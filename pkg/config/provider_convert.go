@@ -142,12 +142,14 @@ func runtimeToCloud(rt *AppRuntimeConfig) CloudRuntime {
 	out := CloudRuntime{
 		Endpoint:          rt.Endpoint,
 		ModelURL:          rt.ModelURLFmt,
-		ModelsPath:        rt.ModelsPath,
 		ModelsResponseKey: rt.ModelsResponseKey,
 		HealthCheck:       rt.HealthCheck,
 	}
 	if rt.API != nil {
 		out.API = *rt.API
+	}
+	if rt.ModelsPath != nil {
+		out.ModelsPath = new(*rt.ModelsPath)
 	}
 	return out
 }

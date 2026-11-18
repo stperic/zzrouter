@@ -25,28 +25,35 @@ const huggingFaceAPIBase = "https://huggingface.co/api/models/"
 
 // ModelCard represents a model's card/information.
 type ModelCard struct {
-	Provider    Provider    `json:"provider"`
-	ModelID     string      `json:"model_id"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	README      string      `json:"readme,omitempty"`
-	Tags        []string    `json:"tags,omitempty"`
-	License     string      `json:"license,omitempty"`
-	Author      string      `json:"author,omitempty"`
-	Size        int64       `json:"size,omitempty"` // Size in bytes
-	PipelineTag string      `json:"pipeline_tag,omitempty"`
-	Downloads   int         `json:"downloads,omitempty"`
-	Likes       int         `json:"likes,omitempty"`
-	CreatedAt   string      `json:"created_at,omitempty"`
-	UpdatedAt   string      `json:"updated_at,omitempty"`
-	URL         string      `json:"url,omitempty"`      // Model page URL
-	Siblings    []hfSibling `json:"siblings,omitempty"` // Files in the repository
+	Provider     Provider       `json:"provider"`
+	ModelID      string         `json:"model_id"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	README       string         `json:"readme,omitempty"`
+	Tags         []string       `json:"tags,omitempty"`
+	License      string         `json:"license,omitempty"`
+	Author       string         `json:"author,omitempty"`
+	Size         int64          `json:"size,omitempty"` // Size in bytes
+	PipelineTag  string         `json:"pipeline_tag,omitempty"`
+	Downloads    int            `json:"downloads,omitempty"`
+	Likes        int            `json:"likes,omitempty"`
+	CreatedAt    string         `json:"created_at,omitempty"`
+	UpdatedAt    string         `json:"updated_at,omitempty"`
+	URL          string         `json:"url,omitempty"`      // Model page URL
+	Siblings     []hfSibling    `json:"siblings,omitempty"` // Files in the repository
+	LibraryName  string         `json:"library_name,omitempty"`
+	CardData     map[string]any `json:"card_data,omitempty"`
+	GGUF         any            `json:"gguf,omitempty"`
+	Safetensors  any            `json:"safetensors,omitempty"`
+	InputTypes   []string       `json:"input_types,omitempty"`
+	VariantCount int            `json:"variant_count,omitempty"`
+	HasCloud     bool           `json:"has_cloud,omitempty"`
 }
 
 // GetCloudModelRaw returns the raw provider response for a cloud model as a
 // map, preserving provider-specific fields (Anthropic capabilities,
 // created_at, etc.) that the ModelCard struct drops.
-func GetCloudModelRaw(ctx context.Context, provider Provider, modelID string, target *backend.Resolved) (map[string]any, error) {
+func GetCloudModelRaw(ctx context.Context, provider Provider, modelID string, target *backend.Resolved, fullDescription bool) (map[string]any, error) {
 	results, err := SearchCloudTarget(ctx, target, modelID, 100)
 	if err != nil {
 		return nil, fmt.Errorf("cloud model lookup failed: %w", err)
@@ -61,8 +68,9 @@ func GetCloudModelRaw(ctx context.Context, provider Provider, modelID string, ta
 		}
 		apiID, _ := m["api_id"].(string)
 		if apiID == modelID {
-			if entry, ok := GetCloudProvider(provider); ok && entry.Meta.ModelURLFmt != "" {
-				m["url"] = fmt.Sprintf(entry.Meta.ModelURLFmt, apiID)
+			EnrichCloudResultsWithURL([]any{m}, provider)
+			if preview, ok := m["description"].(string); ok && fullDescription && provider == "openrouter" {
+				m["description"] = expandOpenRouterDescription(ctx, target.Endpoint, apiID, preview)
 			}
 			return m, nil
 		}
@@ -74,7 +82,7 @@ func GetCloudModelRaw(ctx context.Context, provider Provider, modelID string, ta
 // getCloudModelCard builds a ModelCard from the raw cloud-provider response.
 // Callers wanting full provider detail should use GetCloudModelRaw.
 func getCloudModelCard(ctx context.Context, provider Provider, modelID string, target *backend.Resolved) (*ModelCard, error) {
-	raw, err := GetCloudModelRaw(ctx, provider, modelID, target)
+	raw, err := GetCloudModelRaw(ctx, provider, modelID, target, false)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +220,12 @@ func (c *Client) getHuggingFaceModelCard(ctx context.Context, modelID string) (*
 		Downloads:   hfModel.Downloads,
 		Likes:       hfModel.Likes,
 		CreatedAt:   hfModel.CreatedAt,
+		UpdatedAt:   hfModel.LastModified,
 		Siblings:    hfModel.Siblings,
+		LibraryName: hfModel.LibraryName,
+		CardData:    hfModel.CardData,
+		GGUF:        hfModel.GGUF,
+		Safetensors: hfModel.Safetensors,
 	}
 
 	validateModelCard(modelCard)
@@ -246,17 +259,24 @@ func getOllamaModelCard(ctx context.Context, modelName string) (*ModelCard, erro
 		return nil, fmt.Errorf("%w: %s in Ollama registry", ErrModelNotFound, modelName)
 	}
 
-	description, capabilities, _, modelURL := scrapeOllamaModelPage(ctx, baseName)
+	description, capabilities, inputTypes, modelURL := scrapeOllamaModelPage(ctx, baseName)
+	if modelURL == "" {
+		modelURL = foundModel.URL
+	}
 
 	return &ModelCard{
-		Provider:    ProviderOllama,
-		ModelID:     modelName,
-		Name:        foundModel.Name,
-		Description: description,
-		Size:        foundModel.Size,
-		Downloads:   foundModel.Pulls,
-		Tags:        capabilities,
-		URL:         modelURL,
+		Provider:     ProviderOllama,
+		ModelID:      modelName,
+		Name:         foundModel.Name,
+		Description:  description,
+		Size:         foundModel.Size,
+		Downloads:    foundModel.Pulls,
+		Tags:         capabilities,
+		URL:          modelURL,
+		UpdatedAt:    foundModel.ModifiedAt,
+		InputTypes:   inputTypes,
+		VariantCount: foundModel.Tags,
+		HasCloud:     foundModel.HasCloud,
 	}, nil
 }
 

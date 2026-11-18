@@ -5,6 +5,8 @@ import { bytes, discoveryKey, discoveryIdentity, searchPath, nextSearchPage, sea
 import { inspectDeployment } from './deployments.mjs';
 import { providerCategory } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
+import { descriptionPreview, modelLink, modelMarkdown } from './discovery-markdown.mjs';
+import { providerCardInfo } from './model-catalog-details.mjs';
 
 export async function discoverModels(p, selected) {
   const query = input('discovery_query', '', { type: 'search', placeholder: 'Search model names' });
@@ -14,22 +16,32 @@ export async function discoverModels(p, selected) {
   const logic = select('discovery_tag_logic', [['AND', 'Match all tags'], ['OR', 'Match any tag']], 'AND');
   const author = input('discovery_author');
   const sourceInfo = el('p', { class: 'muted' });
+  const submitSearch = el('button', { type: 'submit', class: 'primary' }, 'Search');
   const filters = el('details', {}, el('summary', {}, 'More filters'), field('Tags', tags), field('Tag matching', logic), field('Author', author));
   const feedback = el('div', { 'aria-live': 'polite' }), results = el('div', { class: 'node-grid' }), pagination = el('div', { class: 'actions' });
-  const form = el('form', {}, el('div', { class: 'workload-filters' }, field('Registry or cloud provider', provider), field('Search', query), field('Sort', sort)), sourceInfo, filters, el('button', { type: 'submit', class: 'primary' }, 'Search'));
+  const form = el('form', {}, el('div', { class: 'workload-filters' }, field('Registry or cloud provider', provider), field('Search', query), field('Sort', sort)), sourceInfo, filters, submitSearch);
   const list = el('section', { class: 'card entity-list' }, form, feedback, results, pagination), workspace = el('div', { class: 'entity-workspace' }, list);
   const reads = new Lifetime(); p.scope.signal.addEventListener('abort', () => reads.end(), { once: true });
   let sources = [], records = [], drawer, activeQuery, history = [], pageIndex = 0;
   const choose = async key => {
     drawer?.dispose(!key); drawer = undefined; selected = key; markSelection(results, selected);
     if (!key) return;
+    const identity = discoveryIdentity(key);
+    const source = sources.find(item => item.name === identity.provider);
+    if (source && provider.value !== source.name) {
+      provider.value = source.name;
+      updateFilters();
+      void read({}, true);
+    }
+    if (source?.discovery_available === false) return;
     drawer = details({ ...p, root: workspace }, 'Discover model', () => p.go('models', undefined, 'discover'));
-    await discoveryDetails(drawer, discoveryIdentity(key), records.find(item => discoveryKey(item.discovery) === key)?.discovery);
+    await discoveryDetails(drawer, identity, records.find(item => discoveryKey(item.discovery) === key));
   };
   const updateFilters = () => {
     const source = sources.find(item => item.name === provider.value);
     sort.replaceChildren(el('option', { value: '' }, 'Provider default'), ...[...new Set([...(source?.sort_options || []), ...(source?.client_sorts || [])])].map(value => el('option', { value }, `${value}${source.client_sorts?.includes(value) ? ' (this page)' : ''}`)));
     tags.disabled = !source?.has_tags; logic.disabled = !source?.has_tags;
+    query.disabled = sort.disabled = submitSearch.disabled = source?.discovery_available === false;
     sourceInfo.textContent = [source?.description, source?.client_filter ? 'Name filtering applies to the current provider page. Browse more pages to see additional matches.' : '', source?.is_cloud && !source.configured ? 'This cloud connection is not configured yet.' : ''].filter(Boolean).join(' ');
   };
   async function read(page = {}, isNew = false) {
@@ -38,6 +50,17 @@ export async function discoverModels(p, selected) {
     if (!source) { feedback.replaceChildren(message('Choose a model discovery provider first.')); return; }
     if (isNew) { activeQuery = searchSelection(source, { query: query.value.trim(), sort: sort.value, tags: tags.disabled ? '' : tags.value.trim(), logic: logic.value, author: author.value.trim() }); history = [{}]; pageIndex = 0; }
     const scope = reads.next(), signal = AbortSignal.any([p.scope.signal, scope.signal]);
+    if (source.discovery_available === false) {
+      records = [];
+      results.replaceChildren();
+      pagination.replaceChildren();
+      const unsupported = source.discovery_supported === false;
+      feedback.replaceChildren(
+        message(unsupported ? 'Model discovery is unavailable through this connection.' : 'Add the provider’s credentials to browse its models.', 'warning'),
+        actions(!unsupported && leaveButton('Configure provider', () => p.go('providers', `cloud/${source.name}`), p.api),
+          leaveButton('Refresh providers', () => loadSources(provider.value), p.api)));
+      return;
+    }
     feedback.replaceChildren(message('Searching models…')); pagination.replaceChildren();
     try {
       const result = await p.api.data(searchPath({ ...activeQuery, ...page }), { signal, timeoutMs: 60000 });
@@ -46,9 +69,12 @@ export async function discoverModels(p, selected) {
       const visible = discoveryRows(records, activeQuery);
       results.replaceChildren(...visible.map(({ discovery: item }) => {
         const key = discoveryKey(item), control = leaveButton('', () => p.go('models', key, 'discover'), p.api, 'network-item');
+        const name = item.display_name || item.api_id;
+        const preview = descriptionPreview(item.description);
         control.setAttribute('data-selection', key);
-        control.append(el('span', { class: 'network-item-title' }, item.display_name || item.api_id, badge(item.is_cloud ? 'Cloud' : item.provider)),
-          text(item.description || item.api_id, 'muted'), text([item.size_bytes > 0 ? bytes(item.size_bytes) : '', item.downloads ? `${item.downloads.toLocaleString()} downloads` : '', item.context_length ? `${item.context_length.toLocaleString()} context` : ''].filter(Boolean).join(' · '), 'muted'));
+        control.append(el('span', { class: 'network-item-title' }, name, badge(item.is_cloud ? 'Cloud' : item.provider)));
+        if (preview && preview !== name && preview !== item.api_id) control.append(text(preview, 'muted discovery-row-preview'));
+        control.append(text([item.size_bytes > 0 ? bytes(item.size_bytes) : '', item.downloads ? `${item.downloads.toLocaleString()} downloads` : '', item.context_length ? `${item.context_length.toLocaleString()} context` : ''].filter(Boolean).join(' · '), 'muted'));
         return control;
       }));
       markSelection(results, selected);
@@ -61,38 +87,110 @@ export async function discoverModels(p, selected) {
   provider.addEventListener('change', () => { updateFilters(); void read({}, true); });
   form.addEventListener('submit', event => { event.preventDefault(); void read({}, true); });
   p.root.append(workspace);
-  try {
-    const catalog = await p.api.data('/search?type=providers', { signal: p.scope.signal });
-    if (!p.current()) return;
-    sources = catalog.results || [];
-    provider.replaceChildren(...sources.map(item => el('option', { value: item.name }, item.display_name || item.name)));
-    const initialProvider = discoveryIdentity(selected).provider;
-    if (sources.some(item => item.name === initialProvider)) provider.value = initialProvider;
-    updateFilters();
-    p.handleSelection?.(choose, (_key, mode) => mode === 'discover');
-    if (provider.value) await read({}, true);
-    else feedback.replaceChildren(message('The coordinator did not declare any model discovery providers.'));
-    if (selected && p.current()) await choose(selected);
-  } catch (error) { if (p.current()) feedback.replaceChildren(problem(error)); }
+  async function loadSources(initialProvider) {
+    const scope = reads.next();
+    const signal = AbortSignal.any([p.scope.signal, scope.signal]);
+    feedback.replaceChildren(message('Checking provider availability…'));
+    try {
+      const catalog = await p.api.data('/search?type=providers', { signal });
+      if (!p.current() || !scope.current()) return;
+      sources = catalog.results || [];
+      const available = el('optgroup', { label: 'Available' });
+      const setup = el('optgroup', { label: 'Setup required' });
+      const unsupported = el('optgroup', { label: 'Catalog unavailable' });
+      for (const item of sources) {
+        const group = item.discovery_supported === false ? unsupported : item.discovery_available === false ? setup : available;
+        group.append(el('option', { value: item.name }, item.display_name || item.name));
+      }
+      provider.replaceChildren(...[available, setup, unsupported].filter(group => group.childElementCount));
+      if (sources.some(item => item.name === initialProvider)) provider.value = initialProvider;
+      updateFilters();
+      if (provider.value) await read({}, true);
+      else feedback.replaceChildren(message('The coordinator did not declare any model discovery providers.'));
+    } catch (error) { if (p.current() && scope.current()) feedback.replaceChildren(problem(error)); }
+  }
+  p.handleSelection?.(choose, (_key, mode) => mode === 'discover');
+  await loadSources(discoveryIdentity(selected).provider);
+  if (selected && p.current()) await choose(selected);
 }
 
 export async function discoveryDetails(p, identity, initial) {
+  const cardPath = `/models/card/${encodeURIComponent(identity.provider)}/${identity.api_id.split('/').map(encodeURIComponent).join('/')}`;
   const show = async () => {
     const owner = p.panel.view('Discover model');
     owner.root.append(message('Loading model card…'));
     try {
-      const value = await p.api.data(`/models/card/${encodeURIComponent(identity.provider)}/${identity.api_id.split('/').map(encodeURIComponent).join('/')}`, { signal: owner.scope.signal });
+      const value = await p.api.data(cardPath, { signal: owner.scope.signal });
       if (!owner.current()) return;
-      const model = value.discovery || initial;
-      if (!model) throw new Error('The coordinator returned no discovery metadata for this model.');
-      owner.root.replaceChildren(el('h2', {}, model.display_name || model.api_id), providerName(model.provider, model.provider), text(model.description || '', 'muted'),
-        facts([['Model ID', model.api_id], ['Storage size', model.size_bytes > 0 ? bytes(model.size_bytes) : 'Not reported'], ['Context length', model.context_length || 'Not reported'], ['Parameters', model.parameter_count?.toLocaleString() || 'Not reported']]),
-        actions(leaveButton(model.is_cloud ? 'Add cloud model' : 'Download', () => deploymentForm(owner.panel.view(model.is_cloud ? 'Add cloud model' : 'Download model'), model, show), p.api, 'primary')));
-      if (model.tags?.length) owner.root.append(el('details', {}, el('summary', {}, 'Tags'), text(model.tags.join(', '))));
-      if (model.readme) owner.root.append(el('details', {}, el('summary', {}, 'Model card'), el('pre', { class: 'log-output' }, model.readme)));
+      if (!value.discovery && !initial?.discovery) throw new Error('The coordinator returned no discovery metadata for this model.');
+      const model = { ...initial?.discovery, ...value.discovery };
+      const native = Object.fromEntries([...Object.entries(initial || {}), ...Object.entries(value)]
+        .filter(([, item]) => item !== null && item !== undefined && item !== ''));
+      const tags = [...new Set([...(model.tags || []), ...(initial?.discovery?.tags || [])])];
+      const info = providerCardInfo(model, native);
+      const description = discoveryDescription(owner, cardPath, model, info.base);
+      const allTags = tags.length ? el('details', { class: 'discovery-all-tags' }, el('summary', {}, 'All tags'),
+        el('div', { class: 'actions' }, tags.map(label => badge(label)))) : null;
+      owner.root.replaceChildren(...[
+        el('h2', {}, model.display_name || model.api_id), providerName(model.provider, model.provider), description,
+        info.facts,
+        actions(leaveButton(model.is_cloud ? 'Add cloud model' : 'Download', () => deploymentForm(owner.panel.view(model.is_cloud ? 'Add cloud model' : 'Download model'), model, show), p.api, 'primary')),
+        info.links, allTags, ...info.extras,
+      ].filter(Boolean));
     } catch (error) { if (owner.current()) owner.root.replaceChildren(problem(error), leaveButton('Reload model card', show, p.api)); }
   };
   await show();
+}
+
+function discoveryDescription(p, path, model, base) {
+  const excerpt = model.description;
+  if (typeof excerpt !== 'string' || !excerpt.trim() || excerpt === model.api_id || excerpt === model.display_name) return null;
+  const preview = modelMarkdown(excerpt, base);
+  if (model.provider !== 'openrouter' || !base || !/(?:\.{3}|…)\s*$/.test(excerpt)) return preview;
+
+  const body = el('div', { id: 'discover-model-description' }, preview);
+  const status = el('span', { role: 'status', class: 'muted' });
+  const toggle = button('Read full description', read);
+  toggle.setAttribute('aria-controls', body.id);
+  toggle.setAttribute('aria-expanded', 'false');
+  let full, loading = false;
+  function display(expanded) {
+    body.replaceChildren(expanded ? full : preview);
+    toggle.textContent = expanded ? 'Show less' : 'Read full description';
+    toggle.setAttribute('aria-expanded', String(expanded));
+  }
+  async function read() {
+    if (loading) return;
+    if (full) {
+      display(toggle.getAttribute('aria-expanded') === 'false');
+      return;
+    }
+    loading = true;
+    toggle.setAttribute('aria-disabled', 'true');
+    status.textContent = 'Loading full description…';
+    try {
+      const data = await p.api.data(path + '?full_description=true', { signal: p.scope.signal });
+      const description = data.discovery?.description;
+      if (p.current() && typeof description === 'string' && description.length > excerpt.length) {
+        full = modelMarkdown(description, base);
+        display(true);
+        return;
+      }
+    } catch {
+      // The excerpt and public page are still available if the request fails.
+    } finally {
+      loading = false;
+      status.textContent = '';
+      toggle.removeAttribute('aria-disabled');
+    }
+    if (p.current()) {
+      const link = modelLink('Read on OpenRouter', base);
+      const focused = document.activeElement === toggle;
+      toggle.replaceWith(link);
+      if (focused) link.focus();
+    }
+  }
+  return el('div', {}, body, el('div', { class: 'actions discovery-links' }, toggle, status));
 }
 
 export async function deploymentForm(p, model, back) {

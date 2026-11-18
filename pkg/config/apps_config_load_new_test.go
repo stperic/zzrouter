@@ -16,6 +16,27 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
+func TestCloudCatalogPathDistinguishesDefaultFromDisabled(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	cfg, err := LoadAppsConfig(dir)
+	require.NoError(t, err)
+
+	openAI, ok := cfg.LookupApp("openai")
+	require.True(t, ok)
+	assert.Nil(t, openAI.Runtime.ModelsPath)
+
+	bedrock, ok := cfg.LookupApp("bedrock")
+	require.True(t, ok)
+	require.NotNil(t, bedrock.Runtime.ModelsPath)
+	assert.Empty(t, *bedrock.Runtime.ModelsPath)
+	*bedrock.Runtime.ModelsPath = "/different"
+	again, ok := cfg.LookupApp("bedrock")
+	require.True(t, ok)
+	require.NotNil(t, again.Runtime.ModelsPath)
+	assert.Empty(t, *again.Runtime.ModelsPath)
+}
+
 // TestNewShape_RoundTripViaInstall is the golden round-trip: install
 // the embedded providers/ tree into a temp dir, load it back, assert
 // every shipped provider is present under its declared kind.

@@ -86,7 +86,7 @@ func (s *ModelSearchService) discoveryResult(provider string, raw map[string]any
 		d.PriceComplete = discoveryString(prices, "completion")
 	}
 	if provider == constants.RepoOllama {
-		d.VariantCount = int(discoveryNumber(raw, "tags"))
+		d.VariantCount = int(discoveryNumber(raw, "variant_count", "tags"))
 	}
 	if provider == constants.RepoHuggingFace {
 		if st, ok := raw["safetensors"].(map[string]any); ok {

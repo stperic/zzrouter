@@ -6421,6 +6421,11 @@ paths:
       tags: [Models]
       operationId: getModelsCard
       summary: Fetch a model card (registry metadata, description, license)
+      parameters:
+        - in: query
+          name: full_description
+          schema: { type: boolean, default: false }
+          description: Expand the OpenRouter description from its public model page when available.
       description: |
         The upstream registry's card for a model: description, licence,
         files, and for cloud providers the native catalog fields enriched
@@ -6449,6 +6454,11 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '501':
+          description: The provider declares no model catalog. The problem code is model_discovery_unavailable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: The provider connection is unavailable. Code provider_connection_unavailable and errors[].hint identify the coordinator connection recovery workflow.
           content:
@@ -7991,6 +8001,11 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '501':
+          description: The provider declares no model catalog. The problem code is model_discovery_unavailable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: The provider connection is unavailable. Code provider_connection_unavailable and errors[].hint identify the coordinator connection recovery workflow.
           content:
@@ -12187,6 +12202,8 @@ components:
         is_cloud: { type: boolean }
         configured: { type: boolean }
         enabled: { type: boolean }
+        discovery_available: { type: boolean }
+        discovery_supported: { type: boolean }
     ProviderServiceStatus:
       type: object
       required: [provider, node, supervisor, managed, enabled, desired_running, running, healthy, manager]

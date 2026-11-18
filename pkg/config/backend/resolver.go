@@ -43,9 +43,17 @@ type Resolved struct {
 	Cloud             bool
 	Configured        bool
 	Revision          string
-	ModelsPath        string
+	ModelsPath        *string
 	ModelsResponseKey string
 	TestPath          string
+}
+
+// ModelListPath returns the configured catalog path. An explicit empty path disables discovery.
+func (r *Resolved) ModelListPath() string {
+	if r.ModelsPath != nil {
+		return *r.ModelsPath
+	}
+	return "/v1/models"
 }
 
 // NewRequest builds a request zzRouter makes on its own to path on the
