@@ -19,6 +19,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
@@ -145,9 +146,10 @@ func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serv
 			body, _ := io.ReadAll(r.Body)
 			b.mu.Lock()
 			b.hits = append(b.hits, recordedRequest{Method: r.Method, Path: r.URL.RequestURI(), Body: body, Headers: r.Header.Clone()})
+			status := b.status
 			b.mu.Unlock()
 			w.Header().Set("Content-Type", contentType)
-			w.WriteHeader(b.status)
+			w.WriteHeader(status)
 			_, _ = w.Write([]byte(reply))
 		}))
 		t.Cleanup(engine.Close)
@@ -271,9 +273,20 @@ func TestResponsesRoute_GroupRecordsServingReplica(t *testing.T) {
 	w := postAsAdmin(t, s, "/v1/responses", `{"model":"claude","input":"hi"}`)
 
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
-	provider, ok := s.inference.affinity.Lookup("resp_spare")
+	provider, ok := s.inference.affinity.Lookup("resp_spare", affinity.Owner{Kind: "static", ID: "admin"})
 	require.True(t, ok)
-	assert.Equal(t, "spare", provider)
+	assert.Equal(t, "spare", provider.ProviderKey)
+	require.Equal(t, "spare-model", provider.Model)
+	target, found := s.backend.Resolve("spare")
+	require.True(t, found)
+	require.Equal(t, target.Revision, provider.ConnectionRevision)
+	// Changing the group's destination cannot reinterpret a stored continuation.
+	require.NoError(t, s.model.Groups.Set("claude", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "other", App: "busy", Model: "changed-model"}}}))
+	continued := postAsAdmin(t, s, "/v1/responses", `{"model":"claude","input":"again","previous_response_id":"resp_spare"}`)
+	require.Equal(t, http.StatusOK, continued.Code, continued.Body.String())
+	hits := backends["spare"].requests()
+	require.Len(t, hits, 2)
+	assert.Contains(t, string(hits[1].Body), `"model":"spare-model"`)
 }
 
 // A body over the engine-wide cap is a 413 in the route's dialect, not a

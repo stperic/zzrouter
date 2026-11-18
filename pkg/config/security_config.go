@@ -4,7 +4,7 @@ import "fmt"
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
-	// Credentials selects an externally provisioned encryption key at startup.
+	// Credentials can override the installation's automatically provisioned key.
 	Credentials CredentialsConfig `mapstructure:"credentials" yaml:"credentials,omitempty"`
 	// LogAuthAttempts logs authentication attempts for debugging
 	LogAuthAttempts bool `mapstructure:"log_auth_attempts" yaml:"log_auth_attempts,omitempty"`

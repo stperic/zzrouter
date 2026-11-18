@@ -60,8 +60,8 @@ auth:
 # SECURITY
 # =============================================================================
 security:
-  # Managed provider keys need an operator-provisioned 32-byte encryption key.
-  # Relative paths resolve from this node configuration directory.
+  # Blank: prepare private/credentials.key automatically under the node account.
+  # Explicit paths select an externally supplied key; relative paths use this directory.
   credentials:
     key_file: ""
   log_auth_attempts: true             # Log auth attempts for audit

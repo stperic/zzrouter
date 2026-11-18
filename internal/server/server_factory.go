@@ -59,6 +59,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -586,6 +587,13 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		}
 	}
 
+	inventory, err := recovery.Capture(s.shutdownCtx, cfg, s.appsConfig())
+	if err != nil {
+		return nil, fmt.Errorf("prepare recovery inventory: %w", err)
+	}
+	if err := recovery.Save(s.shutdownCtx, inventory); err != nil {
+		return nil, fmt.Errorf("save recovery inventory: %w", err)
+	}
 	constructed = true
 	return s, nil
 }
@@ -684,6 +692,8 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 				"stack", string(stack),
 			)
 		}),
+		RequestIDMiddleware(),
+		APIVersionMiddleware(),
 	)
 
 	// Install dialect-aware handlers for unmatched routes so 404/405
@@ -743,19 +753,19 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 		}
 	}
 
+	s.engine.Use(requestBodyReadDeadlineMiddleware(2 * time.Minute))
+
+	// CORS precedes size refusals and auth/ClusterModeGate so browsers
+	// can read 413s and preflights to gated routes still get a 204.
+	// The read deadline stays before every middleware that can abort.
+	s.engine.Use(CORSMiddleware(cfg.Security.CORS))
+
 	// SECURITY: Add request size limit middleware to prevent memory exhaustion attacks
 	maxRequestSize := int64(defaultMaxRequestSize)
 	if cfg.Node.MaxRequestSize > 0 {
 		maxRequestSize = cfg.Node.MaxRequestSize
 	}
 	s.engine.Use(requestSizeLimitMiddleware(maxRequestSize))
-	s.engine.Use(requestBodyReadDeadlineMiddleware(2 * time.Minute))
-
-	// CORS policy runs before everything auth-related and before
-	// ClusterModeGate so preflights to gated routes still get a 204
-	// with the right headers even when the node is not in an allowed
-	// role for the real request. Zero-cost when disabled.
-	s.engine.Use(CORSMiddleware(cfg.Security.CORS))
 
 	// Register cluster detection middleware (detects cluster-internal requests)
 	// Must be registered BEFORE authentication to populate context for auth checks

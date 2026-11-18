@@ -54,7 +54,10 @@ test('initial camera waits for a visible map and preserves readable zoom for lar
   assert.equal(initialCamera(cy), false);
   width = 1000;
   assert.equal(initialCamera(cy), true);
-  assert.equal(cy.zoom(), 0.6);
+  assert.equal(cy.zoom(), 0.75);
+  assert.equal(cy.minZoom(), cy.maxZoom());
+  cy.zoom(1.5);
+  assert.equal(cy.zoom(), 0.75);
   initialCamera(cy, 'node/worker');
   const point = cy.getElementById('node/worker').renderedPosition();
   assert.equal(point.x, 500);
@@ -246,7 +249,7 @@ test('overview switches one nonmodal drawer without replacing the map and protec
   t.after(() => controller.abort());
   let select;
   let canLeave = true;
-  const p = { root, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
+  const p = { root, identity: { role: 'admin' }, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
     go: (_, value) => select(value), handleSelection: callback => { select = callback; },
     api: { canLeave: () => canLeave, canChange: () => true,
       list: async path => path === '/nodes' ? snapshot.inventory[0].value : path === '/providers' ? snapshot.inventory[1].value : path.startsWith('/providers/catalog') ? snapshot.catalog.value : [],
@@ -287,11 +290,11 @@ test('Refresh updates details and a successful save waits for authoritative node
   let select, heldRead;
   let observed = { ...node };
   const provider = { name: 'ollama', node: 'atlas', kind: 'external', enabled: true, installed: true };
-  const p = { root, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
+  const p = { root, identity: { role: 'admin' }, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
     go: (_, value) => select(value), handleSelection: callback => { select = callback; },
     api: { canLeave: () => true, canChange: () => true,
       list: async path => path === '/nodes' ? heldRead ? await heldRead : [observed] : path.startsWith('/providers/catalog') ? [] : path.startsWith('/providers') ? [{ ...provider }] : [],
-      request: async () => ({ data: [] }), data: async () => { provider.enabled = false; } } };
+      request: async () => ({ data: [] }), data: async (_path, options = {}) => { if (options.method) provider.enabled = false; return {}; } } };
   await overview(p);
   select('node/atlas');
   observed = { ...observed, health_status: 'down' };
@@ -327,11 +330,11 @@ test('local provider deep links and list selection keep the machine context in o
   let select;
   let route = localProviderKey(machine, 'ollama');
   const writes = [];
-  const p = { root, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
+  const p = { root, identity: { role: 'admin' }, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {},
     go: (_, value) => { route = value; select(value); }, handleSelection: callback => { select = callback; },
     api: { canLeave: () => true, canChange: () => true,
       list: async path => path === '/nodes' ? observations : path.startsWith('/providers/catalog') ? [] : path.startsWith('/providers') ? records : [], request: async () => ({ data: [] }),
-      data: async (path, options) => { writes.push(path); records.find(row => row.node === machine).enabled = options.body.enabled; } } };
+      data: async (path, options = {}) => { if (!options.method) return {}; writes.push(path); records.find(row => row.node === machine).enabled = options.body.enabled; } } };
   const selection = localProviderKey(machine, 'ollama');
   await overview(p, selection);
   const map = find(root, element => element.getAttribute('aria-label') === 'Network map');

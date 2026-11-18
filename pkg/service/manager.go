@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
 )
@@ -123,49 +122,6 @@ type Status struct {
 // - manager_other.go (fallback)
 
 // Helper functions used by platform-specific implementations
-
-// generateSecureKey generates a cryptographically secure API key
-func generateSecureKey() (string, error) {
-	return config.GenerateAPIKey()
-}
-
-// writeEnvFile writes environment variables to a .env file.
-//
-// The file contains secrets (admin/cluster API keys). On Unix the 0600 mode
-// bits restrict access to the owner. On Windows, where mode bits are ignored
-// by the filesystem, restrictEnvFilePerms applies a DACL that grants access
-// only to the current user, SYSTEM, and BUILTIN\Administrators.
-func writeEnvFile(path string, vars map[string]string) error {
-	var content strings.Builder
-	for key, value := range vars {
-		content.WriteString(fmt.Sprintf("%s=%s\n", key, value))
-	}
-	if err := os.WriteFile(path, []byte(content.String()), 0600); err != nil {
-		return err
-	}
-	return restrictEnvFilePerms(path)
-}
-
-// readEnvFile reads environment variables from a file
-func readEnvFile(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	vars := make(map[string]string)
-	for line := range strings.SplitSeq(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) == 2 {
-			vars[parts[0]] = parts[1]
-		}
-	}
-	return vars, nil
-}
 
 // getExecutablePath returns the path to the current executable
 func getExecutablePath() (string, error) {

@@ -283,7 +283,7 @@ func (a *AccessControl) Enforce(c *gin.Context, modelName string, prepare func()
 		}
 	}
 	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return true
 	}
 	decision, release, reservationID := a.core.EnforceQuotas(ac, quotes)
@@ -348,7 +348,7 @@ func (a *AccessControl) resolveVirtualOrRespond(c *gin.Context, modelName string
 		}
 		return nil, true
 	}
-	if ac.Key == nil || !ac.Key.IsVirtual {
+	if ac.Key == nil || !ac.Key.TeamBound() {
 		return nil, true
 	}
 	return ac, true
@@ -544,7 +544,7 @@ func parseRateLimitReset(formatted string) int64 {
 // during stream completion and this is a no-op.
 func (a *AccessControl) CancelPendingReservationIfUnsettled(c *gin.Context) {
 	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return
 	}
 	val, ok := c.Get(string(CtxKeyReservationID))
@@ -555,7 +555,7 @@ func (a *AccessControl) CancelPendingReservationIfUnsettled(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a.core.CancelPending(ac.Key.ID, id)
+	a.core.CancelPending(ac.Key.ReservationKey(), id)
 }
 
 // ReleaseConcurrency is called by the deferred middleware after response

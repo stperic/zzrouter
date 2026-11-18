@@ -71,9 +71,9 @@ func SearchCloudTarget(ctx context.Context, provider *backend.Resolved, query st
 	if provider == nil {
 		return nil, fmt.Errorf("provider connection is unavailable")
 	}
-	modelsPath, responseKey := provider.ModelsPath, provider.ModelsResponseKey
+	modelsPath, responseKey := provider.ModelListPath(), provider.ModelsResponseKey
 	if modelsPath == "" {
-		modelsPath = "/v1/models"
+		return nil, ErrModelDiscoveryUnavailable
 	}
 	if responseKey == "" {
 		responseKey = "data"

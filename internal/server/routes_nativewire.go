@@ -122,7 +122,7 @@ func (s *Server) admitOpaqueForward(c *gin.Context, surface, provider string, bi
 }
 
 func opaqueForwardLimit(ac *AccessContext) string {
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return ""
 	}
 	switch {

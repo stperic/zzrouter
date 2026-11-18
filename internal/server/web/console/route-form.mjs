@@ -2,6 +2,7 @@ import { formSubmission, readAfterWrite } from './details.mjs';
 import { changedFields } from './api.mjs';
 import { el, text, field, input, select, button, leaveButton, actions, message, editorActions, formFeedback } from './dom.mjs';
 import { providerCategory } from './inventory.mjs';
+import { nodeHealth } from './network-data.mjs';
 
 // Keep every editable replica field, excluding live observations from GET.
 export function routeValues(record = {}) {
@@ -38,8 +39,16 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
     destinations.replaceChildren();
     rows.forEach((row, index) => {
       const rep = row.replica;
-      const nodeNames = [...new Set([...nodes.map(node => node.name), rep.node].filter(Boolean))];
-      const node = select(`node_${index}`, [['', `Coordinator (${p.state.node_name || 'local'})`], ...nodeNames.map(value => [value, value])], rep.node || '');
+      const coordinator = p.state.node_name;
+      const node = select(`node_${index}`, [['', `Coordinator (${coordinator || 'local'})`]], rep.node || '');
+      for (const host of nodes) {
+        if (host.name === coordinator && host.name !== rep.node) continue;
+        const ready = host.health_status === 'healthy';
+        const label = ready ? host.name : `${host.name} (${nodeHealth(host)[0]})`;
+        node.append(el('option', { value: host.name, disabled: !ready && host.name !== rep.node }, label));
+      }
+      if (rep.node && !nodes.some(host => host.name === rep.node)) node.append(el('option', { value: rep.node }, `${rep.node} (saved, unavailable)`));
+      node.value = rep.node || '';
       const provider = select(`provider_${index}`, [], rep.provider);
       provider.required = true;
       const model = input(`model_${index}`, rep.model, { required: true, list: `route-models-${index}`, placeholder: 'Choose or enter an exact model' });
@@ -48,28 +57,29 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
       const populateModels = () => {
         const targetNode = node.value || p.state.node_name;
         choices.replaceChildren(...[...new Set(models.filter(item =>
-          (!item.assigned_app || item.assigned_app === provider.value) &&
+          !item.incomplete && item.assigned_app === provider.value &&
           (!item.node || item.node === targetNode)
         ).map(item => item.name).filter(Boolean))].sort().map(value => el('option', { value })));
       };
-      const populateProviders = (saved = '') => {
-        const candidates = new Map(catalog.filter(item => ['openai', 'ollama'].includes(item.protocol)).map(item => [item.key, item]));
-        const targetNode = node.value || p.state.node_name;
-        // Workers can report provider instances absent from the coordinator catalog.
-        // A cloud service or assigned model is positive inference evidence; a node
-        // observation alone must not turn a registry or browser tool into a route.
-        for (const item of nodes.find(item => item.name === targetNode)?.providers || []) {
-          if (catalog.some(entry => entry.key === item.key)) continue;
-          if (providerCategory(item) === 'cloud' || models.some(model => model.node === targetNode && model.assigned_app === item.key)) candidates.set(item.key, item);
+      const populateProviders = (previous, keepSaved) => {
+        const target = nodes.find(item => item.name === (node.value || coordinator));
+        const candidates = new Map();
+        if (target?.health_status === 'healthy') for (const item of target.providers || []) {
+          if (item.state && !['live', 'cloud-available'].includes(item.state) || item.running === false || item.run_scope === 'node') continue;
+          const entry = catalog.find(value => value.key === item.key);
+          const inference = entry ? ['openai', 'ollama'].includes(entry.protocol) : providerCategory(item) === 'cloud' ||
+            models.some(model => model.node === target.name && model.assigned_app === item.key && !model.incomplete);
+          if (inference) candidates.set(item.key, entry || item);
         }
-        const choices = [['', 'Choose a provider…'], ...[...candidates.values()].map(item => [item.key, `${item.name || item.key} (${providerCategory(item) === 'cloud' ? 'Cloud' : 'Local'})`])];
-        if (saved && !choices.some(([key]) => key === saved)) choices.push([saved, `${saved} (saved)`]);
-        provider.replaceChildren(...choices.map(([value, label]) => el('option', { value, selected: saved === value }, label)));
+        const choices = [['', candidates.size ? 'Choose a provider…' : 'No available providers on this node'],
+          ...[...candidates.values()].map(item => [item.key, `${item.name || item.key} (${providerCategory(item) === 'cloud' ? 'Cloud' : 'Local'})`])];
+        if (keepSaved && rep.provider && !candidates.has(rep.provider)) choices.push([rep.provider, `${rep.provider} (saved, unavailable)`]);
+        provider.replaceChildren(...choices.map(([value, label]) => el('option', { value, selected: previous === value }, label)));
         populateModels();
       };
-      node.addEventListener('change', () => populateProviders(provider.value));
+      node.addEventListener('change', () => populateProviders(provider.value, node.value === (rep.node || '')));
       provider.addEventListener('change', populateModels);
-      populateProviders(rep.provider);
+      populateProviders(rep.provider, true);
       row.read = () => ({ ...rep, provider: provider.value, node: node.value, model: model.value.trim(), on_demand: demand.checked });
       row.fields = { node, provider, model, on_demand: demand };
       const move = direction => {

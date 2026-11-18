@@ -25,6 +25,9 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// API discovery: GET /zzrouter/v1 — returns endpoint groups and
 	// enabled features so AI agents can bootstrap without guessing paths.
 	registerAPIDiscoveryRoute(router, s)
+	s.registerOperationRoutes(router)
+	router.GET("/access/audit", s.browserCoordinatorOnly, browserResponseHeaders, s.handleAccessAudit)
+	router.GET("/system/recovery", browserResponseHeaders, s.handleRecoveryInventory)
 
 	// Initialize services (inject routing layer). The compat surfaces need
 	// a subset of these and are registered on their own engine on a worker,
@@ -142,6 +145,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// RegisterAccessControlAPIRoutes below.
 	if s.teamStore != nil && s.access != nil {
 		s.services.Teams = NewTeamsService(s.teamStore, s.keyStore, s.access)
+		s.services.Teams.people = s.people
 		s.controllers.Teams = NewTeamsController(s.services.Teams)
 
 		// Sweep orphan personal teams — any kind=personal team with zero

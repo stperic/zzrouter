@@ -154,7 +154,8 @@ func TestConnectionSnapshotRotationRemovalAndRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, status.Fields[1].Secret, "client metadata cannot mutate the declared secret classification")
 	revision := target.Revision
-	require.NoError(t, cfg.UpdateApp("cloud", func(s *config.ServiceConfig) error { s.Runtime.ModelsPath = "/different"; return nil }))
+	modelsPath := "/different"
+	require.NoError(t, cfg.UpdateApp("cloud", func(s *config.ServiceConfig) error { s.Runtime.ModelsPath = &modelsPath; return nil }))
 	target, ok = resolver.Resolve("cloud")
 	require.True(t, ok)
 	require.NotEqual(t, revision, target.Revision, "catalog configuration participates in cached credential snapshots")

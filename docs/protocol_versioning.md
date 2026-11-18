@@ -31,6 +31,17 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 25 raises the minimum from 23 to 25. Provider configuration carries
+strict `operations` and `runtime.listener` declarations. Exact-run execution
+rechecks definition and target revisions on the owning worker. Stored Responses
+forwarding also carries protected caller ownership through the existing mTLS
+routing hints; workers must not merge separate callers into their synthetic
+cluster identity. Older peers cannot safely interpret these contracts.
+Upgrade the coordinator and every worker together in a maintenance window,
+preserving CA and node identity state. Existing pre-write provider-sync validation
+continues to refuse incompatible definitions. See
+[provider extensibility](provider-extensibility.md).
+
 Protocol 24 keeps minimum 23 for rolling upgrades. Install-plan replies add
 `script_export`, containing a planner-approved POSIX command script or a refusal
 reason. The executing node evaluates hidden hooks, managed environments and

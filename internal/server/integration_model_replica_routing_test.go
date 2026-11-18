@@ -305,7 +305,7 @@ type launchBroadcastRouter struct{ fakeRouter }
 
 func (r *launchBroadcastRouter) Broadcast(_ context.Context, path, method string, body []byte) (*routing.Response, error) {
 	r.calls = append(r.calls, routing.Request{Path: path, Method: method, Body: body})
-	response := `{"model":"unknown","provider":"llamacpp","instance_id":"fixture-run","status":"loading"}`
+	response := `{"model":"unknown","provider":"llamacpp","instance_id":"fixture-run","status":"loading","node":"worker"}`
 	return &routing.Response{StatusCode: http.StatusOK, Body: []byte(response)}, nil
 }
 

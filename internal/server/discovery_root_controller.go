@@ -21,20 +21,24 @@ var apiDiscoveryHidden = map[string]struct{}{
 }
 
 type apiDiscoveryResponse struct {
-	Runs                string              `json:"runs"`
-	MCP                 string              `json:"mcp,omitempty"`
-	InferenceMCP        string              `json:"inference_mcp,omitempty"`
-	APIVersion          string              `json:"api_version"`
-	Authentication      apiAuthentication   `json:"authentication"`
-	Inference           apiInference        `json:"inference"`
-	EndpointGroups      map[string][]string `json:"endpoint_groups"`
-	StreamingGETs       []string            `json:"streaming_gets"`
-	EnabledFeatures     []string            `json:"enabled_features"`
-	Docs                map[string]string   `json:"docs"`
-	ProviderDiagnostics string              `json:"provider_diagnostics,omitempty"`
-	ProviderModels      string              `json:"provider_models"`
-	UpdateControl       string              `json:"update_control"`
-	ChatTemplates       string              `json:"chat_templates"`
+	Operations           string              `json:"operations,omitempty"`
+	Connections          string              `json:"connections,omitempty"`
+	InferenceOperations  string              `json:"inference_operations,omitempty"`
+	InferenceConnections string              `json:"inference_connections,omitempty"`
+	Runs                 string              `json:"runs"`
+	MCP                  string              `json:"mcp,omitempty"`
+	InferenceMCP         string              `json:"inference_mcp,omitempty"`
+	APIVersion           string              `json:"api_version"`
+	Authentication       apiAuthentication   `json:"authentication"`
+	Inference            apiInference        `json:"inference"`
+	EndpointGroups       map[string][]string `json:"endpoint_groups"`
+	StreamingGETs        []string            `json:"streaming_gets"`
+	EnabledFeatures      []string            `json:"enabled_features"`
+	Docs                 map[string]string   `json:"docs"`
+	ProviderDiagnostics  string              `json:"provider_diagnostics,omitempty"`
+	ProviderModels       string              `json:"provider_models"`
+	UpdateControl        string              `json:"update_control"`
+	ChatTemplates        string              `json:"chat_templates"`
 }
 
 // chatTemplatesGuide is how a caller fixes a model whose own chat template
@@ -149,11 +153,15 @@ func registerAPIDiscoveryRoute(router *gin.RouterGroup, s *Server) {
 func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
 	mcpEndpoint := ""
 	inferenceMCPEndpoint := ""
+	operations, connections, inferenceOperations, inferenceConnections := "", "", "", ""
 	if s.config == nil || !s.config.Cluster.IsWorker() {
 		mcpEndpoint = "POST /zzrouter/v1/mcp"
 		inferenceMCPEndpoint = "POST /inference/mcp"
+		operations, connections = "GET /zzrouter/v1/operations", "GET /zzrouter/v1/connections"
+		inferenceOperations, inferenceConnections = "GET /inference/v1/operations", "GET /inference/v1/connections"
 	}
 	return apiDiscoveryResponse{
+		Operations: operations, Connections: connections, InferenceOperations: inferenceOperations, InferenceConnections: inferenceConnections,
 		MCP:                 mcpEndpoint,
 		InferenceMCP:        inferenceMCPEndpoint,
 		APIVersion:          "v1",

@@ -18,6 +18,93 @@
   }],
   "additionalProperties": false,
   "properties": {
+    "operations": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "description",
+          "adapter",
+          "audience",
+          "effect",
+          "target_scope",
+          "transport",
+          "binding",
+          "input_schema",
+          "output_schema",
+          "runtimes"
+        ],
+        "properties": {
+          "version": {
+            "const": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "adapter": {
+            "const": "run_json_read"
+          },
+          "audience": {
+            "const": "admin"
+          },
+          "effect": {
+            "const": "read"
+          },
+          "target_scope": {
+            "const": "run"
+          },
+          "transport": {
+            "const": "json"
+          },
+          "binding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "path"
+            ],
+            "properties": {
+              "method": {
+                "enum": [
+                  "GET",
+                  "POST"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            }
+          },
+          "input_schema": {
+            "type": "object"
+          },
+          "output_schema": {
+            "type": "object"
+          },
+          "runtimes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        }
+      }
+    },
     "schema": {
       "type": "object",
       "additionalProperties": {
@@ -160,6 +247,7 @@
       ],
       "additionalProperties": false,
       "properties": {
+        "listener": {"$ref": "#/$defs/listener"},
         "data_dir": {"type": "string", "minLength": 1},
         "browser": {
           "type": "object", "additionalProperties": false,
@@ -270,10 +358,31 @@
     }
   },
   "$defs": {
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "host_parameter": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,127}$"
+        },
+        "host_environment": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]{0,127}$"
+        },
+        "default_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        }
+      }
+    },
     "feature": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "listener": {"$ref": "#/$defs/listener"},
         "requires_parameters": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "http": {"type": "object", "additionalProperties": false, "required": ["path", "field"], "properties": {"path": {"type": "string"}, "field": {"type": "string"}}},
         "default": {

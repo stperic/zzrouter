@@ -17,12 +17,16 @@ export class Element extends EventTarget {
   }
   get isConnected() { return this === document.querySelector('#app') || !!this.parent?.isConnected; }
   get children() { return this.childNodes.filter(child => child.tag !== '#text'); }
+  get childElementCount() { return this.children.length; }
   get firstChild() { return this.childNodes[0]; }
   get textContent() { return (this._text || '') + this.childNodes.map(child => child.textContent).join(''); }
   set textContent(value) { this._text = String(value); this.childNodes = []; }
   get value() {
     if (this._value !== undefined) return this._value;
-    if (this.tag === 'select') return (this.children.find(child => child.selected) || this.children[0])?.value || '';
+    if (this.tag === 'select') {
+      const options = walk(this).filter(child => child.tag === 'option');
+      return (options.find(child => child.selected) || options[0])?.value || '';
+    }
     return this.tag === 'textarea' ? this.textContent : '';
   }
   set value(value) { this._value = String(value); }

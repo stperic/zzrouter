@@ -21,6 +21,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/role"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/update"
@@ -164,6 +165,7 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 	if s.access != nil && s.access.oauth != nil {
 		stopErr = errors.Join(stopErr, s.access.oauth.Close())
 	}
+	stopErr = errors.Join(stopErr, s.closePeople())
 	if s.providers.connectionStore != nil {
 		stopErr = errors.Join(stopErr, s.providers.connectionStore.Close())
 	}
@@ -489,6 +491,8 @@ func (s *Server) startCoordinatorSubsystems() error {
 // that transitions Unclaimed → Coordinator via pairing picks up
 // audit coverage.
 func (s *Server) openAuditSink() {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
 	if _, ok := s.auditSink.(audit.Null); !ok {
 		return // already opened
 	}
@@ -502,6 +506,9 @@ func (s *Server) openAuditSink() {
 		return
 	}
 	s.auditSink = sink
+	if s.people != nil {
+		s.people.SetAuditSink(sink)
+	}
 	if s.services.Keys != nil {
 		s.services.Keys.SetAuditSink(sink)
 	}
@@ -515,6 +522,11 @@ func (s *Server) openAuditSink() {
 // services' sink to audit.Null. Paired with openAuditSink across a
 // role-transition cycle.
 func (s *Server) closeAuditSink() {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	if s.people != nil {
+		s.people.SetAuditSink(audit.Null{})
+	}
 	if s.services.Keys != nil {
 		s.services.Keys.SetAuditSink(audit.Null{})
 	}
@@ -762,6 +774,12 @@ func getOutboundIP() (string, error) {
 // requestSizeLimitMiddleware limits request body size (memory exhaustion guard).
 func requestSizeLimitMiddleware(maxSize int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if c.Request.ContentLength > maxSize {
+			httperr.FromContextOr(c, newProblemResponder()).RequestTooLarge(c,
+				fmt.Sprintf("request body exceeds the %d-byte limit", maxSize))
+			c.Abort()
+			return
+		}
 		if c.Request.Body != nil {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxSize)
 		}

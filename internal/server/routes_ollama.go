@@ -37,7 +37,6 @@ func (s *Server) registerOllamaRoutes() {
 
 	ollama := s.engine.Group("/api",
 		httperr.AttachResponder(s.responders.ollama),
-		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 		h.requireOllamaPresence(),
 	)

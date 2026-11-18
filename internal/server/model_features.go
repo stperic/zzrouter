@@ -97,32 +97,3 @@ func (s *Server) admitImages(c *gin.Context, model string, body []byte, resolved
 	httperr.FromContext(c).BadRequest(c, message, "model")
 	return false
 }
-
-// responseAffinityTarget uses a group's sole local model on the pinned provider.
-// Provider-only affinity cannot identify a model among multiple matching replicas;
-// that evidence remains unknown, without redirecting a stateful continuation.
-func (s *Server) responseAffinityTarget(model, provider string) *resolver.Resolved {
-	target := &resolver.Resolved{OriginalName: model, ModelName: s.modelIdentity(model), Provider: provider}
-	if s.model == nil || s.model.Groups == nil {
-		return target
-	}
-	group := s.model.Groups.Get(model)
-	if group == nil {
-		return target
-	}
-	var matched bool
-	for _, rep := range group.Replicas {
-		if rep.App != provider || (rep.Node != "" && rep.Node != "localhost" && rep.Node != s.node.Nodename()) {
-			continue
-		}
-		if matched {
-			return &resolver.Resolved{ModelName: model, Provider: provider}
-		}
-		target.ModelName, target.Node = rep.Model, rep.Node
-		matched = true
-	}
-	if matched {
-		target.GroupName = model
-	}
-	return target
-}

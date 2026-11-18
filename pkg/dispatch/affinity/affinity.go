@@ -1,21 +1,7 @@
-// Package affinity provides session-affinity tracking for zzRouter's
-// stateful /v1/responses surface.
-//
-// /v1/responses is stateful: the backend that created a response holds the
-// authoritative copy, so retrieval/cancel/delete calls on the same id must
-// land on the same backend. In a multi-backend deployment the default-
-// backend pass-through silently breaks this, so we record
-// (response_id → provider_key) on create and use that mapping on subsequent
-// calls. Cache miss falls through to the default backend, matching the
-// pre-affinity behaviour.
-//
-// TTL matches OpenAI's documented 24h stored-response retention; older
-// entries cannot point at a resource the backend still holds.
-// Persistence across restarts is out of scope — restart degrades
-// gracefully to the default-backend path.
-//
-// The sweeper goroutine is owned by the Affinity value. Callers MUST NOT
-// wrap Start in a `go` statement.
+// Package affinity binds stored Responses identifiers to their caller and immutable origin.
+// Entries expire after the backend retention window. A missing entry proves no
+// destination: callers must refuse it rather than select a default backend.
+// The Affinity value owns its background sweeper.
 package affinity
 
 import (
@@ -27,11 +13,11 @@ import (
 
 const defaultTTL = 24 * time.Hour
 
-// Affinity maps a response_id to the provider key that produced it.
+// Affinity maps each caller's response identifier to its immutable origin.
 // Zero value is not usable — call New.
 type Affinity struct {
 	mu      sync.RWMutex
-	entries map[string]entry
+	entries map[resourceKey]entry
 	ttl     time.Duration
 	now     func() time.Time // injectable for tests
 
@@ -49,9 +35,23 @@ type Affinity struct {
 	stop    chan struct{}
 }
 
+// Owner scopes resources to the initiating principal and tenant.
+type Owner struct{ Kind, ID, TeamID string }
+
+// Origin is dispatch evidence captured before sending a create request.
+// A remote Node delegates exact-run ownership to that node's own affinity.
+type Origin struct {
+	ProviderKey, ConnectionRevision, Node, RunID, Endpoint string
+	Model, ClientModel, Route                              string
+}
+
+type resourceKey struct {
+	ID    string
+	Owner Owner
+}
 type entry struct {
-	ProviderKey string
-	ExpiresAt   time.Time
+	Origin    Origin
+	ExpiresAt time.Time
 }
 
 // New constructs a ready-to-use Affinity. A zero ttl is replaced by the
@@ -61,7 +61,7 @@ func New(ttl time.Duration) *Affinity {
 		ttl = defaultTTL
 	}
 	return &Affinity{
-		entries:       make(map[string]entry),
+		entries:       make(map[resourceKey]entry),
 		ttl:           ttl,
 		now:           utils.Now,
 		sweepInterval: 5 * time.Minute,
@@ -69,55 +69,46 @@ func New(ttl time.Duration) *Affinity {
 	}
 }
 
-// Record ignores empty inputs so callers can invoke it with best-effort
-// extraction results without guarding every call site.
-func (a *Affinity) Record(responseID, providerKey string) {
-	if a == nil || responseID == "" || providerKey == "" {
+// Record retains an origin without allowing another backend to take over a live identifier.
+func (a *Affinity) Record(responseID string, owner Owner, origin Origin) {
+	if a == nil || responseID == "" || owner.ID == "" || origin.ProviderKey == "" {
 		return
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.entries[responseID] = entry{
-		ProviderKey: providerKey,
-		ExpiresAt:   a.now().Add(a.ttl),
+	key := resourceKey{responseID, owner}
+	if previous, ok := a.entries[key]; ok && !a.now().After(previous.ExpiresAt) && previous.Origin != origin {
+		return
 	}
+	a.entries[key] = entry{Origin: origin, ExpiresAt: a.now().Add(a.ttl)}
 }
 
-// Lookup purges expired entries lazily as a side effect so the map does
-// not grow unbounded when the background sweeper is disabled.
-//
-// The TOCTOU between the RLock expiry check and the Lock-delete is
-// intentional: if Record re-inserts a fresh entry in the gap we might
-// delete a live one, but the consequence is one cache miss that falls
-// through to the configured default backend — already the documented
-// miss behaviour. The alternative (holding the write lock across every
-// read) would serialize the hot retrieval path.
-func (a *Affinity) Lookup(responseID string) (providerKey string, ok bool) {
-	if a == nil || responseID == "" {
-		return "", false
+// Lookup returns only the initiating caller's unexpired origin.
+func (a *Affinity) Lookup(responseID string, owner Owner) (Origin, bool) {
+	if a == nil || responseID == "" || owner.ID == "" {
+		return Origin{}, false
 	}
-	a.mu.RLock()
-	e, found := a.entries[responseID]
-	a.mu.RUnlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	key := resourceKey{responseID, owner}
+	e, found := a.entries[key]
 	if !found {
-		return "", false
+		return Origin{}, false
 	}
 	if a.now().After(e.ExpiresAt) {
-		a.mu.Lock()
-		delete(a.entries, responseID)
-		a.mu.Unlock()
-		return "", false
+		delete(a.entries, key)
+		return Origin{}, false
 	}
-	return e.ProviderKey, true
+	return e.Origin, true
 }
 
-// Delete removes an entry by id. No-op when missing.
-func (a *Affinity) Delete(responseID string) {
-	if a == nil || responseID == "" {
+// Delete forgets only the initiating caller's resource.
+func (a *Affinity) Delete(responseID string, owner Owner) {
+	if a == nil {
 		return
 	}
 	a.mu.Lock()
-	delete(a.entries, responseID)
+	delete(a.entries, resourceKey{responseID, owner})
 	a.mu.Unlock()
 }
 

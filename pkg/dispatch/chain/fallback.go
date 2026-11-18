@@ -13,6 +13,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/dispatch/steering"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	pfallback "github.com/stperic/zzrouter/pkg/fallback"
@@ -390,7 +391,7 @@ func (p *Proxy) tryOnce(
 	c.Request = original.WithContext(ctx)
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
-	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
+	targetURL, up, inst, err := p.resolveDeploymentTarget(c.Request.Context(), dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
 	if err != nil {
 		attempt.SetError("unavailable", err)
 		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
@@ -415,12 +416,16 @@ func (p *Proxy) tryOnce(
 	}
 	recorder.SetUpstreamRequestData(body)
 
+	requestCtx := c.Request.Context()
+	if lease != nil {
+		requestCtx = lease.Context()
+	}
 	var attemptCtx context.Context
 	var cancel context.CancelFunc
 	if dep.Timeout > 0 {
-		attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
+		attemptCtx, cancel = context.WithTimeout(requestCtx, dep.Timeout)
 	} else {
-		attemptCtx, cancel = context.WithCancel(c.Request.Context())
+		attemptCtx, cancel = context.WithCancel(requestCtx)
 	}
 	defer cancel()
 	var wrap func(io.ReadCloser) io.ReadCloser
@@ -591,11 +596,12 @@ func (p *Proxy) writeSteeringError(c *gin.Context, perr *steering.ParseError) {
 
 // resolveDeploymentTarget returns the URL a deployment attempt goes to
 // and what of the caller's request travels there.
-func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQuery, endpoint string) (string, backend.Upstream, *instance.Instance, error) {
+func (p *Proxy) resolveDeploymentTarget(ctx context.Context, dep pfallback.Candidate, urlPath, rawQuery, endpoint string) (string, backend.Upstream, *instance.Instance, error) {
 	// 1. Cloud providers — always go to their API endpoint.
 	resolved, hasEndpoint := p.deps.Backend(dep.App)
 	if hasEndpoint && resolved.Cloud {
-		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, ConnectionRevision: resolved.Revision, Model: dep.Model})
+		return resolved.InferenceTarget(urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
 
 	// 2. Remote node — its cluster port, over mTLS.
@@ -604,6 +610,7 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 		if base == "" {
 			return "", backend.Upstream{}, nil, fmt.Errorf("node %q advertises no cluster port", dep.Node)
 		}
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, Node: dep.Node, Model: dep.Model})
 		return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Cluster(), nil, nil
 	}
 
@@ -625,12 +632,14 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 	}
 	// 4. A provider without runs is its own endpoint.
 	if inst == nil {
-		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, ConnectionRevision: resolved.Revision, Model: dep.Model})
+		return resolved.InferenceTarget(urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
 	base, up, err := p.deps.RunUpstream(inst)
 	if err != nil {
 		return "", backend.Upstream{}, nil, err
 	}
+	affinity.Observe(ctx, affinity.Origin{ProviderKey: inst.Provider, RunID: inst.ID, Endpoint: base, Model: dep.Model})
 	return backend.PassthroughTarget(base, urlPath, rawQuery), up, inst, nil
 }
 

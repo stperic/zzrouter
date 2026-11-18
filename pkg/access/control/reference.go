@@ -7,16 +7,18 @@ import (
 	"os"
 
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 )
 
 // CredentialReference binds a delegated grant to one version of an existing key.
 // It contains no reusable API credential.
 type CredentialReference struct {
-	IsVirtual   bool     `json:"is_virtual"`
-	ID          string   `json:"id"`
-	Version     string   `json:"version"`
-	Role        UserRole `json:"role"`
-	Fingerprint string   `json:"fingerprint"`
+	Kind        IdentityKind `json:"kind,omitempty"`
+	IsVirtual   bool         `json:"is_virtual"`
+	ID          string       `json:"id"`
+	Version     string       `json:"version"`
+	Role        UserRole     `json:"role"`
+	Fingerprint string       `json:"fingerprint"`
 }
 
 func credentialVersion(secret string) string {
@@ -53,7 +55,21 @@ func (c *Core) Reference(raw string) (CredentialReference, error) {
 func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, error) {
 	var p *KeyPrincipal
 	var version string
+	if ref.Kind != "" && ref.Kind != KindPerson {
+		return nil, ErrInvalidKey
+	}
 	switch {
+	case ref.Kind == KindPerson:
+		if ref.IsVirtual || c.people == nil {
+			return nil, ErrInvalidKey
+		}
+		if person := c.people.Get(ref.ID); person != nil {
+			p = &KeyPrincipal{Kind: KindPerson, ID: person.ID, Name: person.Name, Role: UserRole(person.Role), TeamID: person.TeamID, TeamRole: "member", Suspended: person.Suspended}
+			if person.Owner {
+				p.TeamRole = "owner"
+			}
+			version = person.Revision
+		}
 	case !ref.IsVirtual && ref.ID == "admin":
 		if c.authenticator.staticKeys.Admin != "" {
 			p = c.authenticator.tryStaticKey(c.authenticator.staticKeys.Admin)
@@ -82,9 +98,25 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 	if p.IsExpired() {
 		return nil, ErrKeyExpired
 	}
-	ac := c.buildAccessContext(p)
+	ac, err := c.buildAccessContext(p)
+	if err != nil {
+		return nil, err
+	}
 	if ac.Team != nil && ac.Team.Suspended {
 		return nil, ErrKeySuspended
 	}
 	return ac, nil
+}
+
+// SetPeople installs the coordinator's identity reader before serving requests.
+func (c *Core) SetPeople(reader interface{ Get(string) *people.Person }) { c.people = reader }
+
+// PersonReference binds the exact verified snapshot, refusing concurrent resets.
+func (c *Core) PersonReference(person *people.Person) (CredentialReference, error) {
+	if person == nil {
+		return CredentialReference{}, ErrInvalidKey
+	}
+	ref := CredentialReference{Kind: KindPerson, ID: person.ID, Version: person.Revision, Role: UserRole(person.Role)}
+	_, err := c.AuthenticateReference(ref)
+	return ref, err
 }

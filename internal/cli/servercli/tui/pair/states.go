@@ -279,6 +279,7 @@ func (m *Model) onPairResp(msg pairRespMsg) (tea.Model, tea.Cmd) {
 	case "new", "existing":
 		m.seenActive = true
 		m.code = msg.resp.Code
+		m.transfer = msg.resp.Transfer
 		m.workerURL = msg.resp.WorkerURL
 		m.workerFingerprint = msg.resp.Fingerprint
 		m.deadline = msg.resp.Deadline

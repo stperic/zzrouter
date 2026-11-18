@@ -50,7 +50,7 @@ func (ctrl *KeysController) CreateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.CreateKey(req.ID, &req.CreateKeyRequest, callerKeyID(c))
+	resp, err := ctrl.service.CreateKey(req.ID, &req.CreateKeyRequest, auditActor(c))
 	if err != nil {
 		if isConflict(err) {
 			Conflict(c, err.Error())
@@ -95,7 +95,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.UpdateKey(id, &req, callerKeyID(c))
+	resp, err := ctrl.service.UpdateKey(id, &req, auditActor(c))
 	if err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())

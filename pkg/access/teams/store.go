@@ -75,48 +75,9 @@ func (s *FileTeamStore) Load() error {
 		return fmt.Errorf("failed to read teams config: %w", err)
 	}
 
-	var cfg teamsFile
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("failed to parse teams config: %w", err)
-	}
-
-	// Decode effective mappings as well: YAML null (including aliases/merges)
-	// skips a value unmarshaller, but must not mean an omitted legacy policy.
-	var shape struct {
-		Teams map[string]map[string]any `yaml:"teams"`
-	}
-	if err := yaml.Unmarshal(data, &shape); err != nil {
+	loaded, err := DecodeSnapshot(data)
+	if err != nil {
 		return err
-	}
-	for id, fields := range shape.Teams {
-		for _, field := range []string{"provider_access", "route_access"} {
-			if value, present := fields[field]; present && value == nil {
-				return fmt.Errorf("team %q: %s must be a policy object", id, field)
-			}
-		}
-	}
-
-	loaded := make(map[string]*Team, len(cfg.Teams))
-	for id, team := range cfg.Teams {
-		if team == nil {
-			return fmt.Errorf("team %q must be an object", id)
-		}
-		if err := team.RouteAccess.Validate(); err != nil {
-			return err
-		}
-		if err := team.ProviderAccess.Validate(); err != nil {
-			return fmt.Errorf("team %q: %w", id, err)
-		}
-		team.ID = id
-		if team.Kind == "" {
-			return fmt.Errorf("team %q: missing kind (expected %q or %q)", id, KindPersonal, KindShared)
-		}
-		if team.Kind != KindPersonal && team.Kind != KindShared {
-			return fmt.Errorf("team %q: invalid kind %q (expected %q or %q)", id, team.Kind, KindPersonal, KindShared)
-		}
-		loaded[id] = team
 	}
 
 	s.mu.Lock()
@@ -125,6 +86,55 @@ func (s *FileTeamStore) Load() error {
 	s.mu.Unlock()
 
 	return nil
+}
+
+// DecodeSnapshot validates one persisted policy set without installing it.
+func DecodeSnapshot(data []byte) (map[string]*Team, error) {
+	var cfg teamsFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse teams config: %w", err)
+	}
+
+	// Decode effective mappings as well: YAML null (including aliases/merges)
+	// skips a value unmarshaller, but must not mean an omitted legacy policy.
+	var shape struct {
+		Teams map[string]map[string]any `yaml:"teams"`
+	}
+	if err := yaml.Unmarshal(data, &shape); err != nil {
+		return nil, err
+	}
+	for id, fields := range shape.Teams {
+		for _, field := range []string{"provider_access", "route_access"} {
+			if value, present := fields[field]; present && value == nil {
+				return nil, fmt.Errorf("team %q: %s must be a policy object", id, field)
+			}
+		}
+	}
+
+	loaded := make(map[string]*Team, len(cfg.Teams))
+	for id, team := range cfg.Teams {
+		if team == nil {
+			return nil, fmt.Errorf("team %q must be an object", id)
+		}
+		if err := team.RouteAccess.Validate(); err != nil {
+			return nil, err
+		}
+		if err := team.ProviderAccess.Validate(); err != nil {
+			return nil, fmt.Errorf("team %q: %w", id, err)
+		}
+		team.ID = id
+		if team.Kind == "" {
+			return nil, fmt.Errorf("team %q: missing kind (expected %q or %q)", id, KindPersonal, KindShared)
+		}
+		if team.Kind != KindPersonal && team.Kind != KindShared {
+			return nil, fmt.Errorf("team %q: invalid kind %q (expected %q or %q)", id, team.Kind, KindPersonal, KindShared)
+		}
+		loaded[id] = team
+	}
+
+	return loaded, nil
 }
 
 // Get returns a team by ID, or nil if not found.

@@ -45,9 +45,8 @@ func (s *Server) ollamaDaemon() (*backend.Resolved, error) {
 // client: copy headers (with hop-by-hop + body framing stripped), set the
 // status, and stream the body. The body-normalizer dispatch in
 // proxyToOllamaProvider intentionally does NOT use this helper — only sites
-// that pass through the upstream body verbatim (pullLocalProxy,
-// pullClusterRoute, CreateBlob) share this path. Caller must defer the body
-// close.
+// that pass through the upstream body verbatim share this path. Caller
+// must defer the body close.
 func writeOllamaResponse(c *gin.Context, resp *http.Response) {
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 	c.Status(resp.StatusCode)

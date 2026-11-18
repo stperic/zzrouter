@@ -188,7 +188,9 @@ func TestBudgetPricingSurfaces(t *testing.T) {
 			raw := budgetKey(t, s, 0, 1)
 			body := map[string]any{"model": "claude", "messages": []any{map[string]any{"role": "user", "content": "hi"}}, "max_tokens": 4, "input": "hi", "stream": tc.stream}
 			if tc.affinity {
-				s.inference.affinity.Record("resp_prior", "unknown")
+				ac, err := s.access.AuthenticateRaw(raw)
+				require.NoError(t, err)
+				recordResponseForTest(t, s, "resp_prior", "unknown", "claude", ac)
 				body["previous_response_id"] = "resp_prior"
 			}
 			resp := makeAuthRequest(t, s, http.MethodPost, tc.path, raw, body)

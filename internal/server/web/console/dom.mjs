@@ -125,7 +125,7 @@ function safeEvidence(value) {
   // from unknown objects, never environment maps, request bodies or credentials.
   return JSON.stringify(Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item === 'number' || typeof item === 'boolean').slice(0, 20))).slice(0, 2048);
 }
-export const date = value => value ? new Date(value).toLocaleString() : 'No expiry';
+export const date = (value, missing = 'No expiry') => value ? new Date(value).toLocaleString() : missing;
 export const money = value => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });
 
 // Rows keep native table semantics; the name button provides keyboard activation.
@@ -136,6 +136,19 @@ export function selectableRow(key, selected, open, ...cells) {
 }
 export function markSelection(root, selected) {
   for (const item of root.querySelectorAll('[data-selection]')) item.setAttribute('aria-current', String(item.getAttribute('data-selection') === selected));
+}
+
+export function compactTable(headers, body) {
+  body.setAttribute('role', 'rowgroup');
+  for (const row of body.children) {
+    row.setAttribute('role', 'row');
+    Array.from(row.children).forEach((cell, index) => {
+      cell.setAttribute('role', 'cell');
+      if (index) cell.prepend(el('span', { class: 'compact-cell-label', 'aria-hidden': 'true' }, headers[index]));
+    });
+  }
+  return el('div', { class: 'table-wrap compact-table' }, el('table', { role: 'table' },
+    el('thead', { role: 'rowgroup' }, el('tr', { role: 'row' }, headers.map(label => el('th', { scope: 'col', role: 'columnheader' }, label)))), body));
 }
 export function editorActions(save, cancel, api, draft) {
   save.setAttribute('data-protected-actions', '');

@@ -101,6 +101,21 @@ func readNodeConfigFile(path string) (*NodeConfig, error) {
 	return unmarshalNodeConfig(v, path)
 }
 
+// ReadExistingNodeConfig never initializes files or imports dotenv values.
+func ReadExistingNodeConfig(dir string) (*NodeConfig, error) {
+	return readNodeConfigFile(filepath.Join(dir, hostConfigFileName))
+}
+
+// DecodeNodeConfig applies the same decoding/defaults as a file load, without IO.
+func DecodeNodeConfig(data []byte) (*NodeConfig, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return unmarshalNodeConfig(v, "")
+}
+
 // unmarshalNodeConfig decodes v and applies the normalization every
 // load path shares, so no caller sees a half-resolved config.
 func unmarshalNodeConfig(v *viper.Viper, path string) (*NodeConfig, error) {

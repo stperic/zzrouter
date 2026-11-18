@@ -5,7 +5,7 @@ export const nodeHealth = node => ({ healthy: ['Healthy', 'good'], down: ['Down'
 export const nodeKey = name => `node/${name}`;
 export const localProviderKey = (node, provider) => `local/${encodeURIComponent(node)}/${encodeURIComponent(provider)}`;
 export const clientKey = row => [row.source, row.key_id, row.protocol, row.authentication].map(value => encodeURIComponent(value || '')).join(':');
-export const clientLabel = row => row.name ? `Key: ${row.name}` : `Key ID: ${row.key_id}`;
+export const clientLabel = row => row.source === 'person' ? `Account: ${row.name || row.key_id}` : row.name ? `Key: ${row.name}` : `Key ID: ${row.key_id}`;
 export const protocolName = value => ({ 'management-mcp': 'Management MCP', 'inference-mcp': 'Inference MCP', 'management-api': 'Management API', 'inference-api': 'Inference API' })[value] || 'Protocol unknown';
 export const clientState = row => row.active_requests > 0 ? ['Request in progress', 'good'] : ['No active requests', ''];
 

@@ -73,6 +73,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// ========================================================================
 	router.GET("/health", s.handleHealth)
 	router.GET("/version", handleGetVersion)
+	router.GET("/connections", s.handleInternalListConnections)
+	router.POST("/operations/:id/execute", s.handleInternalExecuteOperation)
 
 	// E2E harness gate endpoints (route catalog + state snapshot/restore)
 	// live on the public admin surface — see routes_public.go. Mounting

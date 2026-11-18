@@ -71,22 +71,21 @@ func (s *ModelSearchService) discoveryResult(provider string, raw map[string]any
 	}
 	d.HasCloud, _ = raw["has_cloud"].(bool)
 	d.IsCloud = search.IsCloudSearchProvider(search.Provider(provider)) || (provider == constants.RepoOllama && (strings.HasSuffix(d.APIID, ":cloud") || strings.HasSuffix(d.APIID, "-cloud")))
-	if tags, ok := raw["tags"].([]string); ok {
-		d.Tags = append([]string(nil), tags...)
+	tagValue := raw["tags"]
+	if provider == constants.RepoOllama && raw["capabilities"] != nil {
+		tagValue = raw["capabilities"]
 	}
-	if tags, ok := raw["tags"].([]any); ok {
-		for _, tag := range tags {
-			if value, ok := tag.(string); ok {
-				d.Tags = append(d.Tags, value)
-			}
-		}
-	}
+	d.Tags = discoveryLabels(tagValue)
 	if prices, ok := raw["pricing"].(map[string]any); ok {
 		d.PricePrompt = discoveryString(prices, "prompt")
 		d.PriceComplete = discoveryString(prices, "completion")
 	}
 	if provider == constants.RepoOllama {
-		d.VariantCount = int(discoveryNumber(raw, "tags"))
+		d.VariantCount = int(discoveryNumber(raw, "variant_count", "tags"))
+		d.ParameterSizes = discoveryLabels(raw["parameter_sizes"])
+		if updated := discoveryString(raw, "updated_at"); updated != "" {
+			d.ModifiedAt = updated
+		}
 	}
 	if provider == constants.RepoHuggingFace {
 		if st, ok := raw["safetensors"].(map[string]any); ok {
@@ -121,6 +120,22 @@ func (s *ModelSearchService) discoveryResult(provider string, raw map[string]any
 		}
 	}
 	return metadata.DiscoveryResult{Discovery: d, Native: raw}
+}
+
+func discoveryLabels(value any) []string {
+	switch labels := value.(type) {
+	case []string:
+		return append([]string(nil), labels...)
+	case []any:
+		var result []string
+		for _, label := range labels {
+			if text, ok := label.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	}
+	return nil
 }
 
 func discoveryString(raw map[string]any, keys ...string) string {

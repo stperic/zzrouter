@@ -1,13 +1,73 @@
 # Installation and updates
 
-Release archives contain the client (`zzrouter`), node (`zzrouter-node`) and
-process launcher (`zzrouter-launcher`). Install all three in one directory.
-The node embeds the SHA256 of its matching launcher. Available targets are
-Linux amd64/arm64, macOS amd64/arm64 and Windows amd64.
+Release archives contain the client (`zzrouter`), node (`zzrouter-node`),
+process launcher (`zzrouter-launcher`), platform installer and license notices.
+The executables use these normal names inside each archive, with `.exe` on
+Windows. Keep all three together: the node embeds the SHA256 of its matching
+launcher. Available targets are Linux amd64/arm64, macOS amd64/arm64 and Windows
+amd64.
 
 Follow the [README](../README.md) for Unix download, Sigstore verification,
 checksum verification and installation. A checksum from an unauthenticated
 source does not establish publisher identity.
+
+## First connection
+
+The installer starts a coordinator on loopback for one-computer use. It does
+not ask you to invent or copy an administrator API key. On an interactive desktop
+it opens the console after verifying the running installation; otherwise run:
+
+```sh
+zzrouter console
+```
+
+Enter the temporary code printed by the trusted local CLI, then create your
+owner username and password. The code is short-lived and single-use; the URL
+does not contain it. Follow the console checklist to connect a provider, prepare
+a model, test Chat and connect an application. The coordinator computer can also
+run local providers.
+
+Use **People** to invite another person to a team. Use **Keys & teams** to
+create a named application key and set the team's providers, routes, limits
+and cloud spending budget. People sign in with their accounts; applications
+use their own keys. Existing API-key sign-in remains under Advanced access.
+
+For a headless machine, run `zzrouter console` in a trusted shell on that
+machine. Reach its console through HTTPS or an SSH-forwarded loopback port.
+For a default loopback installation, forward port 9090 with
+`ssh -L 9090:127.0.0.1:9090 user@router-host`, then open
+`http://localhost:9090/console/` on your computer. Use the actual port if yours
+differs. `zzrouter console --print` only prints a URL and does not issue a code.
+
+If the owner's password is lost, run `zzrouter access recover-owner` on the
+installed host, with its configuration directory and service-account authority.
+Follow the printed recovery instructions. Local recovery preserves app keys,
+providers, models and computer trust; it invalidates the owner's old sessions.
+
+## macOS and Linux
+
+After verifying and extracting the archive, run its bundled `install.sh`.
+It finds the three binaries alongside itself even when invoked from another
+directory. A missing binary stops installation before any running node is stopped.
+
+| Mode | Command | Startup behavior |
+| --- | --- | --- |
+| macOS personal install | `bash install.sh` | Per-user LaunchAgent, starts when you log in |
+| Linux supervised install | `sudo bash install.sh` | systemd service, starts at boot |
+| Linux personal install | `bash install.sh` | Detached process, no restart supervisor |
+| Explicit lightweight mode | `bash install.sh --no-service` | Detached process |
+
+Run the macOS installer as yourself, not with `sudo`. Its **Start when I log in**
+behavior does not start the node before login. Stopping or uninstalling unloads
+the LaunchAgent so KeepAlive cannot immediately restart it. Use `--yes` to skip
+prompts and browser opening, and `--role worker` when installing an additional
+computer for the first time.
+
+The installer keeps an existing `node.yaml`, including its mode, bind address
+and ports. Flags that describe a new installation do not overwrite that file.
+`--force-config` explicitly replaces it after making a backup; ordinary upgrades
+do not need this flag. A preserved HTTPS installation is refused before stopping
+the node: use its authenticated updater, which already has the configured trust.
 
 ## Windows
 
@@ -30,20 +90,51 @@ if ($Entry.Count -ne 1) { throw 'Missing or duplicate archive checksum' }
 $Expected = ($Entry[0] -split '\s+')[0]
 if ((Get-FileHash zzrouter-windows-amd64.zip -Algorithm SHA256).Hash -ne $Expected) { throw 'Checksum mismatch' }
 Expand-Archive zzrouter-windows-amd64.zip -DestinationPath .\zzrouter-release
-foreach ($Bin in @('zzrouter', 'zzrouter-node', 'zzrouter-launcher')) {
-  Rename-Item ".\zzrouter-release\$Bin-windows-amd64.exe" "$Bin.exe"
-}
+powershell -NoProfile -ExecutionPolicy Bypass -File .\zzrouter-release\install.ps1
 ```
 
-Move the directory to your chosen installation location and put it on PATH.
+Without elevation, this installs for the current user and starts a detached
+node. Run from an Administrator shell for the Windows service, which starts at
+boot. `-PerUser` explicitly selects user mode; `-NoOpenConsole` skips browser
+opening. The installer adds a **Router console** Start menu shortcut. It opens
+a persistent PowerShell window with the temporary sign-in code and the selected
+configuration directory. Native setup offers this same shortcut after installation.
+Existing configuration and credentials are preserved, with the same HTTPS upgrade
+preflight as the Unix installer.
+
+An existing Windows service with a custom daemon account is checked before any
+stop or file replacement. If the credential permissions cannot safely retain
+that account, installation refuses and explains the account review needed. It
+does not replace the service definition or silently switch to LocalSystem.
+
+The native macOS app/DMG and Windows installer have build recipes in
+[scripts/packaging](../scripts/packaging/README.md). These recipes do not establish
+that a published tag includes signed desktop installers. Use only artifacts
+actually attached to the verified release. Signing, notarization, and clean-OS
+install/upgrade/reboot qualification require the corresponding release machines
+and credentials.
 
 ## Supervised services
 
-From the matching source checkout with all three built binaries, use
-`scripts/install.sh` (Linux/macOS) or `scripts/install.ps1` (Windows).
-Linux root installs and elevated Windows installs default to a service.
-Unprivileged installs run detached; use them for evaluation and single-user use.
-Read installer options before changing an existing installation.
+The bundled installers and the matching source checkout's `scripts/install.sh`
+or `scripts/install.ps1` use the same path. Linux root installs and elevated
+Windows installs default to a system service. macOS uses the current user's
+LaunchAgent. Read installer options before changing an existing installation.
+
+Credential creation and migration belong to the node's configuration library,
+called through `zzrouter-node config credentials`. Installers and service setup
+reuse that operation; they do not generate or print another administrator key.
+The canonical credential file is `.env` in the selected configuration directory.
+An existing service's authoritative credential is retained during supported
+legacy migration. Ambiguous conflicts fail with source paths instead of silently
+rotating credentials. Explicit environment overrides remain explicit overrides.
+User installations and Windows services respect an absolute
+`ZZROUTER_CONFIG_DIR` override and use that same directory for the service and
+CLI. Linux system services require `/etc/zzrouter`; a custom directory is
+refused before any stop or file changes. Linux custom service drop-ins that change
+`Environment`, `EnvironmentFile`, `ExecStart` or `User` require explicit
+reconciliation or the existing managed updater. The installer refuses those
+overrides before stopping the node; the managed stop-only drop-in is retained.
 
 Linux managed services keep binaries under root-owned `/opt/zzrouter/versions`
 and activate the node, client and launcher through `/opt/zzrouter/bin` symlinks.
@@ -56,6 +147,70 @@ Windows counts as a non-crash failure: its restart actions apply only when the
 service's non-crash failure flag is set. The installer sets it on new services.
 On an older service, `update status` reports a restart is required and names
 the fix; run it once as Administrator: `sc.exe failureflag zzrouter 1`.
+
+## Connect people and applications
+
+The coordinator is useful on its own. Finish owner sign-in and try a local model
+or cloud connection before adding workers. On first startup, protected provider
+credential storage is prepared under the node account automatically; explicit
+`security.credentials.key_file` configurations retain their existing key custody.
+
+Teams define provider/route access and shared budgets for both people and app keys.
+Invite people through **People**; issue a named key only for an API application.
+**Clients → Connect client** separates account-based MCP browser authorization from
+API-key setup. Both paths use the same backend policy and attribution.
+
+Before sharing an invitation or client endpoint, check **System → General**.
+The default localhost issuer is local to one computer. For another device, use a
+reachable HTTPS origin in `auth.oauth.issuer_url`, restart the coordinator and test
+that origin from that device. Allow OAuth discovery/authorization through a reverse
+proxy. A configured address is not proof of network reachability. Cluster pairing
+uses the cluster listener independently of the browser address.
+
+Review committed access changes in **System → Access history** and recovery scope
+in **System → Recovery**. Use the [offline recovery guide](recovery.md) to back up
+each coordinator and worker. Keep protection-key backups separately.
+
+## Add another computer
+
+Additional workers are optional. Finish your coordinator setup first; add another
+computer whenever you need it.
+
+1. In the coordinator console, open **Nodes > Add compute node**.
+2. Choose the new computer’s operating system. Download, verify and extract the
+   matching release using the linked release instructions.
+3. On the new computer, run the displayed **Install as a worker** command. It
+   includes the right cluster port. Windows offers a service that starts at boot
+   or a personal installation for the current session. Native worker installers
+   ask for the same port before installation.
+4. Run **Connect to this router** on that computer. For Windows, open a new
+   PowerShell window and select the installation type you used. Keep the worker
+   running and copy the temporary pairing JSON.
+5. Return to the console, select **I have pairing details**, paste or upload the
+   JSON, compare its name and fingerprint with the worker, and approve it.
+6. Open the node, choose **Set up a provider**, then a model. Chat and model tests
+   keep that computer selected.
+
+Existing workers can skip installation. Commands assume the documented default
+configuration folders; custom configuration uses the existing CLI with the
+installation’s `ZZROUTER_CONFIG_DIR`. Both computers must reach the cluster port
+on their LAN or VPN. Management access can remain local-only. An expired pairing
+window needs new details; an uncertain enrollment needs inventory inspection.
+
+For terminal approval, save the pairing details as a private JSON file and run
+on the coordinator:
+
+```sh
+zzrouter-node cluster accept --file pairing.json
+zzrouter-node cluster accept --file pairing.json --confirm
+```
+
+The first command displays the computer name, endpoint, fingerprint and expiry
+without enrolling it. Confirm only after checking these details against the
+worker. The document is bounded data, not a script; it carries the existing
+single-use pairing code. Expiry and pinned coordinator-led enrollment still
+apply. The original code, `--worker-url` and `--worker-fingerprint` arguments
+remain supported.
 
 ## Updates and rollback
 
@@ -103,9 +258,10 @@ These legacy rollbacks can temporarily run a newer client than the node.
 
 To adopt managed client updates on an older service installation, deliver a
 trusted build with an unused version and all three binaries through
-`scripts/install.sh`, then run `sudo zzrouter-node update enable`. An existing
-service's start command skips first-run binary relocation. Alternatively,
-after a complete managed update, run `sudo zzrouter-node update enable` to repair
+`scripts/install.sh`. The installer activates the complete bundle through the
+existing managed updater before starting an installed Linux service. It verifies
+the responding node's version and configuration before reporting success.
+To repair public links separately, run `sudo zzrouter-node update enable` to repair
 stale `/usr/local/bin` files or links. Running enable before the managed tree has
 a client preserves the external client and reports a warning; run it again after
 the complete update. If public-link repair fails after relocation, correct the

@@ -27,6 +27,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -51,9 +53,8 @@ const maxStreamBufBytes = 1 << 20 // 1 MiB
 // ---------- Request types (Responses subset) ----------
 
 // responsesRequest captures the fields zzRouter understands on the
-// incoming /v1/responses body. Unknown fields are tolerated for
-// forward compatibility but not forwarded — the upstream is Chat
-// Completions, which has its own surface.
+// incoming /v1/responses body. Native extension fields retain their JSON
+// representation; known Responses controls are translated or refused.
 type responsesRequest struct {
 	Model             string          `json:"model"`
 	Input             json.RawMessage `json:"input"`
@@ -69,8 +70,9 @@ type responsesRequest struct {
 	Text              json.RawMessage `json:"text,omitempty"`
 	User              string          `json:"user,omitempty"`
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	ExtraParams       json.RawMessage `json:"extra_params,omitempty"`
 
-	// Rejected-with-400 in the shim path:
+	// Stateful controls are rejected in the shim path.
 	Store              *bool           `json:"store,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	Background         *bool           `json:"background,omitempty"`
@@ -162,7 +164,12 @@ func translateResponsesRequest(body []byte) ([]byte, *responsesRequest, *transla
 			"background mode requires backend-side response persistence which the translation shim does not provide.")
 	}
 
-	chat := map[string]any{}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(body, &fields)
+	chat, terr := responsesChatOptions(fields)
+	if terr != nil {
+		return nil, nil, terr
+	}
 	if req.Model != "" {
 		chat["model"] = req.Model
 	}
@@ -203,20 +210,22 @@ func translateResponsesRequest(body []byte) ([]byte, *responsesRequest, *transla
 	if req.TopP != nil {
 		chat["top_p"] = *req.TopP
 	}
-	if req.MaxOutputTokens != nil {
-		chat["max_completion_tokens"] = *req.MaxOutputTokens
-	}
 	if req.Stream {
 		chat["stream"] = true
 		chat["stream_options"] = map[string]any{"include_usage": true}
 	}
-	if len(req.ResponseFormat) > 0 {
-		chat["response_format"] = req.ResponseFormat
-	} else if rf := translateTextFormat(req.Text); rf != nil {
-		chat["response_format"] = rf
+	if terr := applyResponsesOutputControls(chat, &req, fields); terr != nil {
+		return nil, nil, terr
 	}
 	if req.User != "" {
 		chat["user"] = req.User
+	}
+	if err := protocol.MergeChatExtensions(chat, req.ExtraParams); err != nil {
+		var ext *protocol.ChatExtensionError
+		if errors.As(err, &ext) {
+			return nil, nil, unsupported(ext.Param, ext.Message)
+		}
+		return nil, nil, unsupported("extra_params", err.Error())
 	}
 
 	out, err := json.Marshal(chat)
@@ -227,6 +236,91 @@ func translateResponsesRequest(body []byte) ([]byte, *responsesRequest, *transla
 		}
 	}
 	return out, &req, nil
+}
+
+func applyResponsesOutputControls(chat map[string]any, req *responsesRequest, fields map[string]json.RawMessage) *translateError {
+	if req.MaxOutputTokens != nil {
+		for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+			if len(fields[key]) > 0 && string(fields[key]) != "null" {
+				return unsupported(key, "Use max_output_tokens to set the translated completion limit.")
+			}
+		}
+		chat["max_completion_tokens"] = *req.MaxOutputTokens
+	}
+	format, verbosity, terr := translateTextFormat(req.Text)
+	if terr != nil {
+		return terr
+	}
+	if len(req.ResponseFormat) > 0 && string(req.ResponseFormat) != "null" {
+		if format != nil {
+			return unsupported("response_format", "Specify either response_format or text.format, so neither output-format control is discarded.")
+		}
+		chat["response_format"] = req.ResponseFormat
+	} else if format != nil {
+		chat["response_format"] = format
+	}
+	if len(verbosity) > 0 {
+		chat["verbosity"] = verbosity
+	}
+	return nil
+}
+
+// responsesChatOptions preserves native fields after removing the source dialect's controls.
+func responsesChatOptions(fields map[string]json.RawMessage) (map[string]any, *translateError) {
+	chat := make(map[string]any, len(fields))
+	for key, value := range fields {
+		chat[key] = value
+	}
+	for _, key := range []string{"model", "input", "instructions", "tools", "tool_choice", "parallel_tool_calls", "temperature", "top_p", "max_output_tokens", "stream", "response_format", "text", "user", "store", "previous_response_id", "background", "reasoning", "extra_params"} {
+		delete(chat, key)
+	}
+	for _, key := range []string{"conversation", "prompt", "max_tool_calls", "context_management", "think", "messages", "stream_options"} {
+		if value := fields[key]; len(value) > 0 && string(value) != "null" {
+			return nil, unsupported(key, key+" has no lossless Chat Completions translation. Use a provider that natively serves /v1/responses.")
+		}
+		delete(chat, key)
+	}
+	if value := fields["include"]; len(value) > 0 && string(value) != "null" {
+		var include []json.RawMessage
+		if json.Unmarshal(value, &include) != nil || len(include) > 0 {
+			return nil, unsupported("include", "Additional Responses output fields cannot be supplied by the Chat Completions translation.")
+		}
+	}
+	delete(chat, "include")
+	if value := fields["truncation"]; len(value) > 0 && string(value) != "null" && string(value) != `"disabled"` {
+		return nil, unsupported("truncation", "Automatic Responses input truncation has no Chat Completions equivalent.")
+	}
+	delete(chat, "truncation")
+	var reasoning map[string]json.RawMessage
+	if raw := fields["reasoning"]; len(raw) > 0 && string(raw) != "null" {
+		if json.Unmarshal(raw, &reasoning) != nil || reasoning == nil {
+			return nil, unsupported("reasoning", "reasoning must be an object; only effort has a Chat Completions equivalent.")
+		}
+		keys := make([]string, 0, len(reasoning))
+		for key := range reasoning {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if key != "effort" && string(reasoning[key]) != "null" {
+				return nil, unsupported("reasoning."+key, "Only reasoning.effort has a lossless Chat Completions equivalent.")
+			}
+		}
+		if effort := reasoning["effort"]; len(effort) > 0 && string(effort) != "null" {
+			var name string
+			if json.Unmarshal(effort, &name) != nil || name == "" {
+				return nil, unsupported("reasoning.effort", "reasoning.effort must be a nonempty string.")
+			}
+			if existing := fields["reasoning_effort"]; len(existing) > 0 && string(existing) != "null" {
+				var other string
+				if json.Unmarshal(existing, &other) != nil || other != name {
+					return nil, unsupported("reasoning_effort", "reasoning_effort conflicts with reasoning.effort; supply only one control.")
+				}
+			}
+			chat["reasoning_effort"] = effort
+		}
+	}
+	return chat, nil
 }
 
 func unsupported(param, msg string) *translateError {
@@ -475,6 +569,7 @@ func translateTools(raw json.RawMessage) ([]map[string]any, toolNames, *translat
 			Name        string          `json:"name"`
 			Description string          `json:"description"`
 			Parameters  json.RawMessage `json:"parameters"`
+			Strict      *bool           `json:"strict"`
 			// Already-nested {type:"function", function:{...}} is also
 			// accepted as a passthrough for clients that pre-translate.
 			Function json.RawMessage   `json:"function"`
@@ -501,6 +596,9 @@ func translateTools(raw json.RawMessage) ([]map[string]any, toolNames, *translat
 			}
 			if len(probe.Parameters) > 0 {
 				fn["parameters"] = probe.Parameters
+			}
+			if probe.Strict != nil {
+				fn["strict"] = *probe.Strict
 			}
 			out = append(out, map[string]any{"type": "function", "function": fn})
 		case probe.Type == "namespace" && namespace == "":
@@ -551,20 +649,32 @@ func translateToolChoice(raw json.RawMessage) (any, *translateError) {
 	}
 }
 
-// translateTextFormat folds the Responses `text.format` shape into Chat's
-// `response_format`. Best-effort — passes the field through verbatim
-// when the inner shape already matches.
-func translateTextFormat(text json.RawMessage) any {
-	if len(text) == 0 {
-		return nil
+// translateTextFormat maps Responses output controls to their Chat equivalents.
+func translateTextFormat(text json.RawMessage) (any, json.RawMessage, *translateError) {
+	if len(text) == 0 || string(text) == "null" {
+		return nil, nil, nil
 	}
 	var probe struct {
-		Format json.RawMessage `json:"format"`
+		Format    json.RawMessage `json:"format"`
+		Verbosity json.RawMessage `json:"verbosity"`
 	}
-	if err := json.Unmarshal(text, &probe); err != nil || len(probe.Format) == 0 {
-		return nil
+	if err := json.Unmarshal(text, &probe); err != nil {
+		return nil, nil, unsupported("text", "text must be an object with format or verbosity controls.")
 	}
-	return probe.Format
+	if len(probe.Format) == 0 || string(probe.Format) == "null" {
+		return nil, probe.Verbosity, nil
+	}
+	var format map[string]json.RawMessage
+	if json.Unmarshal(probe.Format, &format) != nil || format == nil {
+		return nil, nil, unsupported("text.format", "text.format must be an output-format object.")
+	}
+	if string(format["type"]) == `"json_schema"` {
+		if len(format["json_schema"]) == 0 {
+			delete(format, "type")
+			return map[string]any{"type": "json_schema", "json_schema": format}, probe.Verbosity, nil
+		}
+	}
+	return probe.Format, probe.Verbosity, nil
 }
 
 // ---------- Non-streaming response translation ----------

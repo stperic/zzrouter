@@ -11,6 +11,7 @@ import (
 	"errors"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
@@ -49,7 +50,7 @@ func (ctrl *TeamsController) CreateTeam(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.CreateTeam(&req, callerKeyID(c))
+	resp, err := ctrl.service.CreateTeam(&req, auditActor(c))
 	if err != nil {
 		writeTeamsError(c, err)
 		return
@@ -97,7 +98,7 @@ func (ctrl *TeamsController) UpdateTeam(c *gin.Context) {
 			"POST /zzrouter/v1/keys with the intended shared team_id to create a replacement key, then revoke the old key")
 		return
 	}
-	resp, err := ctrl.service.UpdateTeam(c.Param("id"), &req.UpdateTeamRequest, callerKeyID(c))
+	resp, err := ctrl.service.UpdateTeam(c.Param("id"), &req.UpdateTeamRequest, auditActor(c))
 	if err != nil {
 		writeTeamsError(c, err)
 		return
@@ -143,16 +144,6 @@ func (ctrl *TeamsController) ResetTeamUsage(c *gin.Context) {
 // Shared helpers
 // ============================================================================
 
-// callerKeyID returns the calling key's ID for CreatedBy / UpdatedBy audit
-// fields. Returns "" if the access context is missing (synthetic bypass paths).
-func callerKeyID(c *gin.Context) string {
-	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil {
-		return ""
-	}
-	return ac.Key.ID
-}
-
 // writeTeamsError translates service-layer errors into HTTP responses.
 func writeTeamsError(c *gin.Context, err error) {
 	switch {
@@ -164,6 +155,8 @@ func writeTeamsError(c *gin.Context, err error) {
 		Conflict(c, err.Error())
 	case errors.Is(err, ErrPersonalTeamImmutable):
 		Conflict(c, err.Error())
+	case errors.Is(err, people.ErrOwnerProtected):
+		Forbidden(c, "The owner's team cannot be suspended")
 	case isInvalidInput(err):
 		BadRequest(c, err.Error())
 	default:

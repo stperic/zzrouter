@@ -30,6 +30,104 @@ func TestTranslateResponsesRequest_BareStringInput(t *testing.T) {
 	assert.Equal(t, "hello", m["content"])
 }
 
+func TestTranslateResponsesRequest_ExplicitControls(t *testing.T) {
+	for _, tc := range []struct{ fields, param string }{
+		{`"reasoning":{"effort":"high","summary":"auto"}`, "reasoning.summary"},
+		{`"reasoning":{"mode":"pro"}`, "reasoning.mode"},
+		{`"reasoning":{"effort":"high"},"reasoning_effort":"low"`, "reasoning_effort"},
+		{`"think":true`, "think"}, {`"conversation":"conv_1"`, "conversation"},
+		{`"truncation":"auto"`, "truncation"}, {`"include":["reasoning.encrypted_content"]`, "include"},
+		{`"max_tool_calls":2`, "max_tool_calls"}, {`"messages":[]`, "messages"},
+		{`"extra_params":{"model":"override"}`, "extra_params.model"},
+		{`"extra_params":{"tools":[]}`, "extra_params.tools"},
+		{`"max_output_tokens":4,"max_tokens":8`, "max_tokens"},
+		{`"n":2`, "n"}, {`"extra_params":{"logprobs":true}`, "extra_params.logprobs"},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			_, _, terr := translateResponsesRequest([]byte(`{"model":"m","input":"x",` + tc.fields + `}`))
+			require.NotNil(t, terr)
+			assert.Equal(t, "unsupported_parameter", terr.Code)
+			assert.Equal(t, tc.param, terr.Param)
+		})
+	}
+	out, _, terr := translateResponsesRequest([]byte(`{"model":"m","input":"x","reasoning":{"effort":"custom-native-level","summary":null},"extra_params":{"seed":9007199254740993,"min_p":0.05},"native":{"enabled":false},"metadata":{"purpose":"test"},"truncation":"disabled"}`))
+	require.Nil(t, terr)
+	for _, field := range []string{`"reasoning_effort":"custom-native-level"`, `"seed":9007199254740993`, `"native":{"enabled":false}`, `"metadata":{"purpose":"test"}`} {
+		assert.Contains(t, string(out), field)
+	}
+	assert.NotContains(t, string(out), "extra_params")
+}
+
+// Synthetic chat engines cover successful native options through translation and fallback.
+func TestTranslatedNativeOptions_ReachFallbackWire(t *testing.T) {
+	for _, tc := range []struct{ path, fields string }{
+		{"/v1/responses", `"input":"x","reasoning":{"effort":"high"}`},
+		{"/v1/messages", `"messages":[{"role":"user","content":"x"}]`},
+		{"/v1/messages/count_tokens", `"messages":[{"role":"user","content":"x"}],"max_tokens":9,"max_completion_tokens":8192`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			backends := map[string]*serviceBackend{
+				"busy":  {wire: compatWire, status: http.StatusServiceUnavailable, reply: `{"error":{"message":"busy"}}`},
+				"ready": {wire: compatWire, status: http.StatusOK, reply: chatReplyJSON},
+			}
+			s := newServiceGroupNode(t, []string{"busy", "ready"}, backends)
+			w := postAsAdmin(t, s, tc.path, `{"model":"claude",`+tc.fields+`,"extra_params":{"seed":9007199254740993,"min_p":0.05},"chat_template_kwargs":{"enable_thinking":false}}`)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			for name, backend := range backends {
+				hits := backend.requests()
+				require.NotEmpty(t, hits)
+				for _, hit := range hits {
+					assert.Equal(t, chatCompletionsPath, hit.Path)
+					assert.Contains(t, string(hit.Body), `"seed":9007199254740993`)
+					assert.Contains(t, string(hit.Body), `"model":"`+name+`-model"`)
+					assert.Contains(t, string(hit.Body), `"chat_template_kwargs":{"enable_thinking":false}`)
+					assert.NotContains(t, string(hit.Body), "extra_params")
+					if tc.path == "/v1/responses" {
+						assert.Contains(t, string(hit.Body), `"reasoning_effort":"high"`)
+					}
+					if tc.path == "/v1/messages/count_tokens" {
+						assert.Contains(t, string(hit.Body), `"max_tokens":1`)
+						assert.NotContains(t, string(hit.Body), "max_completion_tokens")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestTranslateResponsesRequest_OutputControls(t *testing.T) {
+	out, _, terr := translateResponsesRequest([]byte(`{"model":"m","input":"x","text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"},"strict":true},"verbosity":"low"},"tools":[{"type":"function","name":"f","strict":true,"parameters":{}}]}`))
+	require.Nil(t, terr)
+	var chat map[string]any
+	require.NoError(t, json.Unmarshal(out, &chat))
+	assert.Equal(t, "low", chat["verbosity"])
+	assert.Equal(t, map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "answer", "schema": map[string]any{"type": "object"}, "strict": true}}, chat["response_format"])
+	assert.Equal(t, true, chat["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["strict"])
+}
+
+// Synthetic providers distinguish translation refusals from unchanged native forwarding.
+func TestTranslatedControls_RefuseBeforeWireAndPreserveNative(t *testing.T) {
+	for _, tc := range []struct{ path, native, fields string }{
+		{"/v1/responses", "responses", `"input":"x","reasoning":{"summary":"auto"},"think":true`},
+		{"/v1/messages", "messages", `"messages":[{"role":"user","content":"x"}],"thinking":{"type":"enabled","budget_tokens":1024},"cache_control":{"type":"ephemeral"}`},
+	} {
+		t.Run(tc.native, func(t *testing.T) {
+			backends := map[string]*serviceBackend{"shim": {wire: compatWire, status: http.StatusOK, reply: chatReplyJSON}}
+			s := newServiceGroupNode(t, []string{"shim"}, backends)
+			w := postAsAdmin(t, s, tc.path, `{"model":"claude",`+tc.fields+`}`)
+			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Empty(t, backends["shim"].requests())
+			backends = map[string]*serviceBackend{"native": {wire: []string{"chat_completions", tc.native}, status: http.StatusOK, reply: `{"id":"native","usage":{"input_tokens":1,"output_tokens":1}}`}}
+			s = newServiceGroupNode(t, []string{"native"}, backends)
+			w = postAsAdmin(t, s, tc.path, `{"model":"claude",`+tc.fields+`}`)
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			hits := backends["native"].requests()
+			require.Len(t, hits, 1)
+			assert.JSONEq(t, `{"model":"native-model",`+tc.fields+`}`, string(hits[0].Body))
+		})
+	}
+}
+
 func TestTranslateResponsesRequest_InstructionsBecomeSystem(t *testing.T) {
 	body := []byte(`{"model":"m","input":"hi","instructions":"be terse"}`)
 	out, _, err := translateResponsesRequest(body)

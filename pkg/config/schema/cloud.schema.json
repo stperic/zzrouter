@@ -7,6 +7,10 @@
   "required": ["runtime"],
   "additionalProperties": false,
   "properties": {
+    "operations": {
+      "type": "object",
+      "maxProperties": 0
+    },
     "features": {
       "type": "object",
       "additionalProperties": false,
@@ -125,6 +129,7 @@
       "additionalProperties": false,
       "properties": {
         "endpoint": { "type": "string", "minLength": 1 },
+        "openai_path": { "type": "string", "pattern": "^/" },
         "model_url": { "type": "string" },
         "models_path": { "type": "string" },
         "models_response_key": { "type": "string" },
@@ -169,10 +174,31 @@
     }
   },
   "$defs": {
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "host_parameter": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,127}$"
+        },
+        "host_environment": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]{0,127}$"
+        },
+        "default_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        }
+      }
+    },
     "feature": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "listener": {"$ref": "#/$defs/listener"},
         "requires_parameters": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "http": {"type": "object", "additionalProperties": false, "required": ["path", "field"], "properties": {"path": {"type": "string"}, "field": {"type": "string"}}},
         "default": {

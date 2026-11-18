@@ -51,12 +51,15 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 }
 
 func catalogRoute(r gin.RouteInfo) RouteSpec {
-	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: authTierForPath(r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
+	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: authTierForRoute(r.Method, r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
 }
 
 // eligibleAPIRoute uses the same mounted-route facts as the public catalog
 // and returns the operationId the embedded spec gives the matched route.
 func (s *Server) eligibleAPIRoute(method, path string) (string, error) {
+	if strings.HasPrefix(path, "/zzrouter/v1/access/") || strings.HasPrefix(path, apipath.Session+"/") {
+		return "", fmt.Errorf("access ceremonies require their dedicated API")
+	}
 	var selected gin.RouteInfo
 	best := ""
 	for _, route := range s.engine.Routes() {
@@ -126,6 +129,8 @@ func surfaceForPath(p string) string {
 		return "internal"
 	case p == "/zzrouter/v1" || strings.HasPrefix(p, "/zzrouter/v1/"):
 		return "admin"
+	case p == "/inference/v1" || strings.HasPrefix(p, "/inference/v1/"):
+		return "inference"
 	case p == "/v1/messages" || strings.HasPrefix(p, "/v1/messages/"):
 		return "anthropic"
 	case strings.HasPrefix(p, "/v1/") || p == "/v1":
@@ -142,14 +147,30 @@ func surfaceForPath(p string) string {
 	return "other"
 }
 
-func authTierForPath(p string) string {
+func authTierForRoute(method, p string) string {
+	if method == http.MethodPost {
+		switch p {
+		case "/api/pull", "/api/create", "/api/copy", "/api/push", "/api/blobs/:digest":
+			return "admin"
+		}
+	}
+	if method == http.MethodDelete && p == "/api/delete" {
+		return "admin"
+	}
+
 	switch {
-	case p == apipath.Session:
+	case p == apipath.Session || p == apipath.Session+"/password",
+		p == "/zzrouter/v1/access/setup", p == "/zzrouter/v1/access/console-grants/exchange",
+		p == "/zzrouter/v1/access/invitations/inspect", p == "/zzrouter/v1/access/invitations/accept",
+		p == "/zzrouter/v1/access/recovery", p == "/zzrouter/v1/access/recovery/local":
 		// Bootstrap and login have no prior identity; mutations still require CSRF.
 		return "optional"
-	case p == apipath.Me || strings.HasPrefix(p, apipath.Me+"/"):
+	case p == apipath.Me || strings.HasPrefix(p, apipath.Me+"/"),
+		p == "/zzrouter/v1/access/password", p == "/zzrouter/v1/access/sessions/revoke", p == "/zzrouter/v1/access/console-grants":
 		return "user"
 	case p == "/inference/mcp":
+		return "user"
+	case p == "/inference/v1" || strings.HasPrefix(p, "/inference/v1/"):
 		return "user"
 	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "cluster"

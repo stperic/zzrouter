@@ -88,6 +88,7 @@ fallback. Where nothing more specific applies it is a snake_case slug of
 | `not_found` | 404 | No such resource. |
 | `conflict` | 409 | State prevents the operation : e.g. an upgrade with instances still running, or a provider already installed. |
 | `service_unavailable` | 503 | Subsystem not wired or shutting down. |
+| `model_discovery_unavailable` | 501 | The provider declares no model-listing API. Search, popular-model and card requests cannot query its catalog; register a known provider model ID instead. Inference may still be available. |
 
 `type` carries the same identity as a URI (kebab-case, so
 `problems/not-found` pairs with `not_found`). Prefer `code`.

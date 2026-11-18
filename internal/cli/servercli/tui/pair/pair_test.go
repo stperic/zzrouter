@@ -303,12 +303,16 @@ func TestCopyCode_FlashesSuccess(t *testing.T) {
 		Clipboard: func(s string) error { copied = s; return nil },
 	})
 	m.state = statePairing
-	m.code = "CODE"
+	m.cfg.NodeName = "test-worker"
+	m.code = "ABCDEFGHIJKLMNOP"
+	m.workerURL = "https://worker.example:9091"
+	m.workerFingerprint = "sha256:" + strings.Repeat("ab", 32)
+	m.deadline = now.Add(time.Minute)
 
 	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: "c"}))
 	msg := drainCmd(cmd)
-	if copied != "CODE" {
-		t.Fatalf("clipboard got %q, want %q", copied, "CODE")
+	if !strings.Contains(copied, `"type": "zzrouter-pairing"`) || !strings.Contains(copied, `"worker_url": "https://worker.example:9091"`) {
+		t.Fatalf("clipboard did not receive the complete document: %q", copied)
 	}
 	f, ok := msg.(flashMsg)
 	if !ok {
@@ -332,7 +336,11 @@ func TestCopyCode_ClipboardErrorFlashesError(t *testing.T) {
 		Clipboard: func(string) error { return errors.New("no display") },
 	})
 	m.state = statePairing
-	m.code = "CODE"
+	m.cfg.NodeName = "test-worker"
+	m.code = "ABCDEFGHIJKLMNOP"
+	m.workerURL = "https://worker.example:9091"
+	m.workerFingerprint = "sha256:" + strings.Repeat("ab", 32)
+	m.deadline = now.Add(time.Minute)
 
 	_, cmd := m.Update(tea.KeyPressMsg(tea.Key{Text: "c"}))
 	msg := drainCmd(cmd)

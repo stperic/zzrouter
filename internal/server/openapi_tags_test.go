@@ -23,10 +23,12 @@ import (
 // operations land in the spec, the tag is already decided, and the
 // live-coverage check below fails on any new segment nobody placed.
 var tagBySegment = map[string]string{
+	"access":         "Access",
 	"cache":          "Cache",
 	"clients":        "Clients",
 	"cluster":        "Cluster",
 	"config":         "Config",
+	"connections":    "Connections",
 	"deployments":    "Deployments",
 	"discover":       "Discovery",
 	"health":         "Health",
@@ -38,6 +40,7 @@ var tagBySegment = map[string]string{
 	"model-groups":   "ModelGroups",
 	"models":         "Models",
 	"nodes":          "Nodes",
+	"operations":     "Operations",
 	"pricing":        "Pricing",
 	"providers":      "Providers",
 	"registries":     "Registries",
@@ -78,6 +81,10 @@ func expectedTagForPath(path string) (string, bool) {
 		return "OAuth", true
 	case strings.HasPrefix(path, apipath.Base+"/"):
 		seg := strings.SplitN(strings.TrimPrefix(path, apipath.Base+"/"), "/", 2)[0]
+		tag, ok := tagBySegment[seg]
+		return tag, ok
+	case strings.HasPrefix(path, "/inference/v1/"):
+		seg := strings.SplitN(strings.TrimPrefix(path, "/inference/v1/"), "/", 2)[0]
 		tag, ok := tagBySegment[seg]
 		return tag, ok
 	case path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/"):

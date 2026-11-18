@@ -28,7 +28,8 @@ type ownershipReceipt struct {
 }
 
 func managedPaths(template map[string]any) [][]string {
-	var paths [][]string
+	// Record schema support for rollback pruning independently of seeded ownership.
+	paths := [][]string{{"operations"}, {"runtime", "openai_path"}}
 	for _, section := range managedKeySections(template) {
 		for _, key := range section.keys {
 			path := []string{key}

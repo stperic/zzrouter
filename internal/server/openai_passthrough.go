@@ -19,8 +19,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/stperic/zzrouter/pkg/config/backend"
 )
 
 // DefaultMaxUploadBytes is the default request body cap for multipart uploads
@@ -90,7 +88,7 @@ func (s *Server) forwardBufferedToDefaultBackend(c *gin.Context, body []byte) {
 	if !s.admitOpaqueForward(c, "provider passthrough", backendKey, resolved.Cloud) {
 		return
 	}
-	target := backend.PassthroughTarget(resolved.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
+	target := resolved.InferenceTarget(c.Request.URL.Path, c.Request.URL.RawQuery)
 	s.proxy.ForwardToBackend(c.Writer, c.Request, backendKey, target, resolved.Upstream, body)
 }
 
@@ -108,7 +106,7 @@ func (s *Server) readPassthroughBody(c *gin.Context) (body []byte, ok bool) {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			s.responders.openai.RequestTooLarge(c,
-				fmt.Sprintf("request body exceeds maximum upload size of %d bytes", maxBytes))
+				fmt.Sprintf("request body exceeds maximum upload size of %d bytes", mbe.Limit))
 			return nil, false
 		}
 		s.responders.openai.Internal(c, "failed to read request body: "+err.Error())

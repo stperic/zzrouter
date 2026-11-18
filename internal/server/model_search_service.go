@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/search"
@@ -266,6 +268,9 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 	if search.IsCloudSearchProvider(searchProvider) {
 		results, err := search.SearchCloudTarget(ctx, target, query, 0)
 		if err != nil {
+			if respondModelDiscoveryUnavailable(c, err) {
+				return
+			}
 			InternalNodeError(c, fmt.Sprintf("%s search failed: %s", searchProvider, err.Error()))
 			return
 		}
@@ -318,7 +323,7 @@ func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context,
 	search.RegisterCloudProvidersFromConfig(s.appsConfig, s.backend)
 	cfg := s.appsConfig()
 
-	// Config-driven: collect active search registries from enabled providers
+	// A provider enabled on any configured computer can supply a discovery source.
 	activeRegistries := s.collectActiveRegistries()
 
 	var apps []gin.H
@@ -372,23 +377,25 @@ func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context,
 		entry, _ := search.GetCloudProvider(name)
 		meta := entry.Meta
 
-		configured, enabled := s.cloudProviderStatus(string(name))
+		configured, enabled, discoveryAvailable, discoverySupported := s.cloudProviderStatus(string(name))
 
 		apps = append(apps, gin.H{
-			"name":               string(name),
-			"display_name":       meta.DisplayName,
-			"description":        meta.Description,
-			"supported_features": []string{"search"},
-			"base_url":           meta.BaseURL,
-			"model_url_fmt":      meta.ModelURLFmt,
-			"icon":               ui.GetProviderEmojiRaw(string(name)),
-			"sort_options":       meta.SortOptions,
-			"client_sorts":       meta.ClientSorts,
-			"client_filter":      meta.ClientFilter,
-			"has_tags":           meta.HasTags,
-			"is_cloud":           true,
-			"configured":         configured,
-			"enabled":            enabled,
+			"name":                string(name),
+			"display_name":        meta.DisplayName,
+			"description":         meta.Description,
+			"supported_features":  []string{"search"},
+			"base_url":            meta.BaseURL,
+			"model_url_fmt":       meta.ModelURLFmt,
+			"icon":                ui.GetProviderEmojiRaw(string(name)),
+			"sort_options":        meta.SortOptions,
+			"client_sorts":        meta.ClientSorts,
+			"client_filter":       meta.ClientFilter,
+			"has_tags":            meta.HasTags,
+			"is_cloud":            true,
+			"configured":          configured,
+			"enabled":             enabled,
+			"discovery_available": discoveryAvailable,
+			"discovery_supported": discoverySupported,
 		})
 	}
 
@@ -423,23 +430,26 @@ func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context,
 	})
 }
 
-// cloudProviderStatus checks provider config for a cloud provider's configuration status.
-// Returns (configured, enabled) — configured means the provider exists in provider config,
-// enabled means it's configured AND has enabled: true AND API credentials are present.
-func (s *ModelSearchService) cloudProviderStatus(name string) (bool, bool) {
+// cloudProviderStatus preserves the legacy definition and enabled flags.
+// Discovery uses the resolved connection even when routing is disabled.
+func (s *ModelSearchService) cloudProviderStatus(name string) (configured, enabled, discoveryAvailable, discoverySupported bool) {
 	cfg := s.appsConfig()
 	if cfg == nil {
-		return false, false
+		return false, false, false, true
 	}
 	appCfg, exists := cfg.LookupApp(name)
 	if !exists {
-		return false, false
+		return false, false, false, true
 	}
-	return true, appCfg.IsEnabled() && s.backend.Available(name)
+	target, ok := s.backend.Target(name)
+	connected := ok && (!target.Cloud || target.Configured)
+	runtime := appCfg.Runtime
+	discoverySupported = runtime == nil || runtime.ModelsPath == nil || *runtime.ModelsPath != ""
+	enabled = appCfg.IsEnabled() && (!appCfg.IsCloudProvider() || connected)
+	return true, enabled, connected && discoverySupported, discoverySupported
 }
 
-// collectActiveRegistries determines which search registries should be active
-// based on enabled providers in provider config. Config-driven via search.registry fields.
+// collectActiveRegistries collects search sources for providers enabled on any node.
 // Returns a set of registry keys (e.g., "huggingface", "ollama").
 func (s *ModelSearchService) collectActiveRegistries() map[string]bool {
 	registries := make(map[string]bool)
@@ -448,7 +458,14 @@ func (s *ModelSearchService) collectActiveRegistries() map[string]bool {
 		return registries
 	}
 	cfg.RangeApps(func(key string, svc pkgConfig.ServiceConfig) bool {
-		if !svc.IsEnabled() {
+		enabled := svc.IsEnabled()
+		for node := range svc.Nodes {
+			if choice := svc.EnabledOn(node); choice != nil && *choice {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
 			return true
 		}
 		// Search registries (mode: registry) are always active when enabled
@@ -547,6 +564,9 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 	if search.IsCloudSearchProvider(searchProvider) {
 		results, err := search.SearchCloudTarget(ctx, target, "", limit)
 		if err != nil {
+			if respondModelDiscoveryUnavailable(c, err) {
+				return
+			}
 			InternalNodeError(c, fmt.Sprintf("Failed to get %s models: %s", searchProvider, err.Error()))
 			return
 		}
@@ -619,8 +639,11 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 
 	// Cloud providers: return raw map with all native fields + pricing-store enrichment
 	if search.IsCloudSearchProvider(searchProvider) {
-		raw, err := search.GetCloudModelRaw(ctx, searchProvider, decodedID, target)
+		raw, err := search.GetCloudModelRaw(ctx, searchProvider, decodedID, target, c.Query("full_description") == "true")
 		if err != nil {
+			if respondModelDiscoveryUnavailable(c, err) {
+				return
+			}
 			if isModelCardNotFound(err) {
 				NotFound(c, fmt.Sprintf("model %q not found in %s registry", decodedID, provider))
 				return
@@ -661,21 +684,30 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 	}
 
 	raw := gin.H{
-		"provider":     provider,
-		"model_id":     decodedID,
-		"name":         modelCard.Name,
-		"description":  modelCard.Description,
-		"size":         totalSize,
-		"tags":         modelCard.Tags,
-		"license":      modelCard.License,
-		"author":       modelCard.Author,
-		"pipeline_tag": modelCard.PipelineTag,
-		"downloads":    modelCard.Downloads,
-		"likes":        modelCard.Likes,
-		"created_at":   modelCard.CreatedAt,
-		"url":          modelCard.URL,
-		"siblings":     siblings,
-		"readme":       modelCard.README,
+		"provider":        provider,
+		"model_id":        decodedID,
+		"name":            modelCard.Name,
+		"description":     modelCard.Description,
+		"size":            totalSize,
+		"tags":            modelCard.Tags,
+		"license":         modelCard.License,
+		"author":          modelCard.Author,
+		"pipeline_tag":    modelCard.PipelineTag,
+		"downloads":       modelCard.Downloads,
+		"likes":           modelCard.Likes,
+		"created_at":      modelCard.CreatedAt,
+		"url":             modelCard.URL,
+		"siblings":        siblings,
+		"readme":          modelCard.README,
+		"updated_at":      modelCard.UpdatedAt,
+		"library_name":    modelCard.LibraryName,
+		"card_data":       modelCard.CardData,
+		"gguf":            modelCard.GGUF,
+		"safetensors":     modelCard.Safetensors,
+		"input_types":     modelCard.InputTypes,
+		"parameter_sizes": modelCard.ParameterSizes,
+		"variant_count":   modelCard.VariantCount,
+		"has_cloud":       modelCard.HasCloud,
 	}
 	encoded, encodeErr := json.Marshal(raw)
 	if encodeErr != nil {
@@ -784,3 +816,11 @@ func (s *ModelSearchService) enrichCloudResultsWithMetadata(results []any, provi
 
 // isModelCardNotFound preserves typed upstream absence without interpreting prose.
 func isModelCardNotFound(err error) bool { return errors.Is(err, search.ErrModelNotFound) }
+
+func respondModelDiscoveryUnavailable(c *gin.Context, err error) bool {
+	if !errors.Is(err, search.ErrModelDiscoveryUnavailable) {
+		return false
+	}
+	RespondWithProblemOpts(c, http.StatusNotImplemented, "Model discovery unavailable", err.Error(), ProblemOpts{Code: string(httperr.CodeModelDiscoveryUnavailable)})
+	return true
+}

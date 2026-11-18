@@ -18,7 +18,7 @@ import (
 func TestIntegrationInferenceMCPAuthAndMount(t *testing.T) {
 	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, UserKey: TestUserKey})
 	require.Equal(t, "mcp", surfaceForPath("/inference/mcp"))
-	require.Equal(t, "user", authTierForPath("/inference/mcp"))
+	require.Equal(t, "user", authTierForRoute("POST", "/inference/mcp"))
 	for _, tc := range []struct {
 		name, path, key string
 		status          int
@@ -59,7 +59,7 @@ func TestIntegrationInferenceMCPAuthAndMount(t *testing.T) {
 			defer session.Close()
 			listed, listErr := session.ListTools(t.Context(), nil)
 			require.NoError(t, listErr)
-			require.Len(t, listed.Tools, 3)
+			require.Len(t, listed.Tools, 7)
 		})
 	}
 }
@@ -118,7 +118,7 @@ func TestIntegrationInferenceMCPDispatchesThroughUserAPI(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 3)
+	require.Len(t, names, 7)
 	for _, name := range []string{"zzrouter_inference_models", "zzrouter_chat", "zzrouter_embeddings"} {
 		require.True(t, slices.Contains(names, name), "%s missing", name)
 	}

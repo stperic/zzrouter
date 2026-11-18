@@ -76,6 +76,17 @@ func scrubForUpstream(ctx context.Context, h http.Header, up backend.Upstream) {
 	// Reference-authenticated requests cannot forward unrelated proxy credentials.
 	// Explicit native keys retain their forwarding policy even alongside cookies.
 	_, browser := browserBinding(ctx)
+	if browser {
+		// The router has validated browser origin and CSRF locally. The next
+		// hop is server-to-server, including a worker that cannot bind this session.
+		h.Del("Origin")
+		h.Del("Referer")
+		for name := range h {
+			if strings.HasPrefix(strings.ToLower(name), "sec-fetch-") {
+				delete(h, name)
+			}
+		}
+	}
 	if browser || isOAuthRequest(ctx) {
 		for _, name := range nodeAPIKeyHeaders {
 			h.Del(name)

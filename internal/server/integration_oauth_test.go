@@ -219,7 +219,7 @@ func TestIntegrationOAuthDefaultLocalhost(t *testing.T) {
 	userSession := oauthMCPSession(t, endpoint, "/inference/mcp", userAccess)
 	tools, err := userSession.ListTools(t.Context(), nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 3)
+	require.Len(t, tools.Tools, 7)
 }
 
 func TestIntegrationOAuthOptOutKeepsMCP(t *testing.T) {

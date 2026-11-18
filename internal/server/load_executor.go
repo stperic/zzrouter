@@ -106,7 +106,7 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	}
 	run := result.Run
 	if run == nil {
-		return &LoadModelResponse{Model: e.appMgr.CanonicalModelName(req.ModelName), Provider: utils.NormalizeAppType(provider), Status: "running", Message: "The provider serves this model without a run"}, nil
+		return &LoadModelResponse{Model: e.appMgr.CanonicalModelName(req.ModelName), Provider: utils.NormalizeAppType(provider), Status: "running", Node: e.getNodename(), Message: "The provider serves this model without a run"}, nil
 	}
 	status := run.GetStatus()
 	reused := !result.Started && (status == instance.StatusRunning || status == instance.StatusStarting)
@@ -114,7 +114,7 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	if reused {
 		message = fmt.Sprintf("Model '%s' is already %s; follow job_id when present, otherwise inspect zz_runs", run.Model, status)
 	}
-	return &LoadModelResponse{BaseURL: run.BaseURL, Reused: reused, InstanceID: run.ID, JobID: e.appMgr.RunJobID(run), Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Message: message}, nil
+	return &LoadModelResponse{BaseURL: run.BaseURL, Reused: reused, InstanceID: run.ID, JobID: e.appMgr.RunJobID(run), Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Node: e.getNodename(), Message: message}, nil
 }
 
 // PreviewLocalRun generates a preview of what would be run

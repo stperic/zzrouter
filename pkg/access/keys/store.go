@@ -111,18 +111,9 @@ func (s *FileKeyStore) Load() error {
 }
 
 func (s *FileKeyStore) loadFromBytes(data []byte) error {
-	var cfg keysFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("failed to parse keys config: %w", err)
-	}
-
-	keys := make(map[string]*VirtualKey, len(cfg.Keys))
-	for id, yk := range cfg.Keys {
-		vk, err := fromYAML(id, yk)
-		if err != nil {
-			return fmt.Errorf("key %q: %w", id, err)
-		}
-		keys[id] = vk
+	keys, err := DecodeSnapshot(data)
+	if err != nil {
+		return err
 	}
 
 	s.mu.Lock()
@@ -131,6 +122,25 @@ func (s *FileKeyStore) loadFromBytes(data []byte) error {
 
 	s.notifyListeners()
 	return nil
+}
+
+// DecodeSnapshot shares the ordinary loader's validation without publishing state.
+func DecodeSnapshot(data []byte) (map[string]*VirtualKey, error) {
+	var cfg keysFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse keys config: %w", err)
+	}
+
+	keys := make(map[string]*VirtualKey, len(cfg.Keys))
+	for id, yk := range cfg.Keys {
+		vk, err := fromYAML(id, yk)
+		if err != nil {
+			return nil, fmt.Errorf("key %q: %w", id, err)
+		}
+		keys[id] = vk
+	}
+
+	return keys, nil
 }
 
 // Get returns an isolated virtual-key snapshot, or nil if not found.
@@ -373,6 +383,9 @@ func (s *FileKeyStore) save(write func(string, []byte, os.FileMode) error) error
 
 // fromYAML converts the on-disk format to VirtualKey.
 func fromYAML(id string, yk *virtualKeyYAML) (*VirtualKey, error) {
+	if yk == nil {
+		return nil, fmt.Errorf("key must be an object")
+	}
 	if yk.Name == "" {
 		return nil, fmt.Errorf("missing name")
 	}

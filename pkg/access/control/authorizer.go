@@ -79,7 +79,7 @@ func (a *Authorizer) Allowed(modelName string, teamModels []string) bool {
 
 // ProviderAllowed applies team policy to a resolved provider identity.
 func ProviderAllowed(ac *AccessContext, provider string) bool {
-	return ac == nil || ac.Key == nil || !ac.Key.IsVirtual || ac.Team == nil || ac.Team.ProviderAccess.Allows(provider)
+	return ac == nil || ac.Key == nil || !ac.Key.TeamBound() || ac.Team != nil && ac.Team.ProviderAccess.Allows(provider)
 }
 
 // RouteAllowed requires an exact route identity that still exists.
@@ -93,7 +93,7 @@ func (a *Authorizer) RouteAllowed(name string, policy teams.RouteAccess) bool {
 
 // RoutesRestricted reports whether a virtual caller must use assigned routes.
 func RoutesRestricted(ac *AccessContext) bool {
-	return ac != nil && ac.Key != nil && ac.Key.IsVirtual && ac.Team != nil && ac.Team.RouteAccess.Restricted()
+	return ac != nil && ac.Key != nil && ac.Key.TeamBound() && (ac.Team == nil || ac.Team.RouteAccess.Restricted())
 }
 
 // DestinationAllowed applies route-only model ceilings and provider policy.
@@ -104,6 +104,9 @@ func (c *Core) DestinationAllowed(ac *AccessContext, model, provider string) boo
 
 // RouteResolved prevents a pin or missing route from becoming a direct request.
 func RouteResolved(ac *AccessContext, requested, resolved string) bool {
+	if ac != nil && ac.Key != nil && ac.Key.TeamBound() && ac.Team == nil {
+		return false
+	}
 	return !RoutesRestricted(ac) || requested != "" && requested == resolved && ac.Team.RouteAccess.Allows(resolved)
 }
 
@@ -125,7 +128,8 @@ func (c *Core) TeamContext(id string) *AccessContext {
 	if c.teams == nil || c.teams.Get(id) == nil {
 		return nil
 	}
-	return c.buildAccessContext(&KeyPrincipal{ID: "preview", IsVirtual: true, TeamID: id, Role: RoleUser})
+	ac, _ := c.buildAccessContext(&KeyPrincipal{ID: "preview", IsVirtual: true, TeamID: id, Role: RoleUser})
+	return ac
 }
 
 // RouteTeams returns the sorted explicit assignments, without a reverse store.

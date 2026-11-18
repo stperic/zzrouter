@@ -17,6 +17,9 @@ func consoleFixture(t *testing.T) *ConsoleViewModel {
 	t.Helper()
 	m := NewConsoleViewModel(nil, ui.NewStyles(ui.CatppuccinMocha()), pkgClient.ConsoleTarget{Page: "access", Item: "teams/team-one"})
 	m.width = 100
+	m.handoff = func(context.Context, pkgClient.ConsoleTarget) (*pkgClient.ConsoleGrant, error) {
+		return &pkgClient.ConsoleGrant{Token: "temporary-code", URL: "https://router.example/console/"}, nil
+	}
 	m.discover = func(_ context.Context, target pkgClient.ConsoleTarget) (string, error) {
 		require.Equal(t, "teams/team-one", target.Item)
 		return "https://router.example/console/#access?item=teams%2Fteam-one", nil
@@ -56,8 +59,9 @@ func TestConsoleViewRemoteAndFailedOpenKeepUsableURL(t *testing.T) {
 	m.Update(m.Init()())
 	m.browserAvailable = func() bool { return false }
 	_, cmd := m.Update(keyPress("o"))
-	require.Nil(t, cmd)
-	require.Contains(t, m.status, "remote or headless")
+	require.NotNil(t, cmd)
+	m.Update(cmd())
+	require.Equal(t, "temporary-code", m.code)
 	require.NotEmpty(t, m.url)
 	m.browserAvailable = func() bool { return true }
 	m.open = func(string) error { return errors.New("no browser") }

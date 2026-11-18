@@ -28,7 +28,7 @@ func TestCredentialReferenceShortEnvironmentKey(t *testing.T) {
 `), 0o600))
 	store := keys.NewFileKeyStore(path)
 	require.NoError(t, store.Load())
-	core := NewCore(StaticKeySet{}, store, nil, nil, nil, nil)
+	core := NewCore(StaticKeySet{}, store, referenceTeamStore(t), nil, nil, nil)
 	ref, err := core.Reference(raw)
 	require.NoError(t, err)
 	data, err := json.Marshal(ref)
@@ -60,7 +60,7 @@ func TestCredentialReferenceShortEnvironmentKey(t *testing.T) {
 
 func TestCredentialReferenceLiveAuthority(t *testing.T) {
 	st := keys.NewFileKeyStore(filepath.Join(t.TempDir(), "keys.yaml"))
-	ts := teams.NewFileTeamStore(filepath.Join(t.TempDir(), "teams.yaml"))
+	ts := referenceTeamStore(t)
 	raw, err := st.Create("reader", &keys.VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"})
 	require.NoError(t, err)
 	core := NewCore(StaticKeySet{Admin: "test-admin-reference-long-enough-secret"}, st, ts, nil, nil, nil)
@@ -115,7 +115,7 @@ func TestCredentialReferenceRotationDuringLogin(t *testing.T) {
 	raw, err := st.Create("reader", &keys.VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"})
 	require.NoError(t, err)
 	rotating := &rotatingReferenceStore{KeyStore: st, rotate: true}
-	core := NewCore(StaticKeySet{}, rotating, nil, nil, nil, nil)
+	core := NewCore(StaticKeySet{}, rotating, referenceTeamStore(t), nil, nil, nil)
 	_, err = core.Reference(raw)
 	require.ErrorIs(t, err, ErrInvalidKey)
 }
@@ -124,7 +124,7 @@ func TestCredentialReferenceConcurrentRotation(t *testing.T) {
 	store := keys.NewFileKeyStore(filepath.Join(t.TempDir(), "keys.yaml"))
 	raw, err := store.Create("reader", &keys.VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"})
 	require.NoError(t, err)
-	core := NewCore(StaticKeySet{}, store, nil, nil, nil, nil)
+	core := NewCore(StaticKeySet{}, store, referenceTeamStore(t), nil, nil, nil)
 	ref, err := core.Reference(raw)
 	require.NoError(t, err)
 	start := make(chan struct{})
@@ -151,4 +151,11 @@ func TestCredentialReferenceConcurrentRotation(t *testing.T) {
 		default:
 		}
 	}
+}
+
+func referenceTeamStore(t *testing.T) *teams.FileTeamStore {
+	t.Helper()
+	store := teams.NewFileTeamStore(filepath.Join(t.TempDir(), "teams.yaml"))
+	require.NoError(t, store.Create("team", &teams.Team{Name: "Reference team", Kind: "shared"}))
+	return store
 }

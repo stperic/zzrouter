@@ -115,7 +115,7 @@ func TestNewShape_BidirectionalRoundTrip(t *testing.T) {
 		require.NoErrorf(t, strictDecode(body, got), "re-decode %s", name)
 
 		setProviderName(got, name)
-		if diff := cmp.Diff(p, got, cmpopts.EquateEmpty(), cmpopts.IgnoreUnexported(httperr.FailurePattern{})); diff != "" {
+		if diff := cmp.Diff(p, got, cmpopts.EquateEmpty(), cmpopts.IgnoreUnexported(httperr.FailurePattern{}, OnDemandProvider{})); diff != "" {
 			t.Errorf("round-trip mismatch for %s (-orig +got):\n%s", name, diff)
 		}
 	}

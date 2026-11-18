@@ -62,6 +62,19 @@ func TestDispatchRemoteAddr(t *testing.T) {
 	require.Equal(t, "unauthorized", failure.problem.Code)
 }
 
+func TestDispatchPreservesIngressOriginForMetadata(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "coordinator.example:9443", r.Host)
+		require.Equal(t, "coordinator.example:9443", r.URL.Host)
+		require.Equal(t, "https", r.URL.Scheme)
+		writeFixture(t, w, []byte(`{}`))
+	})
+	d.outer.host, d.outer.scheme = "coordinator.example:9443", "https"
+	d.requestInfo.Header.Set("X-Forwarded-Host", "ignored.invalid")
+	var out any
+	require.NoError(t, d.call(t.Context(), request{method: http.MethodGet, path: requestPath{"/zzrouter/v1/connections"}}, &out))
+}
+
 func TestDispatchHeaderAllowlist(t *testing.T) {
 	dHeaderForwarded := []string{"203.0.113.1, 198.51.100.3", "198.51.100.4"}
 	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {

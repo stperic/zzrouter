@@ -1,17 +1,23 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"path"
+	"strings"
+)
 
 // CloudProvider is a hosted HTTPS API gateway (openai, anthropic, groq,
 // gemini, openrouter, cloudflare, bedrock, azure, ollama-cloud). Cloud
 // providers never ship parameters or install variants — they're pure auth
 // + endpoint + occasional catalog-listing metadata.
 type CloudProvider struct {
-	Connection  *ConnectionConfig  `yaml:"connection,omitempty" json:"connection,omitempty"`
-	Features    map[string]Feature `yaml:"features,omitempty" json:"features,omitempty"`
-	Name        string             `yaml:"-" json:"name"`
-	Description string             `yaml:"description,omitempty" json:"description,omitempty"`
-	Enabled     *bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Operations  map[string]OperationDefinition `yaml:"operations,omitempty" json:"operations,omitempty"`
+	Connection  *ConnectionConfig              `yaml:"connection,omitempty" json:"connection,omitempty"`
+	Features    map[string]Feature             `yaml:"features,omitempty" json:"features,omitempty"`
+	Name        string                         `yaml:"-" json:"name"`
+	Description string                         `yaml:"description,omitempty" json:"description,omitempty"`
+	Enabled     *bool                          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Capabilities.Models holds the registered model catalog for this cloud
 	// provider. AddCloudModel/RemoveCloudModels persist into this slice; the
 	// /v1/models surface and inference routing both depend on it.
@@ -25,8 +31,9 @@ type CloudProvider struct {
 // an auth config, even if auth_type is "none".
 type CloudRuntime struct {
 	Endpoint          string            `yaml:"endpoint" json:"endpoint"`
+	OpenAIPath        string            `yaml:"openai_path,omitempty" json:"openai_path,omitempty"`
 	ModelURL          string            `yaml:"model_url,omitempty" json:"model_url,omitempty"`
-	ModelsPath        string            `yaml:"models_path,omitempty" json:"models_path,omitempty"`
+	ModelsPath        *string           `yaml:"models_path,omitempty" json:"models_path,omitempty"`
 	ModelsResponseKey string            `yaml:"models_response_key,omitempty" json:"models_response_key,omitempty"`
 	API               APIConfig         `yaml:"api" json:"api"`
 	HealthCheck       HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
@@ -54,6 +61,9 @@ func (p *CloudProvider) IsAvailable() bool {
 // present (the API value is always present, but auth_type must be set to
 // one of the known values — empty is not allowed for cloud).
 func (p *CloudProvider) Validate() error {
+	if len(p.Operations) != 0 {
+		return fmt.Errorf("provider %q: run operations require an on-demand owner", p.Name)
+	}
 	if err := p.Connection.Validate(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
@@ -65,6 +75,12 @@ func (p *CloudProvider) Validate() error {
 	}
 	if p.Runtime.Endpoint == "" {
 		return fmt.Errorf("provider '%s': runtime.endpoint is required for cloud mode", p.Name)
+	}
+	if prefix := p.Runtime.OpenAIPath; prefix != "" {
+		u, err := url.Parse(prefix)
+		if err != nil || u.IsAbs() || u.Host != "" || u.Path != prefix || !strings.HasPrefix(prefix, "/") || path.Clean(prefix) != prefix {
+			return fmt.Errorf("provider %q: runtime.openai_path must be an absolute URL path without query, fragment or traversal", p.Name)
+		}
 	}
 	if p.Runtime.API.AuthType == "" {
 		return fmt.Errorf("provider '%s': runtime.api.auth_type is required for cloud mode", p.Name)
@@ -86,5 +102,5 @@ func (p *CloudProvider) Validate() error {
 // MarshalYAML keeps an explicit empty features block across provider writes.
 func (p CloudProvider) MarshalYAML() (any, error) {
 	type plain CloudProvider
-	return marshalFeatureProvider(plain(p), p.Features)
+	return marshalFeatureProvider(plain(p), p.Features, p.Operations)
 }

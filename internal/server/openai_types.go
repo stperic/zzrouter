@@ -33,9 +33,9 @@ type OpenAIChatCompletionRequest struct {
 
 // OpenAICompletionRequest is the legacy /v1/completions request.
 type OpenAICompletionRequest struct {
-	Model     string `json:"model"`
-	Prompt    string `json:"prompt"`
-	MaxTokens *int   `json:"max_tokens,omitempty"`
+	Model     string          `json:"model"`
+	Prompt    json.RawMessage `json:"prompt"`
+	MaxTokens *int            `json:"max_tokens,omitempty"`
 }
 
 // OpenAIEmbeddingsRequest is the /v1/embeddings request.

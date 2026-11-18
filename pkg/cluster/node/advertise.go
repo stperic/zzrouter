@@ -1,11 +1,16 @@
 package clusternode
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 // noisyInterfacePrefixes is a curated blocklist of interface-name prefixes
@@ -77,8 +82,8 @@ func isNoisyInterface(name string) bool {
 // persist at pairing-accept time and dial on every renewal. Two
 // resolution paths:
 //
-//  1. advertiseURL non-empty → use it verbatim (after parse
-//     validation). The operator-configured value wins because
+//  1. advertiseURL non-empty → normalize it to the same HTTPS origin
+//     used by pairing intent. The operator-configured address wins because
 //     derived-from-bind can't capture reverse-proxy or NAT
 //     topologies. Validated at Server Start via ValidateAdvertiseURL;
 //     this re-parse is defense-in-depth for hot-reload scenarios.
@@ -104,12 +109,12 @@ func isNoisyInterface(name string) bool {
 // persisting a port-zero URL would silently break all future
 // renewal dials, so we prefer 503 "not ready" over a malformed
 // coordinator_url on disk at the worker.
-func CoordinatorSelfCoordURL(n *Node, bindHost, nodeName, advertiseURL string) (string, error) {
+func CoordinatorSelfCoordURL(n *Node, advertiseURL string) (string, error) {
 	if advertiseURL != "" {
 		if err := ValidateAdvertiseURL(advertiseURL); err != nil {
 			return "", err
 		}
-		return advertiseURL, nil
+		return NormalizeCoordinatorURL(advertiseURL)
 	}
 
 	addr := n.Addr()
@@ -120,7 +125,37 @@ func CoordinatorSelfCoordURL(n *Node, bindHost, nodeName, advertiseURL string) (
 	if err != nil || port == "" {
 		return "", fmt.Errorf("parse listener addr %q: %w", addr.String(), err)
 	}
-	return "https://" + net.JoinHostPort(ResolveSelfHost(bindHost, nodeName, n.cfg.AdvertiseIPs), port), nil
+	return "https://" + net.JoinHostPort(ResolveSelfHost(n.cfg.BindHost, n.cfg.NodeName, n.cfg.advertiseIPs()), port), nil
+}
+
+// NormalizeCoordinatorURL gives CLI inputs, advertised URLs and enrollment intent one spelling.
+func NormalizeCoordinatorURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", errors.New("coordinator URL is required")
+	}
+	if !strings.Contains(s, "://") {
+		s = "https://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("not a valid URL: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", fmt.Errorf("unsupported scheme %q: use https://", u.Scheme)
+	}
+	if u.Hostname() == "" || u.User != nil {
+		return "", errors.New("use a coordinator host without credentials")
+	}
+	port := u.Port()
+	if port == "" {
+		port = strconv.Itoa(constants.DefaultClusterPort)
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil || value < 1 || value > 65535 {
+		return "", errors.New("coordinator port must be between 1 and 65535")
+	}
+	return "https://" + net.JoinHostPort(u.Hostname(), port), nil
 }
 
 // ResolveSelfHost picks the host a peer should dial us on: bindHost if
@@ -138,6 +173,37 @@ func ResolveSelfHost(bindHost, nodeName string, ips []net.IP) string {
 		return ip.String()
 	}
 	return nodeName
+}
+
+// enrollmentHost uses the route to this coordinator for automatic address
+// selection. Interface enumeration order can otherwise choose an unreachable
+// address family or another network. Explicit operator choices still win.
+func (c Config) enrollmentHost(ctx context.Context, coordinatorURL string, ips []net.IP) string {
+	fallback := ResolveSelfHost(c.BindHost, c.NodeName, ips)
+	if len(c.AdvertiseIPs) > 0 || c.BindHost != "" && c.BindHost != "0.0.0.0" && c.BindHost != "::" {
+		return fallback
+	}
+	target, err := url.Parse(coordinatorURL)
+	if err != nil {
+		return fallback
+	}
+	// Connecting UDP selects a source address without sending a datagram.
+	dialer := net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "udp", target.Host)
+	if err != nil {
+		return fallback
+	}
+	defer func() { _ = conn.Close() }()
+	local, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return fallback
+	}
+	for _, ip := range ips {
+		if ip.Equal(local.IP) {
+			return ip.String()
+		}
+	}
+	return fallback
 }
 
 // detectRoutableIPs returns the IPs the host is reachable on for cert

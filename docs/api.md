@@ -7,7 +7,8 @@ at `GET /zzrouter/v1`; use discovery to inspect capabilities before an operation
 | Surface | Authentication and purpose |
 | --- | --- |
 | `/health/*` | Health checks without authentication |
-| `/zzrouter/v1/*` | Management APIs; admin key, with explicitly supported owner permissions |
+| `/zzrouter/v1/*` | Management APIs; admin API key or supported browser session, with explicit owner permissions |
+| `/inference/v1/*` | User-scoped operation and native connection discovery |
 | `/v1/*` | OpenAI compatible APIs and Anthropic Messages |
 | `/api/*` | Ollama compatible APIs |
 | `/zzrouter/v1/internal/*` | Cluster transport, authenticated through mTLS |
@@ -19,24 +20,117 @@ configured node port; use `auth.oauth.issuer_url` for a remote HTTPS origin. OAu
 MCP resource and cannot authenticate direct REST calls.
 
 Client keys use `X-API-Key` or `Authorization: Bearer`. Management and inference
-permissions differ. A virtual key can be constrained by team, models, requests,
-tokens, concurrency and spend. Workers expose inference only on their cluster
+permissions differ. An app key inherits its team’s provider/model access, routes, requests, tokens,
+concurrency and spend rules. Workers expose inference only on their cluster
 listener. The coordinator applies client policy before dispatching to workers.
 
 Cluster connection direction, enrollment and replication are described in
 [cluster networking](cluster_networking.md). Only the coordinator initiates cluster connections.
 
+## Provider operations and endpoint discovery
+
+The fixed operation interfaces expose provider-specific behavior through trusted
+definitions. Both `/zzrouter/v1` and `/inference/v1` provide operation list,
+description and execution routes plus ordinary connection discovery. Existing
+administrator and user audience rules remain separate. Discovery lists only
+operations the caller can execute; the first exact-run JSON diagnostic adapter
+requires an administrator.
+
+`GET {prefix}/connections` publishes native and routed addresses for visible
+providers and runs. It is a read-only facility for direct use, diagnostics or
+comparing provider requests with routed requests. The reply distinguishes actual
+listener scope from advertised node addresses, and does not claim that a remote
+client can reach a loopback listener. It neither starts a run nor changes network
+configuration, and excludes credentials.
+
+See the [provider extensibility specification](provider-extensibility.md) for
+definition and target revisions, schemas, execution limits and compatibility.
+
+## Native mutations and stored responses
+
+Ollama pull, create, copy, push, delete and blob upload require an administrator
+key, including when inference permits anonymous callers. Existing provider and
+route policy still applies. Version and account handshakes remain usable by
+route-restricted callers whose provider policy permits Ollama; the account
+handshake then returns a synthetic unauthorized response without querying the
+upstream account.
+
+For a worker import, send the same `X-Node: worker-name` header on every
+`HEAD /api/blobs/{digest}`, `POST /api/blobs/{digest}` and `POST /api/create`.
+Pull and create also accept `model@node`; if both forms are supplied, they must
+select the same node. Selecting a worker only on the final create request does
+not move earlier uploaded blobs. Without a selector these operations stay local.
+The Ollama compatibility API rejects `?node`, file selectors and qualifiers for
+another provider. Unknown or unreachable nodes fail without falling back to the
+coordinator. Blob bytes and native upstream statuses retain streaming behavior.
+The coordinator's `node.max_request_size` also bounds streamed uploads and
+defaults to 10 MiB. Set it explicitly above the intended GGUF size and restart
+the coordinator before importing a larger file. Exceeding the limit returns
+413; a declared oversized body is refused before upstream contact, while an
+unknown-length body may already have been partially forwarded. See
+[request and upload limits](configuration.md#request-and-upload-limits).
+
+Native stored Responses require an authenticated caller. `store:false` remains
+available under existing anonymous inference policy. Retrieval, deletion,
+cancellation, input-item reads and continuations use the original caller/tenant
+and the connection or exact run captured before dispatch. Unknown or cross-owner
+IDs return `response_not_found`; changed or unavailable origins return
+`response_origin_unavailable`. Continuations cannot change the original caller
+model. No missing binding is resolved through a default backend or replacement
+run. Translated Responses remain stateless. Bindings are in memory and expire;
+they are not a durable cross-restart response store.
+
+## Compatibility and native options
+
+Native inference preserves provider-specific JSON options. A Messages or
+Responses translation shim reconstructs the equivalent Chat Completions request
+and preserves additional native options without converting JSON numbers through
+floating-point values. `extra_params` supplies native Chat options during
+translation, but cannot override translated fields such as model, messages,
+tools, stream, token limits or reasoning effort. Conflicting controls are refused.
+
+Responses translation maps `reasoning.effort`, strict function tools,
+`text.format` JSON schemas and `text.verbosity`. Requested behavior that the shim
+cannot represent returns a parameter error before inference. Examples include
+stateful Responses controls, reasoning summaries, Messages thinking/cache/service
+controls, multiple output choices, log probabilities and audio output. Use an
+advertised native endpoint for those capabilities. Native forwarding does not
+apply translation restrictions. The Messages token-count fallback reserves its
+own one-token output limit regardless of supplied token-limit aliases.
+
+`POST /v1/completions` accepts a string, a nonempty string array, a nonempty
+array of nonnegative integer token IDs, or a nonempty array of nonempty token-ID
+arrays as `prompt`. Omitted, null and empty-string prompts retain native default
+behavior. Mixed arrays, fractional IDs, negative IDs and empty arrays are invalid.
+The router forwards valid prompt data unchanged; the selected provider still
+determines which forms it supports.
+
+Realtime WebSockets and the `/v1/realtime/sessions`,
+`/v1/realtime/transcription_sessions` and `/v1/realtime/client_secrets` HTTP helpers
+all use `openai_compat.realtime_backend`. They share opaque forwarding admission
+and provider credentials. Session request bodies are forwarded unchanged,
+including GA `session.model` and transcription requests without a root `model`.
+These helpers do not use model aliases or route groups. Policies requiring model
+inspection or usage accounting cannot be enforced by this opaque surface and
+are refused. A client secret permits a later direct upstream session; zzRouter
+does not meter that later session.
+
 ## Browser sessions and provider connections
 
 When coordinator OAuth is enabled, `GET /zzrouter/v1/session` bootstraps a CSRF
-proof and browser cookie. `POST` on that path accepts `{ "key": "..." }` with
-the exact issuer `Origin`, the cookie and `X-CSRF-Token`; `DELETE` logs out using
-the same origin/proof. The opaque session remains HttpOnly. `GET /me` returns the
+proof and browser cookie. Account sign-in uses `POST /zzrouter/v1/session/password`
+with `username` and `password`. The advanced `POST /zzrouter/v1/session` accepts
+`{ "key": "..." }`. Both require the exact issuer `Origin`, cookie and
+`X-CSRF-Token`; `DELETE /zzrouter/v1/session` logs out with the same origin/proof. The opaque session remains HttpOnly. `GET /me` returns the
 current identity, and `GET /me/connections` or `DELETE /me/connections/{id}`
 operates only on its MCP grants. These paths use the `/zzrouter/v1` prefix.
-Bootstrap/login also return the fixed `issuer` and coordinator `node_name`.
-`/me` explicitly projects key/team limits, team model allowances and own key
-usage; unavailable usage is null. It exposes no credential fingerprint or key
+Bootstrap/login also return the fixed `issuer`, coordinator `node_name` and
+`sharing` assessment. The `/access/*` APIs cover one-time setup, invitations,
+account recovery, People administration and onboarding; see the
+[onboarding/access specification](onboarding-access-spec.md) and OpenAPI for
+payloads, proof requirements and role gates.
+`/me` explicitly projects account or key identity, effective team limits, model
+allowances and own usage; unavailable usage is null. It exposes no credential fingerprint or key
 metadata. The [console](web-console.md) is served at `/console/` when coordinator
 browser authentication is enabled.
 
@@ -47,7 +141,13 @@ Cluster pairing and worker/internal paths do not accept browser authority.
 
 `GET /zzrouter/v1/providers/{name}/connection` returns the declared field schema,
 nonsecret values, secret presence, ownership mode and revision. `POST` to its
-`/test` subpath accepts candidate `values` without saving. `PUT` replaces the
+`/test` subpath accepts either candidate `values` or `{ "stored": true }` to test
+the saved coordinator connection without resubmitting secrets. The modes are
+mutually exclusive; neither saves or enables the provider. Saved testing resolves
+credentials and destination together, including configured disabled providers.
+An absent connection returns `provider_connection_not_configured`; an unavailable
+probe returns `unknown` / `probe_unavailable`, not a successful verification.
+`PUT` replaces the
 complete connection with `expected_revision`, `values` and optional `activate`.
 `DELETE` with `expected_revision` removes managed values and suppresses external
 fallback. `POST` to `/use-external` explicitly restores external resolution.
@@ -65,11 +165,20 @@ Unavailable configuration returns 503, while a validated empty catalog returns
 `data: []`. Connection refusals have distinct codes for unsupported connections,
 unavailable state, stale revisions, absent startup protection and failed writes.
 
+When a provider declares no connection-test endpoint, `/test` returns
+`status: unknown` and `code: probe_unavailable` without making a provider request.
+Credentials can still be saved, but only a real model request can verify them.
+
 Model search and cards retain native provider fields and add typed `discovery`
 metadata. A missing storage size stays unknown, separate from parameter count.
 Hugging Face variants retain `shards` and `features` inside the `data` envelope.
 `GET /zzrouter/v1/registries/ollama/tags?id=llama3.2` supplies catalog tags through
 the authenticated coordinator, without client-side upstream scraping.
+
+A provider with an explicitly unavailable model catalog returns HTTP 501 with
+`code: model_discovery_unavailable` for search, popular-model and card requests.
+Register a known provider model ID instead. This does not mean inference is
+unavailable and does not substitute a successful catalog result.
 
 ## Discover, execute, observe
 
@@ -166,3 +275,23 @@ on retained node outcomes after the worker job expires. Terminal deployments
 are retained for 30 minutes and swept on the next deployment creation. These
 records and worker jobs are in memory and do not survive their owning process
 restarting.
+
+## Team impact, access audit and recovery scope
+
+`Team.membership` projects app-key and person counts, lifecycle-pending invitations,
+other pending enrollment grants, owner protection, `can_delete` and `can_suspend`.
+These are backend-owned observations used by deletion, not permission rules for a
+client to recalculate. Counts include suspended people and suspended/expired keys.
+
+`BrowserSessionState.sharing` describes the canonical issuer: `local_only`,
+`configured` HTTPS, or `unavailable`. It never asserts tested remote connectivity.
+
+`GET /zzrouter/v1/access/audit?limit=50&cursor=...` is coordinator administrator-only
+and returns `data.events`, optional `data.next` and `data.skipped`. Pages are newest
+first, with a 100-event and 1 MiB read bound. A stale cursor returns 409; refresh
+without one. It covers the current audit file only. People mutation events describe
+committed authority changes, not every OAuth login or logout.
+
+`GET /zzrouter/v1/system/recovery` returns safe recovery inventory and separate
+requirements to administrators. It exports no file content or credential values.
+Backup/check/staged restore are local commands; see [recovery](recovery.md).

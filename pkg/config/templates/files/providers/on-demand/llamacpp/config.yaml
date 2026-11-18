@@ -3,6 +3,30 @@
 description: "llama.cpp inference engine"
 search:
   registry: huggingface
+operations:
+  tokenize:
+    version: 1
+    description: Tokenize text with the selected live engine.
+    adapter: run_json_read
+    audience: admin
+    effect: read
+    target_scope: run
+    transport: json
+    runtimes: [base]
+    binding: {method: POST, path: /tokenize}
+    input_schema:
+      type: object
+      required: [content]
+      additionalProperties: false
+      properties:
+        content: {type: string}
+        add_special: {type: boolean}
+        parse_special: {type: boolean}
+    output_schema:
+      type: object
+      required: [tokens]
+      properties:
+        tokens: {type: array, items: {type: integer}}
 features:
   tools:
     http: {path: /props, field: chat_template_caps.supports_tools}
@@ -145,6 +169,7 @@ defaults:
         reranking: "true"
 
 runtime:
+  listener: {host_parameter: host, default_host: 127.0.0.1}
   failure_patterns:
     - pattern: "cudaMalloc failed: out of memory"
       isRegex: false

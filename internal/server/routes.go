@@ -130,19 +130,21 @@ func (s *Server) setupRoutes() {
 	if !isWorker {
 		// PUBLIC API — general management (models, runs, providers, pricing, …).
 		// Security: live admin identity via an API key or protected browser session.
-		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.browserAuthMiddleware(RoleAdmin))
+		publicAPI := s.engine.Group("/zzrouter/v1", s.auth.browserAdminAuthMiddleware())
 		s.registerPublicRoutes(publicAPI)
 		s.registerClientActivity(publicAPI)
-		mcpAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
+		mcpAPI := s.engine.Group("/zzrouter/v1", s.auth.adminAuthMiddleware())
 		s.registerMCPServer(mcpAPI)
 		s.registerInferenceMCPServer()
+		inferenceAPI := s.engine.Group("/inference/v1", s.auth.AuthMiddleware(RoleUser))
+		s.registerOperationRoutes(inferenceAPI)
 
 		// ACCESS CONTROL API — teams, virtual keys, spend reports.
 		// Separate group so operators can later swap in a dedicated
 		// ZZROUTER_ACCESS_CONTROL_API_KEY via accessControlAuthMiddleware
 		// without touching any URL, handler, or client. Paths still live
 		// under /zzrouter/v1 — the split is by middleware, not by URL.
-		accessAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.accessControlAuthMiddleware())
+		accessAPI := s.engine.Group("/zzrouter/v1", s.auth.accessControlAuthMiddleware())
 		s.registerAccessControlRoutes(accessAPI)
 	}
 	// Worker-read fallback (plan §5.3) deleted: workers bind admin port
@@ -151,7 +153,6 @@ func (s *Server) setupRoutes() {
 	// Operator lifecycle actions initiate pinned enrollment or authenticated worker requests.
 	if !isWorker {
 		clusterOps := s.engine.Group("/zzrouter/v1/cluster",
-			RequestIDMiddleware(), APIVersionMiddleware(),
 			s.auth.adminAuthMiddleware())
 		s.registerBrowserPairing()
 		clusterOps.POST("/decommission-worker", s.clusterHandlers.handleClusterDecommissionWorker)
@@ -168,7 +169,6 @@ func (s *Server) setupRoutes() {
 	// callers still need admin auth — defense-in-depth for multi-user
 	// hosts and accidental external exposure.
 	pairOps := s.engine.Group("/zzrouter/v1/cluster",
-		RequestIDMiddleware(), APIVersionMiddleware(),
 		loopbackOrAdmin(s.auth.adminAuthMiddleware()))
 	pairOps.POST("/pair", s.clusterHandlers.handleClusterPair)
 	pairOps.POST("/reset", s.clusterHandlers.handleClusterReset)
@@ -181,7 +181,6 @@ func (s *Server) setupRoutes() {
 	// dedicated engine; internalRequestOnlyMiddleware 404s any
 	// caller that doesn't carry the in-process trust marker.
 	internalAPI := s.engine.Group("/zzrouter/v1/internal",
-		RequestIDMiddleware(), APIVersionMiddleware(),
 		internalRequestOnlyMiddleware())
 	s.registerInternalRoutes(internalAPI)
 

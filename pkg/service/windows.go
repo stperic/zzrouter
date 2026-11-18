@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -23,7 +26,10 @@ func NewServiceManager() ServiceManager {
 }
 
 // WindowsManager handles service management on Windows using SCM
-type WindowsManager struct{}
+type WindowsManager struct{ configDir string }
+
+// SetConfigDir binds the service to the selected installation.
+func (m *WindowsManager) SetConfigDir(dir string) { m.configDir = dir }
 
 // Windows service constants
 const (
@@ -84,7 +90,7 @@ func (m *WindowsManager) SetupDirectories() error {
 	}
 
 	dirs := []string{
-		filepath.Join(programData, "zzrouter", "config"),
+		m.GetConfigDir(),
 		filepath.Join(programData, "zzrouter", "logs"),
 		filepath.Join(programData, "zzrouter", "data"),
 	}
@@ -111,11 +117,21 @@ func (m *WindowsManager) InstallService() error {
 	}
 	defer scm.Disconnect() //nolint:errcheck // best-effort cleanup in defer
 
-	// Check if service already exists
+	// Keep account, recovery and other SCM settings on an upgrade, while binding
+	// the stopped service to the same installation selected by the installer.
 	s, err := scm.OpenService(windowsServiceName)
 	if err == nil {
-		s.Close()
-		return nil // Service already installed
+		defer s.Close()
+		settings, err := s.Config()
+		if err != nil {
+			return fmt.Errorf("read installed service settings: %w", err)
+		}
+		args := []string{exe, "start", "--no-setup", "--service", "--dir", m.GetConfigDir()}
+		for i := range args {
+			args[i] = windows.EscapeArg(args[i])
+		}
+		settings.BinaryPathName = strings.Join(args, " ")
+		return s.UpdateConfig(settings)
 	}
 
 	// Create the service
@@ -127,7 +143,7 @@ func (m *WindowsManager) InstallService() error {
 			Description: windowsServiceDescription,
 			StartType:   mgr.StartAutomatic,
 		},
-		"start", "--no-setup", "--service",
+		"start", "--no-setup", "--service", "--dir", m.GetConfigDir(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create service: %w", err)
@@ -305,11 +321,17 @@ func (m *WindowsManager) GetLogPath() string {
 
 // GetConfigDir returns the service configuration directory
 func (m *WindowsManager) GetConfigDir() string {
+	if m.configDir != "" {
+		return m.configDir
+	}
+	if dir := os.Getenv("ZZROUTER_CONFIG_DIR"); dir != "" {
+		return dir
+	}
 	programData := os.Getenv("PROGRAMDATA")
 	if programData == "" {
 		programData = `C:\ProgramData`
 	}
-	return filepath.Join(programData, "zzrouter", "config")
+	return filepath.Join(programData, "zzrouter")
 }
 
 // GetDataDir returns the service data directory
@@ -323,36 +345,10 @@ func (m *WindowsManager) GetDataDir() string {
 
 // GenerateAPIKey generates a secure API key and saves it to the environment file
 func (m *WindowsManager) GenerateAPIKey() (string, error) {
-	key, err := generateSecureKey()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate API key: %w", err)
+	if err := CheckInstallationCredentialOwner(m.GetConfigDir()); err != nil {
+		return "", err
 	}
-
-	envPath := filepath.Join(m.GetConfigDir(), "zzrouter.env")
-
-	vars := map[string]string{
-		"ZZROUTER_ADMIN_API_KEY": key,
-	}
-
-	// Preserve existing keys if present
-	if existingVars, err := readEnvFile(envPath); err == nil {
-		if adminKey, ok := existingVars["ZZROUTER_ADMIN_API_KEY"]; ok && adminKey != "" {
-			vars["ZZROUTER_ADMIN_API_KEY"] = adminKey
-			key = adminKey
-		}
-		if clusterKey, ok := existingVars["ZZROUTER_CLUSTER_NETWORK_KEY"]; ok && clusterKey != "" {
-			vars["ZZROUTER_CLUSTER_NETWORK_KEY"] = clusterKey
-		}
-		if userKey, ok := existingVars["ZZROUTER_API_KEY"]; ok && userKey != "" {
-			vars["ZZROUTER_API_KEY"] = userKey
-		}
-	}
-
-	if err := writeEnvFile(envPath, vars); err != nil {
-		return "", fmt.Errorf("failed to write env file: %w", err)
-	}
-
-	return key, nil
+	return config.EnsureInstallationCredentials(context.Background(), m.GetConfigDir(), config.InstallationCredentialOptions{LegacyFile: filepath.Join(m.GetConfigDir(), "zzrouter.env")})
 }
 
 // SwitchToServiceUser starts the Windows service instead of re-executing

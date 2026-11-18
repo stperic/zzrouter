@@ -26,6 +26,25 @@ Anonymous inference is allowed only when configured. The installer enables it
 for loopback; network binds require keys. Team model allowlists also prevent
 anonymous access. Anonymous cloud access is disabled by default.
 
+Native Ollama management mutations require an administrator even on a loopback
+node that permits anonymous inference. A user's permission to query a provider
+does not permit model creation, deletion, copying, pulling, pushing or blob upload.
+
+Stored native Responses bind the authenticated caller and tenant to the original
+connection revision or exact run. Missing, expired, cross-owner or unavailable
+origins never fall through to another backend. Anonymous callers can use native
+`store:false` requests under existing inference policy. Worker calls carry only
+a protected owner digest through existing mTLS routing; caller-supplied ownership
+hints are stripped and the digest is not sent to the native provider.
+
+Provider operation definitions select implemented adapters and cannot reduce
+their minimum role. The initial exact-run JSON diagnostic adapter is
+administrator-only. Native endpoint discovery is an ordinary read under existing
+provider/model/route visibility. It returns no credential values and does not
+open listeners; subsequent direct traffic uses the provider's own authentication
+and bypasses Router policy and accounting. See
+[provider extensibility](provider-extensibility.md).
+
 Cluster pairing establishes a shared CA and node identities. Worker inference
 and internal requests travel over mTLS, with coordinator identity checks on
 worker inference. The coordinator is the enforcement point for forwarded client
@@ -65,10 +84,19 @@ Report vulnerabilities privately as described in [SECURITY.md](../SECURITY.md).
 ## Managed upstream secrets
 
 `common/secrets` encrypts complete provider/registry records with AES-256-GCM,
-random nonces and authenticated format metadata. A separately supplied startup
-key protects `credentials.enc`; it is never generated beside the ciphertext or
-returned by the API. Back up the key and encrypted state separately and verify
-the matching pair during recovery. Encryption detects tampering or a wrong key,
+random nonces and authenticated format metadata. On first startup, the node
+prepares a private 32-byte key at `private/credentials.key` under its actual service
+account. An explicit `security.credentials.key_file` takes precedence and is
+never generated, replaced or repaired automatically. The API never returns the key.
+A missing automatic key beside existing ciphertext refuses startup with recovery
+guidance. Invalid explicit keys also fail closed.
+
+Local file permissions protect the automatic key. A complete configuration-tree
+copy contains both key and ciphertext, so it does not provide independent key
+custody. The recovery commands exclude the key from the archive and export it
+separately. Use an external secret-managed key when independent custody is required.
+Back up the key and encrypted state separately and verify the matching pair during
+[recovery](recovery.md). Encryption detects tampering or a wrong key,
 but cannot detect restoration of an older valid backup or protect against a
 compromised process holding the key.
 
@@ -102,8 +130,10 @@ or otherwise restrict its plaintext listener. The configured issuer is fixed;
 request Host and forwarding headers cannot select it. Workers have no login or
 OAuth endpoints.
 
-The browser authenticates using an existing admin or user key. It remembers the
-identity for up to 12 hours and requires consent for each client. MCP clients
+People sign in with their local account and password after owner setup or an
+invitation. Existing admin/user key sign-in remains an advanced option. Browser
+sign-in uses the same session authority, remembers identity for up to 12 hours,
+and requires consent for each client. MCP clients
 receive independent opaque tokens, not the API key. Admin and inference MCP
 resources remain separate. OAuth credentials authorize only their MCP resource;
 they are not general REST credentials. Inner MCP REST requests reauthenticate
@@ -197,3 +227,24 @@ The client and browser-session collections remain bounded separately.
 Slow network reads, metadata fetches and response writes do
 not hold the state transaction lock. OAuth form bodies and response writes have
 10-second endpoint-specific deadlines.
+
+## Access audit and recovery boundaries
+
+The append-only `audit.jsonl` records committed people/enrollment mutations,
+password changes, authority revocations and existing app-key/team/quota changes.
+Actors identify accounts or keys, static installation authority, or a verified
+local operator. Events contain identifiers and safe change metadata, not passwords,
+grant tokens, credential references or local recovery proof. Account events are
+emitted after persistence, even if the later browser-session operation fails.
+Audit failures are warned and do not undo committed access changes.
+
+**System → Access history** is administrator-only and reads bounded pages of the
+current audit file. It does not aggregate old archives or record every OAuth
+login/logout. New appends preserve page boundaries; reopening, replacing or
+truncating the source requires Refresh. Keep audit history in protected backup
+storage and define retention operationally; this change adds no automatic rotation.
+
+Offline recovery shares an installation lock with node startup. Restore only
+stages into a new directory, and never activates state across multiple filesystems.
+See [recovery](recovery.md) for included data, separate dependencies and required
+post-activation checks. Restoring an old valid backup can resurrect revoked access.

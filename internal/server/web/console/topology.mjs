@@ -120,7 +120,7 @@ export function activityMotion(cy, signal, { now = () => performance.now(), hidd
 }
 
 // Opening a drawer can narrow the canvas past the clicked icon. Pan only enough
-// to keep that icon and its label visible, retaining the user's zoom.
+// to keep that icon and its label visible at the locked scale.
 export function revealNode(cy, id) {
   const node = cy.getElementById(id);
   if (!node.length || cy.width() < 80 || cy.height() < 80) return;
@@ -129,12 +129,34 @@ export function revealNode(cy, id) {
   cy.panBy({ x: shift(box.x1, box.x2, cy.width()), y: shift(box.y1, box.y2, cy.height()) });
 }
 
+const mapPadding = 24;
+const minimumZoom = 0.75;
+
+function centerMap(cy, selection) {
+  const node = cy.getElementById(selection || '');
+  if (node.length) { cy.center(node); return; }
+  const bounds = cy.elements().boundingBox();
+  const zoom = cy.zoom();
+  const coordinator = cy.getElementById('coordinator');
+  const nearestNode = cy.nodes('[kind="compute"]').min(node => Math.abs(node.position('x') - (coordinator.position('x') || 0))).ele;
+  const focus = (nearestNode ? coordinator.union(nearestNode) : coordinator).boundingBox();
+  const offset = (start, end, first, last, size) => {
+    const centered = (size - (start + end) * zoom) / 2;
+    if ((end - start) * zoom <= size || !coordinator.length) return centered;
+    const min = mapPadding - first * zoom;
+    const max = size - mapPadding - last * zoom;
+    return min <= max ? Math.max(min, Math.min(max, centered)) : (min + max) / 2;
+  };
+  cy.pan({ x: offset(bounds.x1, bounds.x2, focus.x1, focus.x2, cy.width()), y: offset(bounds.y1, bounds.y2, focus.y1, focus.y2, cy.height()) });
+}
+
 export function initialCamera(cy, selection) {
   if (cy.width() < 80 || cy.height() < 80) return false;
-  const node = cy.getElementById(selection || '');
-  cy.fit(undefined, 24);
-  if (cy.zoom() < 0.6) cy.zoom({ level: 0.6, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
-  if (node.length) cy.center(node);
+  const viewport = cy.getFitViewport(undefined, mapPadding);
+  if (!viewport) return false;
+  const zoom = Math.max(minimumZoom, Math.min(1, viewport.zoom));
+  cy.zoom(zoom).minZoom(zoom).maxZoom(zoom);
+  centerMap(cy, selection);
   return true;
 }
 
@@ -145,7 +167,7 @@ export async function topology(container, signal, select, failed) {
   let cy;
   try {
     const elk = new ELK({ algorithms: ['layered'], workerFactory: () => worker });
-    cy = cytoscape({ container, elements: [], style: graphStyle(container), layout: { name: 'preset' }, maxZoom: 2.5,
+    cy = cytoscape({ container, elements: [], style: graphStyle(container), layout: { name: 'preset' }, userZoomingEnabled: false,
       autoungrabify: true, autounselectify: true, boxSelectionEnabled: false });
     window.addEventListener('console-theme-change', () => cy.style(graphStyle(container)).update(), { signal });
     const motion = activityMotion(cy, signal);
@@ -186,12 +208,11 @@ export async function topology(container, signal, select, failed) {
         const selected = cy.nodes().filter(node => selection && node.data('selection') === selection).addClass('selected');
         if (!selected.some(node => node.id() === anchor)) anchor = selected.filter(node => node.data('kind') === 'compute')[0]?.id() || selected[0]?.id();
       },
-      fit() { cy.resize(); cy.fit(undefined, 40); },
-      zoom(factor) { cy.zoom({ level: Math.max(cy.minZoom(), Math.min(cy.maxZoom(), cy.zoom() * factor)), renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); },
+      center() { if (initialized) centerMap(cy, anchor); },
       focus(selection) {
         const node = cy.getElementById(selection);
         if (node.length && cy.width() >= 80 && cy.height() >= 80) {
-          anchor = node.id(); cy.zoom(Math.max(0.7, cy.zoom())); cy.center(node.union(node.outgoers('node[kind="provider"]'))); revealNode(cy, anchor);
+          anchor = node.id(); cy.center(node.union(node.outgoers('node[kind="provider"]'))); revealNode(cy, anchor);
         }
         container.focus({ preventScroll: true });
       },

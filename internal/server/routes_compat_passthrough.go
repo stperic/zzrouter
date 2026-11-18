@@ -39,9 +39,8 @@ func (s *Server) registerOpenAIStatefulRoutes(openai *gin.RouterGroup) int {
 	// Retrieval goes through routeToResponsesBackend so that when the
 	// affinity map has an entry for the requested response id, the call
 	// lands on the backend that originally served the create — not the
-	// default backend. On a cache miss the handler falls through to
-	// routeToDefaultOpenAIBackend, preserving the single-backend
-	// behaviour that predated session affinity.
+	// default backend. A missing or stale caller-scoped origin refuses;
+	// it never selects a new destination for an existing resource.
 	// ------------------------------------------------------------------
 	openai.Handle("GET", "/responses/:response_id", s.routeToResponsesBackend)
 	openai.Handle("DELETE", "/responses/:response_id", s.routeToResponsesBackend)

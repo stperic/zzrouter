@@ -14,7 +14,11 @@ import { deployments } from './deployments.mjs';
 import { logs } from './logs.mjs';
 import { system } from './system.mjs';
 import { initializeAppearance, themePicker } from './appearance.mjs';
+import { signIn, takeAccessLink, takeAuthorizationLink } from './login.mjs';
+import { people, accountSettings } from './people.mjs';
 
+let authorizationRequest = takeAuthorizationLink(location, window.history);
+let accessLink = takeAccessLink(location, window.history);
 initializeAppearance();
 const app = document.querySelector('#app');
 const pages = new Lifetime();
@@ -24,6 +28,8 @@ const initialRoute = readRoute();
 let route = initialRoute.name;
 let section = initialRoute.item;
 let mode = initialRoute.mode;
+let computeNode = initialRoute.node;
+let computeProvider = initialRoute.provider;
 let leaveGuard;
 let historyIndex = window.history?.state?.zzrouterConsoleIndex || 0;
 let historyReady = false;
@@ -43,7 +49,7 @@ let recoveryNotice = '';
 const verificationWaiters = new Set();
 const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('zzrouter-console-auth') : null;
 const announce = () => channel?.postMessage('auth-state-changed');
-const brand = () => el('div', { class: 'brand', role: 'img', 'aria-label': 'zzRouter' }, el('span', { class: 'brand-mark', 'aria-hidden': 'true' }), el('span', { 'aria-hidden': 'true' }, 'Router'));
+const brand = () => el('div', { class: 'brand', role: 'img', 'aria-label': 'zzRouter' }, el('span', { class: 'brand-mark', 'aria-hidden': 'true' }), el('span', { class: 'brand-wordmark', 'aria-hidden': 'true' }));
 
 const api = new API({
   cleared(reason) {
@@ -58,7 +64,10 @@ const api = new API({
     app.replaceChildren(el('main', { class: 'startup', id: 'content' }, brand(), noticeArea(), text(reason, 'muted')));
     app.setAttribute('aria-busy', 'true');
   },
-  rejected() { void refreshSession('Access changed. Review the current state before another change. No request was retried.'); },
+  rejected(error) {
+    if (error.status === 403) void probeSession();
+    else void refreshSession('Access changed. Review the current state before another change. No request was retried.');
+  },
   activity: syncActivity,
 });
 
@@ -149,8 +158,13 @@ async function refreshSession(notice = '') {
     if (version !== refreshVersion) return;
     publicState = { issuer: state.issuer, node_name: state.node_name };
     app.setAttribute('aria-busy', 'false');
-    if (state.mismatch || !state.identity) renderLogin(state, notice);
-    else renderShell(state, notice);
+    if (state.mismatch || !state.identity || accessLink) renderLogin(state, notice);
+    else if (authorizationRequest) {
+      const destination = authorizationRequest;
+      authorizationRequest = null;
+      // GET validates the request again and shows fresh, explicit consent.
+      window.location.assign(destination);
+    } else renderShell(state, notice);
   } catch (error) {
     if (version !== refreshVersion || error instanceof Obsolete) return;
     renderRecovery(error);
@@ -171,40 +185,14 @@ function renderRecovery(error) {
 
 function renderLogin(state, notice) {
   const scope = pages.next();
-  const right = el('main', { class: 'login-form', id: 'content' }, el('p', { class: 'eyebrow' }, 'YOUR ROUTER, YOUR ACCESS'), el('h1', {}, 'Sign in to your router'), noticeArea(), text('Use a zzRouter user or administrator key. Your cloud provider keys belong in Providers after sign-in.', 'muted'), facts([['Coordinator', state.node_name], ['Public URL', state.issuer]]));
-  if (notice) right.append(message(notice, 'warning'));
-  if (state.mismatch) {
-    right.append(message('This address does not match the configured browser origin. Open the exact public URL before entering a key.', 'warning'), el('a', { href: state.issuer + '/console/' }, 'Continue at ' + state.issuer));
-  } else {
-    const key = input('key', '', { type: 'password', required: true, autocomplete: 'off', spellcheck: 'false', maxlength: '8192' });
-    const feedback = el('div', { 'aria-live': 'polite' });
-    const submit = el('button', { type: 'submit', class: 'primary' }, 'Sign in');
-    const form = el('form', { autocomplete: 'off', 'data-protected-actions': true }, field('Router API key', key), submit, feedback);
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
-      if (!form.reportValidity() || submit.disabled || !api.canChange()) return;
-      const candidate = key.value;
-      key.value = '';
-      submit.disabled = true;
-      feedback.replaceChildren(message('Signing in…'));
-      try {
-        await api.data('/session', { method: 'POST', body: { key: candidate }, signal: scope.signal });
-        if (!scope.current()) return;
-        recoveryNotice = '';
-        announce();
-        await refreshSession();
-      } catch (error) {
-        if (!scope.current()) return;
-        feedback.replaceChildren(problem(error), leaveButton('Refresh sign-in', () => refreshSession(), api));
-        // A rejected proof or unknown login outcome needs an explicit bootstrap.
-        submit.disabled = error.uncertain || error.status === 403;
-      }
-    });
-    right.append(form);
-  }
-  right.append(text('Need access? Ask your router administrator for a named key. Installation recovery is available through the local terminal client.', 'footer-note'));
-  right.append(themePicker(scope.signal));
-  app.replaceChildren(el('div', { class: 'login' }, el('aside', { class: 'login-story' }, brand(), el('div', {}, el('p', { class: 'eyebrow' }, 'ONE CONNECTION TO YOUR MODELS'), el('h1', {}, 'Manage your router'), text('Connect your providers, manage access, and bring your router to the tools you use.')), el('small', {}, 'Self-hosted. Connected on your terms.')), right));
+  const panel = el('main', { class: 'login-form', id: 'content' }, brand(), noticeArea());
+  if (notice) panel.append(message(notice, 'warning'));
+  if (authorizationRequest) panel.append(text('After sign-in, you’ll review the application’s request before allowing access.', 'muted'));
+  app.replaceChildren(el('div', { class: 'login' }, panel));
+  const incoming = accessLink; accessLink = null;
+  const current = () => scope.current();
+  void signIn({ api, state, root: panel, scope, current, syncActivity,
+    refresh: () => refreshSession(), signedIn: () => { recoveryNotice = ''; announce(); return refreshSession(); } }, incoming);
 }
 
 function renderShell(state, notice) {
@@ -219,7 +207,7 @@ function renderShell(state, notice) {
       event.preventDefault(); event.stopImmediatePropagation(); setNavigation(false); navigationToggle.focus();
     }
   }, { signal: api.authority.signal });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['models', 'Models'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['logs', 'Logs'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'System']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['models', 'Models'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['logs', 'Logs'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['people', 'People'], ['connections', 'My account'], ['settings', 'System']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
@@ -227,9 +215,9 @@ function renderShell(state, notice) {
   navigation.append(themePicker(api.authority.signal));
   content = el('main', { id: 'content', class: 'page-content' });
   const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, 'Coordinator: ' + state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
-  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', { class: 'sidebar-heading' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigationToggle), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));
+  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', { class: 'sidebar-heading' }, brand(), navigationToggle), navigation), workspace));
   scheduleExpiry(expiryDeadline(state));
-  void go(admin || ['chat', 'connections'].includes(route) ? route : 'chat', section, mode);
+  void go(admin || ['chat', 'connections'].includes(route) ? route : 'chat', section, mode, { node: computeNode, provider: computeProvider });
 }
 
 function setNavigation(open) {
@@ -281,12 +269,14 @@ function showKeyAfterSession(result, anchor) {
   scheduleExpiry(anchor.deadline);
 }
 
-async function go(name, sub, nextMode, force = false, checked = false) {
+async function go(name, sub, nextMode, { force = false, checked = false, node: targetNode, provider: targetProvider } = {}) {
   if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
   setNavigation(false);
-  const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'models', 'nodes', 'workloads', 'logs', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['chat', 'connections'];
+  const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'models', 'nodes', 'workloads', 'logs', 'clients', 'providers', 'routes', 'access', 'people', 'connections', 'settings'] : ['chat', 'connections'];
   const destination = allowed.includes(name) ? name : allowed[0];
-  if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
+  const nextNode = ['providers', 'models', 'workloads', 'chat'].includes(destination) ? targetNode : undefined;
+  const nextProvider = nextNode ? targetProvider : undefined;
+  if (!force && destination === route && nextProvider === computeProvider && nextNode === computeNode && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
     section = sub; mode = nextMode;
     writeRoute();
     await pageSelection.select(sub, nextMode);
@@ -296,6 +286,8 @@ async function go(name, sub, nextMode, force = false, checked = false) {
   pageSelection = undefined;
   leaveGuard = undefined;
   route = destination;
+  computeNode = nextNode;
+  computeProvider = nextProvider;
   section = sub; mode = nextMode;
   writeRoute();
   clearSecrets(content);
@@ -303,22 +295,27 @@ async function go(name, sub, nextMode, force = false, checked = false) {
   const scope = pages.next();
   content.replaceChildren();
   for (const item of navigation.children) {
-    if (item.dataset.page === (route === 'connections' && api.state.identity.role === 'admin' ? 'clients' : route)) item.setAttribute('aria-current', 'page');
+    if (item.dataset.page === route) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   }
   const generation = api.generation;
   const focusBefore = document.activeElement;
-  const p = { api, root: content, scope, identity: api.state.identity, state: api.state, current: () => scope.current() && generation === api.generation, go,
+  const p = { api, root: content, scope, identity: api.state.identity, state: api.state, computeNode, computeProvider, current: () => scope.current() && generation === api.generation,
+    go: (name, sub, mode, node = computeNode, provider = computeProvider) => go(name, sub, mode, { node, provider }),
     handleSelection: (select, accepts = () => true) => { if (scope.current()) pageSelection = { current: () => scope.current() && generation === api.generation, select, accepts }; },
-    reload: () => go(route, section, mode, true), canLeave,
+    reload: () => go(route, section, mode, { force: true, node: computeNode, provider: computeProvider }), canLeave,
     guardLeave: (confirm, dirty) => { const guard = { confirm, dirty }; leaveGuard = guard; return () => { if (leaveGuard === guard) leaveGuard = undefined; }; },
     refresh: notice => { announce(); return refreshSession(notice); }, showKeyAfterSession, beginOwnRotation, endOwnRotation, recoverOwnRotation, noteOwnRotationRecovery, syncActivity,
     selectSection: (item, nextMode) => { if (scope.current()) { section = item; mode = nextMode; writeRoute(true); } },
     beforeKeyDisclosure: signal => beforeKeyDisclosure(signal, generation) };
+  if (computeNode) content.append(el('div', { class: 'notice compute-context' },
+    text(`Preparing models on ${computeNode}`), actions(
+      leaveButton('View compute node', () => go('nodes', `node/${computeNode}`), api),
+      leaveButton('Show all computers', () => go(route, undefined, route === 'chat' ? undefined : mode), api))));
   try {
     if (route === 'chat') {
       const { chat, createChatSession } = await import('./chat.mjs');
-      if (p.current()) { chatSession ||= createChatSession(api); await chat(p, chatSession, sub, nextMode); }
+      if (p.current()) { chatSession ||= createChatSession(api); await chat(p, chatSession, sub, nextMode || computeNode); }
     }
     else if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/'), nextMode); }
     else if (route === 'models') await models(p, sub, nextMode);
@@ -328,6 +325,7 @@ async function go(name, sub, nextMode, force = false, checked = false) {
     else if (route === 'clients') await clients(p, sub);
     else if (route === 'routes') await routes(p, sub, nextMode);
     else if (route === 'access') await access(p, sub || 'keys', nextMode);
+    else if (route === 'people') await people(p, sub, nextMode);
     else if (route === 'connections') await connections(p);
     else if (route === 'settings') await system(p, sub || 'general', nextMode);
     else await overview(p, sub);
@@ -345,22 +343,23 @@ function limitFacts(limits) {
 
 async function connections(p) {
   const admin = p.identity.role === 'admin';
-  p.root.append(heading(admin ? 'Connect a client' : 'My Access', 'Connect your tools and review the access granted to this key.'));
+  const person = p.identity.kind === 'person';
+  p.root.append(heading(person ? 'My account' : admin ? 'Connect a client' : 'My Access', 'Connect your tools and review your access.'));
   const endpoints = connectionGuide(p);
-  const identity = card('Your key', facts([['Name', p.identity.name], ['ID', p.identity.id], ['Role', p.identity.role], ['Source', p.identity.is_virtual ? 'Managed key' : 'Startup key'], ['Expires', date(p.identity.expires_at)]]));
+  const identity = card(person ? 'Your account' : 'Your key', facts([['Name', p.identity.name], [person ? 'Username' : 'ID', person ? p.identity.username : p.identity.id], ['Role', p.identity.role], ['Source', person ? 'Local account' : p.identity.is_virtual ? 'Managed key' : 'Startup key'], ...(person ? [] : [['Expires', date(p.identity.expires_at)]])]));
   if (['rpm_limit', 'tpm_limit', 'max_parallel_requests', 'spend_limit', 'default_max_tokens'].some(key => p.identity.limits[key] > 0)) identity.append(el('h3', {}, 'Additional key limits'), limitFacts(p.identity.limits));
   const team = p.identity.team ? card('Your team policy', el('h3', {}, p.identity.team.name), policySummary(p.identity.team), limitFacts(p.identity.team.limits), text('Provider access and usage rules are managed by your team.', 'muted')) : card('Model access', text('This startup key has no team-specific model restrictions. Its role still determines which APIs it can use.'));
   const usage = p.identity.usage;
-  const activity = card('Your recorded usage', usage ? usageDetails(usage) : text('Usage is unavailable for this identity. Startup keys do not have a managed-key usage record.', 'muted'));
+  const activity = card('Your recorded usage', usage ? usageDetails(usage) : text('No usage record is available for this identity.', 'muted'));
   const grants = card('Your authorizations', message('Loading your MCP grants…'));
   const policies = el('div', { class: 'cards access-overview' }, identity, team, activity);
-  p.root.append(...(admin ? [endpoints, policies] : [policies, endpoints]), grants, text('Signing out ends browser access. Revoking a client ends that MCP grant and does not sign you out of this console.', 'footer-note'));
+  p.root.append(...(person ? [policies, accountSettings(p), endpoints] : admin ? [endpoints, policies] : [policies, endpoints]), grants, text('Signing out ends browser access. Revoking a client ends that MCP grant and does not sign you out of this console.', 'footer-note'));
   try {
     const entries = await api.list('/me/connections', { signal: p.scope.signal });
     if (!p.current()) return;
     grants.replaceChildren(el('h2', {}, 'Your authorizations'));
-    grants.append(text('These grants allow clients to use your key. They are not a count of connected applications.', 'muted'));
-    if (!entries.length) grants.append(text('No active MCP grants for this key.', 'empty'));
+    grants.append(text('These grants allow clients to act with your access. They are not a count of connected applications.', 'muted'));
+    if (!entries.length) grants.append(text('No active MCP grants for this identity.', 'empty'));
     for (const grant of entries) {
       const feedback = el('div');
       const revoke = button('Revoke', async () => {
@@ -384,11 +383,12 @@ async function connections(p) {
 
 function readRoute() {
   const [name, query] = (location.hash || '#overview').slice(1).split('?');
-  return { name: name || 'overview', item: new URLSearchParams(query).get('item') || undefined, mode: new URLSearchParams(query).get('mode') || undefined };
+  const values = new URLSearchParams(query);
+  return { name: name || 'overview', item: values.get('item') || undefined, mode: values.get('mode') || undefined, node: values.get('node') || undefined, provider: values.get('provider') || undefined };
 }
 
 function writeRoute(replace = false) {
-  const query = new URLSearchParams({ ...(section ? { item: section } : {}), ...(mode ? { mode } : {}) });
+  const query = new URLSearchParams({ ...(section ? { item: section } : {}), ...(mode ? { mode } : {}), ...(computeNode ? { node: computeNode } : {}), ...(computeProvider ? { provider: computeProvider } : {}) });
   const hash = '#' + route + (query.size ? '?' + query : '');
   if (!window.history) return;
   if (!historyReady) {
@@ -408,7 +408,7 @@ function followHistory() {
     return;
   }
   const next = readRoute();
-  if (next.name === route && next.item === section && next.mode === mode && destination === historyIndex) return;
+  if (next.name === route && next.item === section && next.mode === mode && next.node === computeNode && next.provider === computeProvider && destination === historyIndex) return;
   if (!canLeave()) {
     if (Number.isInteger(destination) && destination !== historyIndex) {
       restoringHistory = true;
@@ -418,7 +418,7 @@ function followHistory() {
   }
   historyIndex = Number.isInteger(destination) ? destination : historyIndex + 1;
   window.history?.replaceState({ zzrouterConsoleIndex: historyIndex }, '', location.hash);
-  if (next.name !== route || next.item !== section || next.mode !== mode) void go(next.name, next.item, next.mode, false, true);
+  if (next.name !== route || next.item !== section || next.mode !== mode || next.node !== computeNode || next.provider !== computeProvider) void go(next.name, next.item, next.mode, { checked: true, node: next.node, provider: next.provider });
 }
 document.querySelector('a.skip')?.addEventListener('click', event => {
   event.preventDefault();
@@ -433,5 +433,5 @@ channel?.addEventListener('message', event => { if (event.data === 'auth-state-c
 window.addEventListener('focus', event => { if (event.target === window) void probeSession(); });
 window.addEventListener('pageshow', event => { if (event.persisted) void (api.state || disclosure ? probeSession() : refreshSession()); });
 window.addEventListener('beforeunload', event => { if (!api.canLeave() || leaveGuard?.dirty()) { event.preventDefault(); event.returnValue = ''; } });
-window.addEventListener('pagehide', () => { api.clear('Session paused.'); });
+window.addEventListener('pagehide', () => { authorizationRequest = null; api.clear('Session paused.'); });
 void refreshSession();

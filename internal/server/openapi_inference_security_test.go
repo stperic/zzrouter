@@ -10,8 +10,9 @@ import (
 
 // A client generated from the spec sends a key only where the spec asks
 // for one. Every inference operation must say it takes a key, in either
-// header, and that a node may be set to answer without one. Only the two
-// console inference operations also accept a browser session.
+// header. Native management mutations always require an administrator;
+// inference may be configured without a key. Only the two console
+// inference operations also accept a browser session.
 func TestOpenAPI_InferenceRoutesDeclareTheirKey(t *testing.T) {
 	paths, ok := mapAt(loadSpecTree(t), "paths")
 	require.True(t, ok)
@@ -34,7 +35,14 @@ func TestOpenAPI_InferenceRoutesDeclareTheirKey(t *testing.T) {
 				want = append(want, map[string]any{"BrowserSession": []any{}})
 				browserOperations++
 			}
-			want = append(want, map[string]any{})
+			switch rk(method, path) {
+			case "POST /api/pull", "POST /api/create", "DELETE /api/delete", "POST /api/copy", "POST /api/push", "POST /api/blobs/{digest}":
+				assert.Contains(t, opMap["description"], "administrator key")
+			case "GET /v1/responses/{response_id}", "DELETE /v1/responses/{response_id}", "POST /v1/responses/{response_id}/cancel", "GET /v1/responses/{response_id}/input_items":
+				assert.Contains(t, opMap["description"], "authenticated owner")
+			default:
+				want = append(want, map[string]any{})
+			}
 			assert.Equalf(t, want, opMap["security"], "%s %s", strings.ToUpper(method), path)
 			checked++
 		}

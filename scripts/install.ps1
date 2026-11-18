@@ -5,7 +5,7 @@
 #   Non-admin (per-user, default when not elevated):
 #     powershell -ExecutionPolicy Bypass -File .\install.ps1
 #   As a cluster worker reachable on the LAN (admin):
-#     powershell -ExecutionPolicy Bypass -File .\install.ps1 -Bind 0.0.0.0 -Role worker
+#     powershell -ExecutionPolicy Bypass -File .\install.ps1 -Role worker -Service
 #
 # What it does:
 #   1. Copies zzrouter.exe, zzrouter-node.exe, zzrouter-launcher.exe to $InstallDir
@@ -13,7 +13,7 @@
 #      - per-user:  %LOCALAPPDATA%\Programs\zzrouter
 #   2. Adds $InstallDir to PATH (Machine if admin, else User)
 #   3. Writes a minimal node.yaml at %APPDATA%\zzrouter\node.yaml
-#      (bind 0.0.0.0:9090, cluster.mode from -Role, default disabled)
+#      (bind 127.0.0.1:9090, cluster.mode from -Role, default coordinator)
 #   4. Creates inbound firewall rules for $Port and, when clustered,
 #      $ClusterPort (admin only; skipped otherwise)
 #   5. Starts zzrouter-node.exe in the background and verifies /health
@@ -24,13 +24,14 @@ param(
     [string]$Bind = "127.0.0.1",
     [int]$Port = 9090,
     [ValidateSet("disabled", "worker", "coordinator")]
-    [string]$Role = "disabled",
+    [string]$Role = "coordinator",
     [int]$ClusterPort = 9091,
     [switch]$SkipStart,
     [switch]$PerUser,
     [switch]$Service,
     [switch]$NoService,
-    [switch]$ForceConfig
+    [switch]$ForceConfig,
+    [switch]$NoOpenConsole
 )
 
 # -Role picks what this node is. A worker still has to pair before it
@@ -56,17 +57,16 @@ param(
 # resolves config under its own profile, silently runs a freshly
 # defaulted config, and every later command disagrees with it.
 
-# $Bind defaults to 127.0.0.1 (single-machine / try-it-out use case).
-# Pass -Bind 0.0.0.0 to expose the node on the LAN for multi-node setups,
-# together with -Role worker (or -Role coordinator) so the node comes up
-# in the mode it is meant to run in.
+# $Bind controls management access and defaults to 127.0.0.1.
+# Cluster connections use a separate listener and firewall rule, so the
+# console can stay local-only when adding workers.
 
 $ErrorActionPreference = "Stop"
 
 # Only this machine can reach a node bound to loopback. It decides the
 # firewall and whether inference may be answered without a key.
 $IsLoopback = ($Bind -eq "127.0.0.1" -or $Bind -eq "::1" -or $Bind -eq "localhost")
-$RequireCompatAuth = if ($IsLoopback) { "false" } else { "true" }
+$RequireCompatAuth = "true"
 
 # Get-ReachableAddress returns an address another machine can actually
 # use to reach this one. $Bind may be 0.0.0.0, which is a listen
@@ -95,6 +95,24 @@ function Write-Step($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "    OK  $msg" -ForegroundColor Green }
 function Write-Warn2($msg) { Write-Host "    !!  $msg" -ForegroundColor Yellow }
 function Write-Err($msg)   { Write-Host "    XX  $msg" -ForegroundColor Red }
+
+function Get-ConsoleShortcutSpec {
+    param(
+        [string]$InstallDir,
+        [string]$ConfigDir,
+        [string]$SystemDirectory = [Environment]::GetFolderPath("System")
+    )
+    $clientPath = Join-Path $InstallDir "zzrouter.exe"
+    # PowerShell literals preserve spaces, apostrophes, dollar signs and
+    # backticks in paths. Keep the window open so the one-time code is usable.
+    $command = '$env:ZZROUTER_CONFIG_DIR = ''{0}''; & ''{1}'' console' -f $ConfigDir.Replace("'", "''"), $clientPath.Replace("'", "''")
+    [pscustomobject]@{
+        TargetPath = Join-Path $SystemDirectory "WindowsPowerShell\v1.0\powershell.exe"
+        Arguments = '-NoProfile -NoExit -Command "{0}"' -f $command
+        WorkingDirectory = $ConfigDir
+        IconLocation = "$clientPath,0"
+    }
+}
 
 # --- Windows version check ----------------------------------------------
 # Minimum: Windows 10 1809 (build 17763) / Server 2019.
@@ -160,6 +178,34 @@ if ($missing) {
     }
 }
 Write-Ok "All three binaries present."
+
+# Resolve preserved configuration with the binary's parser before stopping or
+# replacing anything. TLS upgrades need the existing authenticated updater.
+if ($env:ZZROUTER_CONFIG_DIR) {
+    if (-not [IO.Path]::IsPathRooted($env:ZZROUTER_CONFIG_DIR) -or $env:ZZROUTER_CONFIG_DIR -match '[\x00-\x1F]') { throw "ZZROUTER_CONFIG_DIR must be an absolute path without control characters." }
+    $ConfigDir = [IO.Path]::GetFullPath($env:ZZROUTER_CONFIG_DIR)
+}
+elseif ($Service) { $ConfigDir = Join-Path $env:ProgramData "zzrouter" }
+else { $ConfigDir = Join-Path $env:APPDATA "zzrouter" }
+$ConfigFile = Join-Path $ConfigDir "node.yaml"
+# The existing SCM account may differ from the default LocalSystem account.
+# Check before stopping it or replacing artifacts; credential ACL changes must
+# never exclude the account that actually runs the daemon.
+& (Join-Path $SourceDir "zzrouter-node.exe") config credentials --dir $ConfigDir --check
+if ($LASTEXITCODE -ne 0) { throw "The existing service account needs manual credential-permission review. No files or services were changed." }
+$existingIdentity = $null
+if ((Test-Path $ConfigFile) -and -not $ForceConfig) {
+    $identityOutput = & (Join-Path $SourceDir "zzrouter-node.exe") config identity --dir $ConfigDir --json
+    if ($LASTEXITCODE -ne 0) { throw "Could not read the existing installation. No files or services were changed." }
+    $existingIdentity = ($identityOutput -join "`n") | ConvertFrom-Json
+    if ($existingIdentity.secure) { throw "This installation uses HTTPS. Use its authenticated updater or configure the correct TLS trust before reinstalling. No files or services were changed." }
+    if (-not $existingIdentity.mode -or -not $existingIdentity.bind -or -not $existingIdentity.port -or -not $existingIdentity.cluster_port) { throw "Incomplete installation identity. No files or services were changed." }
+    $Role = $existingIdentity.mode
+    $Bind = $existingIdentity.bind
+    $Port = [int]$existingIdentity.port
+    $ClusterPort = [int]$existingIdentity.cluster_port
+    $IsLoopback = ($Bind -eq "127.0.0.1" -or $Bind -eq "::1" -or $Bind -eq "localhost")
+}
 
 # --- Stop any running node ----------------------------------------------
 # This runs BEFORE the binaries are copied, and that ordering is the whole
@@ -250,19 +296,8 @@ if ($existingPath -notlike "*$InstallDir*") {
 $env:Path = "$env:Path;$InstallDir"
 
 # --- Write minimal node.yaml -------------------------------------------
-# Note: zzrouter-node resolves config via kirsle/configdir.LocalConfig(),
-# which on Windows maps to %APPDATA% (Roaming), NOT %LOCALAPPDATA%.
-# A service runs as its own account, so that default would land somewhere
-# the operator never edits -- hence the machine-wide directory plus
-# ZZROUTER_CONFIG_DIR, which the node honours for the whole config root
-# (node.yaml, providers/, .env, and the cluster ca/identity material).
-if ($Service) {
-    $ConfigDir = Join-Path $env:ProgramData "zzrouter"
-} else {
-    $ConfigDir = Join-Path $env:APPDATA "zzrouter"
-}
-$ConfigFile = Join-Path $ConfigDir "node.yaml"
-
+# The directory was resolved before stopping the old node. Pass the same
+# explicit directory to the CLI and service; do not use LocalSystem's profile.
 if ($Service) {
     # Machine scope so the service account sees it too; the process copy
     # is set as well so the health/identity checks below and any command
@@ -272,6 +307,7 @@ if ($Service) {
     $env:ZZROUTER_CONFIG_DIR = $ConfigDir
     Write-Ok "Service and CLI will both read $ConfigFile"
 }
+$env:ZZROUTER_CONFIG_DIR = $ConfigDir
 
 Write-Step "Writing config: $ConfigFile"
 if (-not (Test-Path $ConfigDir)) {
@@ -281,8 +317,8 @@ if (-not (Test-Path $ConfigDir)) {
 $nodeYaml = @"
 # Minimal zzrouter node.yaml written by install.ps1
 # Defaults to loopback for single-machine use. To expose this node on the LAN
-# for multi-node setups, re-run install.ps1 with -Bind 0.0.0.0 (and run
-# elevated so the installer can add the firewall rule).
+# for multi-node setups, choose -Bind 0.0.0.0 on first install. Existing
+# installations preserve this setting; edit it deliberately before restart.
 node:
   name: ""
   bind: "$Bind"
@@ -298,8 +334,7 @@ cluster:
 auth:
   admin_key: "ZZROUTER_ADMIN_API_KEY"
   user_key: "ZZROUTER_API_KEY"
-  # true: /v1/* and /api/* refuse a request without a key. Written false
-  # only for a loopback bind; give LAN clients virtual keys instead.
+  # Applications use named keys whose access and budgets come from their team.
   require_compat_auth: $RequireCompatAuth
 "@
 
@@ -313,18 +348,6 @@ auth:
 # -ForceConfig overwrites (after a backup) for the case where the operator
 # really is re-provisioning the node.
 if ((Test-Path $ConfigFile) -and -not $ForceConfig) {
-    $existingRole = $null
-    $inCluster = $false
-    foreach ($line in (Get-Content $ConfigFile)) {
-        if ($line -match '^\s*cluster:\s*$') { $inCluster = $true; continue }
-        if ($inCluster -and $line -match '^\S') { break }
-        if ($inCluster -and $line -match '^\s+mode:\s*([a-z]+)') { $existingRole = $Matches[1]; break }
-    }
-    if ($existingRole) {
-        # Follow the file, so the checks below verify what is really
-        # running rather than what the command line asked for.
-        $Role = $existingRole
-    }
     Write-Ok "Keeping existing $ConfigFile (cluster.mode=$Role)"
     Write-Host "    Pass -ForceConfig to regenerate it from the installer template."
 } else {
@@ -340,80 +363,41 @@ if ((Test-Path $ConfigFile) -and -not $ForceConfig) {
     Write-Ok "Wrote node.yaml (bind ${Bind}:$Port, cluster.mode=$Role, cluster.bind_port=$ClusterPort)"
 }
 
-# --- Write .env with generated keys (parity with install.sh) ------------
-# Mirrors install.sh: auth keys are referenced by name in node.yaml/cli.yaml
-# and resolved at runtime by the dotenv loader reading this .env file.
-# Production auth stays on; single-machine use works without any env-var
-# plumbing because both client and server read from this file.
-$EnvFile = Join-Path $ConfigDir ".env"
-Write-Step "Writing $EnvFile"
+# Credential creation, preservation and ACLs use the same Go implementation
+# as service setup. Never print credentials or generate them in PowerShell.
+$nodeExe = Join-Path $InstallDir "zzrouter-node.exe"
+$credentialArgs = @("config", "credentials", "--dir", $ConfigDir)
+$legacyFile = Join-Path $ConfigDir "zzrouter.env"
+if (Test-Path $legacyFile) { $credentialArgs += @("--legacy-file", $legacyFile) }
+& $nodeExe @credentialArgs
+if ($LASTEXITCODE -ne 0) { throw "Could not prepare installation credentials. Existing configuration was preserved." }
 
-function New-ZzRandomHex {
-    param([int]$Bytes = 24)
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    $buf = New-Object byte[] $Bytes
-    $rng.GetBytes($buf)
-    -join ($buf | ForEach-Object { $_.ToString("x2") })
-}
+# A stable entry point lets people return without finding the installation folder.
+$programs = [Environment]::GetFolderPath("Programs")
+$shortcutDir = Join-Path $programs "zzRouter"
+New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+$shortcutPath = Join-Path $shortcutDir "Router console.lnk"
+$shortcut = $shell.CreateShortcut($shortcutPath)
+$shortcutSpec = Get-ConsoleShortcutSpec -InstallDir $InstallDir -ConfigDir $ConfigDir
+$shortcut.TargetPath = $shortcutSpec.TargetPath
+$shortcut.Arguments = $shortcutSpec.Arguments
+$shortcut.WorkingDirectory = $shortcutSpec.WorkingDirectory
+$shortcut.IconLocation = $shortcutSpec.IconLocation
+$shortcut.Description = "Open your zzRouter console"
+$shortcut.Save()
 
-if (-not (Test-Path $EnvFile)) {
-    $AdminKey   = "zzr_" + (New-ZzRandomHex 24)
-    $UserKey    = "zzr_" + (New-ZzRandomHex 24)
-
-    # Note: `$` in PowerShell's (?m) multiline regex anchors before \n only,
-    # so we tolerate an optional \r via \s* to match CRLF-terminated lines.
-    # And we write the final file without a BOM via [System.IO.File]::WriteAllText
-    # -- Set-Content -Encoding UTF8 on Windows PowerShell 5.1 emits a BOM, which
-    # some dotenv parsers don't strip and which would break the very first line.
-    # Cluster traffic uses mTLS on the cluster-port listener (pkg/clusternode),
-    # so no shared cluster secret is seeded.
-    $EnvTemplate = Join-Path (Split-Path -Parent $BundleDir) "pkg\config\templates\files\env-default"
-    if (Test-Path $EnvTemplate) {
-        $content = (Get-Content $EnvTemplate -Raw) `
-            -replace '(?m)^# ZZROUTER_ADMIN_API_KEY=\s*$', "ZZROUTER_ADMIN_API_KEY=$AdminKey" `
-            -replace '(?m)^# ZZROUTER_API_KEY=\s*$',       "# ZZROUTER_API_KEY=$UserKey"
-    } else {
-        $content = @(
-            "ZZROUTER_ADMIN_API_KEY=$AdminKey",
-            "# ZZROUTER_API_KEY=$UserKey"
-        ) -join "`r`n"
-    }
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($EnvFile, $content, $utf8NoBom)
-
-    # Tighten ACL to the current user only (Windows equivalent of chmod 600).
-    # Failure here is non-fatal -- the installer still proceeds.
-    try {
-        $acl = Get-Acl $EnvFile
-        $acl.SetAccessRuleProtection($true, $false)  # disable inheritance, drop inherited ACEs
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            [System.Security.Principal.WindowsIdentity]::GetCurrent().User,
-            "FullControl", "Allow")
-        $acl.ResetAccessRule($rule)
-        Set-Acl -Path $EnvFile -AclObject $acl
-    } catch {
-        Write-Warn2 "Could not tighten ACL on .env: $($_.Exception.Message)"
-    }
-    Write-Ok "Generated admin/user keys in .env"
-} else {
-    if (-not (Select-String -Path $EnvFile -Pattern '^ZZROUTER_ADMIN_API_KEY=' -Quiet)) {
-        $AdminKey = "zzr_" + (New-ZzRandomHex 24)
-        Add-Content -Path $EnvFile -Value ""
-        Add-Content -Path $EnvFile -Value "ZZROUTER_ADMIN_API_KEY=$AdminKey"
-        Write-Ok "Appended generated ZZROUTER_ADMIN_API_KEY to existing .env"
-    }
-}
-
-# --- Firewall rules (only needed for non-loopback binds, admin only) ----
+# --- Firewall rules (management and cluster listeners, admin only) -----
 # Both ports, not just the admin one. A cluster node that only opens
 # $Port pairs successfully and then sits at health "unknown" forever,
 # because every coordinator-to-worker call goes to the mTLS listener on
 # $ClusterPort instead.
-$FirewallPorts = @($Port)
+$FirewallPorts = @()
+if (-not $IsLoopback) { $FirewallPorts += $Port }
 if ($Role -ne "disabled") { $FirewallPorts += $ClusterPort }
 
-if ($IsLoopback) {
-    Write-Step "Firewall rules: not needed (bind=$Bind is loopback)"
+if ($FirewallPorts.Count -eq 0) {
+    Write-Step "Firewall rules: no network listeners to open"
 } elseif ($IsAdmin) {
     foreach ($fwPort in $FirewallPorts) {
         Write-Step "Firewall rule for TCP $fwPort"
@@ -455,14 +439,14 @@ $nodeExe = Join-Path $InstallDir "zzrouter-node.exe"
 # disconnect. That is why a remote install without -Service leaves nothing
 # running once the connection drops.
 if ($Service) {
-    & $nodeExe start
+    & $nodeExe start --dir $ConfigDir
     if ($LASTEXITCODE -ne 0) {
         Write-Err "zzrouter-node start (service install) exited with code $LASTEXITCODE"
         exit 2
     }
     Write-Ok "Windows service installed and started"
 } else {
-    & $nodeExe start --no-setup --detach
+    & $nodeExe start --no-setup --detach --dir $ConfigDir
     if ($LASTEXITCODE -ne 0) {
         Write-Err "zzrouter-node start --detach exited with code $LASTEXITCODE"
         exit 2
@@ -522,6 +506,11 @@ if (-not $healthy) {
 # server which config it loaded and refuse to report success if it is not
 # ours. config_path is loopback-only, and this probe is on 127.0.0.1.
 Write-Step "Verifying the running node loaded $ConfigFile"
+$expectedVersion = ((& $nodeExe version | Select-Object -First 1) -replace '^zzrouter-node version ', '').Trim()
+if ($LASTEXITCODE -ne 0 -or -not $expectedVersion) {
+    Write-Err "Could not read the installed bundle version."
+    exit 2
+}
 try {
     $detail = (Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health?detailed=true" -UseBasicParsing -TimeoutSec 5).Content | ConvertFrom-Json
     $ident = $detail.details.node_identity
@@ -530,12 +519,12 @@ try {
 }
 
 if (-not $ident) {
-    Write-Warn2 "Could not read node_identity from /health?detailed=true."
-    Write-Warn2 "Cannot confirm which node.yaml the running server loaded."
+    Write-Err "Could not verify which installation is running. Check zzrouter-node status before continuing."
+    exit 2
 } else {
     $loaded = $ident.config_path
     $mode   = $ident.cluster_mode
-    if ($loaded -and ($loaded -ne $ConfigFile)) {
+    if (-not $loaded -or ($loaded -ne $ConfigFile)) {
         Write-Err "The server on port $Port is NOT running the config this script wrote."
         Write-Host "    wrote  : $ConfigFile"
         Write-Host "    loaded : $loaded"
@@ -553,7 +542,18 @@ if (-not $ident) {
         Write-Host "    config : $loaded"
         exit 2
     }
-    Write-Ok "Running node loaded $loaded (cluster mode: $mode)"
+    if ($detail.version -ne $expectedVersion) {
+        Write-Err "The running node version '$($detail.version)' does not match the installed bundle '$expectedVersion'."
+        exit 2
+    }
+    Write-Ok "Running $expectedVersion, loaded $loaded (cluster mode: $mode)"
+}
+if ($Role -ne "worker") {
+    Write-Host "Open your router: zzrouter console" -ForegroundColor Cyan
+    if (-not $NoOpenConsole -and [Environment]::UserInteractive) {
+        try { Start-Process -FilePath $shortcutPath }
+        catch { Write-Warn2 "Open Router console from the Start menu, or run: zzrouter console" }
+    }
 }
 
 Write-Host ""
@@ -588,25 +588,15 @@ if ($Service) {
 if ($nodeProc) { Write-Host ("  PID         : {0}" -f $nodeProc.Id) }
 Write-Host ""
 if ($IsLoopback) {
-    Write-Host "This node is bound to loopback only (single-machine use)." -ForegroundColor Cyan
-    Write-Host "To join other nodes on the LAN later, re-run elevated:"
-    Write-Host "  powershell -ExecutionPolicy Bypass -File install.ps1 -Bind 0.0.0.0 -Role worker"
-} elseif ($Role -eq "worker") {
-    Write-Host "Next step: pair this worker with your coordinator." -ForegroundColor Cyan
-    Write-Host "  Here:            zzrouter-node cluster pair --coordinator-url https://COORDINATOR_HOST:$ClusterPort"
-    Write-Host "  On the coord:    zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:$ClusterPort --worker-fingerprint SHA256_FROM_WORKER"
-    Write-Host ""
-    # $Bind is what this node listens on; 0.0.0.0 is not an address the
-    # coordinator can dial. Report a real LAN address instead, because
-    # this line exists to be pasted into the coordinator's config.
-    Write-Host "The coordinator reaches this node at $(Get-ReachableAddress):$ClusterPort, so"
-    Write-Host "that port has to stay open and its cluster.bind_port has to match."
+    Write-Host "Console access stays on this computer. Worker connections use cluster port $ClusterPort." -ForegroundColor Cyan
+}
+if ($Role -eq "worker") {
+    Write-Host "Next: return to Nodes > Add compute node in your coordinator console." -ForegroundColor Cyan
+    Write-Host "Copy its pairing command, run it here, then return the pairing details for approval."
+    Write-Host "Keep TCP $ClusterPort reachable from your coordinator."
 } elseif ($Role -eq "coordinator") {
-    Write-Host "This node is a coordinator. To add a worker:" -ForegroundColor Cyan
-    Write-Host "  On the worker:   zzrouter-node cluster pair --coordinator-url https://THIS_HOST:$ClusterPort"
-    Write-Host "  Here:            zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:$ClusterPort --worker-fingerprint SHA256_FROM_WORKER"
+    Write-Host "Your coordinator is ready. Workers are optional." -ForegroundColor Cyan
+    Write-Host "When ready, open Nodes > Add compute node for installation and pairing instructions."
 } else {
-    Write-Host "This node is not clustered (cluster.mode: disabled)." -ForegroundColor Cyan
-    Write-Host "To make it a worker, re-run with -Role worker, then pair:"
-    Write-Host "  zzrouter-node cluster pair --coordinator-url https://COORDINATOR_HOST:$ClusterPort"
+    Write-Host "Clustering is disabled. Use the console for this computer." -ForegroundColor Cyan
 }

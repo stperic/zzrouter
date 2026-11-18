@@ -2,6 +2,7 @@ package pair
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/stperic/common/atomicfile"
+	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -137,7 +140,7 @@ func (m *Model) focusManualField(idx int) tea.Cmd {
 }
 
 func (m *Model) submitManualEntry() (tea.Model, tea.Cmd) {
-	normalized, err := NormalizeCoordinatorURL(m.manualURL.Value())
+	normalized, err := clusternode.NormalizeCoordinatorURL(m.manualURL.Value())
 	if err != nil {
 		m.manualErrMsg = err.Error()
 		return m, m.focusManualField(0)
@@ -199,39 +202,46 @@ func (m *Model) cancelCmd() tea.Cmd {
 	}
 }
 
-// copyCodeCmd copies the pairing code to the clipboard via OSC52. The
-// escape sequence is written through bubbletea's program output, which
-// the terminal emulator intercepts and routes to the local system
-// clipboard — works over SSH into a headless worker where
-// xclip/xsel/pbcopy aren't available. Supported by iTerm2, kitty,
-// WezTerm, Alacritty, tmux (when set-clipboard is on), and VSCode's
-// terminal. Test/injection callers override via cfg.Clipboard.
-func (m *Model) copyCodeCmd() tea.Cmd {
-	if m.cfg.Clipboard != nil {
-		cp := m.cfg.Clipboard
-		code := m.code
-		return func() tea.Msg {
-			if err := cp(code); err != nil {
-				return flashMsg{text: "clipboard unavailable"}
-			}
-			return flashMsg{text: "code copied"}
-		}
+// pairingDocument snapshots the observed window before a command performs I/O.
+func (m *Model) pairingDocument() ([]byte, error) {
+	transfer := clusternode.PairingWindowInfo{NodeName: m.cfg.NodeName, Code: m.code,
+		WorkerURL: m.workerURL, Fingerprint: m.workerFingerprint, Deadline: m.deadline}.Transfer()
+	if m.transfer != nil {
+		transfer = *m.transfer
 	}
-	return tea.Batch(
-		tea.SetClipboard(m.code),
-		func() tea.Msg { return flashMsg{text: "code copied"} },
-	)
+	if err := transfer.Validate(m.cfg.Clock()); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(transfer, "", "  ")
 }
 
-// writeTransferFileCmd writes a one-liner acceptance script to
-// $XDG_STATE_HOME/zzrouter/ (or os.UserCacheDir() fallback). Returns
-// a flashMsg with the written path (or error text).
+// copyCodeCmd transfers the complete enrollment document through OSC52, which
+// also works when the wizard runs over SSH on a headless computer.
+func (m *Model) copyCodeCmd() tea.Cmd {
+	data, err := m.pairingDocument()
+	if err != nil {
+		return func() tea.Msg { return flashMsg{text: "pairing document unavailable; prepare pairing again"} }
+	}
+	if m.cfg.Clipboard != nil {
+		cp := m.cfg.Clipboard
+		return func() tea.Msg {
+			if err := cp(string(data)); err != nil {
+				return flashMsg{text: "clipboard unavailable"}
+			}
+			return flashMsg{text: "pairing document copied"}
+		}
+	}
+	return tea.Batch(tea.SetClipboard(string(data)), func() tea.Msg { return flashMsg{text: "pairing document copied"} })
+}
+
+// writeTransferFileCmd writes data, never an executable command, with owner-only access.
 func (m *Model) writeTransferFileCmd() tea.Cmd {
-	dir := m.cfg.TransferFileDir
-	code := m.code
-	fp := m.workerFingerprint
-	workerURL := m.workerURL
+	dir, fp := m.cfg.TransferFileDir, m.workerFingerprint
+	data, err := m.pairingDocument()
 	return func() tea.Msg {
+		if err != nil {
+			return flashMsg{text: "pairing document unavailable; prepare pairing again"}
+		}
 		if dir == "" {
 			base, err := os.UserCacheDir()
 			if err != nil {
@@ -242,9 +252,8 @@ func (m *Model) writeTransferFileCmd() tea.Cmd {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return flashMsg{text: fmt.Sprintf("mkdir: %v", err)}
 		}
-		path := filepath.Join(dir, "pair-"+shortFP(fp)+".sh")
-		script := fmt.Sprintf("#!/bin/sh\n%s\n", AcceptCommand(code, workerURL, fp))
-		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		path := filepath.Join(dir, "pair-"+shortFP(fp)+".json")
+		if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
 			return flashMsg{text: fmt.Sprintf("write: %v", err)}
 		}
 		return flashMsg{text: "wrote " + path}
@@ -253,7 +262,7 @@ func (m *Model) writeTransferFileCmd() tea.Cmd {
 
 // shortFP returns the first 8 hex chars of the fingerprint (after
 // any sha256: prefix). Used as a filename suffix for the transfer
-// script so multiple discovered coordinators don't collide.
+// document so multiple discovered coordinators don't collide.
 func shortFP(fp string) string {
 	if fp == "" {
 		return "unknown"

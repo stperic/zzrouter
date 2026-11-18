@@ -24,6 +24,8 @@ const (
 
 	// CodeProviderConnectionUnavailable requires repairing a discovery connection.
 	CodeProviderConnectionUnavailable RouteErrorCode = "provider_connection_unavailable"
+	// CodeModelDiscoveryUnavailable requires an explicit model ID instead of catalog discovery.
+	CodeModelDiscoveryUnavailable RouteErrorCode = "model_discovery_unavailable"
 
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"

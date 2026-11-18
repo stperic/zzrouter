@@ -280,7 +280,7 @@ release-preflight:
 release: release-preflight winres
 	@echo "Building release binaries for: $(RELEASE_PLATFORMS)"
 	@mkdir -p dist
-	@bash .github/scripts/third-party-notices.sh dist/THIRD_PARTY_NOTICES
+	@CGO_ENABLED=0 go run github.com/stperic/common/cmd/zzrelease notices --output dist/THIRD_PARTY_NOTICES --tags release --platforms linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64 ./cmd/...
 	@for platform in $(RELEASE_PLATFORMS); do \
 		goos=$${platform%-*}; \
 		goarch=$${platform#*-}; \
@@ -291,20 +291,17 @@ release: release-preflight winres
 		echo "==> $$platform"; \
 		echo "   building zzrouter-launcher"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -ldflags "$(LDFLAGS)" -o "$$outdir/zzrouter-launcher$$ext" ./cmd/zzrouter-launcher || exit 1; \
+		bash scripts/packaging/sign-binary.sh "$$platform" "$$outdir/zzrouter-launcher$$ext" || exit 1; \
 		launcher_sha=$$(shasum -a 256 "$$outdir/zzrouter-launcher$$ext" | cut -d' ' -f1); \
 		if [ -z "$$launcher_sha" ]; then echo "ERROR: launcher sha empty for $$platform" >&2; exit 1; fi; \
 		echo "   building zzrouter-node (release, launcher sha=$$launcher_sha)"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -tags release -ldflags "$(LDFLAGS) -X github.com/stperic/zzrouter/pkg/prov_apps/process.LauncherSHA256=$$launcher_sha" -o "$$outdir/zzrouter-node$$ext" ./cmd/zzrouter-node || exit 1; \
 		echo "   building zzrouter (client)"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -ldflags "$(LDFLAGS)" -o "$$outdir/zzrouter$$ext" ./cmd/zzrouter || exit 1; \
+		bash scripts/packaging/sign-binary.sh "$$platform" "$$outdir/zzrouter-node$$ext" || exit 1; \
+		bash scripts/packaging/sign-binary.sh "$$platform" "$$outdir/zzrouter$$ext" || exit 1; \
 		echo "   bundling installer and notices"; \
-		cp LICENSE NOTICE dist/THIRD_PARTY_NOTICES "$$outdir/" || exit 1; \
-		if [ "$$goos" = "windows" ]; then \
-			cp scripts/install.ps1 scripts/clean.ps1 "$$outdir/" || exit 1; \
-		else \
-			cp scripts/install.sh "$$outdir/" || exit 1; \
-			chmod +x "$$outdir/install.sh"; \
-		fi; \
+		bash scripts/stage-release.sh "$$platform" "$$outdir" "$$outdir" dist/THIRD_PARTY_NOTICES || exit 1; \
 	done
 	@rm -f dist/THIRD_PARTY_NOTICES
 	@$(MAKE) winres-clean

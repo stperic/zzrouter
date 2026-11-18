@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -52,6 +54,14 @@ const (
 
 	ActionStateSnapshot Action = "state.snapshot"
 	ActionStateRestore  Action = "state.restore"
+
+	ActionPersonCreated   Action = "person.created"
+	ActionPersonUpdated   Action = "person.updated"
+	ActionPasswordChanged Action = "person.password_changed"
+	ActionPersonRecovered Action = "person.recovered"
+	ActionSessionsRevoked Action = "person.authority_revoked"
+	ActionGrantIssued     Action = "enrollment.issued"
+	ActionGrantRevoked    Action = "enrollment.revoked"
 )
 
 // Event is a single audit record. Fields are stable on the wire — once
@@ -109,20 +119,22 @@ func (Null) Emit(_ context.Context, _ Event) error { return nil }
 // Concurrent Emit calls are serialized; the underlying file is opened
 // once at construction and closed via Close.
 type FileSink struct {
-	mu   sync.Mutex
-	w    io.WriteCloser
-	path string
+	mu         sync.Mutex
+	w          io.WriteCloser
+	path       string
+	file       *os.File
+	generation string
 }
 
 // NewFileSink opens path for append-only writing. Creates the file if
 // absent with mode 0o600 — audit logs contain identifiers operators
 // expect to be locally readable only.
 func NewFileSink(path string) (*FileSink, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audit: open %s: %w", path, err)
 	}
-	return &FileSink{w: f, path: path}, nil
+	return &FileSink{w: f, file: f, path: path, generation: uuid.NewString()}, nil
 }
 
 // Emit validates the event, JSON-encodes it, and writes it. Returns
@@ -142,6 +154,9 @@ func (s *FileSink) Emit(_ context.Context, ev Event) error {
 	data = append(data, '\n')
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.w == nil {
+		return fmt.Errorf("audit: sink closed")
+	}
 	if _, err := s.w.Write(data); err != nil {
 		return fmt.Errorf("audit: write %s: %w", s.path, err)
 	}
@@ -188,7 +203,7 @@ func Log(ctx context.Context, sink Sink, ev Event) {
 	if sink == nil {
 		return
 	}
-	if err := sink.Emit(ctx, ev); err != nil {
+	if err := sink.Emit(ctx, withIdentity(ctx, ev)); err != nil {
 		slog.WarnContext(ctx, "audit emit failed",
 			"action", ev.Action,
 			"subject", ev.Subject,

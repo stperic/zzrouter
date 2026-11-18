@@ -1,8 +1,11 @@
 package server
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
@@ -22,7 +25,18 @@ func resolveActor(callerKeyID string) string {
 // from gin and convert to an audit-actor string. Controllers call this
 // directly so the service layer receives an already-resolved actor.
 func auditActor(c *gin.Context) string {
-	return resolveActor(callerKeyID(c))
+	ac := GetAccessContext(c)
+	if ac == nil || ac.Key == nil {
+		return "unknown"
+	}
+	if ac.Key.IdentityKind() == control.KindStatic {
+		return "static:" + ac.Key.ID
+	}
+	return ac.Key.ID
+}
+
+func auditContext(c *gin.Context) context.Context {
+	return audit.WithIdentity(c.Request.Context(), auditActor(c), c.GetString("request_id"))
 }
 
 // updateKeyChangedFields returns the fields a caller actually set on an

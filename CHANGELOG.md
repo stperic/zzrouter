@@ -2,6 +2,118 @@
 
 ## Unreleased
 
+- Expand shortened OpenRouter descriptions on demand from the public model page.
+- Render model-card Markdown and safe links across Discover, and show the
+  provider's model metadata, pricing, capabilities, and repository files.
+
+- Give the Overview map more space on desktop and mobile, lock its zoom, and
+  remove the completed onboarding card.
+- Confirm provider and model eligibility before offering download targets. Label
+  unavailable runtimes and keep route, run and update choices tied to live node
+  observations.
+- Group Discover catalogs by availability. An unavailable cloud catalog or
+  bookmarked model links to setup and can refresh provider status in place.
+- Show Ollama tag inputs and MLX badges in Discover. Check the selected tag
+  against running Ollama providers on healthy nodes before download review.
+- Group discovery search and sort above compact model rows with descriptions,
+  registry dates, version counts, and color-coded capability tags.
+- Keep short Chat exchanges fully visible with a smaller composer and tighter
+  message spacing. Preserve independent transcript scrolling, and use an inline
+  send control on short screens so replies stay readable.
+- Send explicit console Chat output limits as `max_completion_tokens` and let
+  model tests inherit generation defaults, avoiding rejected legacy token limits
+  and forced 32-token truncation on reasoning models.
+- Simplify cloud model registration into Add cloud model and Try in Chat, using
+  the existing deployment and model APIs. Show coordinator connections instead
+  of worker counts on cloud provider cards, and let administrators test saved
+  credentials without entering or exposing them again.
+- Remove console Origin, Referer and fetch metadata from browser-authorized
+  upstream requests, preventing cloud providers from treating routed Chat as
+  direct browser access. Keep ingress session, origin and CSRF enforcement.
+
+- Expose owner password recovery through `zzrouter access recover-owner` and
+  align console help with the user-facing CLI. Preserve local recovery authority
+  and the existing API without invoking the internal node executable.
+- Serve console assets from the embedded inventory, preventing missing modules
+  from leaving the browser on the opening screen. Keep exact routes and existing
+  coordinator and browser security boundaries.
+- Report oversized streamed uploads as 413 with the actual configured limit.
+  Reject declared oversized bodies before forwarding, preserve CORS on refusals,
+  and share request IDs and API-version headers at each server's entry point.
+
+- Correct cloud inference paths through shared backend resolution, including
+  Gemini and Bedrock, and preserve routing overrides during configuration upgrades.
+  Declare Gemini embeddings and report unavailable model catalogs and connection
+  probes without issuing unsupported requests or claiming verified credentials.
+- Preserve supported native options through Responses and Messages translation,
+  map equivalent reasoning and output controls, and refuse unsupported behavior.
+  Accept text and token batches on Completions. Keep token-count probes bounded
+  and apply the existing realtime access policy to session-token helpers.
+- Keep Ollama blob checks, uploads, pulls and model creation on the selected
+  worker through streaming mTLS forwarding. Reject conflicting or invalid node
+  selectors before mutation.
+
+- Add definition-driven provider operation discovery and exact-run JSON
+  diagnostics through shared REST and MCP interfaces. Publish native and routed
+  connection metadata with existing visibility rules, listener scope and no
+  credentials. Preserve rich JSON inference inputs in user MCP tools.
+- Require administrator authority for native Ollama mutations and bind stored
+  Responses to the originating caller, provider connection and run. Refuse stale
+  origins instead of selecting a replacement. Provider metadata and worker
+  ownership require cluster protocol 25 on all peers.
+- Include known local upstream URLs for live process providers without listener
+  declarations, while preserving unknown binding and authentication evidence.
+  Recognize worker-only Ollama enablement on the native API. Keep inference
+  provider and download registry selection separate in the CLI, and preserve
+  canonical worker names when following model launch jobs.
+
+- Prepare protected provider credential storage automatically under the node account,
+  preserving explicit key custody and refusing missing-key recovery shortcuts.
+  Show authoritative team impact across people, app keys and pending enrollment,
+  and serialize shared-key creation with team deletion.
+- Separate MCP browser sign-in from API-key client setup and show local-only sharing
+  readiness before invitations. Add administrator access history backed by committed
+  account events and bounded audit pages.
+- Add local installation recovery inventory, offline backup/check and restore into
+  new private staging directories. Keep protection keys separate, validate authority
+  snapshots through their owners and preserve explicit external-data requirements.
+  Use one configuration root for `start --dir` and fence startup against backup.
+
+- Publish settled provider installation state before completing its job, including
+  rollback and panic recovery. Preserve console editors across ordinary coordinator
+  restarts and permission refusals, while still clearing changed browser authority.
+  Collapse completed onboarding into a compact confirmation. Activate Linux bundle
+  upgrades in one installer run and verify the running version on every platform.
+  Keep activity labels from remaining active when an observation expires during rendering.
+  Refresh provider cards and details from the same inventory, cancelling obsolete
+  reads so switching panels cannot restore an older enablement count.
+
+- Make additional compute nodes optional and guide their setup from the console
+  with OS-specific installation and pinned pairing commands. Preserve the chosen
+  computer through provider setup, model downloads and Chat. Use cluster listener
+  addresses independently of console access; distinguish expired pairing from
+  uncertain certificate delivery and support native worker role/port selection.
+  Select automatic worker pairing addresses from the route to the coordinator,
+  preserving explicit network settings on machines with multiple IP addresses.
+  Discover supported macOS Python installations without relying on a shell PATH.
+  Include model catalogs for providers enabled only on workers and keep pairing
+  completion usable while the first node observation is pending.
+  Apply selected Ollama version tags before download planning, presence checks
+  and worker admission, keeping console and TUI selections consistent.
+
+- Add local owner and invited-person accounts with password sign-in, recovery,
+  session revocation and inherited team access. Reuse the existing OAuth session
+  engine and policy enforcement for human accounts, including inference quotas
+  and usage attribution. Keep app keys and existing API-key sign-in compatible.
+- Add trusted console entry from the CLI and TUI using a temporary code, a focused
+  account setup flow, People side panels and a resumable getting-started checklist.
+  Continue application OAuth connections through account sign-in and explicit
+  consent. Add reviewed pairing documents for connecting another computer.
+- Unify installation credential ownership and release staging across platforms.
+  Preserve existing configuration, credentials and service definitions; validate
+  artifacts and supported installation layouts before changes. Add native macOS
+  and Windows packaging recipes and a persistent Windows console shortcut.
+
 - Simplify TUI parameter editing around scoped overrides and changed-leaf
   patches. Protect drafts and pending writes, reject obsolete replies, and
   require refresh after uncertain outcomes. Share responsive tables, forms,

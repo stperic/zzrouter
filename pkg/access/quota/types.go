@@ -47,8 +47,9 @@ func (q *QuotaConfig) SpendLimitMicro() int64 {
 type ScopeKind string
 
 const (
-	ScopeKey  ScopeKind = "key"
-	ScopeTeam ScopeKind = "team"
+	ScopeKey    ScopeKind = "key"
+	ScopeTeam   ScopeKind = "team"
+	ScopePerson ScopeKind = "person"
 )
 
 // ThrottleScope is the map key for rate limiters.

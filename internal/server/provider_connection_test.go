@@ -350,23 +350,19 @@ func TestConnectionProtectionStartup(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openProviderConnectionStore(config.CredentialsConfig{}, dir)
 	require.NoError(t, err)
-	require.Nil(t, store)
-	_, err = openProviderConnectionStore(config.CredentialsConfig{KeyFile: "missing-test-key"}, dir)
-	require.Error(t, err)
-	keyPath := filepath.Join(t.TempDir(), "test-key")
-	require.NoError(t, os.WriteFile(keyPath, bytes.Repeat([]byte{3}, 32), 0600))
-	store, err = openProviderConnectionStore(config.CredentialsConfig{KeyFile: keyPath}, dir)
-	require.NoError(t, err)
+	require.NotNil(t, store)
 	_, err = store.Remove(t.Context(), "fixture", 0)
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
-	_, err = openProviderConnectionStore(config.CredentialsConfig{}, dir)
-	require.ErrorContains(t, err, "existing protected connections")
-	entries, err := os.ReadDir(dir)
+	store, err = openProviderConnectionStore(config.CredentialsConfig{}, dir)
 	require.NoError(t, err)
-	for _, entry := range entries {
-		require.NotContains(t, entry.Name(), "key", "startup never generates a neighboring encryption key")
-	}
+	state, err := store.Snapshot("fixture")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, state.Revision)
+	require.NoError(t, store.Close())
+	require.NoError(t, os.Remove(config.CredentialKeyPath(dir, config.CredentialsConfig{})))
+	_, err = openProviderConnectionStore(config.CredentialsConfig{}, dir)
+	require.ErrorContains(t, err, "restore the matching protection key")
 }
 
 func TestConnectionDeclaredDefaultsHTTPTestAndSave(t *testing.T) {

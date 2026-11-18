@@ -131,9 +131,8 @@ func (s *LoadService) LoadModel(ctx context.Context, req *LoadModelRequest) (*Lo
 		loadResp.Reused = true
 	}
 
-	// Use the host from routing response (actual IP we routed to)
-	if resp.Node != "" {
-		loadResp.Node = resp.Node
+	if loadResp.Node == "" {
+		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "upstream load response is missing its owning node", httperr.CodeUpstreamShape, resp.Node)
 	}
 
 	slog.Info("Model loaded successfully", "model", loadResp.Model, "node", loadResp.Node, "port", loadResp.Port)

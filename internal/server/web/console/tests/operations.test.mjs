@@ -40,10 +40,12 @@ test('measured zero, missing usage, partial GPUs and unified memory stay distinc
 test('activity expires from request start, without another successful refresh', t => {
   const { root, p } = fixture(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 100;
+  t.mock.method(performance, 'now', () => now++);
   const activity = { state: 'active', valid_for_seconds: 0.001, stale: false };
   observeActivity(activity, -10);
   assert.equal(activityLabel(activity), 'Activity unavailable');
-  observeActivity(activity, performance.now());
+  observeActivity(activity, now);
   const label = activityText(p, activity); root.append(label);
   observeActivity(activity, -10); // deadline passes while no poll is possible
   t.mock.timers.tick(10);
@@ -95,7 +97,14 @@ test('preview, start, completed job and exact run readback form one immutable op
     if (path.startsWith('/runs/')) return { id: 'run/1', status: 'starting', provider: 'engine', model: 'local/model' };
     assert.fail(path);
   };
-  await startRun(f.p, [{ name: 'worker/a' }]);
+  await startRun(f.p, [
+    { name: 'offline', health_status: 'down', providers: [{ run_lifecycle: 'process' }] },
+    { name: 'cloud-only', health_status: 'healthy', providers: [{ run_lifecycle: 'none' }] },
+    { name: 'worker/a', health_status: 'healthy', providers: [{ run_lifecycle: 'process' }] },
+  ]);
+  const nodes = named(f.root, 'run_node');
+  assert.equal(nodes.value, 'worker/a');
+  assert.deepEqual(nodes.children.filter(option => option.disabled).map(option => option.value), ['offline', 'cloud-only']);
   named(f.root, 'run_target').value = '0'; named(f.root, 'run_target').dispatchEvent(new Event('change'));
   await click(f.root, 'Preview start');
   assert.doesNotMatch(f.root.textContent, /hidden-value|hidden-command/);

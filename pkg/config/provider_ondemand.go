@@ -14,26 +14,28 @@ import (
 // install variants, readiness probes, a port-pool, and optional node/model
 // parameter overrides. Everything a local inference engine needs.
 type OnDemandProvider struct {
-	Schema          map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
-	RunScope        string                          `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
-	Install         *InstallConfig                  `yaml:"install,omitempty" json:"install,omitempty"`
-	Features        map[string]Feature              `yaml:"features,omitempty" json:"features,omitempty"`
-	Name            string                          `yaml:"-" json:"name"`
-	Description     string                          `yaml:"description,omitempty" json:"description,omitempty"`
-	Protocol        AppProtocol                     `yaml:"protocol,omitempty" json:"protocol,omitempty"`
-	Enabled         *bool                           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	PinnedVersion   string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
-	VersionSource   *VersionSource                  `yaml:"version_source,omitempty" json:"version_source,omitempty"`
-	Platforms       []InstallPlatform               `yaml:"platforms,omitempty" json:"platforms,omitempty"`
-	Requirements    *AppRequirements                `yaml:"requirements,omitempty" json:"requirements,omitempty"`
-	InstallVariants []AppInstallVariant             `yaml:"install_variants,omitempty" json:"install_variants,omitempty"`
-	Capabilities    *AppCapabilities                `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Discovery       *AppDiscovery                   `yaml:"discovery,omitempty" json:"discovery,omitempty"`
-	Defaults        *AppDefaultsConfig              `yaml:"defaults" json:"defaults"`
-	Models          map[string]ModelSpec            `yaml:"models,omitempty" json:"models,omitempty"`
-	Nodes           map[string]NodeSpec             `yaml:"nodes,omitempty" json:"nodes,omitempty"`
-	Search          *AppSearchConfig                `yaml:"search,omitempty" json:"search,omitempty"`
-	Runtime         OnDemandRuntime                 `yaml:"runtime" json:"runtime"`
+	compiledOperations map[string]*CompiledOperation
+	Operations         map[string]OperationDefinition  `yaml:"operations,omitempty" json:"operations,omitempty"`
+	Schema             map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
+	RunScope           string                          `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
+	Install            *InstallConfig                  `yaml:"install,omitempty" json:"install,omitempty"`
+	Features           map[string]Feature              `yaml:"features,omitempty" json:"features,omitempty"`
+	Name               string                          `yaml:"-" json:"name"`
+	Description        string                          `yaml:"description,omitempty" json:"description,omitempty"`
+	Protocol           AppProtocol                     `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	Enabled            *bool                           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	PinnedVersion      string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
+	VersionSource      *VersionSource                  `yaml:"version_source,omitempty" json:"version_source,omitempty"`
+	Platforms          []InstallPlatform               `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+	Requirements       *AppRequirements                `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	InstallVariants    []AppInstallVariant             `yaml:"install_variants,omitempty" json:"install_variants,omitempty"`
+	Capabilities       *AppCapabilities                `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Discovery          *AppDiscovery                   `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Defaults           *AppDefaultsConfig              `yaml:"defaults" json:"defaults"`
+	Models             map[string]ModelSpec            `yaml:"models,omitempty" json:"models,omitempty"`
+	Nodes              map[string]NodeSpec             `yaml:"nodes,omitempty" json:"nodes,omitempty"`
+	Search             *AppSearchConfig                `yaml:"search,omitempty" json:"search,omitempty"`
+	Runtime            OnDemandRuntime                 `yaml:"runtime" json:"runtime"`
 }
 
 // OnDemandRuntime configures how a per-model inference engine is launched
@@ -48,6 +50,7 @@ type OnDemandRuntime struct {
 	DataSubdirs           []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore            *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
+	Listener              *ListenerConfig    `yaml:"listener,omitempty" json:"listener,omitempty"`
 	Browser               *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	PortRange             []int              `yaml:"port_range" json:"port_range"`
@@ -73,6 +76,9 @@ func (p *OnDemandProvider) GetDescription() string { return p.Description }
 // pool, and a valid execution type. Command may be empty for template
 // entries awaiting configurator fill.
 func (p *OnDemandProvider) Validate() error {
+	if err := p.Runtime.Listener.Validate(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := p.Capabilities.ValidateArchitectures(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
@@ -141,13 +147,13 @@ func (p *OnDemandProvider) Validate() error {
 	if err := checkModels(modelsLaunched, p.Models); err != nil {
 		return fmt.Errorf("provider '%s': %w", p.Name, err)
 	}
-	return nil
+	return p.compileOperations()
 }
 
 // MarshalYAML keeps an explicit empty features block across provider writes.
 func (p OnDemandProvider) MarshalYAML() (any, error) {
 	type plain OnDemandProvider
-	return marshalFeatureProvider(plain(p), p.Features)
+	return marshalFeatureProvider(plain(p), p.Features, p.Operations)
 }
 
 // RunScopeNode identifies a provider whose run serves the node without a model.

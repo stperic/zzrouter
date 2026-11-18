@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/access/control"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -81,7 +82,7 @@ func (h *OllamaHandlers) ollamaManagementHandler(endpoint string, modelLookup bo
 // problem (worker unreachable, endpoint not yet stamped) and a 503
 // is the honest answer.
 func (h *OllamaHandlers) handleOllamaVersion(c *gin.Context) {
-	if err := ollamaAccessError(c); err != nil {
+	if err := ollamaProviderAccessError(c); err != nil {
 		RespondToErrorOllama(c, err)
 		return
 	}
@@ -102,6 +103,10 @@ func (h *OllamaHandlers) handleOllamaVersion(c *gin.Context) {
 // we have no per-host keypair to anchor it) — that's enough to satisfy
 // the CLI's "endpoint exists" check without claiming an account state.
 func (h *OllamaHandlers) handleOllamaMe(c *gin.Context) {
+	if control.RoutesRestricted(GetAccessContext(c)) && control.ProviderAllowed(GetAccessContext(c), constants.AppOllama) {
+		OllamaError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err := ollamaAccessError(c); err != nil {
 		RespondToErrorOllama(c, err)
 		return
@@ -232,8 +237,8 @@ func splitOllamaAddr(raw string) (name, node string) {
 // requireOllamaPresence is a middleware that gates the /api/* surface on
 // at least one node in the cluster having the ollama provider enabled.
 // Returns 503 + Ollama-shape error with an install hint when no backend
-// exists. Coord's appsConfig reflects cluster-wide provider state via
-// peer-sync, so a local check is sufficient — no fan-out per request.
+// exists. The provider tree includes per-node enable choices, so this
+// check needs no network fan-out.
 func (h *OllamaHandlers) requireOllamaPresence() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if h.ollamaEnabled() {
@@ -257,9 +262,18 @@ func (h *OllamaHandlers) ollamaEnabled() bool {
 	}
 	enabled := false
 	cfg.RangeApps(func(name string, provider pkgConfig.ServiceConfig) bool {
-		if provider.IsEnabled() && (name == "ollama" || provider.Protocol == pkgConfig.ProtocolOllama) {
+		if name != constants.AppOllama && provider.Protocol != pkgConfig.ProtocolOllama {
+			return true
+		}
+		if provider.IsEnabled() {
 			enabled = true
 			return false
+		}
+		for node := range provider.Nodes {
+			if choice := provider.EnabledOn(node); choice != nil && *choice {
+				enabled = true
+				return false
+			}
 		}
 		return true
 	})
@@ -346,8 +360,9 @@ func (h *OllamaHandlers) handleOllamaBlobsHead(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	status, _ := h.ollama.CheckBlob(c.Request.Context(), digest)
-	c.Status(status)
+	if err := h.ollama.CheckBlob(c, digest); err != nil && !c.Writer.Written() {
+		RespondToErrorOllama(c, err)
+	}
 }
 
 func (h *OllamaHandlers) handleOllamaBlobsPost(c *gin.Context) {
@@ -362,6 +377,10 @@ func (h *OllamaHandlers) handleOllamaBlobsPost(c *gin.Context) {
 
 // handleOllamaDelete delegates physical ownership to the shared exact deletion service.
 func (h *OllamaHandlers) handleOllamaDelete(c *gin.Context) {
+	if err := ollamaMutationAccessError(c); err != nil {
+		RespondToErrorOllama(c, err)
+		return
+	}
 	var req OllamaManagementRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		OllamaError(c, 400, "invalid model deletion request")

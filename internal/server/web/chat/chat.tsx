@@ -15,6 +15,7 @@ function Markdown() {
   return <MarkdownTextPrimitive className="chat-markdown" components={{
     a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
     img: ({ alt }) => <span>{alt ? `[Image: ${alt}]` : '[Image]'}</span>,
+    pre: ({ children }) => <pre tabIndex={0} aria-label="Code block">{children}</pre>,
   }} />;
 }
 
@@ -23,19 +24,24 @@ function Reasoning({ text }: ReasoningMessagePartProps) {
   return showReasoning ? <details className="chat-reasoning"><summary>Reasoning</summary><div>{text}</div></details> : null;
 }
 
+const seconds = (ms: number) => `${(ms / 1000).toFixed(2)}s`;
+
 function MessageFooter() {
   const { showStats, enabled } = useContext(Settings);
   const status = useAuiState(state => state.message.status);
   const stats = useAuiState(state => state.message.metadata.custom);
-  const entries = showStats ? [
+  const { promptMs, generationMs, tokensPerSecond, providerFirstTokenMs, firstTokenMs, durationMs, outputTokens } = stats;
+  const entries = showStats && typeof durationMs === 'number' ? [
     typeof stats.inputTokens === 'number' && `${stats.inputTokens.toLocaleString()} input tokens`,
-    typeof stats.outputTokens === 'number' && `${stats.outputTokens.toLocaleString()} output tokens`,
-    typeof stats.cachedTokens === 'number' && stats.cachedTokens > 0 && `${stats.cachedTokens.toLocaleString()} cached`,
-    typeof stats.reasoningTokens === 'number' && stats.reasoningTokens > 0 && `${stats.reasoningTokens.toLocaleString()} reasoning`,
-    typeof stats.durationMs === 'number' && `${(stats.durationMs / 1000).toFixed(1)}s`,
-    typeof stats.cost === 'number' && `$${stats.cost.toFixed(6)}`,
-    typeof stats.provider === 'string' && stats.provider,
-    typeof stats.node === 'string' && stats.node,
+    typeof outputTokens === 'number' && `${outputTokens.toLocaleString()} output tokens`,
+    typeof promptMs === 'number' ? `Prompt processing ${seconds(promptMs)}`
+      : typeof providerFirstTokenMs === 'number' ? `First token ${seconds(providerFirstTokenMs)}`
+        : typeof firstTokenMs === 'number' && `First token ${seconds(firstTokenMs)}*`,
+    typeof generationMs === 'number' ? `Generation ${seconds(generationMs)}`
+      : typeof firstTokenMs === 'number' && `Output stream ${seconds(durationMs - firstTokenMs)}*`,
+    typeof tokensPerSecond === 'number' ? `${tokensPerSecond.toFixed(1)} tok/s`
+      : typeof outputTokens === 'number' && typeof generationMs === 'number' && generationMs > 0 && `${(outputTokens * 1000 / generationMs).toFixed(1)} tok/s*`,
+    `${seconds(durationMs)} total*`,
   ].filter(Boolean) : [];
   return <>
     {status?.type === 'incomplete' && <p className={status.reason === 'error' ? 'notice error' : 'muted'} role="status">
@@ -46,7 +52,7 @@ function MessageFooter() {
         other: 'The model ended the response without reporting completion.',
       }[status.reason]}
     </p>}
-    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')}</p>}
+    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')} · * Measured or calculated in the browser</p>}
     <ActionBarPrimitive.Root className="chat-message-actions">
       <ActionBarPrimitive.Copy copiedDuration={1500}>
         <AuiIf condition={state => state.message.isCopied}>Copied</AuiIf>
@@ -81,7 +87,7 @@ function Conversation({ status }: { status: string }) {
     <div className="chat-composer-area">
       <ThreadPrimitive.ScrollToBottom className="chat-scroll">Latest message ↓</ThreadPrimitive.ScrollToBottom>
       <ComposerPrimitive.Root className="chat-composer">
-        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={2} disabled={!settings.model || !settings.enabled} /></div>
+        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={1} disabled={!settings.model || !settings.enabled} /></div>
         <div className="chat-composer-footer"><span>Enter to send · Shift+Enter for a new line</span>
           <span data-protected-actions><AuiIf condition={state => !state.thread.isRunning}><ComposerPrimitive.Send className="primary" disabled={!settings.model || !settings.enabled}>Send ↑</ComposerPrimitive.Send></AuiIf></span>
           <AuiIf condition={state => state.thread.isRunning}><ComposerPrimitive.Cancel>Stop ■</ComposerPrimitive.Cancel></AuiIf>

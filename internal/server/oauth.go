@@ -33,6 +33,9 @@ func (s *Server) initOAuth() error {
 	if issuer == "" {
 		return nil
 	}
+	if err := s.initPeople(context.Background(), issuer); err != nil {
+		return err
+	}
 	browser := oauth.BrowserOptions{SessionCookie: browserSessionCookie, CSRFCookie: browserCSRFCookie, LegacyPath: "/oauth"}
 	if strings.HasPrefix(issuer, "https://") {
 		browser = oauth.BrowserOptions{SessionCookie: browserHostSessionCookie, CSRFCookie: browserHostCSRFCookie}
@@ -97,6 +100,7 @@ func (s *Server) registerOAuthRoutes() {
 		return
 	}
 	s.registerBrowserSessionRoutes()
+	s.registerPeopleRoutes()
 	serve := gin.WrapH(s.access.oauth)
 	discovery := []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource" + adminMCPPath, "/.well-known/oauth-protected-resource" + inferenceMCPPath}
 	if s.config.Coordinator.ProviderBrowser.Origin != "" {

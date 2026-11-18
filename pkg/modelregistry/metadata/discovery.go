@@ -34,13 +34,14 @@ type FeatureFile struct {
 // surface while still signalling "this repo has docs/configs too".
 type HuggingFaceVariantsResponse struct {
 	ModelID        string        `json:"model_id"`
+	Architecture   string        `json:"architecture,omitempty"`
 	Variants       []GGUFVariant `json:"variants"`
 	Features       []FeatureFile `json:"features"`
 	NonGGUFFiles   int           `json:"non_gguf_files"`
 	TotalSizeBytes int64         `json:"total_size_bytes"`
 }
 
-// OllamaTag describes one catalog version. IsCloud is derived by the registry.
+// OllamaTag describes one catalog version, including any published MLX badge.
 type OllamaTag struct {
 	Name    string `json:"name"`
 	Size    string `json:"size"`
@@ -48,6 +49,7 @@ type OllamaTag struct {
 	Input   string `json:"input"`
 	Digest  string `json:"digest"`
 	IsCloud bool   `json:"is_cloud"`
+	IsMLX   bool   `json:"is_mlx,omitempty"`
 }
 
 // OllamaTags is the public catalog tag response.
@@ -72,6 +74,7 @@ type Discovery struct {
 	Tags           []string `json:"tags,omitempty"`
 	SizeBytes      int64    `json:"size_bytes,omitempty"`
 	ParameterCount int64    `json:"parameter_count,omitempty"`
+	ParameterSizes []string `json:"parameter_sizes,omitempty"`
 	URL            string   `json:"url,omitempty"`
 	VariantCount   int      `json:"variant_count,omitempty"`
 	ContextLength  int      `json:"context_length,omitempty"`
@@ -150,19 +153,21 @@ type SearchPage struct {
 
 // SearchProvider declares the server-supported discovery presentation options.
 type SearchProvider struct {
-	Name         string   `json:"name"`
-	DisplayName  string   `json:"display_name"`
-	Description  string   `json:"description"`
-	BaseURL      string   `json:"base_url"`
-	ModelURLFmt  string   `json:"model_url_fmt"`
-	Icon         string   `json:"icon"`
-	SortOptions  []string `json:"sort_options"`
-	ClientSorts  []string `json:"client_sorts"`
-	ClientFilter bool     `json:"client_filter"`
-	HasTags      bool     `json:"has_tags"`
-	IsCloud      bool     `json:"is_cloud"`
-	Configured   bool     `json:"configured"`
-	Enabled      bool     `json:"enabled"`
+	Name               string   `json:"name"`
+	DisplayName        string   `json:"display_name"`
+	Description        string   `json:"description"`
+	BaseURL            string   `json:"base_url"`
+	ModelURLFmt        string   `json:"model_url_fmt"`
+	Icon               string   `json:"icon"`
+	SortOptions        []string `json:"sort_options"`
+	ClientSorts        []string `json:"client_sorts"`
+	ClientFilter       bool     `json:"client_filter"`
+	HasTags            bool     `json:"has_tags"`
+	IsCloud            bool     `json:"is_cloud"`
+	Configured         bool     `json:"configured"`
+	Enabled            bool     `json:"enabled"`
+	DiscoveryAvailable *bool    `json:"discovery_available,omitempty"`
+	DiscoverySupported *bool    `json:"discovery_supported,omitempty"`
 }
 
 // SearchCursor carries opaque upstream page cursors without reconstructing URLs.

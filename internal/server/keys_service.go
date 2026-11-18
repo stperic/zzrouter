@@ -224,6 +224,8 @@ func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy stri
 		if s.teams == nil {
 			return nil, errors.New("teams service not wired")
 		}
+		s.teams.mu.Lock()
+		defer s.teams.mu.Unlock()
 		team := s.teams.store.Get(req.TeamID)
 		if team == nil {
 			return nil, invalidInputf("team %q: %w", req.TeamID, teams.ErrTeamNotFound)

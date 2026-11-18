@@ -328,7 +328,7 @@ func TestVariants_ResponsesAffinityCannotBypassConflict(t *testing.T) {
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 	require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), &resolver.Resolved{ModelName: variantChat, Provider: "llamacpp"}, "responses", "responses_compat"))
 	addConflictingWeights(t, s, variantChat)
-	s.inference.affinity.Record("resp_pinned", "llamacpp")
+	recordResponseForTest(t, s, "resp_pinned", "llamacpp", variantChat, adminResponseOwner())
 	require.NoError(t, s.model.Groups.Set("pinned-group", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "variant", App: "llamacpp", Model: variantChat}}}))
 	for _, model := range []string{variantChat, "pinned-group"} {
 		w := postAsAdmin(t, s, "/v1/responses", `{"model":"`+model+`","previous_response_id":"resp_pinned","input":"hi"}`)
@@ -547,7 +547,7 @@ func TestWireBindingContractGroupAliases(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, s.providers.appMgr.Instances().Remove(run.ID)) })
 	for _, target := range []*resolver.Resolved{
 		{ModelName: variantChat, Provider: "llamacpp", GroupName: "group"},
-		s.responseAffinityTarget(variantChat, "llamacpp"),
+		{ModelName: variantChat, Provider: "llamacpp", OriginalName: variantChat},
 		{ModelName: qwenModel, RequestModel: variantChat, Provider: "llamacpp"},
 	} {
 		require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), target, "responses", "responses_compat"))

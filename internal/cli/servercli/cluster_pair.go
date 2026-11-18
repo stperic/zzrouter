@@ -17,6 +17,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/stperic/zzrouter/internal/cli/servercli/tui/pair"
+	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/network"
@@ -108,7 +109,7 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 	// dying at preflight with a port-80 refusal or a TLS handshake
 	// error.
 	if coordURL != "" {
-		normalized, nerr := pair.NormalizeCoordinatorURL(coordURL)
+		normalized, nerr := clusternode.NormalizeCoordinatorURL(coordURL)
 		if nerr != nil {
 			return fmt.Errorf("--coordinator-url: %w", nerr)
 		}
@@ -179,13 +180,17 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 	if resp.StatusCode != http.StatusOK {
 		return errors.New(pair.FriendlyPairHandlerError(resp.StatusCode, respBody))
 	}
+	return printPairingResult(respBody)
+}
 
+func printPairingResult(respBody []byte) error {
 	var out struct {
-		Status      string    `json:"status"`
-		Code        string    `json:"code"`
-		Deadline    time.Time `json:"deadline"`
-		WorkerURL   string    `json:"worker_url"`
-		Fingerprint string    `json:"fingerprint"`
+		Status      string                       `json:"status"`
+		Transfer    *clusternode.PairingTransfer `json:"transfer"`
+		Code        string                       `json:"code"`
+		Deadline    time.Time                    `json:"deadline"`
+		WorkerURL   string                       `json:"worker_url"`
+		Fingerprint string                       `json:"fingerprint"`
 	}
 	if err := json.Unmarshal(respBody, &out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -210,7 +215,15 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 		fmt.Printf("Pairing status: %s\n", out.Status)
 	}
 	if out.Status == "new" || out.Status == "existing" {
-		fmt.Printf("Run on the coordinator:\n%s\n", pair.AcceptCommand(out.Code, out.WorkerURL, out.Fingerprint))
+		if out.Transfer != nil {
+			data, err := json.MarshalIndent(out.Transfer, "", "  ")
+			if err != nil {
+				return fmt.Errorf("encode pairing document: %w", err)
+			}
+			fmt.Printf("Back in the coordinator console, open Nodes > Add compute node and paste these pairing details. The worker must keep running until approval:\n%s\n", data)
+		} else {
+			fmt.Printf("Run on the coordinator:\n%s\n", pair.AcceptCommand(out.Code, out.WorkerURL, out.Fingerprint))
+		}
 	}
 	return nil
 }
@@ -326,6 +339,7 @@ func runClusterPairTUI(cfg *pkgConfig.NodeConfig, localPort int, adminKey string
 		CAFingerprint: caFingerprint,
 		NoMDNS:        effectiveNoMDNS,
 		Secure:        secure,
+		NodeName:      cfg.Node.Name,
 		LocalPort:     localPort,
 		AdminAPIKey:   adminKey,
 		Theme:         theme,

@@ -8,6 +8,10 @@
   "additionalProperties": false,
   "allOf": [{"if": {"properties": {"runtime": {"required": ["api"]}}}, "then": {"required": ["connection"]}}],
   "properties": {
+    "operations": {
+      "type": "object",
+      "maxProperties": 0
+    },
     "name": { "type": "string" },
     "description": { "type": "string" },
     "enabled": { "type": "boolean" },

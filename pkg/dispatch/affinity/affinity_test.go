@@ -14,10 +14,10 @@ import (
 func TestRecordAndLookup(t *testing.T) {
 	a := New(time.Hour)
 
-	a.Record("resp_abc", "openai-prod")
-	provider, ok := a.Lookup("resp_abc")
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{ProviderKey: "openai-prod"})
+	provider, ok := a.Lookup("resp_abc", Owner{ID: "caller"})
 	require.True(t, ok, "expected lookup hit for recorded id")
-	assert.Equal(t, "openai-prod", provider)
+	assert.Equal(t, "openai-prod", provider.ProviderKey)
 }
 
 // TestEmptyInputsIgnored verifies the defensive guards so callers can
@@ -26,11 +26,11 @@ func TestRecordAndLookup(t *testing.T) {
 func TestEmptyInputsIgnored(t *testing.T) {
 	a := New(time.Hour)
 
-	a.Record("", "openai")
-	a.Record("resp_abc", "")
+	a.Record("", Owner{ID: "caller"}, Origin{ProviderKey: "openai"})
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{})
 	assert.Equal(t, 0, a.Size(), "empty inputs should not be recorded")
 
-	_, ok := a.Lookup("")
+	_, ok := a.Lookup("", Owner{ID: "caller"})
 	assert.False(t, ok)
 }
 
@@ -41,13 +41,13 @@ func TestExpiration(t *testing.T) {
 	now := time.Now()
 	a.now = func() time.Time { return now }
 
-	a.Record("resp_abc", "openai")
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{ProviderKey: "openai"})
 	require.Equal(t, 1, a.Size())
 
 	// Advance the clock past the TTL.
 	now = now.Add(200 * time.Millisecond)
 
-	_, ok := a.Lookup("resp_abc")
+	_, ok := a.Lookup("resp_abc", Owner{ID: "caller"})
 	assert.False(t, ok, "expired entry should not be returned")
 	assert.Equal(t, 0, a.Size(), "expired entry should be purged on access")
 }
@@ -57,10 +57,10 @@ func TestExpiration(t *testing.T) {
 func TestDeleteRemovesEntry(t *testing.T) {
 	a := New(time.Hour)
 
-	a.Record("resp_abc", "openai")
-	a.Delete("resp_abc")
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{ProviderKey: "openai"})
+	a.Delete("resp_abc", Owner{ID: "caller"})
 
-	_, ok := a.Lookup("resp_abc")
+	_, ok := a.Lookup("resp_abc", Owner{ID: "caller"})
 	assert.False(t, ok)
 	assert.Equal(t, 0, a.Size())
 }
@@ -70,14 +70,14 @@ func TestDeleteRemovesEntry(t *testing.T) {
 // interval so the test stays fast.
 func TestSweeperRemovesExpired(t *testing.T) {
 	a := &Affinity{
-		entries:       make(map[string]entry),
+		entries:       make(map[resourceKey]entry),
 		ttl:           50 * time.Millisecond,
 		now:           time.Now,
 		sweepInterval: 10 * time.Millisecond,
 		stop:          make(chan struct{}),
 	}
 
-	a.Record("resp_abc", "openai")
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{ProviderKey: "openai"})
 	a.Start()
 	t.Cleanup(a.Stop)
 
@@ -98,7 +98,7 @@ func TestDefaultTTL(t *testing.T) {
 // working sweeper on the second Start.
 func TestRestartAfterStop(t *testing.T) {
 	a := &Affinity{
-		entries:       make(map[string]entry),
+		entries:       make(map[resourceKey]entry),
 		ttl:           50 * time.Millisecond,
 		now:           time.Now,
 		sweepInterval: 10 * time.Millisecond,
@@ -108,7 +108,7 @@ func TestRestartAfterStop(t *testing.T) {
 	a.Start()
 	a.Stop()
 
-	a.Record("resp_abc", "openai")
+	a.Record("resp_abc", Owner{ID: "caller"}, Origin{ProviderKey: "openai"})
 	a.Start()
 	t.Cleanup(a.Stop)
 
@@ -124,7 +124,7 @@ func TestRestartAfterStop(t *testing.T) {
 // receivers to wake.
 func TestStartIdempotent(t *testing.T) {
 	a := &Affinity{
-		entries:       make(map[string]entry),
+		entries:       make(map[resourceKey]entry),
 		ttl:           time.Hour,
 		now:           time.Now,
 		sweepInterval: 10 * time.Millisecond,
@@ -163,10 +163,35 @@ func TestConcurrentRecordLookup(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				a.Record("id", "p")
-				_, _ = a.Lookup("id")
+				a.Record("id", Owner{ID: "caller"}, Origin{ProviderKey: "p"})
+				_, _ = a.Lookup("id", Owner{ID: "caller"})
 			}
 		}()
 	}
 	wg.Wait()
+}
+
+func TestOwnerTenantAndOriginAreImmutable(t *testing.T) {
+	a := New(time.Hour)
+	creator := Owner{Kind: "key", ID: "client", TeamID: "team-a"}
+	origin := Origin{ProviderKey: "first", ConnectionRevision: "v1", Model: "m"}
+	a.Record("resp", creator, origin)
+	for _, other := range []Owner{{Kind: "key", ID: "peer", TeamID: "team-a"}, {Kind: "key", ID: "client", TeamID: "team-b"}, {Kind: "person", ID: "client", TeamID: "team-a"}} {
+		_, found := a.Lookup("resp", other)
+		require.False(t, found, "owner=%+v", other)
+		a.Delete("resp", other)
+	}
+	a.Record("resp", creator, Origin{ProviderKey: "replacement", ConnectionRevision: "v2"})
+	retained, found := a.Lookup("resp", creator)
+	require.True(t, found)
+	require.Equal(t, origin, retained, "a backend cannot take over a live resource identifier")
+	// Identical backend response IDs from different owners remain separate resources.
+	other := Owner{Kind: "key", ID: "peer", TeamID: "team-a"}
+	second := Origin{ProviderKey: "second", ConnectionRevision: "v1"}
+	a.Record("resp", other, second)
+	require.Equal(t, 2, a.Size())
+	a.Delete("resp", creator)
+	retained, found = a.Lookup("resp", other)
+	require.True(t, found)
+	require.Equal(t, second, retained)
 }

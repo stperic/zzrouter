@@ -21,6 +21,14 @@ export function editableValues(record, type) {
 
 export const limitSummary = record => facts(LIMITS.map(([key, label]) => [label, Number(record[key]) > 0 ? Number(record[key]).toLocaleString() : key === 'default_max_tokens' ? 'Automatic estimate' : 'No limit']));
 
+export function membershipSummary(record) {
+  const m = record?.membership;
+  if (!m) return 'Membership unavailable';
+  const count = (value, single, plural = single + 's') => `${value} ${value === 1 ? single : plural}`;
+  return [count(m.people, 'person', 'people'), count(m.app_keys, 'app key'), count(m.invitations, 'pending invitation'),
+    m.enrollment_grants ? count(m.enrollment_grants, 'other pending enrollment') : null].filter(Boolean).join(' · ');
+}
+
 export function accessForm(p, type, record, options, reload) {
   const { teams, catalog = [], models = [], groups = [] } = options;
   const readOwner = options.readOwner || p;
@@ -47,7 +55,7 @@ export function accessForm(p, type, record, options, reload) {
   let customID = !!record;
   id.addEventListener('input', () => { customID = true; });
   name.addEventListener('input', () => { if (!customID) id.value = name.value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (name.value.trim() && !id.value) identity.setAttribute('open', ''); });
-  group.append(add('name', 'Name', name, isKey ? 'Shown to clients and in the network overview.' : 'A shared policy and budget for its member keys.'));
+  group.append(add('name', 'Name', name, isKey ? 'Shown to clients and in the network overview.' : 'A shared policy and budget for people and applications.'));
   const identity = el('details', { class: 'access-section' }, el('summary', {}, 'Identifier & description'), add('id', 'ID', id, 'Generated from the name. Enter an ID if the name uses no Latin letters or digits. Stable after creation.'));
   id.addEventListener('invalid', () => identity.setAttribute('open', ''));
   const inherited = el('div', { class: 'inherited-policy' });
@@ -81,7 +89,7 @@ export function accessForm(p, type, record, options, reload) {
     fields.set('route_access', routes.control); fields.set('provider_access', providers.control); fields.set('allowed_models', modelAccess.control);
     for (const [key, control] of Object.entries(budget.fields)) fields.set(key, control);
     group.append(el('section', { class: 'access-group' }, el('h3', {}, 'Access'),
-      text(`Shared by ${options.memberCount || 0} existing member keys. Route, provider and model permissions all apply.`, 'muted'), routes.root, providers.root,
+      text(`${record ? membershipSummary(record) + '. ' : ''}Route, provider and model permissions all apply.`, 'muted'), routes.root, providers.root,
       el('details', { class: 'access-section', open: before.allowed_models.length > 0 }, el('summary', {}, 'Restrict specific models'), modelAccess.root)), budget.root);
   }
   if (isKey) group.append(el('section', { class: 'access-section' }, add('expires_at', 'Expiry (optional)', input('expires_at', '', { type: 'datetime-local' }), record?.expires_at ? `Current: ${date(record.expires_at)}. Leave blank to keep it. Existing expiry cannot be cleared.` : 'Leave blank for no expiry.')));
@@ -184,19 +192,19 @@ export function accessForm(p, type, record, options, reload) {
     await mutate(record ? 'PATCH' : 'POST', patch, '', refreshIdentity);
   };
   if (record) {
-    group.append(el('section', { class: 'access-section danger-zone' }, el('h3', {}, 'Lifecycle'), text(isKey ? 'Rotating or revoking a key affects every client using it.' : `Changes affect ${options.memberCount || 0} member keys. A team must be empty before deletion.`, 'muted'), actions(
-      button(record.suspended ? 'Resume' : 'Suspend', async () => {
+    group.append(el('section', { class: 'access-section danger-zone' }, el('h3', {}, 'Lifecycle'), text(isKey ? 'Rotating or revoking a key affects every client using it.' : `${membershipSummary(record)}. Remove or reassign people, keys and pending enrollments before deletion.`, 'muted'), actions(
+      (isKey || record.suspended || record.membership?.can_suspend) ? button(record.suspended ? 'Resume' : 'Suspend', async () => {
         if (!confirm(`${record.suspended ? 'Resume' : 'Suspend'} ${record.name}?${own ? ' This affects your current browser access.' : ''}`)) return;
         await mutate('PATCH', { suspended: !record.suspended }, '', own && !record.suspended);
-      }),
+      }) : text(record.membership?.owner_protected ? 'The owner’s team cannot be suspended.' : 'Reload membership to check lifecycle actions.', 'muted'),
       isKey ? button('Rotate key', async () => {
         if (!confirm(`Replace the secret for ${record.name}? Existing clients must use the new key.${own ? ' Your current session will end.' : ''}`)) return;
         await mutate('POST', undefined, '/rotate', own);
       }) : null,
-      button(isKey ? 'Revoke key' : 'Delete team', async () => {
-        if (!confirm(isKey ? `Permanently revoke ${record.name}? Its clients and MCP grants will lose access.${own ? ' This ends your current session.' : ''}` : `Delete ${record.name}? Shared teams must have no member keys.`)) return;
+      (isKey || record.membership?.can_delete) ? button(isKey ? 'Revoke key' : 'Delete team', async () => {
+        if (!confirm(isKey ? `Permanently revoke ${record.name}? Its clients and MCP grants will lose access.${own ? ' This ends your current session.' : ''}` : `Delete ${record.name}? The team must have no people, app keys or pending enrollments.`)) return;
         await mutate('DELETE', undefined, '', own);
-      }, 'danger'),
+      }, 'danger') : null,
     )));
   }
   const footer = editorActions(submit, p.closeEditor, p.api, draft);

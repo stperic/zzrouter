@@ -10,6 +10,29 @@ before starting; the embedded node template binds all interfaces and requires
 inference authentication. Installers default to loopback. Keep credentials in
 protected environment configuration, rather than copied into examples.
 
+## Request and upload limits
+
+`node.max_request_size` in `node.yaml` limits request bodies at the public
+listener. Its default is 10 MiB, including raw Ollama blob uploads routed to
+workers. For example, to permit a 40 MiB model import:
+
+```yaml
+node:
+  max_request_size: 67108864 # 64 MiB
+```
+
+Restart the coordinator after changing this setting. Choose a limit appropriate
+for your workload: increasing it also raises the bound for buffered requests.
+The existing request read deadline still applies. A known oversized body is
+refused with HTTP 413 before forwarding. Unknown-length uploads stay bounded
+while streaming and may be partially forwarded before they exceed the cap.
+
+OpenAI multipart and opaque pass-through bodies also have the
+`openai_compat.max_upload_bytes` limit. Their effective limit is the smaller of
+the public listener's limit and that upload limit. Error responses report the
+limit that actually rejected the body. Raw Ollama blob uploads are streamed;
+they do not use the OpenAI upload setting.
+
 ## Managed provider and Hugging Face credentials
 
 Administrators can add, test, replace and remove these credentials from
@@ -27,8 +50,11 @@ The managed token serves coordinator requests and downloads. Worker downloads
 require their own externally provisioned Hugging Face token; the coordinator
 does not distribute managed credentials to workers.
 
-Provision a separate 32-byte random encryption key through the service's secret
-mechanism, then configure its path in `node.yaml` before starting:
+By default, the node creates and preserves a private 32-byte protection key at
+`private/credentials.key` inside its configuration directory. This happens under
+the actual node account on first startup; managed provider keys are ready to save
+without a separate key-generation step. To use an externally provisioned key,
+configure its path before starting:
 
 ```yaml
 security:
@@ -40,10 +66,10 @@ The key file accepts 32 raw bytes or strict base64. Unix permissions must be
 owner-only; Windows checks the service identity, SYSTEM and Administrators ACL.
 Keep it outside normal configuration exports and backups of `credentials.enc`.
 The web/API cannot set this path or read the key. A configured invalid key fails
-startup. Without a key and without an existing encrypted store, external
-credentials still work and managed writes report unavailable. An existing
-encrypted store requires its key; removing that setting never silently restores
-old external credentials.
+startup. An existing encrypted store requires its matching key; a missing automatic
+key refuses startup rather than creating a replacement or falling back to external
+credentials. Clearing an explicit setting selects the automatic path, so restore
+the matching key there before changing ownership. See [backup and recovery](recovery.md).
 
 Connection status reports `external`, `managed` or `disabled`, its revision and
 secret presence. Tests are temporary and do not enable the provider. Save supplies
@@ -170,6 +196,23 @@ uses the existing startup window and never delays readiness.
 
 ## Provider endpoints
 
+Cloud `runtime.openai_path` declares the provider's OpenAI-compatible path prefix.
+When absent, routed `/v1/*` paths are unchanged. `/` removes the canonical `/v1`
+prefix for an endpoint that already includes it, as in Gemini's
+`https://generativelanguage.googleapis.com/v1beta/openai`. Bedrock declares
+`/openai/v1` against its regional runtime endpoint. This composition is shared by
+direct inference, fallback, stored Responses, realtime and default-backend routes.
+Native provider mounts retain raw vendor paths.
+
+Cloud `runtime.models_path` is independent: when absent, catalog discovery uses
+the composed `/v1/models` path; a nonempty value is a raw path relative to the
+provider endpoint; an explicit empty string declares no model-listing API.
+Bedrock declares an empty catalog path and no health probe. Connection testing
+then reports unknown instead of claiming success. An explicit connection test
+path or health-check path still takes precedence over the catalog fallback.
+Upgrades seed missing shipped path declarations and preserve explicit operator
+values. These cloud fields are coordinator-owned and do not alter worker sync.
+
 `capabilities.wire_endpoints` declares native APIs such as `chat_completions`,
 `completions`, `embeddings` and `rerank`; Chat also enables derived Messages and
 Responses translation shims. Run endpoints are `chat` (the default), `embeddings`
@@ -191,6 +234,25 @@ with `exclude_parameters`. Each feature applies only to its endpoint. Missing
 required runtime support returns an actionable 400. See
 [model features](model_features.md) for MLX installation, deployment and catalog
 state details. Protocol 11 requires upgrading every node together.
+
+## Provider operations and listener metadata
+
+Native JSON diagnostics belong in the provider's `operations` map. Each entry
+declares a version, fixed engine-relative binding, input/output schemas and an
+implemented adapter. The initial `run_json_read` adapter is administrator-only
+and requires an exact running process. It does not accept arbitrary URLs,
+headers, credentials or scripts from callers. Adding another operation within
+this adapter requires configuration, not a new REST route or MCP tool.
+
+`runtime.listener` describes the effective native bind host using a launch
+parameter, environment variable or engine default. Runtime features can supply
+their own listener declaration. Discovery uses the launch snapshot and reports
+unknown when evidence is absent; a loopback URL belongs to the selected node.
+It never opens a listener or asserts that a remote client can reach it.
+
+See [provider extensibility](provider-extensibility.md) for the definition schema,
+bounded validation, ownership and execution contract. These strict provider
+fields require cluster protocol 25 on every peer before synchronization.
 
 ## Chat usage accounting
 
@@ -483,7 +545,9 @@ responses. Restrict a plaintext node listener behind the TLS proxy. The fixed
 issuer determines discovery URLs and HTTPS cookie policy even when the proxy's
 origin connection uses HTTP; forwarded scheme/host hints do not configure it.
 
-Existing admin/user keys remain the browser login credentials.
+People sign in with their account username and password. Existing admin/user
+keys remain available through the advanced key sign-in option. Create the first
+owner through `zzrouter console`; invite additional people through the console.
 Set `auth.oauth.enabled: false` to disable browser OAuth; key-authenticated MCP
 remains available. Workers expose neither native MCP nor OAuth routes.
 Follow the [remote HTTPS checklist](mcp.md#remote-https-checklist) for preflight

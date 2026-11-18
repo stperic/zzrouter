@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
@@ -47,6 +48,7 @@ type TeamsService struct {
 	keyStore *keys.FileKeyStore
 	access   *AccessControl
 	audit    audit.Sink
+	people   *people.Store // Set once during route construction, before serving.
 }
 
 // NewTeamsService creates a new teams service.
@@ -107,9 +109,17 @@ type UpdateTeamRequest struct {
 	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
-// TeamResponse is the safe API representation of a team. Members are no
-// longer embedded — clients hit GET /teams/:id/keys for the member list.
+// TeamMembership reports dependencies and allowed lifecycle actions.
+type TeamMembership struct {
+	people.TeamDependencies
+	AppKeys    int  `json:"app_keys"`
+	CanDelete  bool `json:"can_delete"`
+	CanSuspend bool `json:"can_suspend"`
+}
+
+// TeamResponse is the safe API representation of a team and its membership impact.
 type TeamResponse struct {
+	Membership          TeamMembership       `json:"membership"`
 	ID                  string               `json:"id"`
 	UUID                string               `json:"uuid"`
 	Name                string               `json:"name"`
@@ -223,24 +233,28 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 		},
 	})
 
-	return toTeamResponse(s.store.Get(req.ID)), nil
+	return s.response(s.store.Get(req.ID)), nil
 }
 
 // GetTeam returns a team by ID.
 func (s *TeamsService) GetTeam(id string) (*TeamResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	team := s.store.Get(id)
 	if team == nil {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
-	return toTeamResponse(team), nil
+	return s.response(team), nil
 }
 
 // ListTeams returns all teams.
 func (s *TeamsService) ListTeams() []*TeamResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	all := s.store.List()
 	result := make([]*TeamResponse, 0, len(all))
 	for _, team := range all {
-		result = append(result, toTeamResponse(team))
+		result = append(result, s.response(team))
 	}
 	return result
 }
@@ -256,6 +270,9 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if req.Suspended != nil && *req.Suspended && s.people != nil && s.people.OwnerTeam(id) {
+		return nil, fmt.Errorf("the owner's team cannot be suspended: %w", people.ErrOwnerProtected)
+	}
 
 	existing := s.store.Get(id)
 	if existing == nil {
@@ -337,7 +354,7 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 		Metadata: updateTeamChangedFields(req),
 	})
 
-	return toTeamResponse(s.store.Get(id)), nil
+	return s.response(s.store.Get(id)), nil
 }
 
 // DeleteTeam removes a shared team. The team must have zero member keys —
@@ -346,7 +363,6 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 func (s *TeamsService) DeleteTeam(id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	existing := s.store.Get(id)
 	if existing == nil {
 		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
@@ -355,12 +371,9 @@ func (s *TeamsService) DeleteTeam(id, actor string) error {
 		return fmt.Errorf("team %q: %w", id, ErrPersonalTeamImmutable)
 	}
 
-	if s.keyStore != nil {
-		members := s.keyStore.ListByTeam(id)
-		if len(members) > 0 {
-			return fmt.Errorf("team %q has %d member keys; delete or re-home them first: %w",
-				id, len(members), teams.ErrTeamHasMembers)
-		}
+	if impact := s.membership(existing); !impact.CanDelete {
+		return fmt.Errorf("team %q has %d app keys, %d people and %d pending enrollments; remove or reassign them first: %w",
+			id, impact.AppKeys, impact.People, impact.Invitations+impact.EnrollmentGrants, teams.ErrTeamHasMembers)
 	}
 
 	if err := s.store.Delete(id); err != nil {
@@ -467,7 +480,7 @@ func (s *TeamsService) CreatePersonalTeam(id, keyName, createdBy string) (*TeamR
 			"key_name": keyName,
 		},
 	})
-	return toTeamResponse(s.store.Get(id)), nil
+	return s.response(s.store.Get(id)), nil
 }
 
 // DeletePersonalTeam removes a personal team without the shared-team
@@ -562,6 +575,28 @@ func (s *TeamsService) ReconcilePersonalTeams() int {
 // ============================================================================
 // Conversion helpers
 // ============================================================================
+
+// Caller holds the team mutation gate so policy and membership agree.
+func (s *TeamsService) response(team *teams.Team) *TeamResponse {
+	response := toTeamResponse(team)
+	if response != nil {
+		response.Membership = s.membership(team)
+	}
+	return response
+}
+
+func (s *TeamsService) membership(team *teams.Team) TeamMembership {
+	var result TeamMembership
+	if s.keyStore != nil {
+		result.AppKeys = len(s.keyStore.ListByTeam(team.ID))
+	}
+	if s.people != nil {
+		result.TeamDependencies = s.people.TeamImpact(team.ID)
+	}
+	result.CanDelete = team.Kind == teams.KindShared && result.AppKeys == 0 && !result.HasMembers()
+	result.CanSuspend = team.Kind == teams.KindShared && !result.OwnerProtected
+	return result
+}
 
 func toTeamResponse(t *teams.Team) *TeamResponse {
 	if t == nil {

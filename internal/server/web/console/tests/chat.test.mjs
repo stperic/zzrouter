@@ -27,7 +27,7 @@ test('chat discovery retains route aliases and unknown capability evidence', () 
   assert.equal(defaultSettings().model, '', 'sending requires an explicit choice');
 });
 
-test('real SDK preserves fragmented Unicode, loading events, reasoning aliases and late usage', async () => {
+test('real SDK preserves fragmented Unicode, loading events, reasoning aliases and late usage and timings', async () => {
   let request;
   const statuses = [];
   const adapter = createChatAdapter({ baseURL: 'https://router.example/v1', settings: () => ({ model: 'coding', node: 'worker', system: 'Be concise.', temperature: 0, topP: 0.7, maxTokens: 64 }), signal: new AbortController().signal,
@@ -35,7 +35,8 @@ test('real SDK preserves fragmented Unicode, loading events, reasoning aliases a
       request = { url, body: JSON.parse(init.body), headers: new Headers(init.headers) };
       return response('event: status_update\ndata: {"status":"loading_model","message":"Loading model"}\n\n' +
         frame(delta({ reasoning_content: 'Think ' })) + frame(delta({ reasoning: 'carefully.' })) + frame(delta({ content: 'Hello 🌍' })) +
-        frame(delta({}, 'stop')) + frame({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.001, prompt_tokens_details: { cached_tokens: 2 }, completion_tokens_details: { reasoning_tokens: 3 } } }) + 'data: [DONE]\n\n', true);
+        frame(delta({}, 'stop')) + frame({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.001, prompt_tokens_details: { cached_tokens: 2 }, completion_tokens_details: { reasoning_tokens: 3 } },
+          timings: { prompt_ms: 0, predicted_ms: 125, predicted_per_second: 40 } }) + 'data: [DONE]\n\n', true);
     } });
   const values = await collect(adapter);
   const last = values.at(-1);
@@ -47,6 +48,9 @@ test('real SDK preserves fragmented Unicode, loading events, reasoning aliases a
   assert.equal(last.metadata.custom.provider, 'vllm');
   assert.equal(last.metadata.custom.cachedTokens, 2);
   assert.equal(last.metadata.custom.reasoningTokens, 3);
+  assert.equal(last.metadata.custom.promptMs, 0);
+  assert.equal(last.metadata.custom.generationMs, 125);
+  assert.equal(last.metadata.custom.tokensPerSecond, 40);
   assert.ok(statuses.includes('Loading model'));
   assert.equal(request.url, 'https://router.example/v1/chat/completions');
   assert.equal(request.headers.get('X-Node'), 'worker');
@@ -54,8 +58,38 @@ test('real SDK preserves fragmented Unicode, loading events, reasoning aliases a
   assert.deepEqual(request.body.messages, [{ role: 'system', content: 'Be concise.' }, { role: 'user', content: 'Hello' }]);
   assert.equal(request.body.temperature, 0);
   assert.equal(request.body.top_p, 0.7);
-  assert.equal(request.body.max_tokens, 64);
+  assert.equal(request.body.max_completion_tokens, 64);
+  assert.equal('max_tokens' in request.body, false);
   assert.deepEqual(request.body.stream_options, { include_usage: true });
+});
+
+test('real SDK reads terminal vLLM, Groq and MLX-VLM timing fields', async t => {
+  const usage = { prompt_tokens: 42, completion_tokens: 128, total_tokens: 170 };
+  const cases = [
+    { name: 'vLLM', terminal: { choices: [], usage, metrics: { time_to_first_token_ms: 85.2, generation_time_ms: 1240.5, tokens_per_second: 103.2 } },
+      expected: { providerFirstTokenMs: 85.2, generationMs: 1240.5, tokensPerSecond: 103.2, promptMs: undefined } },
+    { name: 'Groq usage', terminal: { choices: [], usage: { ...usage, prompt_time: 0.02, completion_time: 0.16 } },
+      expected: { promptMs: 20, generationMs: 160 } },
+    { name: 'Groq extension', terminal: { ...delta({}, 'stop'), x_groq: { usage: { ...usage, prompt_time: 0.02, completion_time: 0.16 } } },
+      expected: { promptMs: 20, generationMs: 160 } },
+    { name: 'MLX-VLM aggregate rate', terminal: { choices: [], usage, timings: { predicted_per_second: 32 } },
+      expected: { tokensPerSecond: 32 } },
+    { name: 'MLX-VLM with only an instantaneous rate', terminal: { choices: [], usage, timings: { predicted_per_second: null } },
+      expected: { tokensPerSecond: undefined } },
+  ];
+  for (const { name, terminal, expected } of cases) {
+    await t.test(name, async () => {
+      const source = frame({ ...delta({ content: 'Hello' }), timings: { predicted_per_second: 999 } }) +
+        frame(delta({}, 'stop')) + frame(terminal) + 'data: [DONE]\n\n';
+      const adapter = createChatAdapter({ baseURL: 'https://router.example/v1', settings: () => ({ model: 'alias' }), signal: new AbortController().signal,
+        fetcher: async () => response(source, true) });
+      const { metadata: { custom: stats } } = (await collect(adapter)).at(-1);
+      assert.equal(stats.inputTokens, 42);
+      assert.equal(stats.outputTokens, 128);
+      assert.equal(stats.totalTokens, 170);
+      for (const [key, value] of Object.entries(expected)) assert.equal(stats[key], value, key);
+    });
+  }
 });
 
 test('real SDK preserves multiline SSE data with CRLF and split frames', async () => {
@@ -78,7 +112,7 @@ test('defaults are omitted and DONE alone terminates a valid response', async ()
   const values = await collect(adapter);
   assert.equal(values.at(-1).content[0].text, 'Done');
   assert.equal(values.at(-1).status.type, 'complete');
-  for (const key of ['temperature', 'top_p', 'max_tokens']) assert.equal(key in body, false);
+  for (const key of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens']) assert.equal(key in body, false);
   assert.equal(body.model, 'alias');
 });
 

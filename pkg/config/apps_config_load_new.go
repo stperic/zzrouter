@@ -303,6 +303,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 			Install:         tp.Install,
 			Features:        tp.Features,
 			Enabled:         tp.Enabled,
+			Operations:      cloneOperations(tp.Operations),
 			Name:            tp.Name,
 			Description:     tp.Description,
 			RunScope:        tp.RunScope,
@@ -326,6 +327,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 			Schema:          tp.Schema,
 			Features:        tp.Features,
 			Enabled:         tp.Enabled,
+			Operations:      cloneOperations(tp.Operations),
 			Name:            tp.Name,
 			Description:     tp.Description,
 			Protocol:        tp.Protocol,
@@ -353,6 +355,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 			Connection:   tp.Connection,
 			Features:     tp.Features,
 			Enabled:      tp.Enabled,
+			Operations:   cloneOperations(tp.Operations),
 			Name:         tp.Name,
 			Description:  tp.Description,
 			Protocol:     ProtocolOpenAI,
@@ -365,6 +368,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 		return ServiceConfig{
 			Connection:  tp.Connection,
 			Enabled:     tp.Enabled,
+			Operations:  cloneOperations(tp.Operations),
 			Name:        tp.Name,
 			Description: tp.Description,
 			Mode:        constants.AppModeRegistry,
@@ -382,6 +386,7 @@ func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 		ModelStore:            rt.ModelStore,
 		ActivityProbe:         rt.ActivityProbe,
 		Browser:               rt.Browser,
+		Listener:              rt.Listener,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,
 		KeepAlive:             rt.KeepAlive,
@@ -415,6 +420,7 @@ func cloudRuntimeToLegacy(rt CloudRuntime) *AppRuntimeConfig {
 	apiCopy := rt.API
 	return &AppRuntimeConfig{
 		Endpoint:          rt.Endpoint,
+		OpenAIPath:        rt.OpenAIPath,
 		ModelURLFmt:       rt.ModelURL,
 		ModelsPath:        rt.ModelsPath,
 		ModelsResponseKey: rt.ModelsResponseKey,

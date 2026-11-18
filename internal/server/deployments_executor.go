@@ -388,14 +388,7 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 		return
 	}
 
-	// Parse with cloud-aware hints. For a cloud Registry, Parse short-circuits
-	// and returns the model name verbatim — preserving '@', '#', ':', '/' that
-	// carry different semantics in cloud model IDs (e.g., "@cf/meta/llama-3",
-	// "openai/gpt-4o-mini:2024-07-18").
-	id, err := modelregistry.Parse(req.Model, modelregistry.ParseOpts{
-		Config:   e.appsConfig(),
-		Registry: req.Registry,
-	})
+	id, err := parseDownloadIdentifier(req.Model, req.Registry, req.File, e.appsConfig())
 	if err != nil {
 		BadRequest(c, fmt.Sprintf("invalid model identifier: %v", err))
 		return
@@ -407,7 +400,8 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 		return
 	}
 
-	repoName := req.registryFor(id.Repository, modelName)
+	repoName := id.Repository
+	req.File = id.File
 
 	admission, err := e.resolveDownloadAdmission(req, modelName, repoName)
 	if err != nil {
@@ -427,12 +421,8 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 	case constants.RepoOllama:
 		// Cloud variant (e.g., "minimax-m2.7" with file="cloud") → register, don't download
 		if isOllamaCloudVariant(modelName, req.File) {
-			cloudModelName := modelName
-			if req.File != "" && !strings.Contains(modelName, ":") {
-				cloudModelName = modelName + ":" + req.File
-			}
-			cloudKey := fmt.Sprintf("%s/%s/%s", e.getNodename(), repoName, cloudModelName)
-			e.registerCloudModel(c, repoName, cloudModelName, cloudKey)
+			cloudKey := fmt.Sprintf("%s/%s/%s", e.getNodename(), repoName, modelName)
+			e.registerCloudModel(c, repoName, modelName, cloudKey)
 		} else {
 			e.downloadOllama(c, admission)
 		}

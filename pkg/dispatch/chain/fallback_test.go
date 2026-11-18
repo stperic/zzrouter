@@ -544,7 +544,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, up, _, err := p.resolveDeploymentTarget(tc.dep, "/v1/chat/completions", "", "")
+			target, up, _, err := p.resolveDeploymentTarget(context.Background(), tc.dep, "/v1/chat/completions", "", "")
 			require.NoError(t, err)
 			assert.Equal(t, tc.target, target)
 			assert.Equal(t, tc.up, up)
@@ -556,7 +556,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 // worker serves inference nowhere else.
 func TestResolveDeploymentTarget_UnknownNodeIsAnError(t *testing.T) {
 	p := newProxyWithFake(newFakeDeps())
-	_, _, _, err := p.resolveDeploymentTarget(
+	_, _, _, err := p.resolveDeploymentTarget(context.Background(),
 		pfallback.Candidate{Name: "c", App: "llamacpp", Model: "m", Node: "nowhere"}, "/v1/chat/completions", "", "")
 	assert.ErrorContains(t, err, "cluster port")
 }

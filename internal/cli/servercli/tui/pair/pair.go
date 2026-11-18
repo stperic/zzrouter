@@ -13,18 +13,16 @@ package pair
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
+
+	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/network"
 	"github.com/stperic/zzrouter/pkg/ui"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -48,12 +46,13 @@ type PairRequest struct {
 // returned 403 because require_secure_pairing is set and the worker
 // didn't echo a matching fingerprint.
 type PairResponse struct {
-	Status      string    `json:"status"`
-	Code        string    `json:"code,omitempty"`
-	Deadline    time.Time `json:"deadline,omitempty"`
-	WorkerURL   string    `json:"worker_url,omitempty"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Status      string                       `json:"status"`
+	Transfer    *clusternode.PairingTransfer `json:"transfer,omitempty"`
+	Code        string                       `json:"code,omitempty"`
+	Deadline    time.Time                    `json:"deadline,omitempty"`
+	WorkerURL   string                       `json:"worker_url,omitempty"`
+	Fingerprint string                       `json:"fingerprint,omitempty"`
+	Error       string                       `json:"error,omitempty"`
 	// Mode is the node's runtime cluster mode. On a no_active_window
 	// response, Mode == "worker" is the authoritative success signal:
 	// the coord consumed the window and the local lifecycle flipped.
@@ -90,6 +89,7 @@ type Config struct {
 	CAFingerprint    string
 	NoMDNS           bool
 	Secure           bool // when true, CAFingerprint is required; otherwise pairing runs in TOFU mode
+	NodeName         string
 	LocalPort        int
 	AdminAPIKey      string
 	DiscoveryTimeout time.Duration
@@ -120,6 +120,7 @@ type Model struct {
 	coordName     string // mDNS advertised name; "" for flag-supplied
 
 	// Active pairing window state.
+	transfer          *clusternode.PairingTransfer
 	workerURL         string
 	workerFingerprint string
 	code              string
@@ -261,55 +262,6 @@ func FriendlyPairHandlerError(statusCode int, body []byte) string {
 		return detail
 	}
 	return fmt.Sprintf("pair endpoint returned HTTP %d", statusCode)
-}
-
-// NormalizeCoordinatorURL accepts operator-typed forms like
-// "198.51.100.180", "http://198.51.100.180", "coord.local:9091" and returns a
-// well-formed "https://host:port". Rules:
-//
-//   - No scheme → "https://" prepended.
-//   - "http://" → promoted to "https://" (the cluster port is always
-//     mTLS; plain HTTP would fail the handshake — silently correct
-//     rather than force the operator to debug a generic TLS error).
-//   - No port → DefaultClusterPort appended.
-//   - Paths / queries / fragments stripped (the enrollment
-//     pairing endpoints are fixed paths; anything else is operator
-//     error).
-//
-// Returns a friendly error when the input is unrecoverable.
-// Exported so the CLI can share the identical rules with the TUI.
-func NormalizeCoordinatorURL(raw string) (string, error) {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return "", errors.New("coordinator URL is required")
-	}
-	if !strings.Contains(s, "://") {
-		s = "https://" + s
-	}
-	u, err := url.Parse(s)
-	if err != nil {
-		return "", fmt.Errorf("not a valid URL: %w", err)
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		// Silent upgrade. The cluster port is mTLS regardless; the
-		// operator's only "wrong" here is typing http:// and plain
-		// HTTP would fail with an opaque TLS handshake error.
-		u.Scheme = "https"
-	default:
-		return "", fmt.Errorf("unsupported scheme %q: use https://", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", errors.New("URL is missing a host")
-	}
-	if u.Port() == "" {
-		u.Host = u.Hostname() + ":" + strconv.Itoa(constants.DefaultClusterPort)
-	}
-	u.Path = ""
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String(), nil
 }
 
 // View implements tea.Model.

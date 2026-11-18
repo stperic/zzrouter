@@ -70,7 +70,7 @@ func TestCore_Enforce_SuspendedKey(t *testing.T) {
 	t.Parallel()
 	c, _, _ := newTestCore(t, StaticKeySet{})
 
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{
 			ID:        "vk-1",
 			Role:      RoleUser,
@@ -106,7 +106,7 @@ func TestCore_Enforce_ExpiredKey(t *testing.T) {
 	c, _, _ := newTestCore(t, StaticKeySet{})
 
 	past := time.Now().Add(-time.Hour)
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{
 			ID:        "vk-1",
 			Role:      RoleUser,
@@ -139,7 +139,7 @@ func TestCore_Enforce_Happy(t *testing.T) {
 	t.Parallel()
 	c, _, _ := newTestCore(t, StaticKeySet{})
 
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-1", Role: RoleUser, IsVirtual: true},
 	}
 	d, release, _ := enforceTestCore(c, ac, "any-model")
@@ -195,7 +195,7 @@ func TestCore_Enforce_ConcurrencyFailureCancelsBudget(t *testing.T) {
 		SpendLimit:          100,  // $100 — plenty of headroom, reservation succeeds
 		DefaultMaxTokens:    1024, // so the reservation has a non-zero estimate
 	}
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-cc", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
 
@@ -319,7 +319,7 @@ func TestCore_PendingReservations_ConcurrentSameKey(t *testing.T) {
 		SpendLimit:       1000, // very large — reservations never exhaust
 		DefaultMaxTokens: 100,
 	}
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-race", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
 
@@ -386,7 +386,7 @@ func TestCore_PendingReservations_CancelPending_Concurrent(t *testing.T) {
 		SpendLimit:       1000,
 		DefaultMaxTokens: 100,
 	}
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-race-cancel", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
 
@@ -446,7 +446,7 @@ func TestCore_LateSettle_AfterReap(t *testing.T) {
 		SpendLimit:       1000,
 		DefaultMaxTokens: 100,
 	}
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-late", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
 	_, release, id := enforceTestCore(c, ac, "model-late")
@@ -507,7 +507,7 @@ func TestCore_SettleWithinTTL_RecordsFullLedger(t *testing.T) {
 		SpendLimit:       1000,
 		DefaultMaxTokens: 100,
 	}
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-cold", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
 	_, release, id := enforceTestCore(c, ac, "model-cold")
@@ -551,7 +551,7 @@ func TestCore_SettleWithinTTL_RecordsFullLedger(t *testing.T) {
 func TestCore_Authorize_DoesNotTickRPM(t *testing.T) {
 	t.Parallel()
 	c, _, _ := newTestCore(t, StaticKeySet{})
-	ac := &AccessContext{
+	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-rpm", Role: RoleUser, IsVirtual: true,
 			Quotas: quota.QuotaConfig{RPMLimit: 1}},
 	}
@@ -572,10 +572,10 @@ func TestCore_Authorize_DeniesWhatEnforceDenies(t *testing.T) {
 	c, _, _ := newTestCore(t, StaticKeySet{})
 	past := time.Now().Add(-time.Hour)
 	cases := map[DenialReason]*AccessContext{
-		DenyKeySuspended: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true, Suspended: true}},
+		DenyKeySuspended: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true, Suspended: true}, Team: &TeamPrincipal{ID: "test-team"}},
 		DenyTeamSuspended: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true},
 			Team: &TeamPrincipal{ID: "t", Suspended: true}},
-		DenyKeyExpired: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true, ExpiresAt: &past}},
+		DenyKeyExpired: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true, ExpiresAt: &past}, Team: &TeamPrincipal{ID: "test-team"}},
 		DenyModelAccess: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true},
 			Team: &TeamPrincipal{ID: "t", AllowedModels: []string{"other"}}},
 	}

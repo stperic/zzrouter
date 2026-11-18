@@ -23,6 +23,38 @@ func acquireTestLease(t *testing.T, inst *Instance) *Lease {
 	return lease
 }
 
+func TestLeaseContextFollowsCallerRunAndRelease(t *testing.T) {
+	type callerValue struct{}
+	for _, source := range []string{"caller", "run", "release"} {
+		t.Run(source, func(t *testing.T) {
+			caller, cancel := context.WithCancel(context.WithValue(t.Context(), callerValue{}, "trace-and-policy"))
+			defer cancel()
+			run := NewInstance("id", "p", "m", 0, 0, 0)
+			lease, err := run.Acquire(caller, nil)
+			require.NoError(t, err)
+			defer lease.Release()
+			require.Equal(t, "trace-and-policy", lease.Context().Value(callerValue{}))
+			switch source {
+			case "caller":
+				cancel()
+			case "run":
+				run.Cancel()
+			case "release":
+				lease.Release()
+			}
+			select {
+			case <-lease.Context().Done():
+			case <-time.After(time.Second):
+				t.Fatal("leased request outlived " + source)
+			}
+			require.ErrorIs(t, lease.Context().Err(), context.Canceled)
+			if source != "caller" {
+				require.NoError(t, caller.Err(), "run ownership must not cancel the caller's parent")
+			}
+		})
+	}
+}
+
 func TestLease_ReleaseExactlyOnce(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 0)
 	inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})

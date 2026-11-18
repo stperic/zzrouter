@@ -39,11 +39,12 @@ func NewResolver(appsConfig func() *config.AppsConfig, sources ...ConnectionReco
 // no node of the cluster serves the request.
 type Resolved struct {
 	Endpoint          string
+	OpenAIPath        string
 	Upstream          Upstream
 	Cloud             bool
 	Configured        bool
 	Revision          string
-	ModelsPath        string
+	ModelsPath        *string
 	ModelsResponseKey string
 	TestPath          string
 }
@@ -100,6 +101,27 @@ func PassthroughTarget(base, path, rawQuery string) string {
 		url += "?" + rawQuery
 	}
 	return url
+}
+
+// InferenceTarget maps the common API prefix to the provider's declared path.
+// Native mounts and cluster hops use PassthroughTarget without this mapping.
+func (r *Resolved) InferenceTarget(path, rawQuery string) string {
+	return PassthroughTarget(r.Endpoint, r.inferencePath(path), rawQuery)
+}
+
+func (r *Resolved) inferencePath(path string) string {
+	if r.OpenAIPath != "" && (path == "/v1" || strings.HasPrefix(path, "/v1/")) {
+		return strings.TrimRight(r.OpenAIPath, "/") + strings.TrimPrefix(path, "/v1")
+	}
+	return path
+}
+
+// ModelListPath returns the native catalog path, or empty when none is declared.
+func (r *Resolved) ModelListPath() string {
+	if r.ModelsPath != nil {
+		return *r.ModelsPath
+	}
+	return r.inferencePath("/v1/models")
 }
 
 // SameEndpoint compares physical endpoints without folding case-sensitive URL paths.

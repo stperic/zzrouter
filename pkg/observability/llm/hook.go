@@ -54,6 +54,8 @@ type InferenceLogData struct {
 	FallbackCount   int    // Number of deployments tried before success
 	FallbackFrom    string // First attempted deployment (if fallback occurred)
 	KeyID           string // Virtual key ID (empty for static/anonymous)
+	SubjectKind     string // "person" or "key", captured at admission
+	SubjectID       string // Immutable caller ID, independent of later membership edits
 	KeyAlias        string // LiteLLM `api_key_alias` — human-readable Name
 	HashedKey       string // LiteLLM `hashed_api_key` — first4..last4 fingerprint
 	TeamID          string // Team ID (empty if the key has no team)

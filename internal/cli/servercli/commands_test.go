@@ -5,7 +5,48 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/service"
+	"github.com/stretchr/testify/require"
 )
+
+type startServiceManager struct {
+	service.ServiceManager
+	dir        string
+	firstRun   bool
+	startCalls int
+}
+
+func (m *startServiceManager) GetConfigDir() string { return m.dir }
+func (m *startServiceManager) IsFirstRun() bool     { return m.firstRun }
+func (m *startServiceManager) GetStatus() (*service.Status, error) {
+	return &service.Status{Running: m.startCalls > 0}, nil
+}
+func (m *startServiceManager) StartService() error { m.startCalls++; return nil }
+
+func TestPrivilegedStartRejectsUnsupportedNewConfigBeforeMutation(t *testing.T) {
+	for _, source := range []string{"flag", "environment"} {
+		t.Run(source, func(t *testing.T) {
+			manager := &startServiceManager{dir: t.TempDir(), firstRun: true}
+			dir := t.TempDir()
+			t.Setenv("ZZROUTER_CONFIG_DIR", "")
+			if source == "environment" {
+				t.Setenv("ZZROUTER_CONFIG_DIR", dir)
+				dir = ""
+			}
+			err := runPrivilegedStart(manager, dir)
+			require.ErrorContains(t, err, "--no-setup")
+			require.Zero(t, manager.startCalls)
+		})
+	}
+}
+
+func TestPrivilegedStartPreservesExistingServiceDefinition(t *testing.T) {
+	manager := &startServiceManager{dir: t.TempDir()}
+	t.Setenv("ZZROUTER_CONFIG_DIR", t.TempDir())
+	// A selection cannot rewrite an installed service; every mutation except Start hits the nil interface.
+	require.NoError(t, runPrivilegedStart(manager, t.TempDir()))
+	require.Equal(t, 1, manager.startCalls)
+}
 
 func TestNewStartCmd_Node(t *testing.T) {
 	cmd := NewStartCmd()

@@ -36,7 +36,8 @@ var guardedPrefixes = map[string]map[string]bool{
 // needs a reason; an entry that stops matching a shadowable collection
 // is reported as removable.
 var shadowExemptPrefixes = map[string]string{
-	apipath.Base + "/runs": "run ids are server-generated, never user-chosen",
+	apipath.Base + "/access/invitations": "grant IDs are random server-generated identifiers, never user-chosen",
+	apipath.Base + "/runs":               "run ids are server-generated, never user-chosen",
 	apipath.Base + "/pricing": "overrides are keyed by (provider, model) in body/query by design " +
 		"(model ids carry slashes); only the convenience lookup GET is shadowed, and model ids " +
 		"come from upstream catalogs, not user creation",

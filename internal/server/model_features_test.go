@@ -109,14 +109,14 @@ func TestResponsesAdmissionOnceForNativeTranslationAndAffinity(t *testing.T) {
 			s.access, _ = newGatewayWithEnforcer(t)
 			body := `{"model":"test-model","input":"hello"}`
 			if mode == "affinity" {
-				s.inference.affinity.Record("resp_previous", "gateway")
+				recordResponseForTest(t, s, "resp_previous", "gateway", "test-model", &AccessContext{Key: &KeyPrincipal{ID: "once", IsVirtual: true}})
 				body = `{"model":"test-model","input":"hello","previous_response_id":"resp_previous"}`
 			}
 			request := func(suspended bool) *httptest.ResponseRecorder {
 				w := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(w)
 				c.Request = httptest.NewRequest("POST", "/v1/responses", strings.NewReader(body))
-				setAccessContext(c, &AccessContext{Key: &KeyPrincipal{ID: "once", IsVirtual: true, Role: RoleUser, Suspended: suspended, Quotas: quota.QuotaConfig{RPMLimit: 1, MaxParallelRequests: 1}}})
+				setAccessContext(c, &AccessContext{Team: &TeamPrincipal{ID: "team"}, Key: &KeyPrincipal{ID: "once", IsVirtual: true, Role: RoleUser, Suspended: suspended, Quotas: quota.QuotaConfig{RPMLimit: 1, MaxParallelRequests: 1}}})
 				s.handleResponses(c)
 				return w
 			}

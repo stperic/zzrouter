@@ -69,7 +69,7 @@ func TestIntegrationOAuthConsentDisclosesUnverifiedClientDestination(t *testing.
 			}
 			require.Contains(t, string(body), html.EscapeString(name))
 			require.NotContains(t, string(body), "<img src=x")
-			require.Contains(t, string(body), "Client name (unverified)")
+			require.Contains(t, string(body), "Application name (unverified)")
 			require.Contains(t, string(body), "Callback address")
 			require.Contains(t, string(body), html.EscapeString(callback))
 			require.Less(t, strings.Index(string(body), html.EscapeString(callback)), strings.Index(string(body), `name="action" value="allow"`), "destination must be visible before approval")

@@ -12,6 +12,7 @@ connection:
       secret: true
 runtime:
   endpoint: https://generativelanguage.googleapis.com/v1beta/openai
+  openai_path: /
   model_url: "https://aistudio.google.com/app/prompts/new_chat?model=%s"
   api:
     auth_type: bearer
@@ -24,4 +25,4 @@ runtime:
     timeout: 10s
     retries: 3
 capabilities:
-  wire_endpoints: [chat_completions]
+  wire_endpoints: [chat_completions, embeddings]

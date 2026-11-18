@@ -11,6 +11,7 @@ import (
 // still manage the service-level config via systemd/launchd/nssm (see
 // ServiceManagement), but never launches it per model.
 type ExternalProvider struct {
+	Operations    map[string]OperationDefinition  `yaml:"operations,omitempty" json:"operations,omitempty"`
 	Schema        map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
 	Features      map[string]Feature              `yaml:"features,omitempty" json:"features,omitempty"`
 	Name          string                          `yaml:"-" json:"name"`
@@ -56,6 +57,9 @@ func (p *ExternalProvider) GetDescription() string { return p.Description }
 // external daemons: protocol + endpoint. Credentials are optional (Ollama
 // runs without auth by default), but auth_type must be one zzRouter knows.
 func (p *ExternalProvider) Validate() error {
+	if len(p.Operations) != 0 {
+		return fmt.Errorf("provider %q: run operations require an on-demand owner", p.Name)
+	}
 	if err := p.Capabilities.ValidateArchitectures(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
@@ -132,5 +136,5 @@ func NewOllamaConnectProvider(name, endpoint, token string) *ExternalProvider {
 // MarshalYAML keeps an explicit empty features block across provider writes.
 func (p ExternalProvider) MarshalYAML() (any, error) {
 	type plain ExternalProvider
-	return marshalFeatureProvider(plain(p), p.Features)
+	return marshalFeatureProvider(plain(p), p.Features, p.Operations)
 }

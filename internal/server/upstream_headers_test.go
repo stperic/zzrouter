@@ -86,7 +86,8 @@ func TestUpstreamHeaders(t *testing.T) {
 				assert.Equal(t, tc.keys[name], got.Get(name), "key header %s", name)
 			}
 			for _, name := range constants.RoutingHintHeaders() {
-				assert.Equal(t, tc.hints, got.Get(name) != "", "routing hint %s", name)
+				// Forwarding preserves existing coordinator hints; it cannot invent a caller identity.
+				assert.Equal(t, tc.hints && src.Get(name) != "", got.Get(name) != "", "routing hint %s", name)
 			}
 			for _, name := range []string{"Connection", "X-Per-Hop", "Proxy-Authorization", "Accept-Encoding"} {
 				assert.Empty(t, got.Get(name), "%s describes the caller's connection", name)
@@ -187,12 +188,14 @@ func TestPublicEntryDropsCoordinatorProviderHint(t *testing.T) {
 	engine.POST("/v1/chat/completions", func(c *gin.Context) {
 		require.Empty(t, c.GetHeader(constants.HeaderServingProvider))
 		require.Empty(t, c.GetHeader(constants.HeaderServingNode))
+		require.Empty(t, c.GetHeader(constants.HeaderResponseOwner))
 		require.Equal(t, "worker", c.GetHeader("X-Node"), "client node pins remain supported")
 		c.Status(http.StatusNoContent)
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set(constants.HeaderServingProvider, "paid")
 	req.Header.Set(constants.HeaderServingNode, "injected")
+	req.Header.Set(constants.HeaderResponseOwner, "injected-owner")
 	req.Header.Set("X-Node", "worker")
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, req)

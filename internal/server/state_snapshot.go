@@ -25,6 +25,8 @@ import (
 const stateAuditSubject = "cluster-state"
 
 func (s *Server) auditState(c *gin.Context, action audit.Action, meta map[string]any) {
+	s.auditMu.RLock()
+	defer s.auditMu.RUnlock()
 	if s.auditSink == nil {
 		return
 	}

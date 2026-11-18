@@ -41,7 +41,8 @@ func validateNotSubcommand(modelName string) error {
 
 // NewDeployCmd creates the deploy command group for downloading models.
 func NewDeployCmd() *cobra.Command {
-	var repo string
+	var registry string
+	var provider string
 	var model string
 	var node string
 	var file string
@@ -78,7 +79,8 @@ VARIANT SELECTION:
 
 OVERRIDE FLAGS:
   --node <name>                 # Single-node deploy
-  --provider <name>             # Override auto-detected provider
+  --provider <name>             # Select the inference provider
+  --registry <name>             # Override the model source registry
   --file <filename>             # Specific GGUF variant file
 
 MULTI-NODE DEPLOY:
@@ -109,11 +111,12 @@ USAGE:
 
 			// Pass model string through unchanged. The server parser
 			// handles #file, @node, and registry detection.
-			return runDeploy(cmd.Context(), modelIdentifier, repo, file, node, toNodes, toAll, force, watch)
+			return runDeploy(cmd.Context(), modelIdentifier, provider, registry, file, node, toNodes, toAll, force, watch)
 		},
 	}
 
-	cmd.Flags().StringVarP(&repo, "provider", "a", "", "Provider (auto-detected: ollama for simple names, huggingface for org/model)")
+	cmd.Flags().StringVarP(&provider, "provider", "a", "", "Inference provider to serve the model (for example, llamacpp or mlx)")
+	cmd.Flags().StringVar(&registry, "registry", "", "Model source registry (auto-detected: ollama for simple names, huggingface for org/model)")
 	cmd.Flags().StringVar(&model, "model", "", "Model name to download")
 	cmd.Flags().StringVarP(&node, "node", "n", "", "Target node in cluster")
 	cmd.Flags().StringVar(&file, "file", "", "Specific file/variant to download")
@@ -245,7 +248,7 @@ func newDeployStopCmd() *cobra.Command {
 // runDeploy is the single unified path for all deploy invocations. It
 // resolves Nodes client-side (via --node/--to/--to-all or interactive
 // selectDownloadNode) so the server never needs to infer targets.
-func runDeploy(ctx context.Context, modelIdentifier, repository, file, singleNode string, toNodes []string, toAll, force, watch bool) error {
+func runDeploy(ctx context.Context, modelIdentifier, provider, registry, file, singleNode string, toNodes []string, toAll, force, watch bool) error {
 	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
@@ -254,7 +257,7 @@ func runDeploy(ctx context.Context, modelIdentifier, repository, file, singleNod
 	var nodes []string
 	switch {
 	case toAll:
-		compatibleNodes, err := client.GetCompatibleNodes(ctx, modelIdentifier, repository, "")
+		compatibleNodes, err := client.GetCompatibleNodes(ctx, modelIdentifier, registry, provider)
 		if err != nil {
 			return fmt.Errorf("failed to fetch compatible nodes: %w", err)
 		}
@@ -280,14 +283,14 @@ func runDeploy(ctx context.Context, modelIdentifier, repository, file, singleNod
 	case singleNode != "":
 		nodes = []string{singleNode}
 	default:
-		selected, err := selectDownloadNode(ctx, client, modelIdentifier, repository)
+		selected, err := selectDownloadNode(ctx, client, modelIdentifier, registry, provider)
 		if err != nil {
 			return err
 		}
 		nodes = []string{selected}
 	}
 
-	resp, err := client.Deploy(ctx, pkgClient.DeployRequest{Model: modelIdentifier, Registry: repository, File: file, Nodes: nodes, Force: force})
+	resp, err := client.Deploy(ctx, pkgClient.DeployRequest{Model: modelIdentifier, Provider: provider, Registry: registry, File: file, Nodes: nodes, Force: force})
 	if err != nil {
 		return fmt.Errorf("%s", shared.ExtractUserFriendlyError(err))
 	}
@@ -333,7 +336,7 @@ func runDeploy(ctx context.Context, modelIdentifier, repository, file, singleNod
 }
 
 // selectDownloadNode lists inventory for an explicit download choice.
-func selectDownloadNode(ctx context.Context, client *pkgClient.Client, modelName, repository string) (string, error) {
+func selectDownloadNode(ctx context.Context, client *pkgClient.Client, modelName, registry, provider string) (string, error) {
 	renderer := ui.NewRenderer(ui.RendererOptions{
 		Adaptive: true,
 		MinWidth: 80,
@@ -350,13 +353,13 @@ func selectDownloadNode(ctx context.Context, client *pkgClient.Client, modelName
 	}
 
 	fmt.Printf("\nModel: %s\n", modelName)
-	repositoryDisplay := repository
+	repositoryDisplay := registry
 	if repositoryDisplay == "" {
 		repositoryDisplay = "(auto-detect)"
 	}
 	fmt.Printf("Format: %s | Repository: %s\n\n", detectFormat(modelName), repositoryDisplay)
 	fmt.Printf("Select download destination:\n\n")
-	assessments, assessmentErr := client.GetCompatibleNodes(ctx, modelName, repository, "")
+	assessments, assessmentErr := client.GetCompatibleNodes(ctx, modelName, registry, provider)
 	if assessmentErr != nil {
 		fmt.Println("Capacity is unknown. The server checks download admission.")
 	}

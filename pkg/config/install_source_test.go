@@ -190,6 +190,7 @@ func TestShippedPipRecipesRemainSourceFree(t *testing.T) {
 		require.NoError(t, configschema.ValidateOnDemand(data))
 		var p OnDemandProvider
 		require.NoError(t, strictDecode(data, &p))
+		p.Name = name
 		require.NoError(t, p.Validate())
 		for _, r := range p.Install.Runtimes {
 			assert.Nil(t, r.Source)

@@ -12,7 +12,7 @@ import (
 )
 
 func TestLaunchdInstalledPlistStopBudget(t *testing.T) {
-	data, err := plist.Marshal(launchdDefinition("/opt/node", t.TempDir()), plist.XMLFormat)
+	data, err := plist.Marshal(launchdDefinition("/opt/node", t.TempDir(), "/custom/config"), plist.XMLFormat)
 	require.NoError(t, err)
 	var decoded map[string]any
 	_, err = plist.Unmarshal(data, &decoded)

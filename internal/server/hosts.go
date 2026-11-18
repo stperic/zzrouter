@@ -442,9 +442,11 @@ func (s *NodesService) GetNode(_ context.Context, nodeName string) (map[string]a
 
 // ListCompatibleNodesRequest represents a request to list compatible hosts for a model
 type ListCompatibleNodesRequest struct {
-	Model    string
-	Registry string
-	Provider string
+	Model        string
+	Registry     string
+	Provider     string
+	Format       string
+	Architecture string
 }
 
 // ListCompatibleNodesResponse represents the response for listing compatible hosts
@@ -474,6 +476,12 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 	if req.Provider != "" {
 		query.Set("provider", req.Provider)
+	}
+	if req.Format != "" {
+		query.Set("format", req.Format)
+	}
+	if req.Architecture != "" {
+		query.Set("architecture", req.Architecture)
 	}
 
 	resp, err := s.router.Route(ctx, &routing.Request{
