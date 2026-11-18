@@ -52,6 +52,7 @@ const (
 
 	ActionQuotaSpendReset Action = "quota.spend_reset"
 
+	// Nothing emits these two any more; existing audit logs contain them.
 	ActionStateSnapshot Action = "state.snapshot"
 	ActionStateRestore  Action = "state.restore"
 

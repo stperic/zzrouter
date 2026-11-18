@@ -127,6 +127,3 @@ the existing local recovery command if necessary. Expired worker certificates ca
 require pairing again. An older valid backup can restore access that was revoked
 later; review people, keys, grants and budget state after recovery. A successful
 archive check is not a successful activation test.
-
-The older `/state/snapshot` and `/state/restore` HTTP endpoints remain limited
-test-harness facilities for four policy files. They are not installation backup.

@@ -59,9 +59,8 @@ func TestAPIDiscovery_NoMissingRoutes(t *testing.T) {
 	}
 }
 
-// TestAPIDiscovery_HiddenRoutesNotAdvertised ensures the e2e harness
-// gates (server/routes, state/snapshot, state/restore) stay out of the
-// agent-facing discovery doc even though they live on the public engine.
+// TestAPIDiscovery_HiddenRoutesNotAdvertised ensures the route catalog
+// stays out of discovery even though it lives on the public engine.
 func TestAPIDiscovery_HiddenRoutesNotAdvertised(t *testing.T) {
 	server := createTestNodeWithDefaults(t)
 
@@ -78,7 +77,7 @@ func TestAPIDiscovery_HiddenRoutesNotAdvertised(t *testing.T) {
 			for hidden := range apiDiscoveryHidden {
 				for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
 					assert.NotEqualf(t, m+" "+hidden, e,
-						"hidden harness route %s leaked into discovery", e)
+						"hidden route %s leaked into discovery", e)
 				}
 			}
 		}

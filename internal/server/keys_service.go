@@ -509,17 +509,6 @@ func (s *KeysService) RotateKey(id, actor string) (*CreateKeyResponse, error) {
 	}, nil
 }
 
-// ReloadKeys re-reads keys from disk and invalidates the cache.
-func (s *KeysService) ReloadKeys() error {
-	if err := s.store.Reload(); err != nil {
-		return err
-	}
-	if s.access != nil {
-		s.access.InvalidateAuthCache()
-	}
-	return nil
-}
-
 // KeyUsageResponse is the response for GET /keys/:id/usage.
 type KeyUsageResponse struct {
 	KeyID string `json:"key_id"`

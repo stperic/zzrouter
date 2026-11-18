@@ -30,7 +30,8 @@ func (ctrl *KeysController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.POST("/keys/:id/rotate", ctrl.RotateKey)
 	router.GET("/keys/:id/usage", ctrl.GetKeyUsage)
 	router.POST("/keys/:id/usage/reset", ctrl.ResetKeyUsage)
-	router.POST("/keys/reload", ctrl.ReloadKeys)
+	router.POST("/keys/reload", newRetiredHandler("app keys are managed through the keys API: "+
+		"POST /zzrouter/v1/keys, PATCH /zzrouter/v1/keys/{id}"))
 	router.GET("/spend/report", ctrl.GetSpendReport)
 }
 
@@ -143,19 +144,6 @@ func (ctrl *KeysController) RotateKey(c *gin.Context) {
 	}
 
 	respondSuccess(c, "Key rotated successfully. Save the new key value: it will not be shown again.", resp)
-}
-
-// ReloadKeys handles POST /zzrouter/v1/keys/reload
-func (ctrl *KeysController) ReloadKeys(c *gin.Context) {
-	if err := ctrl.service.ReloadKeys(); err != nil {
-		// Surface the actual reason (e.g. file parse error, missing file) so
-		// operators can fix it without tailing logs. SanitizeErrorMessage
-		// inside InternalNodeError scrubs paths and stack traces.
-		InternalNodeError(c, "failed to reload keys: "+err.Error())
-		return
-	}
-
-	respondSuccess(c, "Keys reloaded successfully", nil)
 }
 
 // GetKeyUsage handles GET /zzrouter/v1/keys/:id/usage.

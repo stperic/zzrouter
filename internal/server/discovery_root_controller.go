@@ -12,12 +12,9 @@ import (
 const apiDiscoveryPrefix = "/zzrouter/v1"
 
 // apiDiscoveryHidden — routes kept out of the agent-facing discovery
-// doc: the raw route catalog (tooling, not a workflow) and the e2e
-// harness state gates. Other /server/* routes list normally.
+// doc: the raw route catalog (tooling, not a workflow).
 var apiDiscoveryHidden = map[string]struct{}{
-	apiDiscoveryPrefix + "/server/routes":  {},
-	apiDiscoveryPrefix + "/state/snapshot": {},
-	apiDiscoveryPrefix + "/state/restore":  {},
+	apiDiscoveryPrefix + "/server/routes": {},
 }
 
 type apiDiscoveryResponse struct {
@@ -274,26 +271,6 @@ func uriTemplatePath(path string) string {
 		}
 	}
 	return strings.Join(segments, "/")
-}
-
-// retiredHandlerSuffix identifies the handler every retired route is
-// mounted on. Matching the handler rather than listing paths means a
-// route retired later drops out of discovery on its own — a hand-kept
-// list is exactly the thing that goes stale here.
-const retiredHandlerSuffix = ".(*ParamsExecutor).RetiredHandler-fm"
-
-// isRetiredRoute reports whether a route only answers 410 Gone. It is
-// the one matcher for that question — discovery, the route catalog and
-// the client method guard all ask it here, so a second spelling cannot
-// drift away from this one.
-//
-// Discovery is what an agent enumerates to decide what it can call, so
-// listing a route that always refuses hands it a guaranteed dead end.
-// /zzrouter/v1/server/routes still reports them, flagged `retired`:
-// that one is a literal dump of what is mounted, and the flag is what
-// keeps the dump from reading as a menu.
-func isRetiredRoute(handler string) bool {
-	return strings.HasSuffix(handler, retiredHandlerSuffix)
 }
 
 // Hyphens collapse to underscores so group keys keep the underscored

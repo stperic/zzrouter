@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove `POST /zzrouter/v1/state/snapshot` and `POST /zzrouter/v1/state/restore`; retire `POST /zzrouter/v1/keys/reload` with `410 Gone`.
+
 - Expand shortened OpenRouter descriptions on demand from the public model page.
 - Render model-card Markdown and safe links across Discover, and show the
   provider's model metadata, pricing, capabilities, and repository files.

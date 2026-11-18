@@ -1053,27 +1053,3 @@ func (e *ParamsExecutor) HandleInternalGetModelParameters(c *gin.Context) {
 	resolved := cfg.Resolve(e.nodename(), model)
 	c.JSON(http.StatusOK, buildLegacyModelResponse(provider, model, resolved))
 }
-
-// RetiredHandler returns 410 Gone for the parameter mutators that
-// PATCH .../parameters replaced.
-//
-// It answers in the Problem envelope every other management failure uses
-// (including the other 410 on this API, expired cluster pairing) rather
-// than the parameter-validation body it used to emit. A caller branching
-// on the documented top-level `code` found nothing there, which is the
-// one thing an error shape has to get right.
-func (e *ParamsExecutor) RetiredHandler(c *gin.Context) {
-	_ = e // unused — method for symmetry with other handlers
-	problem := utils.NewProblemDetails(http.StatusGone, "Gone",
-		"this route is retired; PATCH /zzrouter/v1/providers/{name}/parameters "+
-			"with Content-Type: application/merge-patch+json is the single mutator",
-		c.Request.URL.Path)
-	problem.Code = string(httperr.CodeRetired)
-	if reqID, exists := c.Get("request_id"); exists {
-		if id, ok := reqID.(string); ok {
-			problem.RequestID = id
-		}
-	}
-	c.Header("Content-Type", "application/problem+json")
-	c.JSON(http.StatusGone, problem)
-}

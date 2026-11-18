@@ -26,6 +26,7 @@ func TestAPIDiscoveryOmitsRetiredRoutes(t *testing.T) {
 		}
 	}
 	require.NotEmpty(t, mounted, "expected retired routes to be registered")
+	require.Contains(t, mounted, "POST /zzrouter/v1/keys/reload")
 
 	resp := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, resp.Code)

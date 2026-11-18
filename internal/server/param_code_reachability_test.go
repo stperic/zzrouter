@@ -39,7 +39,7 @@ import (
 // actually be emitted.
 //
 // The cases deliberately go through the real producers — validatePatch,
-// respondMutatorError, RetiredHandler — rather than constructing a
+// respondMutatorError, newRetiredHandler — rather than constructing a
 // ParamError literal. Asserting on a literal you wrote yourself proves
 // only that Go assigns struct fields.
 
@@ -201,7 +201,7 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 			how: "a request to one of the retired parameter-write routes",
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {
 				c, rec := testGinContext(http.MethodPut, "/zzrouter/v1/providers/vllm/parameters")
-				(&ParamsExecutor{}).RetiredHandler(c)
+				newRetiredHandler(retiredParametersReplacement)(c)
 				if rec.Code != http.StatusGone {
 					t.Fatalf("retired route should answer 410, got %d", rec.Code)
 				}

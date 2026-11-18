@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // RouteSpec describes mounted routes for discovery and MCP escape-hatch eligibility.
@@ -274,4 +277,37 @@ func asyncForPath(method, p string) bool {
 		}
 	}
 	return false
+}
+
+type retiredRoute string
+
+// newRetiredHandler mounts a route that only answers 410 Gone. Every
+// mount shares one handler identity; replacement names what to call instead.
+func newRetiredHandler(replacement string) gin.HandlerFunc {
+	return retiredRoute(replacement).handle
+}
+
+func (r retiredRoute) handle(c *gin.Context) {
+	RespondWithProblemOpts(c, http.StatusGone, "Gone", "this route is retired; "+string(r),
+		ProblemOpts{Code: string(httperr.CodeRetired)})
+}
+
+// retiredHandlerName is the name gin reports for that handler. Deriving
+// it, rather than spelling it, survives a rename; matching the handler,
+// rather than listing paths, means a route retired later drops out of
+// discovery on its own.
+var retiredHandlerName = runtime.FuncForPC(reflect.ValueOf(newRetiredHandler("")).Pointer()).Name()
+
+// isRetiredRoute reports whether a route only answers 410 Gone. It is
+// the one matcher for that question: discovery, the route catalog and
+// the client method guard all ask it here, so a second spelling cannot
+// drift away from this one.
+//
+// Discovery is what an agent enumerates to decide what it can call, so
+// listing a route that always refuses hands it a guaranteed dead end.
+// /zzrouter/v1/server/routes still reports them, flagged `retired`:
+// that one is a literal dump of what is mounted, and the flag is what
+// keeps the dump from reading as a menu.
+func isRetiredRoute(handler string) bool {
+	return handler == retiredHandlerName
 }

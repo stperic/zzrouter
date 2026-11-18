@@ -87,6 +87,7 @@ fallback. Where nothing more specific applies it is a snake_case slug of
 | `forbidden` | 403 | Key authenticated but not permitted. |
 | `not_found` | 404 | No such resource. |
 | `conflict` | 409 | State prevents the operation : e.g. an upgrade with instances still running, or a provider already installed. |
+| `retired` | 410 | The route is still mounted but retired. `detail` names the replacement; call that instead. |
 | `service_unavailable` | 503 | Subsystem not wired or shutting down. |
 | `model_discovery_unavailable` | 501 | The provider declares no model-listing API. Search, popular-model and card requests cannot query its catalog; register a known provider model ID instead. Inference may still be available. |
 
@@ -181,7 +182,6 @@ tier that set the key: a request key is fixed in `zz_run_preview` or
 | `unknown_node` | Tier 3 cell references a node not in the cluster. | List `/zzrouter/v1/nodes`. |
 | `unknown_model` | Tier 2/3 cell references a model not in the catalog. | List `/v1/models`. |
 | `coercion_failed` | Value couldn't be converted to schema type. | Send the value as the declared type. |
-| `retired` | Key was removed from the schema. | Remove from your patch. |
 | `duplicate_flag` | Two spellings of one flag (`ctx_size`, `ctx-size`) with different values in one map: a tier's, the request's or a PATCH body's. One entry per spelling. | Keep one: drop it from the request, or set the flag once with `zz_params_set`, which replaces every spelling (a `null` removes them all). |
 | `excluded_by_runtime` | The provider declares the key, but the runtime selected for this model (named in `message`) does not take it. | Drop the key, or send `auto`; in `zz_params_get` accepts, the key's `excluded_by` lists each runtime that does not take it with the feature that selects it (`{"runtime":"mlx-vlm","feature":"vision"}`). |
 | `unknown_asset` | An asset-typed key names a file the provider does not have. | List `GET /zzrouter/v1/providers/:n/assets`, or upload the file with `PUT .../assets/:asset` first. |

@@ -114,8 +114,6 @@ tags:
   - name: Cluster
   - name: Config
     description: Reloading provider configuration from disk.
-  - name: State
-    description: Snapshot and restore of this node's persistent state.
   - name: Server
     description: Node introspection, version and system info.
   - name: InferenceLogs
@@ -5719,19 +5717,16 @@ paths:
     post:
       tags: [Keys]
       operationId: reloadKeys
-      summary: Reload keys.yaml from disk
+      summary: "Retired: Reload keys.yaml from disk"
       description: |
-        Re-reads the on-disk keys store, invalidates the auth cache, and
-        applies any external changes. Intended for out-of-band edits.
+        Retired. The route is still mounted and answers `410 Gone` with
+        code `retired`. App keys are managed through the keys API:
+        `POST /zzrouter/v1/keys` and `PATCH /zzrouter/v1/keys/{id}`.
+      deprecated: true
       responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '500':
-          description: The store could not be re-read; the in-memory keys are unchanged.
+        '410':
+          description: Gone, manage app keys through the keys API.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -8203,116 +8198,6 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: This node has no provider config loaded.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /zzrouter/v1/state/snapshot:
-    post:
-      tags: [State]
-      operationId: createStateSnapshot
-      summary: Download this node's persistent state as a tar.gz
-      description: |
-        Flushes the key, team and model-group stores, then streams a
-        gzipped tar of `keys.yaml`, `teams.yaml`, `model_groups.yaml`
-        and `spend.json`. A file that does not exist is skipped rather
-        than archived empty.
-
-        Two things to know before using it as a backup:
-
-        - The archive is the raw on-disk files, including the Argon2id
-          hashes that `GET /zzrouter/v1/keys` redacts. An admin key
-          gets material the key listing deliberately withholds; treat
-          the download accordingly.
-        - Reads are not fenced against concurrent admin writes, and
-          `spend.json` reflects the spend tracker's last flush rather
-          than the instant of the request. Quiesce the node if you need
-          a coherent point-in-time image.
-      responses:
-        '200':
-          description: Gzipped tar, sent as an attachment.
-          content:
-            application/gzip:
-              schema: { type: string, format: binary }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '500':
-          description: A store failed to flush, or a file could not be read or archived.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: This node has no config directory configured.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /zzrouter/v1/state/restore:
-    post:
-      tags: [State]
-      operationId: restoreState
-      summary: Restore persistent state from a snapshot archive
-      description: |
-        Accepts an archive produced by
-        `POST /zzrouter/v1/state/snapshot`, writes the files it carries
-        into the config directory, and reloads the matching in-memory
-        stores so the running node sees the restored state without a
-        restart.
-
-        Only the four snapshot filenames are accepted, and only as bare
-        names: an entry with a path in it is rejected rather than
-        written. Each entry is size-capped, so an admin-key holder
-        cannot post a decompression bomb.
-
-        Every entry is decoded and validated before anything is
-        written, then files are staged as siblings and renamed in a
-        fixed order. A crash mid-restore therefore leaves a
-        deterministic prefix applied, and re-posting the same archive
-        is the recovery.
-
-        Restoring a `keys.yaml` replaces the key set wholesale, which is
-        the one path that bypasses reserved-name validation. That is
-        deliberate: a round-trip has to reproduce what it captured.
-      requestBody:
-        required: true
-        content:
-          application/gzip:
-            schema: { type: string, format: binary }
-      responses:
-        '200':
-          description: |
-            Restored. `restored` names the files the archive actually
-            carried; a file absent from the archive is left untouched
-            rather than cleared.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [restored]
-                properties:
-                  restored:
-                    type: array
-                    items: { type: string }
-                    example: [keys.yaml, teams.yaml]
-        '400':
-          description: Not a valid gzip or tar, or it carries an entry outside the accepted set.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '413':
-          description: An entry exceeds the per-entry size cap.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '500':
-          description: |
-            Staging, renaming or reloading failed. Disk is consistent,
-            but in-memory state may be partially new: restart the node.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: This node has no config directory configured.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

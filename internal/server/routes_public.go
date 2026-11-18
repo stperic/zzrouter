@@ -257,15 +257,13 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// listener in pkg/cluster/node (registerWorkerRoutes), not here —
 	// it is only reachable from a coordinator client cert.
 
-	// E2E harness gate endpoints. Public-admin surface (the internal-API
+	// Route catalog for tooling. Public-admin surface (the internal-API
 	// mount on the public engine is gated by internalRequestOnlyMiddleware
 	// and reserved for in-process dispatch). Coordinator-only — workers
 	// have no keys/teams/groups state, and the route catalog on a worker
 	// would misrepresent compat-gate auth tags.
 	if !s.node.IsWorker() {
 		router.GET("/server/routes", s.handleListRoutes)
-		router.POST("/state/snapshot", s.handleStateSnapshot)
-		router.POST("/state/restore", s.handleStateRestore)
 	}
 }
 

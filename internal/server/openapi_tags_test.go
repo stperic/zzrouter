@@ -19,7 +19,7 @@ import (
 // and is gone.
 //
 // tagBySegment is the taxonomy. It deliberately covers LIVE segments
-// that are not yet documented (config, server, state, ...): when their
+// that are not yet documented (config, server, ...): when their
 // operations land in the spec, the tag is already decided, and the
 // live-coverage check below fails on any new segment nobody placed.
 var tagBySegment = map[string]string{
@@ -52,7 +52,6 @@ var tagBySegment = map[string]string{
 	"teams":          "Teams",
 	"update":         "Update",
 	"usage":          "Usage",
-	"state":          "State",
 	"system":         "System",
 
 	// C3 resolved (arc 1.4): the former duplicate segments moved under
@@ -131,7 +130,7 @@ func TestOpenAPITags_FollowTheSegmentTaxonomy(t *testing.T) {
 // honest in both directions: a declared-but-unused tag is dead weight
 // an agent will chase, and a used-but-undeclared tag renders untitled
 // in every spec viewer. Taxonomy entries for still-undocumented
-// segments (Config, State) are deliberately NOT declared here; they
+// segments (Config) are deliberately NOT declared here; they
 // enter the spec with their first documented operation.
 func TestOpenAPITags_DeclaredMatchesUsed(t *testing.T) {
 	spec := loadOpenAPI(t)
