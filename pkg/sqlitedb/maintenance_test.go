@@ -1,0 +1,187 @@
+package sqlitedb_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stperic/zzrouter/pkg/sqlitedb"
+	"github.com/stretchr/testify/require"
+)
+
+func TestCopyToPurgesDeletedContent(t *testing.T) {
+	s := testSchema(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.sqlite")
+	db := createDB(t, path, s)
+	execSQL(t, db.SQL(), "PRAGMA secure_delete=OFF")
+	secret := "DELETED_SECRET_" + strings.Repeat("purge-this-value-", 4096)
+	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, ?), (2, 'retained')", secret)
+	execSQL(t, db.SQL(), "INSERT INTO children VALUES(1, 2)")
+	execSQL(t, db.SQL(), "DELETE FROM parents WHERE id=1")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	marker := []byte(strings.Repeat("purge-this-value-", 16))
+	require.True(t, bytes.Contains(data, marker), "source must still contain deleted bytes for this test to prove purging")
+	for _, preexisting := range []bool{false, true} {
+		t.Run(map[bool]string{false: "absent", true: "empty"}[preexisting], func(t *testing.T) {
+			dst := filepath.Join(dir, t.Name()[strings.LastIndex(t.Name(), "/")+1:]+" ?#%.sqlite")
+			if preexisting {
+				require.NoError(t, os.WriteFile(dst, nil, 0o644))
+			}
+			require.NoError(t, db.CopyTo(t.Context(), dst))
+			ownerOnly(t, dst)
+			copy := openDB(t, dst, s)
+			require.NoError(t, copy.Check(t.Context(), true))
+			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents"))
+			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents WHERE id=2 AND value='retained'"))
+			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM children WHERE parent_id=2"))
+			data, err := os.ReadFile(dst)
+			require.NoError(t, err)
+			require.False(t, bytes.Contains(data, marker))
+		})
+	}
+	t.Run("nonempty", func(t *testing.T) {
+		dst := filepath.Join(dir, "occupied")
+		require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o600))
+		require.Error(t, db.CopyTo(t.Context(), dst))
+		data, err := os.ReadFile(dst)
+		require.NoError(t, err)
+		require.Equal(t, "preserve", string(data))
+	})
+}
+
+func TestCheckCorruptPage(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		name := map[bool]string{false: "quick_check", true: "integrity_check"}[full]
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "corrupt.sqlite")
+			s := testSchema(t)
+			db := createDB(t, path, s)
+			execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'intact')")
+			require.NoError(t, db.Check(t.Context(), full))
+			page := integer(t, db.SQL(), "SELECT rootpage FROM sqlite_schema WHERE name='parents'")
+			size := integer(t, db.SQL(), "PRAGMA page_size")
+			require.NoError(t, db.Close())
+			f, err := os.OpenFile(path, os.O_RDWR, 0)
+			require.NoError(t, err)
+			_, err = f.WriteAt([]byte{0xff}, (page-1)*size)
+			require.NoError(t, err)
+			require.NoError(t, f.Close())
+			db = openDB(t, path, s)
+			var failure *sqlitedb.CheckError
+			require.ErrorAs(t, db.Check(t.Context(), full), &failure)
+			require.Equal(t, name, failure.Check)
+			require.NotEmpty(t, failure.Detail)
+			require.NotContains(t, failure.Detail, "<nil>")
+		})
+	}
+}
+
+func TestCheckForeignKeyViolation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "foreign-key.sqlite")
+	s := testSchema(t)
+	db := createDB(t, path, s)
+	require.NoError(t, db.Close())
+	raw := rawDB(t, path)
+	execSQL(t, raw, "PRAGMA foreign_keys=OFF; INSERT INTO children VALUES(1,999)")
+	require.NoError(t, raw.Close())
+	db = openDB(t, path, s)
+	for _, full := range []bool{false, true} {
+		var failure *sqlitedb.CheckError
+		require.ErrorAs(t, db.Check(t.Context(), full), &failure)
+		require.Equal(t, "foreign_key_check", failure.Check)
+		require.NotEmpty(t, failure.Detail)
+		require.Contains(t, failure.Detail, "table children rowid 1")
+		require.NotContains(t, failure.Detail, "<nil>")
+	}
+}
+
+func TestCheckCancelledContext(t *testing.T) {
+	db := createDB(t, filepath.Join(t.TempDir(), "cancelled.sqlite"), testSchema(t))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, full := range []bool{false, true} {
+		err := db.Check(ctx, full)
+		require.ErrorIs(t, err, context.Canceled)
+		var failure *sqlitedb.CheckError
+		require.False(t, errors.As(err, &failure))
+	}
+}
+
+func TestCheckUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unreadable.sqlite")
+	db := createDB(t, path, testSchema(t))
+	db.SQL().SetMaxIdleConns(0)
+	require.NoError(t, os.WriteFile(path, []byte("no longer a SQLite database"), 0o600))
+	for _, full := range []bool{false, true} {
+		var failure *sqlitedb.CheckError
+		require.ErrorAs(t, db.Check(t.Context(), full), &failure)
+		require.NotEmpty(t, failure.Detail)
+		require.NotContains(t, failure.Detail, "<nil>")
+	}
+}
+
+func TestCheckForeignKeyWithoutRowid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "without-rowid.sqlite")
+	s := scriptsSchema(`CREATE TABLE parents(id PRIMARY KEY);
+		CREATE TABLE children(id PRIMARY KEY, parent_id REFERENCES parents(id)) WITHOUT ROWID;`)
+	db := createDB(t, path, s)
+	require.NoError(t, db.Close())
+	raw := rawDB(t, path)
+	execSQL(t, raw, "PRAGMA foreign_keys=OFF; INSERT INTO children VALUES('child',999)")
+	require.NoError(t, raw.Close())
+	db = openDB(t, path, s)
+	var failure *sqlitedb.CheckError
+	require.ErrorAs(t, db.Check(t.Context(), true), &failure)
+	require.Contains(t, failure.Detail, "table children rowid NULL")
+	require.NotContains(t, failure.Detail, "<nil>")
+}
+
+func TestCopyToFailureCleansCreatedDestination(t *testing.T) {
+	db := createDB(t, filepath.Join(t.TempDir(), "source.sqlite"), testSchema(t))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, preexisting := range []bool{false, true} {
+		t.Run(map[bool]string{false: "created", true: "preexisting"}[preexisting], func(t *testing.T) {
+			dst := filepath.Join(t.TempDir(), "copy.sqlite")
+			if preexisting {
+				require.NoError(t, os.WriteFile(dst, nil, 0o600))
+			}
+			require.ErrorIs(t, db.CopyTo(ctx, dst), context.Canceled)
+			data, err := os.ReadFile(dst)
+			if preexisting {
+				require.NoError(t, err)
+				require.Empty(t, data)
+			} else {
+				require.ErrorIs(t, err, os.ErrNotExist)
+			}
+		})
+	}
+}
+
+func TestFreeBytes(t *testing.T) {
+	db := createDB(t, filepath.Join(t.TempDir(), "freelist.sqlite"), testSchema(t))
+	free, err := db.FreeBytes(t.Context())
+	require.NoError(t, err)
+	require.Zero(t, free)
+	tx, err := db.SQL().BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	for i := range 256 {
+		_, err := tx.ExecContext(t.Context(), "INSERT INTO parents VALUES(?, ?)", i, strings.Repeat("x", 4096))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tx.Commit())
+	before, err := db.FreeBytes(t.Context())
+	require.NoError(t, err)
+	execSQL(t, db.SQL(), "DELETE FROM parents")
+	after, err := db.FreeBytes(t.Context())
+	require.NoError(t, err)
+	require.Greater(t, after, before)
+	require.Equal(t, integer(t, db.SQL(), "PRAGMA freelist_count")*integer(t, db.SQL(), "PRAGMA page_size"), after)
+}
