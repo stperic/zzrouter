@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 var (
@@ -81,6 +82,16 @@ func (t *Team) Validate() error {
 	}
 	if err := t.ProviderAccess.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if !utils.InRFC3339Range(t.SuspendedAt, &t.CreatedAt, &t.UpdatedAt) {
+		return fmt.Errorf("%w: a time is outside the years 0001 to 9999", ErrInvalid)
+	}
+	if !t.ValidSpendLimit() {
+		return fmt.Errorf("%w: spend_limit must be a finite number", ErrInvalid)
+	}
+	// Policies and metadata are stored as JSON.
+	if !utils.ValidUTF8([]any{t.AllowedModels, t.RouteAccess.Routes, t.ProviderAccess.Providers, t.Metadata}) {
+		return fmt.Errorf("%w: models, routes, providers and metadata must be valid UTF-8", ErrInvalid)
 	}
 	return nil
 }

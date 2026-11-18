@@ -214,3 +214,20 @@ func TestFreeBytes(t *testing.T) {
 	require.Greater(t, after, before)
 	require.Equal(t, integer(t, db.SQL(), "PRAGMA freelist_count")*integer(t, db.SQL(), "PRAGMA page_size"), after)
 }
+
+func TestRenameMovesAClosedFile(t *testing.T) {
+	s := testSchema(t)
+	dir := t.TempDir()
+	staged, final := filepath.Join(dir, "store.sqlite.staged"), filepath.Join(dir, "store.sqlite")
+	db, err := sqlitedb.Create(t.Context(), staged, s, nil)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	require.NoError(t, sqlitedb.Rename(staged, final))
+	_, err = os.Stat(staged)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	ownerOnly(t, final)
+	h, err := sqlitedb.Probe(t.Context(), final)
+	require.NoError(t, err)
+	require.Equal(t, sqlitedb.Header{AppID: s.AppID, Version: 3}, h)
+	require.ErrorIs(t, sqlitedb.Rename(staged, final), os.ErrNotExist, "a missing source moves nothing")
+}

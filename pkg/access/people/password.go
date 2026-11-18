@@ -127,7 +127,7 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 	if err := s.admitLogin(canonical); err != nil {
 		return nil, err
 	}
-	var candidate personRecord
+	var candidate PersonRecord
 	for _, record := range s.view().people {
 		if record.Username == canonical {
 			candidate = record

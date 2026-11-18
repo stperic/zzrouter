@@ -24,10 +24,10 @@ func TestConsoleGrantIssuanceCannotExhaustOwnerRecovery(t *testing.T) {
 	require.NoError(t, err)
 	// Even global normal-grant saturation leaves capacity for local recovery.
 	saturated := s.state().Clone()
-	saturated.grants = make(map[string]grantRecord)
+	saturated.grants = make(map[string]GrantRecord)
 	now := utils.NowUTC()
 	for i := range maxGrants - 1 {
-		saturated.grants[fmt.Sprintf("%064x", i)] = grantRecord{Grant: Grant{ID: fmt.Sprint(i), Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, Issuer: issuer}
+		saturated.grants[fmt.Sprintf("%064x", i)] = GrantRecord{Grant: Grant{ID: fmt.Sprint(i), Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, Issuer: issuer}
 	}
 	s.owner.current.Store(saturated)
 	_, err = s.Issue(t.Context(), GrantRequest{Purpose: PurposeSession, Issuer: issuer})

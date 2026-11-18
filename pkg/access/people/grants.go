@@ -39,7 +39,7 @@ func (s *Store) validateIssuer(ctx context.Context, state *State, issuer Issuer,
 	return nil
 }
 
-func (s *Store) validateGrant(ctx context.Context, state *State, grant grantRecord) error {
+func (s *Store) validateGrant(ctx context.Context, state *State, grant GrantRecord) error {
 	if !active(grant.Grant) {
 		return ErrInvalidGrant
 	}
@@ -95,7 +95,7 @@ func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, 
 	}
 	raw := randomValue("zzg_")
 	now := utils.NowUTC()
-	grant := grantRecord{Grant: Grant{ID: randomValue("grant_"), Purpose: request.Purpose, TeamID: request.TeamID, Role: request.Role, PersonID: request.PersonID, CreatedAt: now, ExpiresAt: now.Add(request.TTL)}, Issuer: request.Issuer}
+	grant := GrantRecord{Grant: Grant{ID: randomValue("grant_"), Purpose: request.Purpose, TeamID: request.TeamID, Role: request.Role, PersonID: request.PersonID, CreatedAt: now, ExpiresAt: now.Add(request.TTL)}, Issuer: request.Issuer}
 	event := audit.Event{Action: audit.ActionGrantIssued, Subject: grant.ID, Metadata: map[string]any{"purpose": grant.Purpose, "team_id": grant.TeamID, "role": grant.Role}}
 	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		if err := s.validateGrant(ctx, state, grant); err != nil {
@@ -202,13 +202,13 @@ func (s *Store) Exchange(ctx context.Context, token, browserProof string) (*Issu
 	return &IssuedGrant{Grant: result, Token: raw}, nil
 }
 
-func (s *Store) redeem(ctx context.Context, state *State, token, proof string, purpose Purpose) (grantRecord, error) {
+func (s *Store) redeem(ctx context.Context, state *State, token, proof string, purpose Purpose) (GrantRecord, error) {
 	grant, ok := state.grants[digest(token)]
 	if !ok || grant.Purpose != purpose || grant.BrowserHash == "" || len(token) > 256 || proof == "" || len(proof) > 4096 || subtle.ConstantTimeCompare([]byte(grant.BrowserHash), []byte(digest(proof))) != 1 {
-		return grantRecord{}, ErrInvalidGrant
+		return GrantRecord{}, ErrInvalidGrant
 	}
 	if err := s.validateGrant(ctx, state, grant); err != nil {
-		return grantRecord{}, err
+		return GrantRecord{}, err
 	}
 	now := utils.NowUTC()
 	grant.UsedAt = &now
@@ -277,7 +277,7 @@ func (s *Store) enroll(ctx context.Context, token, proof string, input CreatePer
 		}
 		now := utils.NowUTC()
 		result = Person{ID: randomValue("person_"), Username: username, Name: strings.TrimSpace(input.Name), Role: grant.Role, TeamID: grant.TeamID, Owner: purpose == PurposeSetup, Revision: randomValue(""), CreatedAt: now, UpdatedAt: now}
-		state.people[result.ID] = personRecord{Person: result, PasswordHash: hash}
+		state.people[result.ID] = PersonRecord{Person: result, PasswordHash: hash}
 		if purpose == PurposeSetup {
 			state.initialized = true
 			state.ownerID = result.ID

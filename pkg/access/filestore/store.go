@@ -63,9 +63,8 @@ type store struct {
 	people     *people.Store
 	peopleLock *os.File
 	snap       atomic.Pointer[access.Snapshot]
-	peopleView atomic.Pointer[people.State] // the people state in snap, for people.Options.View
 
-	gate   sync.Mutex // serializes key and team operations, their publish and the fields below
+	gate   sync.Mutex // serializes key, team and people commits, their publish and the fields below
 	recs   records
 	sink   audit.Sink
 	subs   []func(access.Commit)
@@ -110,7 +109,7 @@ func (s *store) openPeople(opts Options) error {
 		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) error {
 			return s.commit(ctx, peopleRecords, func(r *records) (audit.Event, error) { return change(r.people) })
 		},
-		View: s.peopleView.Load,
+		View: func() *people.State { return s.Snapshot().PeopleState() },
 	})
 	if err != nil {
 		return err
@@ -153,7 +152,6 @@ func loadPeople(path string) (*people.State, error) {
 
 // publishRecords makes recs the state every reader sees.
 func (s *store) publishRecords() {
-	s.peopleView.Store(s.recs.people)
 	s.snap.Store(access.NewSnapshot(s.recs.keys, s.recs.teams, s.recs.people))
 }
 
@@ -266,6 +264,10 @@ func (s *store) publish(ctx context.Context, f part, change func(*records) (audi
 		data, err = encodeTeams(next.teams)
 	case peopleRecords:
 		name = peopleFileName
+		// Built through the validator, so a commit never publishes what a reopen refuses.
+		if next.people, err = people.NewState(next.people.Records()); err != nil {
+			return access.Commit{}, nil, fmt.Errorf("people state: %w", err)
+		}
 		if data, err = json.Marshal(next.people); err == nil && len(data) > maxPeopleBytes {
 			return access.Commit{}, nil, people.ErrCapacity
 		}

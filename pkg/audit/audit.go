@@ -142,7 +142,7 @@ func NewFileSink(path string) (*FileSink, error) {
 // an error on sink failure; the caller decides whether to log or
 // degrade.
 func (s *FileSink) Emit(_ context.Context, ev Event) error {
-	if err := validate(ev); err != nil {
+	if err := ev.Validate(); err != nil {
 		return err
 	}
 	if ev.Time.IsZero() {
@@ -180,10 +180,10 @@ func (s *FileSink) Close() error {
 // Path returns the on-disk location; useful for diagnostics and tests.
 func (s *FileSink) Path() string { return s.path }
 
-// validate enforces the event-shape contract. Emitting an invalid
+// Validate enforces the event-shape contract. Recording an invalid
 // event would pollute the audit log with records a compliance review
 // cannot trust.
-func validate(ev Event) error {
+func (ev Event) Validate() error {
 	if ev.Action == "" {
 		return fmt.Errorf("audit: Action is required")
 	}
@@ -192,6 +192,12 @@ func validate(ev Event) error {
 	}
 	if ev.Subject == "" {
 		return fmt.Errorf("audit: Subject is required")
+	}
+	if _, err := json.Marshal(ev.Metadata); err != nil {
+		return fmt.Errorf("audit: metadata does not encode as JSON: %w", err)
+	}
+	if !utils.ValidUTF8(ev.Metadata) {
+		return fmt.Errorf("audit: metadata must be valid UTF-8")
 	}
 	return nil
 }
@@ -204,7 +210,7 @@ func Log(ctx context.Context, sink Sink, ev Event) {
 	if sink == nil {
 		return
 	}
-	if err := sink.Emit(ctx, withIdentity(ctx, ev)); err != nil {
+	if err := sink.Emit(ctx, Attribute(ctx, ev)); err != nil {
 		slog.WarnContext(ctx, "audit emit failed",
 			"action", ev.Action,
 			"subject", ev.Subject,

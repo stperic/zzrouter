@@ -83,6 +83,12 @@ func (k *VirtualKey) Validate() error {
 		return fmt.Errorf("%w: missing team_id", ErrInvalid)
 	case k.TeamRole == "":
 		return fmt.Errorf("%w: missing team_role", ErrInvalid)
+	case !utils.InRFC3339Range(k.ExpiresAt, k.SuspendedAt, &k.CreatedAt, &k.UpdatedAt, &k.LastSeenAt):
+		return fmt.Errorf("%w: a time is outside the years 0001 to 9999", ErrInvalid)
+	case !k.ValidSpendLimit():
+		return fmt.Errorf("%w: spend_limit must be a finite number", ErrInvalid)
+	case !utils.ValidUTF8(k.Metadata): // stored as JSON
+		return fmt.Errorf("%w: metadata must be valid UTF-8", ErrInvalid)
 	}
 	return nil
 }

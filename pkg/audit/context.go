@@ -13,7 +13,9 @@ func WithIdentity(ctx context.Context, actor, requestID string) context.Context 
 // ActorLocalOperator identifies a verified local installation operator.
 const ActorLocalOperator = "local:operator"
 
-func withIdentity(ctx context.Context, event Event) Event {
+// Attribute fills an event's missing actor and request ID from ctx; an actor
+// still unknown is recorded as "unknown".
+func Attribute(ctx context.Context, event Event) Event {
 	id, _ := ctx.Value(identityKey{}).(identity)
 	if event.Actor == "" {
 		event.Actor = id.actor

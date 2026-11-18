@@ -4,6 +4,7 @@ package accesstest
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"slices"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
@@ -25,8 +27,9 @@ import (
 // ValidateExternalIssuer and ValidateTeam below.
 type Harness struct {
 	Store          access.Store
-	Reopen         func() access.Store // closes Store and opens its persisted state again
-	FailNextCommit func()              // makes the next persist fail before anything is committed
+	Reopen         func() access.Store  // closes Store and opens its persisted state again
+	FailNextCommit func()               // makes the next persist fail before anything is committed
+	Events         func() []audit.Event // every event the store recorded, oldest first, open or closed
 }
 
 // Run checks every rule that holds for any access.Store.
@@ -40,6 +43,7 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"KeyRotation", testKeyRotation},
 		{"TeamLifecycle", testTeamLifecycle},
 		{"EveryCommittedStateReopens", testInvalidRecords},
+		{"TimesAtTheRFC3339BoundsReopen", testTimeBounds},
 		{"ConcurrentUpdatesLoseNothing", testConcurrentUpdates},
 		{"ApplyErrorIsReturnedUnwrapped", testApplyError},
 		{"HasGatedTeam", testHasGatedTeam},
@@ -59,6 +63,10 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"PeoplePasswordChange", testPeoplePasswordChange},
 		{"PeopleFailedCommitConsumesNothing", testPeopleFailedCommit},
 		{"PeopleSurviveReopen", testPeopleReopen},
+		{"PeopleViewMatchesSnapshot", testPeopleViewMatchesSnapshot},
+		{"PeopleConcurrentRedemption", testPeopleConcurrentRedemption},
+		{"PeopleSingleUseCodes", testPeopleSingleUseCodes},
+		{"PeopleAndKeyWritersLoseNothing", testPeopleAndKeyWriters},
 		{"PeopleCommitNotifies", testPeopleCommitNotifies},
 		{"PeopleSnapshotsDoNotChange", testPeopleSnapshotIsolation},
 	} {
@@ -70,16 +78,10 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 }
 
 type recorder struct {
+	events  func() []audit.Event
+	before  int // events recorded before observe
 	mu      sync.Mutex
-	events  []audit.Event
 	commits []access.Commit
-}
-
-func (r *recorder) Emit(_ context.Context, ev audit.Event) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, ev)
-	return nil
 }
 
 func (r *recorder) commit(c access.Commit) {
@@ -91,13 +93,12 @@ func (r *recorder) commit(c access.Commit) {
 func (r *recorder) counts() (int, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.events), len(r.commits)
+	return len(r.events()) - r.before, len(r.commits)
 }
 
 func (r *recorder) lastEvent() audit.Event {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.events[len(r.events)-1]
+	events := r.events()
+	return events[len(events)-1]
 }
 
 func (r *recorder) lastCommit() access.Commit {
@@ -106,11 +107,10 @@ func (r *recorder) lastCommit() access.Commit {
 	return r.commits[len(r.commits)-1]
 }
 
-// observe records every audit event and commit of s from now on.
-func observe(s access.Store) *recorder {
-	r := &recorder{}
-	s.SetAuditSink(r)
-	s.OnCommit(r.commit)
+// observe counts the audit events and commits of h's store from now on.
+func observe(h Harness) *recorder {
+	r := &recorder{events: h.Events, before: len(h.Events())}
+	h.Store.OnCommit(r.commit)
 	return r
 }
 
@@ -288,7 +288,7 @@ func testInvalidRecords(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(s)
+	rec := observe(h)
 	key := func(apply func(*keys.VirtualKey)) keys.VirtualKey { k := newKey("team"); apply(&k); return k }
 	team := func(apply func(*teams.Team)) teams.Team { team := sharedTeam(); apply(&team); return team }
 	for name, run := range map[string]func() error{
@@ -306,6 +306,29 @@ func testInvalidRecords(t *testing.T, h Harness) {
 		},
 		"update key to no name": func() error {
 			_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error { k.Name = ""; return nil }, audit.Event{})
+			return err
+		},
+		"create key expiring after year 9999": func() error {
+			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.ExpiresAt = new(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)) }), audit.Event{})
+			return err
+		},
+		"create key with a NaN spend limit": func() error {
+			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.SpendLimit = math.NaN() }), audit.Event{})
+			return err
+		},
+		"create key with an infinite spend limit": func() error {
+			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.SpendLimit = math.Inf(1) }), audit.Event{})
+			return err
+		},
+		"update key to a negative infinite spend limit": func() error {
+			_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error { k.SpendLimit = math.Inf(-1); return nil }, audit.Event{})
+			return err
+		},
+		"update key to expire before year 0001": func() error {
+			_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error {
+				k.ExpiresAt = new(time.Date(0, 12, 31, 23, 59, 59, 0, time.UTC))
+				return nil
+			}, audit.Event{})
 			return err
 		},
 	} {
@@ -336,6 +359,25 @@ func testInvalidRecords(t *testing.T, h Harness) {
 			_, err := s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error { team.ProviderAccess = teams.ProviderAccess{Mode: "selected"}; return nil }, audit.Event{})
 			return err
 		},
+		"create team with a NaN spend limit": func() error {
+			_, err := s.CreateTeam(t.Context(), "bad", team(func(team *teams.Team) { team.SpendLimit = math.NaN() }), audit.Event{})
+			return err
+		},
+		"create team with an infinite spend limit": func() error {
+			_, err := s.CreateTeam(t.Context(), "bad", team(func(team *teams.Team) { team.SpendLimit = math.Inf(1) }), audit.Event{})
+			return err
+		},
+		"update team to a negative infinite spend limit": func() error {
+			_, err := s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error { team.SpendLimit = math.Inf(-1); return nil }, audit.Event{})
+			return err
+		},
+		"update team suspended after year 9999": func() error {
+			_, err := s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error {
+				team.SuspendedAt = new(time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC))
+				return nil
+			}, audit.Event{})
+			return err
+		},
 	} {
 		require.ErrorIs(t, run(), teams.ErrInvalid, name)
 	}
@@ -349,6 +391,22 @@ func testInvalidRecords(t *testing.T, h Harness) {
 		assert.Equal(t, sharedTeam().Name, snap.Team("eng").Name)
 		assert.False(t, snap.Team("eng").RouteAccess.Restricted())
 		assert.False(t, snap.Team("eng").ProviderAccess.Restricted())
+	}
+}
+
+// testTimeBounds commits the first and last instants every store must hold.
+func testTimeBounds(t *testing.T, h Harness) {
+	bounds := map[string]time.Time{"last": time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), "first": time.Date(1, 2, 3, 4, 5, 6, 0, time.UTC)}
+	for id, at := range bounds {
+		key := newKey("team")
+		key.ExpiresAt = &at
+		_, _, err := h.Store.CreateKey(t.Context(), id, key, audit.Event{})
+		require.NoError(t, err, id)
+	}
+	snap := h.Reopen().Snapshot()
+	for id, at := range bounds {
+		require.NotNil(t, snap.Key(id), id)
+		assert.Equal(t, at, seconds(snap.Key(id)).ExpiresAt.UTC(), id)
 	}
 }
 
@@ -378,7 +436,7 @@ func testApplyError(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(s)
+	rec := observe(h)
 	refused := errors.New("refused by the caller")
 	_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error {
 		k.Name = "half applied"
@@ -486,8 +544,8 @@ func testKeySnapshotIsolation(t *testing.T, h Harness) {
 	stored := s.Snapshot().Key("reader")
 	assert.Equal(t, "Reader", stored.Name)
 	assert.Equal(t, "original", stored.Metadata["label"])
-	assert.True(t, expires.Equal(*stored.ExpiresAt))
-	assert.True(t, suspended.Equal(*stored.SuspendedAt))
+	assert.Equal(t, expires.Truncate(time.Second), stored.ExpiresAt.Truncate(time.Second))
+	assert.Equal(t, suspended.Truncate(time.Second), stored.SuspendedAt.Truncate(time.Second))
 
 	before := s.Snapshot()
 	metadata := map[string]string{"label": "applied"}
@@ -534,7 +592,7 @@ func testTeamSnapshotIsolation(t *testing.T, h Harness) {
 	assert.Equal(t, []string{"coding"}, stored.RouteAccess.Routes)
 	assert.Equal(t, []string{"ollama"}, stored.ProviderAccess.Providers)
 	assert.Equal(t, "original", stored.Metadata["label"])
-	assert.True(t, suspended.Equal(*stored.SuspendedAt))
+	assert.Equal(t, suspended.Truncate(time.Second), stored.SuspendedAt.Truncate(time.Second))
 
 	before := s.Snapshot()
 	updated, err := s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error {
@@ -549,8 +607,7 @@ func testTeamSnapshotIsolation(t *testing.T, h Harness) {
 
 func testCommitNotifications(t *testing.T, h Harness) {
 	s := h.Store
-	rec, second := observe(s), &recorder{}
-	s.OnCommit(second.commit)
+	rec, second := observe(h), observe(h)
 	_, raw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
 	require.NoError(t, err)
 	c := rec.lastCommit()
@@ -612,7 +669,7 @@ func testSubscriberReentry(t *testing.T, h Harness) {
 
 func testAuditEvents(t *testing.T, h Harness) {
 	s := h.Store
-	rec := observe(s)
+	rec := observe(h)
 	steps := []struct {
 		ev  audit.Event
 		run func(audit.Event) error
@@ -660,7 +717,7 @@ func testPersistFailure(t *testing.T, h Harness) {
 	_, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(s)
+	rec := observe(h)
 	for name, run := range map[string]func() error{
 		"create key": func() error {
 			_, _, err := s.CreateKey(t.Context(), "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
@@ -707,7 +764,7 @@ func testCanceledContext(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(s)
+	rec := observe(h)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, _, err := s.CreateKey(ctx, "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
@@ -738,7 +795,8 @@ func testClosedStore(t *testing.T, h Harness) {
 	_, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(s)
+	owner := claimOwner(t, s)
+	rec := observe(h)
 	last := s.Snapshot()
 	require.NoError(t, s.Close())
 	for name, run := range map[string]func() error{
@@ -746,6 +804,7 @@ func testClosedStore(t *testing.T, h Harness) {
 			_, _, err := s.CreateKey(t.Context(), "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
 			return err
 		},
+		"people": func() error { return s.People().UpdateProgress(t.Context(), people.ProgressUpdate{Step: new("app")}) },
 		"update key": func() error {
 			_, err := s.UpdateKey(t.Context(), "reader", func(*keys.VirtualKey) error { return nil }, audit.Event{})
 			return err
@@ -766,6 +825,8 @@ func testClosedStore(t *testing.T, h Harness) {
 	assert.Zero(t, events, "a closed store records nothing")
 	assert.Zero(t, commits)
 	assert.Same(t, last, s.Snapshot(), "a closed store keeps its last published snapshot")
+	assert.True(t, s.Snapshot().Initialized(), "the snapshot keeps its people")
+	assert.Equal(t, seconds(owner), seconds(s.Snapshot().Owner()))
 	snap := h.Reopen().Snapshot()
 	id, _ := snap.ValidateRawKey(oldRaw)
 	assert.Equal(t, "reader", id)
@@ -776,7 +837,7 @@ func testClosedStore(t *testing.T, h Harness) {
 
 func testConcurrentCreates(t *testing.T, h Harness) {
 	s := h.Store
-	rec := observe(s)
+	rec := observe(h)
 	const callers = 4
 	start := make(chan struct{})
 	results := make(chan error, callers)
@@ -827,10 +888,10 @@ func fullTeam() teams.Team {
 	}
 }
 
-// requireAllSet fails for every exported field left zero, except those named;
-// KeyEnv excludes HashedKey and nothing stores LastSeenAt yet.
-func requireAllSet(t *testing.T, record any, except ...string) {
-	t.Helper()
+// zeroFields lists the exported fields of *record left zero, nested structs
+// field by field, except those named.
+func zeroFields(record any, except ...string) []string {
+	var zero []string
 	var walk func(reflect.Value, string)
 	walk = func(v reflect.Value, path string) {
 		for i := range v.NumField() {
@@ -841,11 +902,39 @@ func requireAllSet(t *testing.T, record any, except ...string) {
 			case value.Kind() == reflect.Struct && value.Type() != reflect.TypeFor[time.Time]():
 				walk(value, name+".")
 			case value.IsZero():
-				t.Errorf("%s is zero: set it so the round trip covers it", name)
+				zero = append(zero, name)
 			}
 		}
 	}
 	walk(reflect.ValueOf(record).Elem(), "")
+	return zero
+}
+
+// requireAllSet fails for every exported field left zero, except those named;
+// KeyEnv excludes HashedKey and nothing stores LastSeenAt yet.
+func requireAllSet(t *testing.T, record any, except ...string) {
+	t.Helper()
+	for _, name := range zeroFields(record, except...) {
+		t.Errorf("%s is zero: set it so the round trip covers it", name)
+	}
+}
+
+// requireCovered fails for every exported field that no record sets, so a
+// field added later cannot leave the round trip unnoticed.
+func requireCovered[T any](t *testing.T, records []T, except ...string) {
+	t.Helper()
+	require.NotEmpty(t, records)
+	unset := make(map[string]int)
+	for i := range records {
+		for _, name := range zeroFields(&records[i], except...) {
+			unset[name]++
+		}
+	}
+	for name, n := range unset {
+		if n == len(records) {
+			t.Errorf("%s is zero in every record: set it in one so the round trip covers it", name)
+		}
+	}
 }
 
 // seconds drops what a store may not keep below second precision.

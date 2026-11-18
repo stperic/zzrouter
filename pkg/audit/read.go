@@ -122,7 +122,7 @@ func scanWindow(ctx context.Context, data []byte, start int64, limit int, page *
 		}
 		line := data[lineStart : end-1]
 		var event Event
-		if len(line) > maxLine || json.Unmarshal(line, &event) != nil || validate(event) != nil {
+		if len(line) > maxLine || json.Unmarshal(line, &event) != nil || event.Validate() != nil {
 			page.Skipped++
 		} else {
 			page.Events = append(page.Events, event)

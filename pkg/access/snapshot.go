@@ -113,7 +113,10 @@ func (s *Snapshot) Teams() iter.Seq2[string, *teams.Team] {
 // The anonymous compat gate reads it on every keyless request.
 func (s *Snapshot) HasGatedTeam() bool { return s != nil && s.gated }
 
-func (s *Snapshot) peopleState() *people.State {
+// PeopleState returns the published people state, nil for none. A store's
+// people View reads it, so what people transitions read never runs ahead of
+// the snapshot.
+func (s *Snapshot) PeopleState() *people.State {
 	if s == nil {
 		return nil
 	}
@@ -121,27 +124,27 @@ func (s *Snapshot) peopleState() *people.State {
 }
 
 // Person returns one account, or nil.
-func (s *Snapshot) Person(id string) *people.Person { return s.peopleState().Person(id) }
+func (s *Snapshot) Person(id string) *people.Person { return s.PeopleState().Person(id) }
 
 // People lists accounts by username.
-func (s *Snapshot) People() []people.Person { return s.peopleState().People() }
+func (s *Snapshot) People() []people.Person { return s.PeopleState().People() }
 
 // Owner returns the initial owner, or nil.
-func (s *Snapshot) Owner() *people.Person { return s.peopleState().Owner() }
+func (s *Snapshot) Owner() *people.Person { return s.PeopleState().Owner() }
 
 // Initialized reports the permanent owner-claim marker.
-func (s *Snapshot) Initialized() bool { return s.peopleState().Initialized() }
+func (s *Snapshot) Initialized() bool { return s.PeopleState().Initialized() }
 
 // Progress returns the persisted onboarding state.
-func (s *Snapshot) Progress() people.Progress { return s.peopleState().Progress() }
+func (s *Snapshot) Progress() people.Progress { return s.PeopleState().Progress() }
 
 // Invitations lists invitation and recovery grants, newest first.
-func (s *Snapshot) Invitations() []people.Grant { return s.peopleState().Invitations() }
+func (s *Snapshot) Invitations() []people.Grant { return s.PeopleState().Invitations() }
 
 // TeamImpact counts the people and pending enrollments that use teamID.
 func (s *Snapshot) TeamImpact(teamID string) people.TeamDependencies {
-	return s.peopleState().TeamImpact(teamID)
+	return s.PeopleState().TeamImpact(teamID)
 }
 
 // OwnerTeam reports whether teamID is the owner's team.
-func (s *Snapshot) OwnerTeam(teamID string) bool { return s.peopleState().OwnerTeam(teamID) }
+func (s *Snapshot) OwnerTeam(teamID string) bool { return s.PeopleState().OwnerTeam(teamID) }

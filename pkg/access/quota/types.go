@@ -22,6 +22,7 @@
 package quota
 
 import (
+	"math"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -36,6 +37,12 @@ type QuotaConfig struct {
 	SpendLimit          float64 `yaml:"spend_limit,omitempty" json:"spend_limit,omitempty"`   // USD, display only — tracker uses microdollars internally
 	ResetPeriod         string  `yaml:"reset_period,omitempty" json:"reset_period,omitempty"` // "daily", "weekly", "monthly"
 	DefaultMaxTokens    int     `yaml:"default_max_tokens,omitempty" json:"default_max_tokens,omitempty"`
+}
+
+// ValidSpendLimit reports whether the spend limit is a finite number, which
+// every access store can hold.
+func (q *QuotaConfig) ValidSpendLimit() bool {
+	return !math.IsNaN(q.SpendLimit) && !math.IsInf(q.SpendLimit, 0)
 }
 
 // SpendLimitMicro returns the spend limit as microdollars (int64).

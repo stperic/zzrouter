@@ -22,7 +22,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
-// validateExternalIssuer runs with the people mutex held, so it never reads a person.
+// validateExternalIssuer runs inside a people commit, under the access store's writer gate, so it never reads a person.
 func (s *Server) validateExternalIssuer(_ context.Context, value string) error {
 	if s.ownerRecovery != nil && s.ownerRecovery.ValidReference(value) {
 		return nil

@@ -107,15 +107,31 @@ func (d *DB) CopyTo(ctx context.Context, dst string) (err error) {
 	return syncFile(dst)
 }
 
+// Rename moves a closed database file and syncs the destination directory, so
+// the move survives a power loss. Windows refuses to move an open file.
+func Rename(from, to string) error {
+	if err := os.Rename(from, to); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(to))
+}
+
 func syncFile(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
-	if err = errors.Join(f.Sync(), f.Close()); err != nil || runtime.GOOS == "windows" {
+	if err = errors.Join(f.Sync(), f.Close()); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	return syncDir(filepath.Dir(path))
+}
+
+func syncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}

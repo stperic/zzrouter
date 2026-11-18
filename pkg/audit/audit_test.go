@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,3 +198,23 @@ func TestLog_SwallowsSinkErrors(t *testing.T) {
 type errSink struct{}
 
 func (errSink) Emit(_ context.Context, _ Event) error { return os.ErrClosed }
+
+func TestValidateRefusesMetadataJSONWouldAlter(t *testing.T) {
+	t.Parallel()
+	valid := Event{Action: ActionKeyCreated, Actor: "a", Subject: "s", Metadata: map[string]any{"purpose": "setup", "n": 1.5, "list": []any{"x"}}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid metadata refused: %v", err)
+	}
+	for name, metadata := range map[string]map[string]any{
+		"invalid UTF-8 key":    {"bad\xffname": 1},
+		"invalid UTF-8 nested": {"list": []any{map[string]any{"k": "bad\xff"}}},
+		"NaN":                  {"n": math.NaN()},
+		"unencodable":          {"c": make(chan int)},
+	} {
+		ev := valid
+		ev.Metadata = metadata
+		if err := ev.Validate(); err == nil {
+			t.Errorf("%s: metadata accepted", name)
+		}
+	}
+}

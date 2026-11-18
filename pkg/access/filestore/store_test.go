@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,11 +28,13 @@ func TestStoreContract(t *testing.T) {
 	accesstest.Run(t, func(t *testing.T) accesstest.Harness {
 		dir := t.TempDir()
 		var fail atomic.Bool
+		sink := &recordedEvents{}
 		open := func() access.Store {
 			opened, err := Open(t.Context(), dir, contractOptions)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = opened.Close() })
 			s := opened.(*store)
+			s.SetAuditSink(sink)
 			s.write = func(path string, data []byte, mode os.FileMode) error {
 				if fail.CompareAndSwap(true, false) {
 					return io.ErrClosedPipe
@@ -43,6 +47,7 @@ func TestStoreContract(t *testing.T) {
 		return accesstest.Harness{
 			Store:          current,
 			FailNextCommit: func() { fail.Store(true) },
+			Events:         sink.all,
 			Reopen: func() access.Store {
 				require.NoError(t, current.Close())
 				current = open()
@@ -313,11 +318,22 @@ func TestPeopleLockAndCorruptLoadRelease(t *testing.T) {
 }
 
 // recordedEvents is an audit sink a test reads after the fact.
-type recordedEvents struct{ events []audit.Event }
+type recordedEvents struct {
+	mu     sync.Mutex
+	events []audit.Event
+}
 
 func (r *recordedEvents) Emit(_ context.Context, ev audit.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, ev)
 	return nil
+}
+
+func (r *recordedEvents) all() []audit.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.events)
 }
 
 func TestPostRenameWarningPublishesCommittedClaim(t *testing.T) {
@@ -339,9 +355,10 @@ func TestPostRenameWarningPublishesCommittedClaim(t *testing.T) {
 	person, err := s.People().ClaimOwner(ctx, bound.Token, "browser proof", people.CreatePerson{Username: "alice", Name: "Alice", Password: "a long test password"})
 	require.NoError(t, err)
 	assert.Equal(t, person, s.Snapshot().Owner())
-	require.Len(t, sink.events, 1, "committed state is audited despite uncertain directory durability")
-	assert.Equal(t, audit.ActionPersonCreated, sink.events[0].Action)
-	assert.Equal(t, "claim-request", sink.events[0].RequestID)
+	events := sink.all()
+	require.Len(t, events, 1, "committed state is audited despite uncertain directory durability")
+	assert.Equal(t, audit.ActionPersonCreated, events[0].Action)
+	assert.Equal(t, "claim-request", events[0].RequestID)
 	require.NoError(t, s.Close())
 	reopened, err := Open(t.Context(), dir, contractOptions)
 	require.NoError(t, err)

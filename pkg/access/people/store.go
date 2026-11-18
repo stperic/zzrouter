@@ -25,12 +25,14 @@ const (
 	maxGrants = 4096
 )
 
-type personRecord struct {
+// PersonRecord is a stored account with its password hash.
+type PersonRecord struct {
 	Person
 	PasswordHash string `json:"password_hash"`
 }
 
-type grantRecord struct {
+// GrantRecord is a stored grant with its issuer and browser binding.
+type GrantRecord struct {
 	Grant
 	Issuer      Issuer `json:"issuer"`
 	BrowserHash string `json:"browser_hash,omitempty"`
@@ -41,25 +43,31 @@ type grantRecord struct {
 type State struct {
 	initialized bool
 	ownerID     string
-	people      map[string]personRecord
-	grants      map[string]grantRecord
+	people      map[string]PersonRecord
+	grants      map[string]GrantRecord
 	progress    Progress
+}
+
+// Records is a State's plain transfer form, for an owner that stores records
+// rather than JSON: people by ID, grants by token digest.
+type Records struct {
+	Initialized bool                    `json:"initialized"`
+	OwnerID     string                  `json:"owner_id,omitempty"`
+	People      map[string]PersonRecord `json:"people"`
+	Grants      map[string]GrantRecord  `json:"grants"`
+	Progress    Progress                `json:"progress"`
 }
 
 // stateJSON is the persisted form of State.
 type stateJSON struct {
-	Version     int                     `json:"version"`
-	Initialized bool                    `json:"initialized"`
-	OwnerID     string                  `json:"owner_id,omitempty"`
-	People      map[string]personRecord `json:"people"`
-	Grants      map[string]grantRecord  `json:"grants"`
-	Progress    Progress                `json:"progress"`
+	Version int `json:"version"`
+	Records
 }
 
 // Clone is the private copy a transition changes; a nil State clones as empty.
 func (s *State) Clone() *State {
 	if s == nil {
-		return &State{people: make(map[string]personRecord), grants: make(map[string]grantRecord)}
+		return &State{people: make(map[string]PersonRecord), grants: make(map[string]GrantRecord)}
 	}
 	next := *s
 	next.people = maps.Clone(s.people)
@@ -67,10 +75,33 @@ func (s *State) Clone() *State {
 	return &next
 }
 
-// MarshalJSON writes the persisted form; Clone gives a nil State its empty maps.
-func (s *State) MarshalJSON() ([]byte, error) {
+// NewState validates r and builds a State that shares nothing with it.
+func NewState(r Records) (*State, error) {
+	state := &State{initialized: r.Initialized, ownerID: r.OwnerID, people: make(map[string]PersonRecord, len(r.People)), grants: make(map[string]GrantRecord, len(r.Grants)), progress: r.Progress}
+	maps.Copy(state.people, r.People)
+	for hash, grant := range r.Grants {
+		grant.Grant = grant.copyTimes()
+		state.grants[hash] = grant
+	}
+	if err := state.validate(); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// Records returns a copy of the state's records; a nil State has none.
+func (s *State) Records() Records {
 	s = s.Clone()
-	return json.Marshal(stateJSON{Version: 1, Initialized: s.initialized, OwnerID: s.ownerID, People: s.people, Grants: s.grants, Progress: s.progress})
+	for hash, grant := range s.grants {
+		grant.Grant = grant.copyTimes()
+		s.grants[hash] = grant
+	}
+	return Records{Initialized: s.initialized, OwnerID: s.ownerID, People: s.people, Grants: s.grants, Progress: s.progress}
+}
+
+// MarshalJSON writes the persisted form.
+func (s *State) MarshalJSON() ([]byte, error) {
+	return json.Marshal(stateJSON{Version: 1, Records: s.Records()})
 }
 
 // DecodeState validates persisted account state.
@@ -87,11 +118,7 @@ func DecodeState(data []byte) (*State, error) {
 	if wire.Version != 1 || wire.People == nil || wire.Grants == nil {
 		return nil, fmt.Errorf("invalid people snapshot structure")
 	}
-	state := &State{initialized: wire.Initialized, ownerID: wire.OwnerID, people: wire.People, grants: wire.Grants, progress: wire.Progress}
-	if err := state.validate(); err != nil {
-		return nil, err
-	}
-	return state, nil
+	return NewState(wire.Records)
 }
 
 func (s *State) validate() error {
@@ -282,8 +309,8 @@ func active(grant Grant) bool {
 	return grant.UsedAt == nil && grant.RevokedAt == nil && utils.NowUTC().Before(grant.ExpiresAt)
 }
 
-func publicGrant(record grantRecord) Grant {
-	g := record.Grant
+// copyTimes gives g time pointers of its own, so no two holders share one.
+func (g Grant) copyTimes() Grant {
 	if g.UsedAt != nil {
 		value := *g.UsedAt
 		g.UsedAt = &value
@@ -292,6 +319,11 @@ func publicGrant(record grantRecord) Grant {
 		value := *g.RevokedAt
 		g.RevokedAt = &value
 	}
+	return g
+}
+
+func publicGrant(record GrantRecord) Grant {
+	g := record.copyTimes()
 	switch {
 	case g.UsedAt != nil:
 		g.Status = "accepted"
