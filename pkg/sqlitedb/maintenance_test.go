@@ -11,6 +11,8 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stretchr/testify/require"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func TestCopyToPurgesDeletedContent(t *testing.T) {
@@ -78,6 +80,33 @@ func TestCheckCorruptPage(t *testing.T) {
 			require.Equal(t, name, failure.Check)
 			require.NotEmpty(t, failure.Detail)
 			require.NotContains(t, failure.Detail, "<nil>")
+		})
+	}
+}
+
+func TestCheckCorruptQueryError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "truncated.sqlite")
+	db := createDB(t, path, testSchema(t))
+	// Drop the cached connection so the next query reads the damaged file.
+	db.SQL().SetMaxIdleConns(0)
+	require.NoError(t, os.Truncate(path, 256))
+	for _, full := range []bool{false, true} {
+		name := map[bool]string{false: "quick_check", true: "integrity_check"}[full]
+		t.Run(name, func(t *testing.T) {
+			// Prove this fixture fails the query, rather than returning a check result row.
+			rows, err := db.SQL().QueryContext(t.Context(), "PRAGMA "+name)
+			if rows != nil {
+				require.NoError(t, rows.Close())
+			}
+			var corrupt *sqlite.Error
+			require.ErrorAs(t, err, &corrupt)
+			require.Equal(t, sqlite3.SQLITE_CORRUPT, corrupt.Code()&0xff)
+			err = db.Check(t.Context(), full)
+			var failure *sqlitedb.CheckError
+			require.ErrorAs(t, err, &failure)
+			require.IsType(t, &sqlitedb.CheckError{}, err)
+			require.Equal(t, name, failure.Check)
+			require.NotEmpty(t, failure.Detail)
 		})
 	}
 }

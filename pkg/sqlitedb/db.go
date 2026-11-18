@@ -92,7 +92,7 @@ func Probe(ctx context.Context, path string) (h Header, err error) {
 	defer func() { err = openError(path, err) }()
 	if _, err = os.Stat(path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return h, fmt.Errorf("%w: %s", ErrNotExist, path)
+			return h, ErrNotExist
 		}
 		return h, err
 	}
@@ -124,7 +124,7 @@ func Open(ctx context.Context, path string, s Schema) (*DB, error) {
 		return nil, fmt.Errorf("%w: got %d, latest %d", ErrNewer, h.Version, latest)
 	}
 	if h.Version < 0 {
-		return nil, fmt.Errorf("invalid schema version: %d", h.Version)
+		return nil, fmt.Errorf("%w: invalid schema version: %d", ErrUnreadable, h.Version)
 	}
 	if err := security.RestrictFilePermissions(path); err != nil {
 		return nil, openError(path, err)
@@ -171,6 +171,8 @@ func Create(ctx context.Context, path string, s Schema, init func(*sql.Tx) error
 func (d *DB) SQL() *sql.DB { return d.db }
 
 // Close blocks until in-flight work returns and releases the file before returning.
+// It must never be called while the caller holds a *sql.Tx, *sql.Rows, or *sql.Conn
+// obtained from SQL(), because it waits for the one connection.
 func (d *DB) Close() error {
 	conn, err := d.db.Conn(d.detached)
 	closed := d.db.Close()

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,10 +117,12 @@ func TestOpenRefusals(t *testing.T) {
 	db, err := sqlitedb.Open(t.Context(), path, s)
 	require.Nil(t, db)
 	require.ErrorIs(t, err, sqlitedb.ErrNotExist)
+	require.Equal(t, 1, strings.Count(err.Error(), path))
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
 	_, err = sqlitedb.Probe(t.Context(), path)
 	require.ErrorIs(t, err, sqlitedb.ErrNotExist)
+	require.Equal(t, 1, strings.Count(err.Error(), path))
 	for _, name := range []string{"foreign", "newer"} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "store.sqlite")
@@ -249,6 +252,15 @@ func TestProbeAndOpenFileErrors(t *testing.T) {
 				require.ErrorIs(t, err, sqlitedb.ErrUnreadable)
 				require.ErrorContains(t, err, path)
 			})
+			t.Run("truncated", func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "truncated.sqlite")
+				db := createDB(t, path, s)
+				require.NoError(t, db.Close())
+				require.NoError(t, os.Truncate(path, 256))
+				err := operation(t.Context(), path)
+				require.ErrorIs(t, err, sqlitedb.ErrUnreadable)
+				require.ErrorContains(t, err, path)
+			})
 			t.Run("directory", func(t *testing.T) {
 				path := t.TempDir()
 				err := operation(t.Context(), path)
@@ -259,6 +271,29 @@ func TestProbeAndOpenFileErrors(t *testing.T) {
 			})
 		})
 	}
+	t.Run("open/unparseable_schema", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "unparseable.sqlite")
+		db := createDB(t, path, s)
+		require.NoError(t, db.Close())
+		raw := rawDB(t, path)
+		execSQL(t, raw, `PRAGMA writable_schema=ON;
+			INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)
+			VALUES('table','future','future',0,'CREATE TABLE future(x FUTURE SYNTAX !!!)');
+			PRAGMA writable_schema=OFF;`)
+		require.NoError(t, raw.Close())
+		h, err := sqlitedb.Probe(t.Context(), path)
+		require.NoError(t, err)
+		latest, err := s.Latest()
+		require.NoError(t, err)
+		require.Equal(t, sqlitedb.Header{AppID: s.AppID, Version: latest}, h)
+		opened, err := sqlitedb.Open(t.Context(), path, s)
+		if opened != nil {
+			require.NoError(t, opened.Close())
+		}
+		require.Nil(t, opened)
+		require.ErrorIs(t, err, sqlitedb.ErrUnreadable)
+		require.ErrorContains(t, err, path)
+	})
 }
 
 func TestOpenNegativeVersion(t *testing.T) {
@@ -272,7 +307,7 @@ func TestOpenNegativeVersion(t *testing.T) {
 	if opened != nil {
 		require.NoError(t, opened.Close())
 	}
-	require.Error(t, err)
+	require.ErrorIs(t, err, sqlitedb.ErrUnreadable)
 	require.Nil(t, opened)
 }
 
