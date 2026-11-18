@@ -228,7 +228,13 @@ limits. The browser does not implement a second policy engine.
 Settings opens the shared right-side panel. Apply a system prompt, temperature,
 top-p, output-token limit and optional node for the next request. Blank numeric
 values use model defaults. Display controls show returned reasoning and response
-statistics; only reported usage/cost is shown. Stop cancels the request; New chat
+statistics. Chat reads token counts and available timing metrics from the
+existing Chat Completions stream. It accepts llama.cpp-style timings, Groq usage
+timings and vLLM's optional per-request metrics. vLLM reports first-token latency
+and generation time when `enable-per-request-metrics` is enabled on its server.
+An asterisk marks browser measurements and calculations, including total elapsed
+time. When provider timings are unavailable, Chat shows browser-measured time to
+first token and output stream time as available. Stop cancels the request. New chat
 clears the conversation, draft and settings after confirmation. Regenerate explicitly requests a new
 response. No inference request is automatically retried. Partial output remains
 visible on stream failure, with a distinct stopped/error outcome.
