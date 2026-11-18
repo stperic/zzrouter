@@ -405,9 +405,9 @@ headers, sampling and restart-required activation.
 
 ## Budget pricing
 
-Set `models.pricing.enabled: true` to use the pricing table. Administrators can
-POST rates to `/zzrouter/v1/pricing/overrides`; an explicit zero rate declares
-free inference. Enable pricing before posting overrides.
+Pricing is enabled by default. Set `models.pricing.enabled: false` in `node.yaml`
+and restart the node to disable it. Administrators can POST rates to
+`/zzrouter/v1/pricing/overrides`; an explicit zero rate declares free inference.
 Recognized launched engines and served Ollama default to zero, with operator
 overrides taking precedence. Ollama Cloud and arbitrary external endpoints do
 not inherit local-free pricing.

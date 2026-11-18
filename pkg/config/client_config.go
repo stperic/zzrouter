@@ -67,12 +67,9 @@ type PricingConfig struct {
 	RefreshInterval string `mapstructure:"refresh_interval" yaml:"refresh_interval,omitempty"`
 }
 
-// IsEnabled returns true if pricing is enabled (default: false).
+// IsEnabled returns true unless pricing was explicitly disabled.
 func (c *PricingConfig) IsEnabled() bool {
-	if c.Enabled == nil {
-		return false
-	}
-	return *c.Enabled
+	return c.Enabled == nil || *c.Enabled
 }
 
 // GetSource returns the pricing data source URL, falling back to the

@@ -91,6 +91,27 @@ auth:
 	assert.Equal(t, "test-server", config.Node.Name)
 }
 
+func TestLoadNodeConfig_PricingEnabledByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		pricing string
+		enabled bool
+	}{
+		{name: "omitted", enabled: true},
+		{name: "enabled", pricing: "models:\n  pricing:\n    enabled: true\n", enabled: true},
+		{name: "disabled", pricing: "models:\n  pricing:\n    enabled: false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			content := "node:\n  bind: localhost\n  port: 9090\ncluster:\n  mode: disabled\n" + tc.pricing
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "node.yaml"), []byte(content), 0o600))
+			cfg, err := NewConfigManager("test-app").LoadNodeConfigFromDir(dir)
+			require.NoError(t, err)
+			assert.Equal(t, tc.enabled, cfg.Models.Pricing.IsEnabled())
+		})
+	}
+}
+
 // A fresh node answers keyless inference only where nobody else can reach
 // it, so a template that binds every interface must require a key.
 func TestNodeTemplate_KeylessInferenceOnlyOnLoopback(t *testing.T) {

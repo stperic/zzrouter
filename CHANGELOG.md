@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Enable model pricing by default. An explicit `models.pricing.enabled: false`
+  in `node.yaml` still disables it.
+
 - Simplify TUI parameter editing around scoped overrides and changed-leaf
   patches. Protect drafts and pending writes, reject obsolete replies, and
   require refresh after uncertain outcomes. Share responsive tables, forms,
