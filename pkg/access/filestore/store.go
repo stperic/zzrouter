@@ -106,8 +106,16 @@ func (s *store) openPeople(opts Options) error {
 	var err error
 	s.people, err = people.New(people.Options{
 		ValidateExternalIssuer: opts.ValidateExternalIssuer, ValidateTeam: validateTeam,
-		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) error {
-			return s.commit(ctx, peopleRecords, func(r *records) (audit.Event, error) { return change(r.people) })
+		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) (*people.State, error) {
+			var committed *records // publish leaves the published people state here
+			err := s.commit(ctx, peopleRecords, func(r *records) (audit.Event, error) {
+				committed = r
+				return change(r.people)
+			})
+			if err != nil {
+				return nil, err
+			}
+			return committed.people, nil
 		},
 		View: func() *people.State { return s.Snapshot().PeopleState() },
 	})

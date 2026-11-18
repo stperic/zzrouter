@@ -123,10 +123,12 @@ func (j jsonText) Value() (driver.Value, error) {
 	return string(data), nil
 }
 
+// Scan replaces the target rather than decoding into it: the target may be a
+// map someone else holds.
 func (j jsonText) Scan(src any) error {
+	reflect.ValueOf(j.v).Elem().SetZero()
 	switch src := src.(type) {
 	case nil:
-		reflect.ValueOf(j.v).Elem().SetZero()
 		return nil
 	case string:
 		return json.Unmarshal([]byte(src), j.v)
@@ -279,7 +281,7 @@ func scanAll[R any](ctx context.Context, db querier, cols func(*R) []col, keep f
 	for rows.Next() {
 		r := new(R)
 		if err := rows.Scan(ptrs(cols(r))...); err != nil {
-			return err
+			return fmt.Errorf("%w: %w", errBroken, err)
 		}
 		keep(r)
 	}

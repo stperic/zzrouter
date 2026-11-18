@@ -247,7 +247,9 @@ func TestUncertainCommit(t *testing.T) {
 			assert.Nil(t, snap.Key("reader"), "the snapshot admits no one")
 			assert.Nil(t, snap.Team("workspace"))
 			assert.Empty(t, snap.People())
-			assert.False(t, snap.Initialized())
+			assert.True(t, snap.HasGatedTeam(), "keyless callers stay refused")
+			assert.True(t, snap.Initialized(), "setup cannot start")
+			assert.Nil(t, snap.Owner())
 			_, err = s.People().Authenticate(t.Context(), "owner", testPassword)
 			require.ErrorIs(t, err, people.ErrInvalidCredentials)
 			_, err = s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
@@ -376,9 +378,16 @@ func TestPublishedStateIsStoredState(t *testing.T) {
 	invitation := bound(t, s, people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: "eng", Role: "user"})
 	member, err := s.People().AcceptInvitation(t.Context(), invitation.Token, testProof, people.CreatePerson{Username: "member", Name: "Member", Password: testPassword})
 	require.NoError(t, err)
+	assert.Equal(t, owner, s.Snapshot().Owner(), "people answer in stored form")
+	assert.Equal(t, member, s.Snapshot().Person(member.ID))
 	bound(t, s, people.GrantRequest{Purpose: people.PurposeSession})
-	_, err = s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeRecovery, TeamID: "eng", PersonID: member.ID, Issuer: installationIssuer})
+	recovery, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeRecovery, TeamID: "eng", PersonID: member.ID, Issuer: installationIssuer})
 	require.NoError(t, err)
+	for _, grant := range s.Snapshot().Invitations() {
+		if grant.ID == recovery.ID {
+			assert.Equal(t, recovery.Grant, grant)
+		}
+	}
 	require.NoError(t, s.People().UpdateProgress(t.Context(), people.ProgressUpdate{Dismissed: new(true)}))
 	require.NoError(t, s.People().MarkResponse(t.Context(), owner.ID))
 	published := viewOf(s.Snapshot())
@@ -421,4 +430,32 @@ func TestRefusedEventChangesNothing(t *testing.T) {
 	_, _, _, sequence := s.Meta()
 	assert.EqualValues(t, 1, sequence, "a refused event commits nothing")
 	assert.Empty(t, storedEvents(t, dir))
+}
+
+// TestCallerMetadataIsNotRewritten leaves the caller's event metadata as it
+// was, whether the commit succeeds, is refused or only records an event.
+func TestCallerMetadataIsNotRewritten(t *testing.T) {
+	t.Parallel()
+	s := openStore(t, t.TempDir(), Options{})
+	metadata := func() map[string]any {
+		return map[string]any{"count": 3, "fields": map[string]string{"name": "changed"}, "purpose": people.PurposeInvitation}
+	}
+	shared := metadata()
+	event := audit.Event{Action: audit.ActionKeyCreated, Subject: "reader", Metadata: shared}
+	_, _, err := s.CreateKey(t.Context(), "reader", readerKey(), event)
+	require.NoError(t, err)
+	assert.Equal(t, metadata(), shared, "after a commit")
+	s.beforeCommit = func(*sql.Tx) error { return errInjected }
+	_, err = s.UpdateKey(t.Context(), "reader", func(*keys.VirtualKey) error { return nil }, event)
+	require.ErrorIs(t, err, errInjected)
+	s.beforeCommit = nil
+	assert.Equal(t, metadata(), shared, "after a refused commit")
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			s.Record(context.Background(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader", Metadata: shared})
+		})
+	}
+	wg.Wait()
+	assert.Equal(t, metadata(), shared, "after concurrent records")
 }

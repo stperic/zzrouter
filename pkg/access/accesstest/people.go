@@ -137,8 +137,8 @@ func testPeopleOwnerSetup(t *testing.T, h Harness) {
 
 	snap := s.Snapshot()
 	assert.True(t, snap.Initialized())
-	assert.Equal(t, seconds(owner), seconds(snap.Owner()))
-	assert.Equal(t, seconds(owner), seconds(snap.Person(owner.ID)))
+	assert.Equal(t, owner, snap.Owner())
+	assert.Equal(t, owner, snap.Person(owner.ID))
 	assert.True(t, snap.OwnerTeam("workspace"))
 	assert.Equal(t, "workspace", owner.TeamID)
 	assert.True(t, owner.Owner)
@@ -155,7 +155,7 @@ func testPeopleInvitation(t *testing.T, h Harness) {
 	assert.Equal(t, "user", member.Role)
 	assert.False(t, member.Owner)
 	snap := s.Snapshot()
-	assert.Equal(t, seconds(member), seconds(snap.Person(member.ID)))
+	assert.Equal(t, member, snap.Person(member.ID))
 	assert.Len(t, snap.People(), 2)
 	assert.Equal(t, 1, snap.TeamImpact("eng").People)
 	assert.Equal(t, "accepted", snap.Invitations()[0].Status)
@@ -248,6 +248,45 @@ func testPeopleReopen(t *testing.T, h Harness) {
 	snap = reopened.Snapshot()
 	assert.NotNil(t, snap.Key("reader"), "people commits keep the keys")
 	assert.NotNil(t, snap.Team("eng"), "people commits keep the teams")
+}
+
+// testPeopleResults requires every people operation to answer with the record
+// the snapshot then holds, in the store's own form, with no tolerance.
+func testPeopleResults(t *testing.T, h Harness) {
+	s := h.Store
+	invitation := func(g *people.IssuedGrant) people.Grant {
+		for _, grant := range s.Snapshot().Invitations() {
+			if grant.ID == g.ID {
+				return grant
+			}
+		}
+		return people.Grant{}
+	}
+	owner := claimOwner(t, s)
+	assert.Equal(t, owner, s.Snapshot().Owner(), "ClaimOwner")
+	createTeam(t, s, "eng", sharedTeam())
+	issued, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: "eng", Role: "user", Issuer: people.Issuer{Reference: installation}})
+	require.NoError(t, err)
+	assert.Equal(t, issued.Grant, invitation(issued), "Issue")
+	bound, err := s.People().Exchange(t.Context(), issued.Token, proof)
+	require.NoError(t, err)
+	assert.Equal(t, bound.Grant, invitation(bound), "Exchange")
+	member, err := s.People().AcceptInvitation(t.Context(), bound.Token, proof, people.CreatePerson{Username: "alice", Name: "Alice", Password: password})
+	require.NoError(t, err)
+	assert.Equal(t, member, s.Snapshot().Person(member.ID), "AcceptInvitation")
+	member, err = s.People().Update(t.Context(), member.ID, people.UpdatePerson{Name: new("Alice Renamed")})
+	require.NoError(t, err)
+	assert.Equal(t, member, s.Snapshot().Person(member.ID), "Update")
+	member, err = s.People().RevokeSessions(t.Context(), member.ID, member.Revision)
+	require.NoError(t, err)
+	assert.Equal(t, member, s.Snapshot().Person(member.ID), "RevokeSessions")
+	member, err = s.People().ChangePassword(t.Context(), member.ID, member.Revision, password, "another long contract password")
+	require.NoError(t, err)
+	assert.Equal(t, member, s.Snapshot().Person(member.ID), "ChangePassword")
+	recovery := bind(t, s, people.GrantRequest{Purpose: people.PurposeRecovery, TeamID: "eng", PersonID: member.ID, Issuer: people.Issuer{Reference: installation}})
+	member, err = s.People().Recover(t.Context(), recovery.Token, proof, password)
+	require.NoError(t, err)
+	assert.Equal(t, member, s.Snapshot().Person(member.ID), "Recover")
 }
 
 // testPeopleViewMatchesSnapshot requires what people transitions read never to

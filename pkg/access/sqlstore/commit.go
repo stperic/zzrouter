@@ -155,7 +155,7 @@ func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*
 	stored, err := s.readBack(context.WithoutCancel(ctx))
 	if err != nil {
 		s.refusal = fmt.Errorf("%w: %w", ErrFailed, errors.Join(commitErr, err))
-		s.pub.Store(&state{snap: access.NewSnapshot(nil, nil, nil), meta: s.pub.Load().meta})
+		s.pub.Store(&state{snap: access.FailedSnapshot(), meta: s.pub.Load().meta})
 		return nil, s.refusal
 	}
 	if stored.meta.sequence != sequence {

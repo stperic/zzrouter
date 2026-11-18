@@ -66,6 +66,7 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"PeopleViewMatchesSnapshot", testPeopleViewMatchesSnapshot},
 		{"PeopleConcurrentRedemption", testPeopleConcurrentRedemption},
 		{"PeopleSingleUseCodes", testPeopleSingleUseCodes},
+		{"PeopleResultsAreWhatTheSnapshotHolds", testPeopleResults},
 		{"PeopleAndKeyWritersLoseNothing", testPeopleAndKeyWriters},
 		{"PeopleCommitNotifies", testPeopleCommitNotifies},
 		{"PeopleSnapshotsDoNotChange", testPeopleSnapshotIsolation},
@@ -826,7 +827,7 @@ func testClosedStore(t *testing.T, h Harness) {
 	assert.Zero(t, commits)
 	assert.Same(t, last, s.Snapshot(), "a closed store keeps its last published snapshot")
 	assert.True(t, s.Snapshot().Initialized(), "the snapshot keeps its people")
-	assert.Equal(t, seconds(owner), seconds(s.Snapshot().Owner()))
+	assert.Equal(t, owner, s.Snapshot().Owner())
 	snap := h.Reopen().Snapshot()
 	id, _ := snap.ValidateRawKey(oldRaw)
 	assert.Equal(t, "reader", id)

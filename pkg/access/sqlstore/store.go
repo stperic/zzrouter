@@ -180,8 +180,16 @@ func (s *Store) openPeople(opts Options) error {
 	var err error
 	s.people, err = people.New(people.Options{
 		ValidateExternalIssuer: opts.ValidateExternalIssuer, ValidateTeam: validateTeam,
-		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) error {
-			return s.mutate(ctx, peopleRecords, func(r *records) (audit.Event, error) { return change(r.people) })
+		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) (*people.State, error) {
+			var committed *records // diff leaves the published people state here
+			err := s.mutate(ctx, peopleRecords, func(r *records) (audit.Event, error) {
+				committed = r
+				return change(r.people)
+			})
+			if err != nil {
+				return nil, err
+			}
+			return committed.people, nil
 		},
 		View: func() *people.State { return s.Snapshot().PeopleState() },
 	})
@@ -253,17 +261,25 @@ func initialize(ctx context.Context, tx *sql.Tx, storeID string) error {
 // refuse; it migrates before loading because the loader reads the latest schema.
 func check(ctx context.Context, db *sqlitedb.DB) (*state, error) {
 	if err := db.Check(ctx, false); err != nil {
-		return nil, refuse(IntegrityFailed, err)
+		var failed *sqlitedb.CheckError
+		if errors.As(err, &failed) {
+			return nil, refuse(IntegrityFailed, err)
+		}
+		return nil, err
 	}
 	if _, _, err := db.Migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate access store: %w", err)
 	}
 	st, err := load(ctx, db.SQL())
-	if err != nil {
+	if errors.Is(err, errBroken) {
 		return nil, refuse(IntegrityFailed, err)
 	}
-	return st, nil
+	return st, err
 }
+
+// errBroken marks a stored record that breaks its rules or cannot be decoded,
+// as opposed to a failure to read it.
+var errBroken = errors.New("a stored record breaks its rules")
 
 type marker struct {
 	Version int    `json:"version"`
@@ -313,25 +329,25 @@ func load(ctx context.Context, db querier) (*state, error) {
 			installations++
 		}, installationTable.selectAll)
 	}
-	if err == nil && installations != 1 {
-		err = fmt.Errorf("installation has %d rows", installations)
-	}
 	if err != nil {
 		return nil, err
 	}
+	if installations != 1 {
+		return nil, fmt.Errorf("%w: installation has %d rows", errBroken, installations)
+	}
 	for id, k := range r.keys {
 		if err := checkKey(k); err != nil {
-			return nil, fmt.Errorf("key %q: %w", id, err)
+			return nil, fmt.Errorf("%w: key %q: %w", errBroken, id, err)
 		}
 	}
 	for id, t := range r.teams {
 		if err := t.Validate(); err != nil {
-			return nil, fmt.Errorf("team %q: %w", id, err)
+			return nil, fmt.Errorf("%w: team %q: %w", errBroken, id, err)
 		}
 	}
 	p.Initialized = p.OwnerID != ""
 	if r.people, err = people.NewState(p); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", errBroken, err)
 	}
 	return &state{records: r, snap: access.NewSnapshot(r.keys, r.teams, r.people), meta: m}, nil
 }
@@ -339,18 +355,20 @@ func load(ctx context.Context, db querier) (*state, error) {
 func loadMeta(ctx context.Context, db querier) (meta, error) {
 	values := make(map[string]string)
 	pair := func(kv *[2]string) []col { return []col{{"key", &kv[0]}, {"value", &kv[1]}} }
-	err := scanAll(ctx, db, pair, func(kv *[2]string) { values[kv[0]] = kv[1] }, "SELECT key, value FROM meta")
+	if err := scanAll(ctx, db, pair, func(kv *[2]string) { values[kv[0]] = kv[1] }, "SELECT key, value FROM meta"); err != nil {
+		return meta{}, err
+	}
 	m := meta{storeID: values["store_id"], generation: values["generation"]}
-	if err == nil {
-		m.revision, err = strconv.ParseUint(values["revision"], 10, 64)
-	}
-	if err == nil {
-		m.sequence, err = strconv.ParseUint(values["sequence"], 10, 64)
-	}
-	if err == nil && (m.storeID == "" || m.generation == "") {
+	revision, err := strconv.ParseUint(values["revision"], 10, 64)
+	sequence, err2 := strconv.ParseUint(values["sequence"], 10, 64)
+	m.revision, m.sequence = revision, sequence
+	if err = errors.Join(err, err2); err == nil && (m.storeID == "" || m.generation == "") {
 		err = errors.New("store ID or generation is missing")
 	}
-	return m, err
+	if err != nil {
+		return meta{}, fmt.Errorf("%w: meta: %w", errBroken, err)
+	}
+	return m, nil
 }
 
 // Snapshot returns the last published state without locking.

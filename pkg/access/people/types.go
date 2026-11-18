@@ -130,12 +130,14 @@ type Options struct {
 	ValidateTeam           func(context.Context, string) error
 	// Mutate runs change exactly once per call, on a private copy of the current
 	// state, under the owner's single writer gate; it then persists and publishes
-	// the result and records the returned event with the caller's ctx. A closed
-	// owner returns access.ErrClosed. A failed change returns its error unwrapped,
-	// a failed persist an error whose chain holds the cause, and neither publishes
-	// or records anything. A change that alters nothing and returns no event may
-	// write nothing; whether subscribers hear of it is unspecified.
-	Mutate func(ctx context.Context, change func(*State) (audit.Event, error)) error
+	// the result, records the returned event with the caller's ctx, and returns
+	// the state it published, so a transition answers with the stored form. A
+	// closed owner returns access.ErrClosed. A failed change returns its error
+	// unwrapped, a failed persist an error whose chain holds the cause, and
+	// neither publishes or records anything. A change that alters nothing and
+	// returns no event may write nothing; whether subscribers hear of it is
+	// unspecified.
+	Mutate func(ctx context.Context, change func(*State) (audit.Event, error)) (*State, error)
 	// View returns the state the owner's snapshot publishes, without locking.
 	View func() *State
 }

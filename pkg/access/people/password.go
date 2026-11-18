@@ -169,8 +169,7 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 	if err != nil {
 		return nil, err
 	}
-	var result Person
-	err = s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
 			return audit.Event{}, ErrInvalidCredentials
@@ -180,19 +179,17 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 		record.UpdatedAt = utils.NowUTC()
 		state.people[id] = record
 		invalidatePersonGrants(state, id)
-		result = record.Person
 		return audit.Event{Action: audit.ActionPasswordChanged, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &result, nil
+	return committed.Person(id), nil
 }
 
 // RevokeSessions advances the current revision without changing its password.
 func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Person, error) {
-	var result Person
-	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
 			return audit.Event{}, ErrInvalidCredentials
@@ -201,11 +198,10 @@ func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Perso
 		record.UpdatedAt = utils.NowUTC()
 		state.people[id] = record
 		invalidatePersonGrants(state, id)
-		result = record.Person
 		return audit.Event{Action: audit.ActionSessionsRevoked, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &result, nil
+	return committed.Person(id), nil
 }

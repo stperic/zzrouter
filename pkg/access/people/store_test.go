@@ -45,25 +45,25 @@ type memoryOwner struct {
 	failure error
 }
 
-func (o *memoryOwner) mutate(ctx context.Context, change func(*State) (audit.Event, error)) error {
+func (o *memoryOwner) mutate(ctx context.Context, change func(*State) (audit.Event, error)) (*State, error) {
 	o.gate.Lock()
 	defer o.gate.Unlock()
 	next := o.current.Load().Clone()
 	event, err := change(next)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if o.failure != nil {
-		return o.failure
+		return nil, o.failure
 	}
 	o.current.Store(next)
 	if event.Action != "" && o.sink != nil {
 		audit.Log(ctx, o.sink, event)
 	}
-	return nil
+	return next, nil
 }
 
 // failPersists makes every later persist fail with err; nil restores success.

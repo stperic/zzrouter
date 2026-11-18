@@ -16,7 +16,15 @@ type Snapshot struct {
 	teams      map[string]*teams.Team
 	keysByTeam map[string][]string
 	gated      bool
+	failed     bool
 	people     *people.State
+}
+
+// FailedSnapshot is what a store publishes once it cannot vouch for its state:
+// no key, team or person resolves, keyless callers meet a gated team, and the
+// installation reads as claimed, so nothing is admitted and setup cannot start.
+func FailedSnapshot() *Snapshot {
+	return &Snapshot{keysByTeam: make(map[string][]string), gated: true, failed: true}
 }
 
 // NewSnapshot owns k and t: the caller never changes them or their records
@@ -133,7 +141,7 @@ func (s *Snapshot) People() []people.Person { return s.PeopleState().People() }
 func (s *Snapshot) Owner() *people.Person { return s.PeopleState().Owner() }
 
 // Initialized reports the permanent owner-claim marker.
-func (s *Snapshot) Initialized() bool { return s.PeopleState().Initialized() }
+func (s *Snapshot) Initialized() bool { return s != nil && s.failed || s.PeopleState().Initialized() }
 
 // Progress returns the persisted onboarding state.
 func (s *Snapshot) Progress() people.Progress { return s.PeopleState().Progress() }

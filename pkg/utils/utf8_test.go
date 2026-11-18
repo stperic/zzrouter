@@ -35,3 +35,26 @@ func TestValidUTF8(t *testing.T) {
 		assert.False(t, ValidUTF8(value), name)
 	}
 }
+
+type node struct {
+	Name string
+	Next *node
+}
+
+// TestValidUTF8Cycles ends on a value that refers to itself.
+func TestValidUTF8Cycles(t *testing.T) {
+	t.Parallel()
+	looped := &node{Name: "ok"}
+	looped.Next = looped
+	assert.True(t, ValidUTF8(looped), "pointer cycle")
+	self := map[string]any{"name": "ok"}
+	self["self"] = self
+	assert.True(t, ValidUTF8(self), "map cycle")
+	self["bad"] = "bad\xff"
+	assert.False(t, ValidUTF8(self), "a cycle does not hide an invalid string")
+	list := []any{"ok", nil}
+	list[1] = list
+	assert.True(t, ValidUTF8(list), "slice cycle")
+	shared := []string{"ok", "bad\xff"}
+	assert.False(t, ValidUTF8([]any{shared[:1], shared}), "a shorter view of a slice does not hide the rest")
+}

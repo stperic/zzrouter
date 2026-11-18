@@ -339,7 +339,7 @@ func publicGrant(record GrantRecord) Grant {
 
 // UpdateProgress saves navigation choices without accepting success evidence.
 func (s *Store) UpdateProgress(ctx context.Context, update ProgressUpdate) error {
-	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		if update.Step != nil {
 			switch *update.Step {
 			case "", "owner", "provider", "model", "test", "app", "complete":
@@ -354,11 +354,12 @@ func (s *Store) UpdateProgress(ctx context.Context, update ProgressUpdate) error
 		state.progress.UpdatedAt = utils.NowUTC()
 		return audit.Event{}, nil
 	})
+	return err
 }
 
 // MarkResponse records successful routed inference by the initial owner.
 func (s *Store) MarkResponse(ctx context.Context, personID string) error {
-	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		if !state.initialized || state.ownerID != personID {
 			return audit.Event{}, ErrNotFound
 		}
@@ -366,13 +367,15 @@ func (s *Store) MarkResponse(ctx context.Context, personID string) error {
 		state.progress.UpdatedAt = utils.NowUTC()
 		return audit.Event{}, nil
 	})
+	return err
 }
 
 // MarkAppConnected records a successful inference request from an application key.
 func (s *Store) MarkAppConnected(ctx context.Context) error {
-	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		state.progress.AppConnected = true
 		state.progress.UpdatedAt = utils.NowUTC()
 		return audit.Event{}, nil
 	})
+	return err
 }

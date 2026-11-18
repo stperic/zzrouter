@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/sqlitedb"
 )
 
 func readMarker(t *testing.T, dir string) marker {
@@ -220,4 +221,25 @@ func TestOpenFailuresThatAreNotDamage(t *testing.T) {
 	require.Error(t, err)
 	var refusal *Refusal
 	require.False(t, errors.As(err, &refusal), "a permission error is not an unreadable store: %v", err)
+}
+
+// TestOpenLabelsOnlyDamage refuses with integrity_failed only for a failed
+// check or a record that breaks its rule; a failure to read is plain.
+func TestOpenLabelsOnlyDamage(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, openStore(t, dir, Options{}).Close())
+	db, err := sqlitedb.Open(t.Context(), dbPath(dir), schema)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	_, err = check(t.Context(), db)
+	require.Error(t, err, "a check that cannot run")
+	var refusal *Refusal
+	require.False(t, errors.As(err, &refusal), "a check that cannot run is not a failed check: %v", err)
+
+	_, err = rawDB(t, dir).ExecContext(t.Context(), "ALTER TABLE grants RENAME TO lost")
+	require.NoError(t, err)
+	_, err = Open(t.Context(), dir, Options{})
+	require.Error(t, err)
+	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
 }
