@@ -16,7 +16,7 @@ func NewPricingController(store *pricing.Store) *PricingController {
 }
 
 // RegisterRoutes registers pricing routes unconditionally. When the pricing
-// store is disabled (no models.pricing.enabled in node.yaml), handlers return
+// store is disabled (models.pricing.enabled: false in node.yaml), handlers return
 // 503 Problem Details so clients can distinguish "feature disabled" from
 // "endpoint does not exist".
 func (pc *PricingController) RegisterRoutes(router *gin.RouterGroup) {

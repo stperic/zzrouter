@@ -130,7 +130,7 @@ models:
   #
   # Pricing data from LiteLLM (per-token costs for 300+ models).
   # pricing:
-  #   enabled: true                     # Enable pricing data fetch
+  #   enabled: true                     # Default: true. Set to false to disable pricing.
   #   source: ""                        # URL (default: LiteLLM GitHub JSON)
   #   refresh_interval: "24h"           # How often to refresh (Go duration)
 

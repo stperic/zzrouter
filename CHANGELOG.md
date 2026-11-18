@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Enable model pricing by default. An explicit `models.pricing.enabled: false`
+  in `node.yaml` still disables it.
+
 - Render model-card links and provider metadata in Discover. Expand shortened
   OpenRouter descriptions on demand from the public model page.
 
