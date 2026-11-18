@@ -1,6 +1,6 @@
 import './schema-config';
 import { streamText, type ModelMessage } from 'ai';
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { createOpenAICompatible, type MetadataExtractor } from '@ai-sdk/openai-compatible';
 import { EventSourceParserStream } from 'eventsource-parser/stream';
 import type { ChatModelAdapter, ChatModelRunResult, MessageStatus, TextMessagePart, ReasoningMessagePart } from '@assistant-ui/react';
 
@@ -21,6 +21,52 @@ export type ChatHost = {
   settings: () => ChatSettings;
   signal: AbortSignal;
   onStatus?: (message: string) => void;
+};
+
+type ChatMetricsChunk = {
+  choices?: { finish_reason?: string | null }[];
+  timings?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  usage?: Record<string, unknown>;
+  x_groq?: { usage?: Record<string, unknown> };
+};
+
+function reportedNumber(...values: unknown[]) {
+  return values.find((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+}
+
+function secondsToMilliseconds(value: unknown) {
+  return typeof value === 'number' ? value * 1000 : undefined;
+}
+
+// Only terminal chunks carry request-wide stats. MLX-VLM also emits per-token rates.
+const timingMetadata: MetadataExtractor = {
+  async extractMetadata() { return undefined; },
+  createStreamExtractor() {
+    const stats: Record<string, number> = {};
+    return {
+      processChunk(chunk) {
+        const frame = chunk as ChatMetricsChunk | null;
+        if (!Array.isArray(frame?.choices) || (frame.choices.length > 0 && !frame.choices.some(choice => choice?.finish_reason))) return;
+        const { timings, metrics, usage, x_groq } = frame;
+        const groqUsage = x_groq?.usage;
+        for (const [name, value] of Object.entries({
+          promptMs: reportedNumber(timings?.prompt_ms,
+            secondsToMilliseconds(usage?.prompt_time), secondsToMilliseconds(groqUsage?.prompt_time)),
+          providerFirstTokenMs: reportedNumber(metrics?.time_to_first_token_ms),
+          generationMs: reportedNumber(timings?.predicted_ms, metrics?.generation_time_ms,
+            secondsToMilliseconds(usage?.completion_time), secondsToMilliseconds(groqUsage?.completion_time)),
+          tokensPerSecond: reportedNumber(timings?.predicted_per_second, metrics?.tokens_per_second),
+          inputTokens: reportedNumber(groqUsage?.prompt_tokens),
+          outputTokens: reportedNumber(groqUsage?.completion_tokens),
+          totalTokens: reportedNumber(groqUsage?.total_tokens),
+        })) {
+          if (value !== undefined) stats[name] = value;
+        }
+      },
+      buildMetadata: () => ({ zzrouter: stats }),
+    };
+  },
 };
 
 // zzRouter adds loading events and accepts [DONE] without a finish_reason.
@@ -75,7 +121,7 @@ export function createChatAdapter(host: ChatHost): ChatModelAdapter {
         signal.throwIfAborted();
         host.onStatus?.('Waiting for the model…');
         const provider = createOpenAICompatible({
-          name: 'zzrouter', baseURL: host.baseURL, includeUsage: true,
+          name: 'zzrouter', baseURL: host.baseURL, includeUsage: true, metadataExtractor: timingMetadata,
           fetch: async (url, init) => {
             const response = await host.fetcher(url, init);
             stats.node = response.headers.get('X-zzrouter-Node');
@@ -107,10 +153,15 @@ export function createChatAdapter(host: ChatHost): ChatModelAdapter {
           }
           if (part.type === 'finish-step') {
             status = part.finishReason === 'stop' ? { type: 'complete', reason: 'stop' } : { type: 'incomplete', reason: part.finishReason === 'interrupted' ? 'other' : part.finishReason };
+            const reported = part.providerMetadata?.zzrouter;
             Object.assign(stats, {
-              inputTokens: part.usage.inputTokens, outputTokens: part.usage.outputTokens,
-              totalTokens: part.usage.totalTokens, cachedTokens: part.usage.inputTokenDetails.cacheReadTokens,
+              inputTokens: part.usage.inputTokens ?? reported?.inputTokens,
+              outputTokens: part.usage.outputTokens ?? reported?.outputTokens,
+              totalTokens: part.usage.totalTokens ?? reported?.totalTokens,
+              cachedTokens: part.usage.inputTokenDetails.cacheReadTokens,
               reasoningTokens: part.usage.outputTokenDetails.reasoningTokens, cost: part.usage.raw?.zz_cost_usd ?? part.usage.raw?.cost,
+              promptMs: reported?.promptMs, providerFirstTokenMs: reported?.providerFirstTokenMs,
+              generationMs: reported?.generationMs, tokensPerSecond: reported?.tokensPerSecond,
               durationMs: performance.now() - started, finishReason: part.finishReason,
             });
             yield snapshot();

@@ -635,3 +635,36 @@ test('large topology, mobile list and constrained Chat remain usable', { timeout
   await audit(p, 'chat-short-unverified');
   assert.equal(await p.getByRole('button', { name: 'Verify session' }).evaluate(node => { const r = node.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === node; }), true);
 });
+
+test('Chat distinguishes reported timings, calculated speed, and browser timing', { timeout: 30000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  const timingFrames = [
+    { timings: { prompt_ms: 300, predicted_ms: 3500 } },
+    { timings: { prompt_ms: -1, predicted_ms: null } },
+    { metrics: { time_to_first_token_ms: 85.2, generation_time_ms: 1240.5, tokens_per_second: 103.2 } },
+  ];
+  let replies = 0;
+  await page.route('**/v1/chat/completions', route => {
+    const stats = { choices: [], usage: { prompt_tokens: 31, completion_tokens: 22, total_tokens: 53 }, ...timingFrames[replies++] };
+    return route.fulfill({ contentType: 'text/event-stream',
+      headers: { 'X-zzrouter-Provider': 'ollama', 'X-zzrouter-Node': 'fixture-worker' }, body:
+      'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n\n' +
+      `data: ${JSON.stringify(stats)}\n\ndata: [DONE]\n\n` });
+  });
+  await f.open('#chat'); await f.model('coding');
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  const send = page.getByRole('button', { name: 'Send ↑', exact: true });
+  const stats = page.locator('.chat-assistant .chat-stats');
+  await composer.fill('First reply'); await send.click();
+  await stats.nth(0).waitFor();
+  assert.match(await stats.nth(0).innerText(), /^31 input tokens · 22 output tokens · Prompt processing 0\.30s · Generation 3\.50s · 6\.3 tok\/s\* · \d+\.\d{2}s total\* · \* Measured or calculated in the browser$/);
+  await composer.fill('Second reply'); await send.click();
+  await stats.nth(1).waitFor();
+  assert.match(await stats.nth(1).innerText(), /^31 input tokens · 22 output tokens · First token \d+\.\d{2}s\* · Output stream \d+\.\d{2}s\* · \d+\.\d{2}s total\* · \* Measured or calculated in the browser$/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await composer.fill('Third reply'); await send.click();
+  await stats.nth(2).waitFor();
+  assert.match(await stats.nth(2).innerText(), /First token 0\.09s · Generation 1\.24s · 103\.2 tok\/s ·/);
+  assert.equal(await stats.count(), 3, 'one stats row per assistant reply');
+  await audit(page, 'chat-stats-phone');
+});
