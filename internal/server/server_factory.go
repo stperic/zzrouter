@@ -20,9 +20,8 @@ import (
 	"github.com/stperic/common/httpclient"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
@@ -449,7 +448,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 		// Load keys.yaml
 		keysPath := filepath.Join(configDir, "keys.yaml")
-		s.keyStore = keys.NewFileKeyStore(keysPath)
+		s.keyStore = filestore.NewKeys(keysPath)
 		if err := s.keyStore.Load(); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				logger.Warn("Failed to load keys.yaml", "error", err)
@@ -463,7 +462,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 		// Load teams.yaml
 		teamsPath := filepath.Join(configDir, "teams.yaml")
-		s.teamStore = teams.NewFileTeamStore(teamsPath)
+		s.teamStore = filestore.NewTeams(teamsPath)
 		if err := s.teamStore.Load(); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return nil, fmt.Errorf("load teams.yaml: %w", err)

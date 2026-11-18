@@ -1,12 +1,19 @@
-// Package teams provides team management with shared quotas and model access.
+// Package teams defines teams, store contracts, and access policies without storage.
 // Teams collect virtual keys under a shared identity — quotas and model access
 // are enforced at the team level, keys point at their team via TeamID.
 package teams
 
 import (
+	"errors"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
+)
+
+var (
+	ErrTeamNotFound   = errors.New("team not found")
+	ErrTeamExists     = errors.New("team already exists")
+	ErrTeamHasMembers = errors.New("team has member keys")
 )
 
 // MemberRole is the role a key plays within its team.

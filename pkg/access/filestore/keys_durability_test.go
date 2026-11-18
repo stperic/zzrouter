@@ -1,4 +1,4 @@
-package keys
+package filestore
 
 import (
 	"errors"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,8 +20,8 @@ func TestKeyRotationAcknowledgesCommittedReplacement(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "keys.yaml")
-			store := NewFileKeyStore(path)
-			oldKey, err := store.Create("reader", &VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"})
+			store := NewKeys(path)
+			oldKey, err := store.Create("reader", &keys.VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"})
 			require.NoError(t, err)
 			require.NoError(t, store.Save())
 			newKey, err := store.RotateKey("reader")
@@ -39,15 +40,15 @@ func TestKeyRotationAcknowledgesCommittedReplacement(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, io.ErrClosedPipe)
 			}
-			restarted := NewFileKeyStore(path)
+			restarted := NewKeys(path)
 			require.NoError(t, restarted.Load())
 			want := oldKey
 			if committed {
 				want = newKey
 				require.Equal(t, store.Get("reader").HashedKey, restarted.Get("reader").HashedKey)
-				require.False(t, VerifyKey(oldKey, restarted.Get("reader").HashedKey))
+				require.False(t, keys.VerifyKey(oldKey, restarted.Get("reader").HashedKey))
 			}
-			require.True(t, VerifyKey(want, restarted.Get("reader").HashedKey))
+			require.True(t, keys.VerifyKey(want, restarted.Get("reader").HashedKey))
 		})
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access/control"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -55,8 +56,8 @@ type accessRig struct {
 	access   *AccessControl
 	enforcer *quota.Enforcer
 	keyPath  string
-	keys     *keys.FileKeyStore
-	teams    *teams.FileTeamStore
+	keys     *filestore.Keys
+	teams    *filestore.Teams
 	groups   *stubGroupReader
 }
 
@@ -130,8 +131,8 @@ func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "keys.yaml")
-	keyStore := keys.NewFileKeyStore(keyPath)
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(keyPath)
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	groups := newStubGroupReader()
 
 	enforcer := quota.NewEnforcer(

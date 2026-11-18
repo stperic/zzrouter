@@ -1,4 +1,4 @@
-package teams
+package filestore
 
 import (
 	"errors"
@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,10 +20,10 @@ func TestTeamSaveAcknowledgesCommittedPolicy(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "teams.yaml")
-			store := NewFileTeamStore(path)
-			require.NoError(t, store.Create("engineering", &Team{Name: "Engineering", Kind: KindShared}))
+			store := NewTeams(path)
+			require.NoError(t, store.Create("engineering", &teams.Team{Name: "Engineering", Kind: teams.KindShared}))
 			require.NoError(t, store.Save())
-			require.NoError(t, store.Update("engineering", &Team{Name: "Engineering", Suspended: true}))
+			require.NoError(t, store.Update("engineering", &teams.Team{Name: "Engineering", Suspended: true}))
 			err := store.save(func(path string, data []byte, mode os.FileMode) error {
 				if !committed {
 					return io.ErrClosedPipe
@@ -37,7 +38,7 @@ func TestTeamSaveAcknowledgesCommittedPolicy(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, io.ErrClosedPipe)
 			}
-			restarted := NewFileTeamStore(path)
+			restarted := NewTeams(path)
 			require.NoError(t, restarted.Load())
 			require.Equal(t, committed, restarted.Get("engineering").Suspended)
 		})

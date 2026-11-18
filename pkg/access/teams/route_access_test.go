@@ -2,11 +2,8 @@ package teams
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"testing"
-
 	"github.com/stretchr/testify/require"
+	"testing"
 )
 
 func TestRouteAccessJSON(t *testing.T) {
@@ -30,39 +27,4 @@ func TestRouteAccessJSON(t *testing.T) {
 	body, err = json.Marshal(RouteAccess{})
 	require.NoError(t, err)
 	require.JSONEq(t, `{"mode":"direct"}`, string(body))
-}
-
-func TestRouteAccessPersistence(t *testing.T) {
-	for _, mode := range []string{"", "direct", "selected", "none"} {
-		t.Run(mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "teams.yaml")
-			store := NewFileTeamStore(path)
-			policy := RouteAccess{Mode: mode}
-			if mode == "selected" {
-				policy.Routes = []string{"ollama"}
-			}
-			require.NoError(t, store.Create("team", &Team{Name: "Team", Kind: KindShared, RouteAccess: policy}))
-			require.NoError(t, store.Save())
-			loaded := NewFileTeamStore(path)
-			require.NoError(t, loaded.Load())
-			require.Equal(t, policy, loaded.Get("team").RouteAccess)
-			require.Equal(t, mode == "selected" || mode == "none", loaded.HasGatedTeam())
-		})
-	}
-	for _, yaml := range []string{
-		"teams:\n  a: {kind: shared, route_access: null}",
-		"teams:\n  a: {kind: shared, route_access: {}}",
-		"teams:\n  a: {kind: shared, route_access: {mode: select, routes: [ollama]}}",
-		"teams:\n  a: {kind: shared, route_access: {mode: all, typo: x}}",
-		"teams:\n  a: &a {kind: shared, route_access: &none null}\n  b: {kind: shared, route_access: *none}",
-		"teams:\n  a: &a {kind: shared, route_access: null}\n  b: {<<: *a}",
-	} {
-		t.Run(yaml, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "teams.yaml")
-			require.NoError(t, os.WriteFile(path, []byte(yaml), 0600))
-			store := NewFileTeamStore(path)
-			require.Error(t, store.Load())
-			require.Empty(t, store.List())
-		})
-	}
 }

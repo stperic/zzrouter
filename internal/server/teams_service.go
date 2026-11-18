@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -44,15 +44,15 @@ var ErrPersonalTeamImmutable = errors.New("personal team is immutable")
 // KeysService.mu → TeamsService.mu. Don't reverse.
 type TeamsService struct {
 	mu       sync.Mutex
-	store    *teams.FileTeamStore
-	keyStore *keys.FileKeyStore
+	store    *filestore.Teams
+	keyStore *filestore.Keys
 	access   *AccessControl
 	audit    audit.Sink
 	people   *people.Store // Set once during route construction, before serving.
 }
 
 // NewTeamsService creates a new teams service.
-func NewTeamsService(store *teams.FileTeamStore, keyStore *keys.FileKeyStore, access *AccessControl) *TeamsService {
+func NewTeamsService(store *filestore.Teams, keyStore *filestore.Keys, access *AccessControl) *TeamsService {
 	return &TeamsService{store: store, keyStore: keyStore, access: access, audit: audit.Null{}}
 }
 

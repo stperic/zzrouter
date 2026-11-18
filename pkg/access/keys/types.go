@@ -1,4 +1,4 @@
-// Package keys provides virtual API key management for the gateway API.
+// Package keys defines virtual API keys, store contracts, and hashing without storage.
 // Virtual keys extend the static 3-key model with named, scoped keys that
 // belong to a team (the team governs model access and shared quotas).
 package keys

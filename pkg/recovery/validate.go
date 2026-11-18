@@ -7,7 +7,7 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/common/secrets"
 	"github.com/stperic/zzrouter/pkg/access/control"
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -29,13 +29,13 @@ func validateSnapshots(files map[string][]byte, key []byte) error {
 	teamRecords := make(map[string]*teams.Team)
 	if data, ok := files["config/teams.yaml"]; ok {
 		var err error
-		teamRecords, err = teams.DecodeSnapshot(data)
+		teamRecords, err = filestore.DecodeTeams(data)
 		if err != nil {
 			return fmt.Errorf("team snapshot: %w", err)
 		}
 	}
 	if data, ok := files["config/keys.yaml"]; ok {
-		records, err := keys.DecodeSnapshot(data)
+		records, err := filestore.DecodeKeys(data)
 		if err != nil {
 			return fmt.Errorf("key snapshot: %w", err)
 		}

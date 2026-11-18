@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -32,7 +33,7 @@ func (r *peopleReader) Get(id string) *people.Person {
 
 func (r *peopleReader) replace(p people.Person) { r.mu.Lock(); defer r.mu.Unlock(); r.person = p }
 
-func identityFixture(t *testing.T, limits quota.QuotaConfig) (*Core, *teams.FileTeamStore, *peopleReader, CredentialReference, CredentialReference) {
+func identityFixture(t *testing.T, limits quota.QuotaConfig) (*Core, *filestore.Teams, *peopleReader, CredentialReference, CredentialReference) {
 	t.Helper()
 	core, keyStore, teamStore := newTestCore(t, StaticKeySet{Admin: "test-installation-admin-with-sufficient-length"})
 	require.NoError(t, teamStore.Create("engineering", &teams.Team{Name: "Engineering", Kind: "shared", QuotaConfig: limits}))

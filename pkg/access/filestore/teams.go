@@ -1,4 +1,4 @@
-package teams
+package filestore
 
 import (
 	"bytes"
@@ -13,26 +13,21 @@ import (
 	"github.com/stperic/common/atomicfile"
 
 	"github.com/google/uuid"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
-var (
-	ErrTeamNotFound   = errors.New("team not found")
-	ErrTeamExists     = errors.New("team already exists")
-	ErrTeamHasMembers = errors.New("team has member keys")
-)
-
 // teamsFile is the on-disk format for teams.yaml.
 type teamsFile struct {
-	Version string           `yaml:"version"`
-	Teams   map[string]*Team `yaml:"teams,omitempty"`
+	Version string                 `yaml:"version"`
+	Teams   map[string]*teams.Team `yaml:"teams,omitempty"`
 }
 
-// FileTeamStore implements TeamStore backed by teams.yaml.
-type FileTeamStore struct {
+// Teams implements teams.TeamStore backed by teams.yaml.
+type Teams struct {
 	mu    sync.RWMutex
-	teams map[string]*Team
+	teams map[string]*teams.Team
 	path  string
 
 	// hasGatedTeam is a lock-free snapshot of any model or provider restriction.
@@ -44,13 +39,13 @@ type FileTeamStore struct {
 
 // HasGatedTeam reports whether any stored team restricts models or providers.
 // Lock-free; safe to call on the request hot path.
-func (s *FileTeamStore) HasGatedTeam() bool {
+func (s *Teams) HasGatedTeam() bool {
 	return s.hasGatedTeam.Load()
 }
 
 // recomputeGated walks the current team map and refreshes hasGatedTeam.
 // Must be called with the write lock held.
-func (s *FileTeamStore) recomputeGated() {
+func (s *Teams) recomputeGated() {
 	for _, t := range s.teams {
 		if len(t.AllowedModels) > 0 || t.ProviderAccess.Restricted() || t.RouteAccess.Restricted() {
 			s.hasGatedTeam.Store(true)
@@ -60,22 +55,22 @@ func (s *FileTeamStore) recomputeGated() {
 	s.hasGatedTeam.Store(false)
 }
 
-// NewFileTeamStore creates a team store that reads/writes to the given file path.
-func NewFileTeamStore(path string) *FileTeamStore {
-	return &FileTeamStore{
-		teams: make(map[string]*Team),
+// NewTeams creates a team store that reads/writes to the given file path.
+func NewTeams(path string) *Teams {
+	return &Teams{
+		teams: make(map[string]*teams.Team),
 		path:  path,
 	}
 }
 
 // Load reads teams from teams.yaml.
-func (s *FileTeamStore) Load() error {
+func (s *Teams) Load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		return fmt.Errorf("failed to read teams config: %w", err)
 	}
 
-	loaded, err := DecodeSnapshot(data)
+	loaded, err := DecodeTeams(data)
 	if err != nil {
 		return err
 	}
@@ -88,8 +83,8 @@ func (s *FileTeamStore) Load() error {
 	return nil
 }
 
-// DecodeSnapshot validates one persisted policy set without installing it.
-func DecodeSnapshot(data []byte) (map[string]*Team, error) {
+// DecodeTeams validates one persisted policy set without installing it.
+func DecodeTeams(data []byte) (map[string]*teams.Team, error) {
 	var cfg teamsFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -113,7 +108,7 @@ func DecodeSnapshot(data []byte) (map[string]*Team, error) {
 		}
 	}
 
-	loaded := make(map[string]*Team, len(cfg.Teams))
+	loaded := make(map[string]*teams.Team, len(cfg.Teams))
 	for id, team := range cfg.Teams {
 		if team == nil {
 			return nil, fmt.Errorf("team %q must be an object", id)
@@ -126,10 +121,10 @@ func DecodeSnapshot(data []byte) (map[string]*Team, error) {
 		}
 		team.ID = id
 		if team.Kind == "" {
-			return nil, fmt.Errorf("team %q: missing kind (expected %q or %q)", id, KindPersonal, KindShared)
+			return nil, fmt.Errorf("team %q: missing kind (expected %q or %q)", id, teams.KindPersonal, teams.KindShared)
 		}
-		if team.Kind != KindPersonal && team.Kind != KindShared {
-			return nil, fmt.Errorf("team %q: invalid kind %q (expected %q or %q)", id, team.Kind, KindPersonal, KindShared)
+		if team.Kind != teams.KindPersonal && team.Kind != teams.KindShared {
+			return nil, fmt.Errorf("team %q: invalid kind %q (expected %q or %q)", id, team.Kind, teams.KindPersonal, teams.KindShared)
 		}
 		loaded[id] = team
 	}
@@ -138,23 +133,23 @@ func DecodeSnapshot(data []byte) (map[string]*Team, error) {
 }
 
 // Get returns a team by ID, or nil if not found.
-func (s *FileTeamStore) Get(id string) *Team {
+func (s *Teams) Get(id string) *teams.Team {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.teams[id]
 }
 
 // List returns all teams (shallow copies to prevent mutation of the map).
-func (s *FileTeamStore) List() map[string]*Team {
+func (s *Teams) List() map[string]*teams.Team {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make(map[string]*Team, len(s.teams))
+	result := make(map[string]*teams.Team, len(s.teams))
 	maps.Copy(result, s.teams)
 	return result
 }
 
 // Create adds a new team.
-func (s *FileTeamStore) Create(id string, team *Team) error {
+func (s *Teams) Create(id string, team *teams.Team) error {
 	if err := team.RouteAccess.Validate(); err != nil {
 		return err
 	}
@@ -165,7 +160,7 @@ func (s *FileTeamStore) Create(id string, team *Team) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.teams[id]; exists {
-		return fmt.Errorf("team %q: %w", id, ErrTeamExists)
+		return fmt.Errorf("team %q: %w", id, teams.ErrTeamExists)
 	}
 	if team.Kind == "" {
 		return fmt.Errorf("team %q: kind is required", id)
@@ -187,7 +182,7 @@ func (s *FileTeamStore) Create(id string, team *Team) error {
 // Update replaces an existing team's mutable fields. Kind is preserved from
 // the existing record — callers cannot convert a personal team to shared or
 // vice versa.
-func (s *FileTeamStore) Update(id string, team *Team) error {
+func (s *Teams) Update(id string, team *teams.Team) error {
 	if err := team.RouteAccess.Validate(); err != nil {
 		return err
 	}
@@ -199,7 +194,7 @@ func (s *FileTeamStore) Update(id string, team *Team) error {
 
 	existing, ok := s.teams[id]
 	if !ok {
-		return fmt.Errorf("team %q: %w", id, ErrTeamNotFound)
+		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 
 	// Preserve immutable fields
@@ -216,12 +211,12 @@ func (s *FileTeamStore) Update(id string, team *Team) error {
 }
 
 // Delete removes a team.
-func (s *FileTeamStore) Delete(id string) error {
+func (s *Teams) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.teams[id]; !ok {
-		return fmt.Errorf("team %q: %w", id, ErrTeamNotFound)
+		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 
 	delete(s.teams, id)
@@ -230,20 +225,20 @@ func (s *FileTeamStore) Delete(id string) error {
 }
 
 // Reload re-reads teams from disk.
-func (s *FileTeamStore) Reload() error {
+func (s *Teams) Reload() error {
 	return s.Load()
 }
 
 // Save persists the current state to disk.
-func (s *FileTeamStore) Save() error {
+func (s *Teams) Save() error {
 	return s.save(atomicfile.WriteFile)
 }
 
-func (s *FileTeamStore) save(write func(string, []byte, os.FileMode) error) error {
+func (s *Teams) save(write func(string, []byte, os.FileMode) error) error {
 	s.mu.RLock()
 	cfg := teamsFile{
 		Version: "1",
-		Teams:   make(map[string]*Team, len(s.teams)),
+		Teams:   make(map[string]*teams.Team, len(s.teams)),
 	}
 	maps.Copy(cfg.Teams, s.teams)
 	s.mu.RUnlock()

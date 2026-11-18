@@ -11,13 +11,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
-func newAuditTestAccess(t *testing.T, keyStore *keys.FileKeyStore, teamStore *teams.FileTeamStore) *AccessControl {
+func newAuditTestAccess(t *testing.T, keyStore *filestore.Keys, teamStore *filestore.Teams) *AccessControl {
 	t.Helper()
 	enforcer := quota.NewEnforcer(
 		quota.NewRateLimiter(),
@@ -41,8 +41,8 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sink.Close() })
 
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	access := newAuditTestAccess(t, keyStore, teamStore)
 
 	teamsSvc := NewTeamsService(teamStore, keyStore, access)
@@ -106,8 +106,8 @@ func TestAudit_PersonalTeamCascade(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sink.Close() })
 
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	access := newAuditTestAccess(t, keyStore, teamStore)
 	teamsSvc := NewTeamsService(teamStore, keyStore, access)
 	teamsSvc.SetAuditSink(sink)
@@ -144,8 +144,8 @@ func TestAudit_PersonalTeamCascade(t *testing.T) {
 // a fresh-install test host would get a surprise audit.jsonl.
 func TestAudit_DefaultSinkIsNull(t *testing.T) {
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	access := newAuditTestAccess(t, keyStore, teamStore)
 	teamsSvc := NewTeamsService(teamStore, keyStore, access)
 	keysSvc := NewKeysService(keyStore, teamsSvc, access)

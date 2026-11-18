@@ -1,51 +1,18 @@
-package keys
+package filestore
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestGenerateRawKey(t *testing.T) {
-	t.Parallel()
-	key, err := GenerateRawKey()
-	require.NoError(t, err)
-	assert.True(t, len(key) > len(KeyPrefix))
-	assert.Equal(t, KeyPrefix, key[:len(KeyPrefix)])
-
-	// Keys should be unique
-	key2, err := GenerateRawKey()
-	require.NoError(t, err)
-	assert.NotEqual(t, key, key2)
-}
-
-func TestHashAndVerify(t *testing.T) {
-	t.Parallel()
-	rawKey := "zzr_test-key-for-hashing-purposes"
-
-	hash, err := HashKey(rawKey)
-	require.NoError(t, err)
-	assert.Contains(t, hash, "$argon2id$")
-
-	assert.True(t, VerifyKey(rawKey, hash))
-	assert.False(t, VerifyKey("wrong-key", hash))
-	assert.False(t, VerifyKey("", hash))
-}
-
-func TestVerifyKey_InvalidHash(t *testing.T) {
-	t.Parallel()
-	assert.False(t, VerifyKey("key", "not-a-hash"))
-	assert.False(t, VerifyKey("key", "$argon2id$v=19$m=65536,t=1,p=2$bad"))
-	assert.False(t, VerifyKey("key", ""))
-}
-
 func testKeysYAML(t *testing.T, rawKey string) string {
 	t.Helper()
-	hash, err := HashKey(rawKey)
+	hash, err := keys.HashKey(rawKey)
 	require.NoError(t, err)
 
 	return `version: "1"
@@ -87,7 +54,7 @@ func TestFileKeyStore_Load(t *testing.T) {
 	rawKey := "zzr_test-load-key-12345678901234567890"
 	path := writeTestKeysFile(t, dir, rawKey)
 
-	store := NewFileKeyStore(path)
+	store := NewKeys(path)
 	require.NoError(t, store.Load())
 
 	keys := store.List()
@@ -119,7 +86,7 @@ func TestFileKeyStore_ValidateRawKey_Hashed(t *testing.T) {
 	rawKey := "zzr_validate-hashed-key-test-1234567890"
 	path := writeTestKeysFile(t, dir, rawKey)
 
-	store := NewFileKeyStore(path)
+	store := NewKeys(path)
 	require.NoError(t, store.Load())
 
 	id, vk := store.ValidateRawKey(rawKey)
@@ -137,7 +104,7 @@ func TestFileKeyStore_ValidateRawKey_Env(t *testing.T) {
 	rawKey := "zzr_some-key-for-hashed-validation-test"
 	path := writeTestKeysFile(t, dir, rawKey)
 
-	store := NewFileKeyStore(path)
+	store := NewKeys(path)
 	require.NoError(t, store.Load())
 
 	// Set env var
@@ -150,15 +117,15 @@ func TestFileKeyStore_ValidateRawKey_Env(t *testing.T) {
 
 func TestFileKeyStore_GetNotFound(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 	assert.Nil(t, store.Get("nonexistent"))
 }
 
 func TestFileKeyStore_Create(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 
-	vk := &VirtualKey{
+	vk := &keys.VirtualKey{
 		Name:     "Test Key",
 		Role:     "user",
 		TeamID:   "team-a",
@@ -168,7 +135,7 @@ func TestFileKeyStore_Create(t *testing.T) {
 	rawKey, err := store.Create("test-key", vk)
 	require.NoError(t, err)
 	assert.True(t, len(rawKey) > 0)
-	assert.Contains(t, rawKey, KeyPrefix)
+	assert.Contains(t, rawKey, keys.KeyPrefix)
 
 	// Verify it was stored
 	got := store.Get("test-key")
@@ -184,8 +151,8 @@ func TestFileKeyStore_Create(t *testing.T) {
 
 func TestFileKeyStore_CreateDuplicate(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
-	vk := &VirtualKey{Name: "Key1", Role: "user", TeamID: "t", TeamRole: "owner"}
+	store := NewKeys("")
+	vk := &keys.VirtualKey{Name: "Key1", Role: "user", TeamID: "t", TeamRole: "owner"}
 
 	_, err := store.Create("dup", vk)
 	require.NoError(t, err)
@@ -197,12 +164,12 @@ func TestFileKeyStore_CreateDuplicate(t *testing.T) {
 
 func TestFileKeyStore_Update(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
-	vk := &VirtualKey{Name: "Original", Role: "user", TeamID: "t", TeamRole: "owner"}
+	store := NewKeys("")
+	vk := &keys.VirtualKey{Name: "Original", Role: "user", TeamID: "t", TeamRole: "owner"}
 	_, err := store.Create("upd", vk)
 	require.NoError(t, err)
 
-	updated := &VirtualKey{
+	updated := &keys.VirtualKey{
 		Name: "Updated",
 		Role: "admin",
 	}
@@ -220,16 +187,16 @@ func TestFileKeyStore_Update(t *testing.T) {
 
 func TestFileKeyStore_UpdateNotFound(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
-	err := store.Update("missing", &VirtualKey{})
+	store := NewKeys("")
+	err := store.Update("missing", &keys.VirtualKey{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestFileKeyStore_Delete(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
-	vk := &VirtualKey{Name: "ToDelete", Role: "user", TeamID: "t", TeamRole: "owner"}
+	store := NewKeys("")
+	vk := &keys.VirtualKey{Name: "ToDelete", Role: "user", TeamID: "t", TeamRole: "owner"}
 	_, err := store.Create("del", vk)
 	require.NoError(t, err)
 
@@ -239,15 +206,15 @@ func TestFileKeyStore_Delete(t *testing.T) {
 
 func TestFileKeyStore_DeleteNotFound(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 	err := store.Delete("missing")
 	assert.Error(t, err)
 }
 
 func TestFileKeyStore_RotateKey(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
-	vk := &VirtualKey{Name: "Rotate", Role: "user", TeamID: "t", TeamRole: "owner"}
+	store := NewKeys("")
+	vk := &keys.VirtualKey{Name: "Rotate", Role: "user", TeamID: "t", TeamRole: "owner"}
 	oldRaw, err := store.Create("rot", vk)
 	require.NoError(t, err)
 
@@ -269,8 +236,8 @@ func TestFileKeyStore_SaveAndReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "keys.yaml")
 
-	store := NewFileKeyStore(path)
-	vk := &VirtualKey{
+	store := NewKeys(path)
+	vk := &keys.VirtualKey{
 		Name:     "Persisted",
 		Role:     "user",
 		TeamID:   "t",
@@ -283,7 +250,7 @@ func TestFileKeyStore_SaveAndReload(t *testing.T) {
 	require.NoError(t, store.Save())
 
 	// Load into new store
-	store2 := NewFileKeyStore(path)
+	store2 := NewKeys(path)
 	require.NoError(t, store2.Load())
 
 	got := store2.Get("persist")
@@ -293,23 +260,6 @@ func TestFileKeyStore_SaveAndReload(t *testing.T) {
 	// Validate key still works after reload
 	id, _ := store2.ValidateRawKey(rawKey)
 	assert.Equal(t, "persist", id)
-}
-
-func TestVirtualKey_IsExpired(t *testing.T) {
-	t.Parallel()
-	// Not expired
-	future := time.Now().Add(24 * time.Hour)
-	vk := &VirtualKey{ExpiresAt: &future}
-	assert.False(t, vk.IsExpired())
-
-	// Expired
-	past := time.Now().Add(-24 * time.Hour)
-	vk = &VirtualKey{ExpiresAt: &past}
-	assert.True(t, vk.IsExpired())
-
-	// No expiration
-	vk = &VirtualKey{}
-	assert.False(t, vk.IsExpired())
 }
 
 func TestFileKeyStore_LoadValidationErrors(t *testing.T) {
@@ -352,7 +302,7 @@ func TestFileKeyStore_LoadValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := NewFileKeyStore("")
+			store := NewKeys("")
 			err := store.loadFromBytes([]byte(tt.yaml))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
@@ -373,7 +323,7 @@ keys:
     allowed_models:
       - realtime /v1/realtime
 `), 0o600))
-	store := NewFileKeyStore(path)
+	store := NewKeys(path)
 	err := store.Load()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "allowed_models on keys is not supported; set model access on the team and remove this field from the key")

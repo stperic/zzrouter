@@ -10,9 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
@@ -20,11 +19,11 @@ import (
 // (in-memory) quota.Enforcer. The reaper is NOT started — tests that
 // want to exercise reap behaviour call reapStalePendingReservations
 // directly with an injected "now".
-func newTestCore(t *testing.T, staticKeys StaticKeySet) (*Core, *keys.FileKeyStore, *teams.FileTeamStore) {
+func newTestCore(t *testing.T, staticKeys StaticKeySet) (*Core, *filestore.Keys, *filestore.Teams) {
 	t.Helper()
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	enforcer := quota.NewEnforcer(
 		quota.NewRateLimiter(),
 		quota.NewConcurrencyLimiter(),

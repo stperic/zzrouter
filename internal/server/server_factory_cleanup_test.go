@@ -8,6 +8,7 @@ import (
 
 	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -23,7 +24,7 @@ func TestProviderAccessInvalidPersistedPolicyPreventsStartup(t *testing.T) {
 	dir := config.NewConfigManager("zzrouter").GetNodeConfigDir()
 	require.NoError(t, os.MkdirAll(dir, 0700))
 	keyPath := filepath.Join(dir, "keys.yaml")
-	seedFileTestKey(t, keys.NewFileKeyStore(keyPath), keyPath, "client", keys.VirtualKey{Name: "Client", TeamID: "restricted", TeamRole: "member", Role: "user"})
+	seedFileTestKey(t, filestore.NewKeys(keyPath), keyPath, "client", keys.VirtualKey{Name: "Client", TeamID: "restricted", TeamRole: "member", Role: "user"})
 	for _, policy := range []string{"null", "{mode: select, providers: [ollama]}"} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "teams.yaml"), []byte("teams:\n  restricted: {kind: shared, provider_access: "+policy+"}\n"), 0600))
 		cfg := &config.NodeConfig{Node: config.ServeConfig{Bind: "localhost", Port: 19191, Name: "fixture"}, Auth: config.AuthConfig{AdminKey: TestAdminKey, UserKey: TestUserKey, ClusterNetworkKey: TestClusterKey}}

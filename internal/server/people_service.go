@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/access/control"
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
@@ -45,7 +46,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 	}
 	s.people = store
 	s.access.core.SetPeople(store)
-	descriptor := people.RecoveryFile{ConsoleURL: issuer + "/console/", TLSCert: s.config.Node.TLSCert}
+	descriptor := localproof.File{ConsoleURL: issuer + "/console/", TLSCert: s.config.Node.TLSCert}
 	if descriptor.TLSCert != "" {
 		descriptor.TLSCert, err = filepath.Abs(descriptor.TLSCert)
 		if err != nil {
@@ -63,7 +64,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 		descriptor.TLSName = parsed.Hostname()
 	}
 	descriptor.Endpoint = scheme + "://" + net.JoinHostPort(host, strconv.Itoa(s.config.Node.Port))
-	s.ownerRecovery, err = people.NewLocalRecovery(ctx, s.auditConfigDir, descriptor)
+	s.ownerRecovery, err = localproof.New(ctx, s.auditConfigDir, descriptor)
 	if err != nil {
 		return fmt.Errorf("initialize owner recovery: %w", err)
 	}
@@ -102,7 +103,7 @@ func localRecoveryHost(ctx context.Context, bind string) (string, error) {
 	case "::", "[::]":
 		return "::1", nil
 	}
-	if people.LocalRecoveryAddress(bind) {
+	if localproof.Address(bind) {
 		return bind, nil
 	}
 	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, bind)
@@ -110,7 +111,7 @@ func localRecoveryHost(ctx context.Context, bind string) (string, error) {
 		return "", fmt.Errorf("resolve local recovery bind address: %w", err)
 	}
 	for _, address := range addresses {
-		if people.LocalRecoveryAddress(address.IP.String()) {
+		if localproof.Address(address.IP.String()) {
 			return address.IP.String(), nil
 		}
 	}
@@ -158,7 +159,7 @@ func peopleIssuer(ref control.CredentialReference) (people.Issuer, error) {
 
 func localRecoveryRequest(rhost string) bool {
 	host, _, err := net.SplitHostPort(rhost)
-	return err == nil && people.LocalRecoveryAddress(host)
+	return err == nil && localproof.Address(host)
 }
 
 func (s *Server) closePeople() error {

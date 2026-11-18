@@ -1,4 +1,5 @@
-package people
+// Package localproof owns the private installation proof shared by the node and local clients.
+package localproof
 
 import (
 	"context"
@@ -19,9 +20,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
-// RecoveryFile is the private daemon-created proof consumed by a local operator.
+// File is the private daemon-created proof consumed by a local operator.
 // It must never be returned by an HTTP API or printed by a client.
-type RecoveryFile struct {
+type File struct {
 	Version    int    `json:"version"`
 	Proof      string `json:"proof"`
 	Endpoint   string `json:"endpoint"`
@@ -30,20 +31,20 @@ type RecoveryFile struct {
 	TLSName    string `json:"tls_name,omitempty"`
 }
 
-// LocalRecovery owns this daemon lifetime's local recovery authority.
-type LocalRecovery struct {
+// Proof owns this daemon lifetime's local recovery authority.
+type Proof struct {
 	path   string
 	digest string
 }
 
-// RecoveryPath is resolved only beneath the operator-selected installation.
-func RecoveryPath(configDir string) string {
+// Path is resolved only beneath the operator-selected installation.
+func Path(configDir string) string {
 	return filepath.Join(configDir, "access", "owner-recovery.json")
 }
 
-// LocalRecoveryAddress accepts literal addresses assigned to this host only.
+// Address accepts literal addresses assigned to this host only.
 // It avoids DNS or proxy configuration turning a private proof into remote input.
-func LocalRecoveryAddress(host string) bool {
+func Address(host string) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return false
@@ -63,13 +64,13 @@ func LocalRecoveryAddress(host string) bool {
 	return false
 }
 
-// NewLocalRecovery rotates proof only while the caller owns the people store lock.
+// New rotates proof only while the caller owns the people store lock.
 // The containing directory is restricted before any secret bytes are written.
-func NewLocalRecovery(ctx context.Context, configDir string, descriptor RecoveryFile) (*LocalRecovery, error) {
+func New(ctx context.Context, configDir string, descriptor File) (*Proof, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	path := RecoveryPath(configDir)
+	path := Path(configDir)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -93,7 +94,7 @@ func NewLocalRecovery(ctx context.Context, configDir string, descriptor Recovery
 		_ = os.Remove(path)
 		return nil, err
 	}
-	return &LocalRecovery{path: path, digest: recoveryDigest(descriptor.Proof)}, nil
+	return &Proof{path: path, digest: recoveryDigest(descriptor.Proof)}, nil
 }
 
 func recoveryDigest(value string) string {
@@ -102,20 +103,20 @@ func recoveryDigest(value string) string {
 }
 
 // Verify compares a supplied proof without retaining its reusable value.
-func (r *LocalRecovery) Verify(proof string) bool {
+func (r *Proof) Verify(proof string) bool {
 	return r != nil && len(proof) == 43 && subtle.ConstantTimeCompare([]byte(r.digest), []byte(recoveryDigest(proof))) == 1
 }
 
 // Reference identifies this local authority epoch without disclosing its proof.
-func (r *LocalRecovery) Reference() string { return "local-recovery:" + r.digest }
+func (r *Proof) Reference() string { return "local-recovery:" + r.digest }
 
 // ValidReference rejects grants from a previous daemon lifetime.
-func (r *LocalRecovery) ValidReference(value string) bool {
+func (r *Proof) ValidReference(value string) bool {
 	return r != nil && subtle.ConstantTimeCompare([]byte(value), []byte(r.Reference())) == 1
 }
 
 // Close removes only this daemon's own proof file, preserving a replacement.
-func (r *LocalRecovery) Close() error {
+func (r *Proof) Close() error {
 	if r == nil {
 		return nil
 	}
@@ -132,20 +133,20 @@ func (r *LocalRecovery) Close() error {
 	return os.Remove(r.path)
 }
 
-// ReadLocalRecovery requires the operator to have read access to the daemon's
+// Read requires the operator to have read access to the daemon's
 // protected file. System service installations may require elevation.
-func ReadLocalRecovery(ctx context.Context, configDir string) (*RecoveryFile, error) {
+func Read(ctx context.Context, configDir string) (*File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	file, err := readRecoveryPath(RecoveryPath(configDir))
+	file, err := readRecoveryPath(Path(configDir))
 	if err != nil {
 		return nil, fmt.Errorf("read local recovery authority (run as the service account or administrator for a system installation): %w", err)
 	}
 	return file, nil
 }
 
-func readRecoveryPath(path string) (*RecoveryFile, error) {
+func readRecoveryPath(path string) (*File, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -158,7 +159,7 @@ func readRecoveryPath(path string) (*RecoveryFile, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	var file RecoveryFile
+	var file File
 	decoder := json.NewDecoder(io.LimitReader(f, 8193))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&file); err != nil {

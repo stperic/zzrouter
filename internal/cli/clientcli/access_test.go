@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/people"
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ import (
 func recoveryFixture(t *testing.T, endpoint string) string {
 	t.Helper()
 	dir := t.TempDir()
-	authority, err := people.NewLocalRecovery(t.Context(), dir, people.RecoveryFile{Endpoint: endpoint, ConsoleURL: "https://router.example/console/"})
+	authority, err := localproof.New(t.Context(), dir, localproof.File{Endpoint: endpoint, ConsoleURL: "https://router.example/console/"})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, authority.Close()) })
 	return dir
@@ -33,7 +33,7 @@ func TestLocalOwnerRecoveryUsesOnlySelectedInstallation(t *testing.T) {
 		require.Empty(t, r.Header.Get("Authorization"))
 		var input struct{ Proof string }
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
-		file, err := people.ReadLocalRecovery(r.Context(), dir)
+		file, err := localproof.Read(r.Context(), dir)
 		require.NoError(t, err)
 		require.Equal(t, file.Proof, input.Proof)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": localRecoveryGrant{URL: file.ConsoleURL, Token: "synthetic-once-only-code", ExpiresAt: utils.NowUTC().Add(time.Minute)}})
@@ -58,7 +58,7 @@ func TestOwnerRecoveryCommandUsesSelectedInstallation(t *testing.T) {
 		require.Empty(t, r.Header.Get("Authorization"))
 		var input struct{ Proof string }
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
-		file, err := people.ReadLocalRecovery(r.Context(), dir)
+		file, err := localproof.Read(r.Context(), dir)
 		require.NoError(t, err)
 		require.Equal(t, file.Proof, input.Proof)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": localRecoveryGrant{URL: file.ConsoleURL, Token: "synthetic-recovery-code", ExpiresAt: utils.NowUTC().Add(time.Minute)}})
@@ -74,7 +74,7 @@ func TestOwnerRecoveryCommandUsesSelectedInstallation(t *testing.T) {
 	require.EqualValues(t, 1, requests.Load())
 	require.Contains(t, output.String(), "https://router.example/console/")
 	require.Contains(t, output.String(), "synthetic-recovery-code")
-	file, err := people.ReadLocalRecovery(t.Context(), dir)
+	file, err := localproof.Read(t.Context(), dir)
 	require.NoError(t, err)
 	require.NotContains(t, output.String(), file.Proof)
 }

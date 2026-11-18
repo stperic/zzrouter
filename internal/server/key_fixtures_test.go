@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -79,7 +80,7 @@ func prehashedTestRecord(t *testing.T, id string, key keys.VirtualKey) (string, 
 }
 
 // seedFileTestKey adds an incidental key without dropping any existing keys.
-func seedFileTestKey(t *testing.T, store *keys.FileKeyStore, path, id string, key keys.VirtualKey) string {
+func seedFileTestKey(t *testing.T, store *filestore.Keys, path, id string, key keys.VirtualKey) string {
 	t.Helper()
 	population := store.List()
 	require.NotContains(t, population, id, "duplicate fixture key")
@@ -89,7 +90,7 @@ func seedFileTestKey(t *testing.T, store *keys.FileKeyStore, path, id string, ke
 	return rawKey
 }
 
-func loadTestKeyPopulation(t *testing.T, store *keys.FileKeyStore, path string, population map[string]*keys.VirtualKey) {
+func loadTestKeyPopulation(t *testing.T, store *filestore.Keys, path string, population map[string]*keys.VirtualKey) {
 	t.Helper()
 	data, err := yaml.Marshal(struct {
 		Version string                      `yaml:"version"`

@@ -6,12 +6,15 @@
 //   - [control] — the [control.Core] facade that callers use end-to-end
 //     (Authenticate + Enforce). Owns post-response reservation settlement
 //     and the pending-reservation reaper goroutine.
-//   - [keys]    — virtual keys ([keys.Store], Argon2id hashing, UUID +
+//   - [keys]    — virtual keys ([keys.KeyStore], Argon2id hashing, UUID +
 //     lifecycle fields).
 //   - [quota]   — RPM/TPM limiters, reservation-based budgets, spend
 //     tracking, concurrency limiter ([quota.Enforcer]).
-//   - [teams]   — teams + membership ([teams.Store], merge-semantics
+//   - [teams]   — teams + membership ([teams.TeamStore], merge-semantics
 //     member patches).
+//
+// YAML storage lives in filestore; people retains its account store. Localproof
+// owns the installation proof without importing access storage.
 //
 // # Dependency Direction
 //

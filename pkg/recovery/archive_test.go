@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -46,10 +47,10 @@ func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	_, err = vault.Replace(t.Context(), "cloud", 0, map[string]string{"token": "synthetic-provider-secret"})
 	require.NoError(t, err)
 	require.NoError(t, vault.Close())
-	policy := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	policy := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	require.NoError(t, policy.Create("workspace", &teams.Team{Name: "Workspace", Kind: teams.KindShared}))
 	require.NoError(t, policy.Save())
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
 	_, err = keyStore.Create("editor", &keys.VirtualKey{Name: "Editor", Role: "user", TeamID: "workspace", TeamRole: "member"})
 	require.NoError(t, err)
 	require.NoError(t, keyStore.Save())
@@ -101,7 +102,7 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	require.Equal(t, "admin", person.Role)
 	require.Equal(t, "workspace", person.TeamID)
 	require.NoError(t, restoredPeople.Close())
-	restoredKeys := keys.NewFileKeyStore(filepath.Join(destination, "config", "keys.yaml"))
+	restoredKeys := filestore.NewKeys(filepath.Join(destination, "config", "keys.yaml"))
 	require.NoError(t, restoredKeys.Load())
 	require.Equal(t, "workspace", restoredKeys.Get("editor").TeamID)
 	spend, err := quota.LoadSpend(filepath.Join(destination, "config", "spend.json"))
@@ -162,7 +163,7 @@ func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
 	require.NoError(t, os.WriteFile(archive, data[:len(data)-5], 0o600))
 	_, err = Check(t.Context(), archive, "")
 	require.Error(t, err, "gzip truncation must be detected")
-	_, err = keys.DecodeSnapshot([]byte("keys: {broken: null}"))
+	_, err = filestore.DecodeKeys([]byte("keys: {broken: null}"))
 	require.Error(t, err, "malformed keys must never panic")
 }
 

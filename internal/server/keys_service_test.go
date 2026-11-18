@@ -10,19 +10,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
 // newKeysTestHarness wires a complete KeysService + TeamsService + AccessControl
 // against temp-dir-backed stores. Every test gets isolated state.
-func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, *keys.FileKeyStore, *teams.FileTeamStore, *AccessControl) {
+func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, *filestore.Keys, *filestore.Teams, *AccessControl) {
 	t.Helper()
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 
 	enforcer := quota.NewEnforcer(
 		quota.NewRateLimiter(),

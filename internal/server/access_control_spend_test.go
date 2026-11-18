@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -21,8 +22,8 @@ func newGatewayWithEnforcer(t *testing.T) (*AccessControl, *quota.Enforcer) {
 	t.Helper()
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 
 	rl := quota.NewRateLimiter()
 	cl := quota.NewConcurrencyLimiter()
@@ -192,7 +193,7 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 
 	// Seed the key store.
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
 	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 
 	svc := NewKeysService(keyStore, nil, gw)
@@ -231,7 +232,7 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
 	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
 
@@ -260,7 +261,7 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
 	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
@@ -302,8 +303,8 @@ func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	svc := NewTeamsService(teamStore, keyStore, gw)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{
@@ -343,8 +344,8 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	svc := NewTeamsService(teamStore, keyStore, gw)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
@@ -372,8 +373,8 @@ func TestTeamsService_GetTeamUsage_NotFound(t *testing.T) {
 	gw, _ := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 	svc := NewTeamsService(teamStore, keyStore, gw)
 
 	_, err := svc.GetTeamUsage("ghost")

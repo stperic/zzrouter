@@ -1,10 +1,11 @@
-package keys
+package filestore
 
 import (
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,18 +22,18 @@ import (
 // delayed by the cache TTL.
 func TestFileKeyStore_OnChangeFiresOnMutation(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 
 	var fires atomic.Int32
 	store.OnChange(func() { fires.Add(1) })
 
 	// Create → 1 fire
-	_, err := store.Create("k1", &VirtualKey{Name: "K1", Role: "user", TeamID: "t", TeamRole: "owner"})
+	_, err := store.Create("k1", &keys.VirtualKey{Name: "K1", Role: "user", TeamID: "t", TeamRole: "owner"})
 	require.NoError(t, err)
 	require.EqualValues(t, 1, fires.Load(), "Create must fire OnChange")
 
 	// Update → 2 fires
-	err = store.Update("k1", &VirtualKey{Name: "K1-renamed", Role: "user", TeamID: "t", TeamRole: "owner"})
+	err = store.Update("k1", &keys.VirtualKey{Name: "K1-renamed", Role: "user", TeamID: "t", TeamRole: "owner"})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, fires.Load(), "Update must fire OnChange")
 
@@ -58,13 +59,13 @@ func TestFileKeyStore_OnChangeFiresOnMutation(t *testing.T) {
 // cache's existing subscription.
 func TestFileKeyStore_OnChangeSupportsMultipleListeners(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 
 	var a, b atomic.Int32
 	store.OnChange(func() { a.Add(1) })
 	store.OnChange(func() { b.Add(1) })
 
-	_, err := store.Create("k", &VirtualKey{Name: "K", Role: "user", TeamID: "t", TeamRole: "owner"})
+	_, err := store.Create("k", &keys.VirtualKey{Name: "K", Role: "user", TeamID: "t", TeamRole: "owner"})
 	require.NoError(t, err)
 
 	require.EqualValues(t, 1, a.Load())
@@ -77,7 +78,7 @@ func TestFileKeyStore_OnChangeSupportsMultipleListeners(t *testing.T) {
 // cache that wants to list keys on invalidation would deadlock.
 func TestFileKeyStore_OnChangeRunsOutsideLock(t *testing.T) {
 	t.Parallel()
-	store := NewFileKeyStore("")
+	store := NewKeys("")
 
 	done := make(chan struct{})
 	store.OnChange(func() {
@@ -93,7 +94,7 @@ func TestFileKeyStore_OnChangeRunsOutsideLock(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = store.Create("k", &VirtualKey{Name: "K", Role: "user", TeamID: "t", TeamRole: "owner"})
+		_, _ = store.Create("k", &keys.VirtualKey{Name: "K", Role: "user", TeamID: "t", TeamRole: "owner"})
 	}()
 	wg.Wait()
 	<-done

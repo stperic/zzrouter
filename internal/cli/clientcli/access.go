@@ -12,7 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stperic/common/httpclient"
-	"github.com/stperic/zzrouter/pkg/access/people"
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/security"
 )
@@ -44,12 +44,12 @@ type localRecoveryGrant struct {
 }
 
 func recoverLocalOwner(ctx context.Context, dir string) (*localRecoveryGrant, error) {
-	proof, err := people.ReadLocalRecovery(ctx, dir)
+	proof, err := localproof.Read(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
 	endpoint, err := url.Parse(proof.Endpoint)
-	if err != nil || !people.LocalRecoveryAddress(endpoint.Hostname()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Port() == "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+	if err != nil || !localproof.Address(endpoint.Hostname()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Port() == "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 		return nil, fmt.Errorf("recovery endpoint must be the installed node's literal local address")
 	}
 	transport := &http.Transport{} // No environment proxy may receive the local proof.

@@ -13,18 +13,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
-func newTeamsTestHarness(t *testing.T) (*TeamsService, *keys.FileKeyStore, *teams.FileTeamStore, *AccessControl, string) {
+func newTeamsTestHarness(t *testing.T) (*TeamsService, *filestore.Keys, *filestore.Teams, *AccessControl, string) {
 	t.Helper()
 
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "keys.yaml")
-	keyStore := keys.NewFileKeyStore(keyPath)
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	keyStore := filestore.NewKeys(keyPath)
+	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
 
 	enforcer := quota.NewEnforcer(
 		quota.NewRateLimiter(),
@@ -39,7 +40,7 @@ func newTeamsTestHarness(t *testing.T) (*TeamsService, *keys.FileKeyStore, *team
 }
 
 // seedKeyBound creates a virtual key with the given TeamID/TeamRole.
-func seedKeyBound(t *testing.T, store *keys.FileKeyStore, path, id, teamID, role string) {
+func seedKeyBound(t *testing.T, store *filestore.Keys, path, id, teamID, role string) {
 	t.Helper()
 	seedFileTestKey(t, store, path, id, keys.VirtualKey{
 		Name:     id,

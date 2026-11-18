@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -26,14 +27,14 @@ import (
 // for the same key name.
 type KeysService struct {
 	mu     sync.Mutex
-	store  *keys.FileKeyStore
+	store  *filestore.Keys
 	teams  *TeamsService
 	access *AccessControl
 	audit  audit.Sink
 }
 
 // NewKeysService creates a new keys service.
-func NewKeysService(store *keys.FileKeyStore, teamsService *TeamsService, access *AccessControl) *KeysService {
+func NewKeysService(store *filestore.Keys, teamsService *TeamsService, access *AccessControl) *KeysService {
 	return &KeysService{store: store, teams: teamsService, access: access, audit: audit.Null{}}
 }
 

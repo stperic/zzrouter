@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/common/mcp/oauth"
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
@@ -132,7 +133,7 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 	owner.csrf = info.CSRF
 	status, _ := second.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, http.StatusUnauthorized, status)
-	proof, err := people.ReadLocalRecovery(t.Context(), s.auditConfigDir)
+	proof, err := localproof.Read(t.Context(), s.auditConfigDir)
 	require.NoError(t, err)
 	postProof := func(value, origin string) (int, []byte) {
 		data, err := json.Marshal(map[string]string{"proof": value})
