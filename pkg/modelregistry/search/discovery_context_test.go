@@ -121,13 +121,13 @@ func TestCloudTargetPreservesNativeFieldsAndRefusesRedirect(t *testing.T) {
 	}))
 	defer upstream.Close()
 	target := testTarget(upstream.URL, "r1", "fixture")
-	target.ModelsPath = "/custom/models?account=fixture"
+	target.ModelsPath = new("/custom/models?account=fixture")
 	target.ModelsResponseKey = "models"
 	models, err := SearchCloudTarget(context.Background(), target, "model", 10)
 	require.NoError(t, err)
 	require.Len(t, models, 1)
 	assert.Equal(t, map[string]any{"vision": true}, models[0].(map[string]any)["capabilities"])
-	target.ModelsPath = "/redirect"
+	target.ModelsPath = new("/redirect")
 	_, err = SearchCloudTarget(context.Background(), target, "", 10)
 	require.Error(t, err)
 	assert.Zero(t, destinationCalls.Load())

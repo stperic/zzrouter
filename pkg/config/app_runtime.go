@@ -46,9 +46,9 @@ type AppRuntimeConfig struct {
 	QueueTimeout string `yaml:"queue_timeout,omitempty"`
 
 	// Models listing configuration (for cloud search)
-	ModelsPath        string `yaml:"models_path,omitempty"`         // Path to list models (default: /v1/models)
-	ModelsResponseKey string `yaml:"models_response_key,omitempty"` // JSON key containing model list (default: "data")
-	ModelURLFmt       string `yaml:"model_url,omitempty"`           // URL template for model pages (e.g., "https://ollama.com/library/%s")
+	ModelsPath        *string `yaml:"models_path,omitempty"`         // Omitted uses /v1/models; empty disables listing.
+	ModelsResponseKey string  `yaml:"models_response_key,omitempty"` // JSON key containing model list (default: "data")
+	ModelURLFmt       string  `yaml:"model_url,omitempty"`           // URL template for model pages (e.g., "https://ollama.com/library/%s")
 }
 
 // ExecutionConfig represents execution configuration

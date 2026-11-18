@@ -1,6 +1,9 @@
 package search
 
-import "fmt"
+import (
+	"fmt"
+	"path"
+)
 
 // metadataEquivalents maps external-metadata field names to provider-native
 // field names that carry the same data. When a provider already has one of
@@ -57,6 +60,12 @@ func EnrichCloudResultsWithURL(results []any, provider Provider) {
 		if apiID == "" {
 			continue
 		}
-		m["url"] = fmt.Sprintf(entry.Meta.ModelURLFmt, apiID)
+		slug := apiID
+		if provider == "cloudflare" {
+			// Model API identifiers include an account namespace; the
+			// Workers AI public model pages use only the final slug.
+			slug = path.Base(apiID)
+		}
+		m["url"] = fmt.Sprintf(entry.Meta.ModelURLFmt, slug)
 	}
 }

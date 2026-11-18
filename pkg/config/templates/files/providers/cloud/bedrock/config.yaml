@@ -19,6 +19,7 @@ connection:
       secret: true
 runtime:
   endpoint: "${AWS_BEDROCK_ENDPOINT:-https://bedrock-runtime.us-east-1.amazonaws.com}"
+  models_path: ""  # Bedrock Runtime does not list models.
   model_url: "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html#%s"
   api:
     auth_type: bearer

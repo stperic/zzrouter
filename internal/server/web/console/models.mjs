@@ -2,7 +2,6 @@ import { el, text, button, leaveButton, heading, actions, field, input, select, 
 import { details } from './details.mjs';
 import { modelKey, modelIdentity, modelQuery, modelInferenceTarget, bytes } from './model-data.mjs';
 import { providerName } from './provider-icons.mjs';
-import { discoverModels } from './model-discovery.mjs';
 import { parameterSettings } from './parameters.mjs';
 import { startRun } from './run-form.mjs';
 
@@ -16,7 +15,9 @@ export function modelTabs(p, mode) {
 export async function models(p, selected, mode = 'available') {
   if (mode === 'discover') {
     p.root.append(heading('Models', 'Find models and choose exactly where to deploy them.'), modelTabs(p, mode));
-    return discoverModels(p, selected);
+    const { discoverModels } = await import('./model-discovery.mjs');
+    if (p.current()) return discoverModels(p, selected);
+    return;
   }
   const search = input('model_search', '', { type: 'search', placeholder: 'Search available models' });
   const node = select('model_node', [['', 'All nodes']], '');

@@ -7,9 +7,10 @@ import "errors"
 // context (offending value, platform, etc.) for logs without changing
 // identity.
 var (
-	ErrModelNotFound   = errors.New("model not found")
-	ErrInvalidProvider = errors.New("invalid provider")
-	ErrLimitNegative   = errors.New("limit cannot be negative")
-	ErrLimitExceedsMax = errors.New("limit cannot exceed maximum")
-	ErrOffsetNegative  = errors.New("offset cannot be negative")
+	ErrModelDiscoveryUnavailable = errors.New("provider has no model-listing API")
+	ErrModelNotFound             = errors.New("model not found")
+	ErrInvalidProvider           = errors.New("invalid provider")
+	ErrLimitNegative             = errors.New("limit cannot be negative")
+	ErrLimitExceedsMax           = errors.New("limit cannot exceed maximum")
+	ErrOffsetNegative            = errors.New("offset cannot be negative")
 )

@@ -26,7 +26,7 @@ type CloudProvider struct {
 type CloudRuntime struct {
 	Endpoint          string            `yaml:"endpoint" json:"endpoint"`
 	ModelURL          string            `yaml:"model_url,omitempty" json:"model_url,omitempty"`
-	ModelsPath        string            `yaml:"models_path,omitempty" json:"models_path,omitempty"`
+	ModelsPath        *string           `yaml:"models_path,omitempty" json:"models_path,omitempty"`
 	ModelsResponseKey string            `yaml:"models_response_key,omitempty" json:"models_response_key,omitempty"`
 	API               APIConfig         `yaml:"api" json:"api"`
 	HealthCheck       HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`

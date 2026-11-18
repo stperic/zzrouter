@@ -1311,3 +1311,18 @@ h1 {
   .chat-composer-footer { padding-bottom:.5rem }
   .chat-privacy { font-size:.65rem; margin-top:.3rem }
 }
+
+.discovery-markdown, .discovery-extra, .discovery-files { overflow-wrap:anywhere; min-width:0 }
+.discovery-markdown { line-height:1.55 }
+.discovery-markdown pre { overflow:auto; border:1px solid var(--line); border-radius:8px; padding:.65rem; background:var(--surface-muted) }
+.discovery-markdown table { display:block; overflow:auto }
+.discovery-markdown a, .discovery-links a, .discovery-extra a { text-decoration:underline }
+.discovery-links { margin-top:.35rem }
+.discovery-links a { min-height:24px }
+.discovery-readme, .discovery-extra { margin-top:.85rem }
+.discovery-readme>summary, .discovery-extra>summary, .discovery-all-tags>summary { font-weight:600 }
+.discovery-extra dd>.facts { margin-top:0 }
+.discovery-files { padding-left:1.35rem }
+.discovery-files li { padding:.2rem 0 }
+.discovery-files small { margin-left:.6rem; color:var(--muted) }
+.discovery-row-preview { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere }

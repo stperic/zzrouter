@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Render model-card links and provider metadata in Discover. Expand shortened
+  OpenRouter descriptions on demand from the public model page.
+
 - Simplify TUI parameter editing around scoped overrides and changed-leaf
   patches. Protect drafts and pending writes, reject obsolete replies, and
   require refresh after uncertain outcomes. Share responsive tables, forms,

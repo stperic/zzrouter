@@ -280,7 +280,7 @@ func connectionTarget(svc *config.ServiceConfig, record secrets.Record, values m
 	header := upstream.Header()
 	encoded, _ := json.Marshal(struct {
 		Endpoint          string
-		ModelsPath        string
+		ModelsPath        *string
 		ModelsResponseKey string
 		Header            http.Header
 		Revision          uint64

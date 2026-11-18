@@ -174,6 +174,148 @@ test('complete console workspaces and editors fit desktop and phone', { timeout:
   }
 });
 
+test('Discover renders provider links and metadata across catalogs', { timeout: 60000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  const sources = ['ollama', 'huggingface', 'openai', 'anthropic', 'openrouter', 'azure', 'cloudflare', 'gemini', 'groq', 'ollama-cloud'];
+  const cards = Object.fromEntries(sources.map(provider => {
+    const url = provider === 'huggingface' ? 'https://huggingface.co/org/model' : 'https://catalog.example/' + provider + '/model';
+    const discovery = {
+      provider, url, api_id: 'org/model', display_name: provider + ' model',
+      is_cloud: !['ollama', 'huggingface'].includes(provider),
+      description: 'Try [Jev](https://openrouter.ai/typesafe/jev-router).',
+      modified_at: '2026-11-10T00:10:00Z',
+    };
+    return [provider, { discovery }];
+  }));
+  const hf = cards.huggingface;
+  hf.discovery.readme = '# Guide\n\n[Install](./install.md) · [Overview](#guide)\n\n' +
+    '| Setting | Value |\n| --- | --- |\n| Precision | BF16 |';
+  hf.siblings = [{ rfilename: 'weights/model file.safetensors', size: 1024 }];
+  hf.safetensors = { total: 7000000000 };
+  const router = cards.openrouter;
+  router.discovery.description += ' See https://example.org/bare. <a href="/docs">HTML link</a>\n\n' +
+    '[Unsupported destination](javascript:alert%281%29) ' +
+    '[![Badge](https://example.org/badge.svg)](https://example.org/badge)\n\n' +
+    '<script>untrusted script</script>\n\nLast paragraph.';
+  Object.assign(router.discovery, { price_prompt: -1, price_complete: -1 });
+  Object.assign(router, {
+    architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
+    top_provider: { max_completion_tokens: 16384 },
+    links: { details: '/api/v1/endpoints' },
+    supported_parameters: ['temperature', 'top_p'],
+    absent: null,
+  });
+  const searched = [];
+  await page.route('**/search?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('type') === 'providers') return route.fulfill({ json: { data: { results: [
+      ...sources.map(name => ({ name, is_cloud: cards[name].discovery.is_cloud, sort_options: ['newest'], discovery_available: true })),
+      { name: 'bedrock', is_cloud: true, discovery_available: false, discovery_supported: false },
+    ] } } });
+    const provider = query.get('provider');
+    searched.push(provider);
+    return route.fulfill({ json: { data: { results: cards[provider] ? [cards[provider]] : [] } } });
+  });
+  await page.route('**/models/card/**', route => {
+    const provider = new URL(route.request().url()).pathname.split('/card/')[1].split('/')[0];
+    return route.fulfill({ json: { data: cards[provider] } });
+  });
+  await f.open('#models?mode=discover');
+  const source = page.getByLabel('Registry or cloud provider');
+  const drawer = page.getByRole('dialog');
+  const link = name => drawer.getByRole('link', { name, exact: true });
+  for (const provider of sources) {
+    await source.selectOption(provider);
+    const card = page.locator('.node-grid button').filter({ hasText: provider + ' model' });
+    await card.waitFor();
+    assert.doesNotMatch(await card.innerText(), /\[Jev\]|\(https:/);
+    assert.equal(await card.locator('a').count(), 0);
+    await card.click();
+    assert.equal(await link('Jev').getAttribute('href'), 'https://openrouter.ai/typesafe/jev-router');
+    assert.equal(await link('View model on provider').getAttribute('href'), cards[provider].discovery.url);
+    assert.equal(await drawer.getByText('null', { exact: true }).count(), 0);
+    assert.equal(await drawer.getByText('org/model', { exact: true }).isVisible(), true);
+    assert.equal(await drawer.locator('time').getAttribute('datetime'), '2026-11-10T00:10:00Z');
+    if (provider === 'openrouter') {
+      assert.equal(await link('https://example.org/bare').getAttribute('href'), 'https://example.org/bare');
+      assert.equal(await link('HTML link').getAttribute('href'), 'https://catalog.example/docs');
+      assert.equal(await link('Badge').getAttribute('href'), 'https://example.org/badge');
+      assert.equal(await link('Endpoint details').getAttribute('href'), 'https://catalog.example/api/v1/endpoints');
+      assert.equal(await link('Unsupported destination').count(), 0);
+      assert.equal(await drawer.locator('a a, script').count(), 0);
+      assert.doesNotMatch(await drawer.innerText(), /untrusted script/);
+      assert.equal(await drawer.getByText('Last paragraph.', { exact: true }).isVisible(), true);
+      assert.equal(await drawer.getByText('text, image', { exact: true }).isVisible(), true);
+      assert.equal(await drawer.getByText('16,384', { exact: true }).isVisible(), true);
+      assert.equal(await drawer.getByText('Varies by routed model', { exact: true }).count(), 2);
+      await drawer.getByText('Provider details', { exact: true }).click();
+      await drawer.getByText('temperature, top_p', { exact: true }).waitFor();
+      await audit(page, 'discover-provider-details-desktop');
+    }
+    if (provider === 'huggingface') {
+      await drawer.getByText('Model card', { exact: true }).click();
+      assert.equal(await link('Install').getAttribute('href'), hf.discovery.url + '/blob/main/install.md');
+      assert.equal(await link('Overview').getAttribute('href'), hf.discovery.url + '#guide');
+      assert.equal(await drawer.getByRole('cell', { name: 'BF16', exact: true }).isVisible(), true);
+      await drawer.getByText('Repository files (1)', { exact: true }).click();
+      assert.equal(await link('weights/model file.safetensors').getAttribute('href'), hf.discovery.url + '/blob/main/weights/model%20file.safetensors');
+      await page.setViewportSize({ width: 390, height: 844 });
+      await audit(page, 'discover-model-card-phone');
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    await drawer.getByRole('button', { name: 'Close discover model' }).click();
+  }
+  await source.selectOption('bedrock');
+  assert.equal(await source.locator('optgroup[label="Catalog unavailable"] option').count(), 1);
+  await page.getByText('Model discovery is unavailable through this connection.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Search', exact: true }).isDisabled(), true);
+  assert.equal(searched.includes('bedrock'), false);
+});
+
+test('Discover expands OpenRouter excerpts on demand and keeps a provider link if unavailable', async t => {
+  const f = await consolePage(t), { page } = f;
+  const excerpt = 'This model supports text and images. Thinking can...';
+  const full = 'This model supports text and images. Thinking can be turned off per request. See the [model guide](https://example.com/guide).';
+  const read = [];
+  const models = ['example/supported', 'example/unavailable'].map(api_id => ({
+    discovery: { provider: 'openrouter', api_id, is_cloud: true, url: 'https://openrouter.ai/' + api_id, description: excerpt },
+  }));
+  await page.route('**/search?**', route => {
+    const providers = new URL(route.request().url()).searchParams.get('type') === 'providers';
+    return route.fulfill({ json: { data: { results: providers ? [{ name: 'openrouter', is_cloud: true }] : models } } });
+  });
+  await page.route('**/models/card/openrouter/**', route => {
+    const url = new URL(route.request().url());
+    const model = models.find(item => url.pathname.endsWith('/' + item.discovery.api_id));
+    if (url.searchParams.get('full_description') !== 'true') return route.fulfill({ json: { data: model } });
+    read.push(model.discovery.api_id);
+    const description = model === models[0] ? full : excerpt;
+    return route.fulfill({ json: { data: { discovery: { ...model.discovery, description } } } });
+  });
+  await f.open('#models?mode=discover');
+  const drawer = page.getByRole('dialog');
+  const expand = drawer.getByRole('button', { name: 'Read full description' });
+  await page.locator('.node-grid button').filter({ hasText: 'example/supported' }).click();
+  await expand.waitFor();
+  assert.deepEqual(read, []);
+  assert.equal(await drawer.getByText(excerpt, { exact: true }).isVisible(), true);
+  await expand.click();
+  const collapse = drawer.getByRole('button', { name: 'Show less' });
+  assert.equal(await collapse.getAttribute('aria-expanded'), 'true');
+  assert.equal(await drawer.getByRole('link', { name: 'model guide' }).getAttribute('href'), 'https://example.com/guide');
+  await collapse.click();
+  assert.equal(await drawer.getByText(excerpt, { exact: true }).isVisible(), true);
+  await expand.click();
+  await collapse.waitFor();
+  assert.deepEqual(read, ['example/supported']);
+  await drawer.getByRole('button', { name: 'Close discover model' }).click();
+  await page.locator('.node-grid button').filter({ hasText: 'example/unavailable' }).click();
+  await expand.click();
+  assert.equal(await drawer.getByRole('link', { name: 'Read on OpenRouter' }).getAttribute('href'), models[1].discovery.url);
+  assert.equal(await drawer.getByText(excerpt, { exact: true }).isVisible(), true);
+  assert.deepEqual(read, ['example/supported', 'example/unavailable']);
+});
+
 test('model discovery reviews exact targets, downloads, test and Chat handoff', { timeout: 60000 }, async t => {
   const f = await consolePage(t); const { page } = f;
   await f.open('#models');

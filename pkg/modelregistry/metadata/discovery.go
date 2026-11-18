@@ -150,19 +150,21 @@ type SearchPage struct {
 
 // SearchProvider declares the server-supported discovery presentation options.
 type SearchProvider struct {
-	Name         string   `json:"name"`
-	DisplayName  string   `json:"display_name"`
-	Description  string   `json:"description"`
-	BaseURL      string   `json:"base_url"`
-	ModelURLFmt  string   `json:"model_url_fmt"`
-	Icon         string   `json:"icon"`
-	SortOptions  []string `json:"sort_options"`
-	ClientSorts  []string `json:"client_sorts"`
-	ClientFilter bool     `json:"client_filter"`
-	HasTags      bool     `json:"has_tags"`
-	IsCloud      bool     `json:"is_cloud"`
-	Configured   bool     `json:"configured"`
-	Enabled      bool     `json:"enabled"`
+	Name               string   `json:"name"`
+	DisplayName        string   `json:"display_name"`
+	Description        string   `json:"description"`
+	BaseURL            string   `json:"base_url"`
+	ModelURLFmt        string   `json:"model_url_fmt"`
+	Icon               string   `json:"icon"`
+	SortOptions        []string `json:"sort_options"`
+	ClientSorts        []string `json:"client_sorts"`
+	ClientFilter       bool     `json:"client_filter"`
+	HasTags            bool     `json:"has_tags"`
+	IsCloud            bool     `json:"is_cloud"`
+	Configured         bool     `json:"configured"`
+	Enabled            bool     `json:"enabled"`
+	DiscoveryAvailable *bool    `json:"discovery_available,omitempty"`
+	DiscoverySupported *bool    `json:"discovery_supported,omitempty"`
 }
 
 // SearchCursor carries opaque upstream page cursors without reconstructing URLs.

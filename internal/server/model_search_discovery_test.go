@@ -47,14 +47,22 @@ func TestModelCardCanonicalizesProviderAliases(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/tree/"):
 			_, _ = w.Write([]byte("[]"))
 		case r.URL.Path == "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"model"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"model"},{"id":"e2ee1a9b-74d3-4c65-9db1-c45a3b89a312","name":"@cf/meta/example"}]}`))
 		default:
-			_, _ = w.Write([]byte(`{"id":"org/model","modelId":"org/model"}`))
+			_, _ = w.Write([]byte(`{"id":"org/model","modelId":"org/model","lastModified":"2026-11-10T14:00:00Z","library_name":"transformers","safetensors":{"total":7000000000}}`))
 		}
 	}))
 	defer upstream.Close()
 	cfg := discoveryConfig(t, upstream.URL, "fixture")
 	require.NoError(t, cfg.AddApp("openai", config.ServiceConfig{Enabled: new(true), Name: "OpenAI", Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: upstream.URL, API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "fixture"}}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+	require.NoError(t, cfg.AddApp("cloudflare", config.ServiceConfig{
+		Enabled: new(true), Name: "Cloudflare", Mode: "cloud", Protocol: config.ProtocolOpenAI,
+		Runtime: &config.AppRuntimeConfig{
+			Endpoint: upstream.URL, ModelURLFmt: "https://developers.cloudflare.com/workers-ai/models/%s/",
+			API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "fixture"},
+		},
+		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+	}))
 	getter := func() *config.AppsConfig { return cfg }
 	search.RegisterCloudProvidersFromConfig(getter)
 	client := discoveryHTTPClient(t, NewModelSearchService(getter, nil))
@@ -67,6 +75,7 @@ func TestModelCardCanonicalizesProviderAliases(t *testing.T) {
 		{"HUGGINGFACE", "huggingface", "org/model", false},
 		{"openai", "openai", "model", true},
 		{"OPENAI", "openai", "model", true},
+		{"cloudflare", "cloudflare", "@cf/meta/example", true},
 	} {
 		t.Run(test.provider, func(t *testing.T) {
 			card, err := client.GetModelCard(t.Context(), test.provider, test.model)
@@ -74,6 +83,14 @@ func TestModelCardCanonicalizesProviderAliases(t *testing.T) {
 			assert.Equal(t, test.canonical, card.Discovery.Provider)
 			assert.Equal(t, test.model, card.Discovery.APIID)
 			assert.Equal(t, test.cloud, card.Discovery.IsCloud)
+			switch test.canonical {
+			case "huggingface":
+				assert.Equal(t, "2026-11-10T14:00:00Z", card.Discovery.ModifiedAt)
+				assert.Equal(t, int64(7000000000), card.Discovery.ParameterCount)
+				assert.Equal(t, "transformers", card.Native["library_name"])
+			case "cloudflare":
+				assert.Equal(t, "https://developers.cloudflare.com/workers-ai/models/example/", card.Discovery.URL)
+			}
 		})
 	}
 }
@@ -144,15 +161,17 @@ func TestDiscoveryProviderHTTPConfigurationStates(t *testing.T) {
 	require.NoError(t, registered.AddApp(cloud, cloudConfig(true, "fixture")))
 	search.RegisterCloudProvidersFromConfig(func() *config.AppsConfig { return registered })
 	for _, state := range []struct {
-		name                                     string
-		registriesEnabled, cloudPresent, cloudOn bool
-		token                                    string
-		wantCloudConfigured, wantCloudEnabled    bool
+		name                                                          string
+		registriesEnabled, cloudPresent, cloudOn                      bool
+		token                                                         string
+		wantCloudConfigured, wantCloudEnabled, wantDiscoveryAvailable bool
+		modelsDisabled                                                bool
 	}{
-		{"enabled-public", true, true, true, "fixture", true, true},
-		{"disabled-configured", false, true, false, "fixture", true, false},
-		{"missing-cloud-credentials", true, true, true, "", true, false},
-		{"absent-cloud", true, false, false, "", false, false},
+		{"enabled-public", true, true, true, "fixture", true, true, true, false},
+		{"disabled-configured", false, true, false, "fixture", true, false, true, false},
+		{"missing-cloud-credentials", true, true, true, "", true, false, false, false},
+		{"absent-cloud", true, false, false, "", false, false, false, false},
+		{"disabled-catalog", true, true, true, "fixture", true, true, false, true},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			cfg := discoveryConfig(t, upstream.URL, "${TEST_DISCOVERY_TOKEN}")
@@ -166,7 +185,11 @@ func TestDiscoveryProviderHTTPConfigurationStates(t *testing.T) {
 				Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 			}))
 			if state.cloudPresent {
-				require.NoError(t, cfg.AddApp(cloud, cloudConfig(state.cloudOn, state.token)))
+				app := cloudConfig(state.cloudOn, state.token)
+				if state.modelsDisabled {
+					app.Runtime.ModelsPath = new("")
+				}
+				require.NoError(t, cfg.AddApp(cloud, app))
 			}
 			service := NewModelSearchService(func() *config.AppsConfig { return cfg }, nil)
 			client := discoveryHTTPClient(t, service)
@@ -187,6 +210,10 @@ func TestDiscoveryProviderHTTPConfigurationStates(t *testing.T) {
 			require.Contains(t, byName, cloud)
 			assert.Equal(t, state.wantCloudConfigured, byName[cloud].Configured)
 			assert.Equal(t, state.wantCloudEnabled, byName[cloud].Enabled)
+			require.NotNil(t, byName[cloud].DiscoveryAvailable)
+			assert.Equal(t, state.wantDiscoveryAvailable, *byName[cloud].DiscoveryAvailable)
+			require.NotNil(t, byName[cloud].DiscoverySupported)
+			assert.Equal(t, !state.modelsDisabled, *byName[cloud].DiscoverySupported)
 
 			engine := gin.New()
 			engine.GET(apipath.Search, service.HandleSearchPublic)
@@ -202,6 +229,9 @@ func TestDiscoveryProviderHTTPConfigurationStates(t *testing.T) {
 			for _, row := range envelope.Data.Results {
 				assert.IsType(t, true, row["configured"], row["name"])
 				assert.IsType(t, true, row["enabled"], row["name"])
+				if row["name"] == cloud {
+					assert.Equal(t, state.wantDiscoveryAvailable, row["discovery_available"])
+				}
 			}
 		})
 	}

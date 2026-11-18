@@ -63,6 +63,10 @@ or map. Forms share readable control sizes and a consistent action footer.
 
 ## Models, runtime management and downloads
 
+Discover renders model descriptions and README files with clickable links and
+shows available provider metadata. For OpenRouter excerpts, Read full description
+loads the public model page’s description on demand.
+
 Models separates available inventory from discovery. Available models have exact
 node/provider identities, details, an explicit inference test, Chat, run creation,
 parameters and deletion. Deletion reports partial errors; a successful HTTP

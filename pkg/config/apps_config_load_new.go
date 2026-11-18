@@ -413,10 +413,14 @@ func externalRuntimeToLegacy(rt ExternalRuntime) *AppRuntimeConfig {
 
 func cloudRuntimeToLegacy(rt CloudRuntime) *AppRuntimeConfig {
 	apiCopy := rt.API
+	var modelsPath *string
+	if rt.ModelsPath != nil {
+		modelsPath = new(*rt.ModelsPath)
+	}
 	return &AppRuntimeConfig{
 		Endpoint:          rt.Endpoint,
 		ModelURLFmt:       rt.ModelURL,
-		ModelsPath:        rt.ModelsPath,
+		ModelsPath:        modelsPath,
 		ModelsResponseKey: rt.ModelsResponseKey,
 		API:               &apiCopy,
 		HealthCheck:       rt.HealthCheck,
