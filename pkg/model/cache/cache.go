@@ -67,7 +67,7 @@ type Cache struct {
 
 	// Lifecycle: Start installs lifeCtx / lifeCancel; Stop cancels and
 	// waits for any in-flight async refresh. Start→Stop→Start cycles
-	// safely — required for coordinator promote/demote (mTLS PR 4).
+	// safely.
 	lifecycleMu sync.Mutex
 	lifeCtx     context.Context
 	lifeCancel  context.CancelFunc

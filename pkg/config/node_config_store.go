@@ -91,7 +91,7 @@ func (s *NodeConfigStore) FilePath() string {
 // ReloadReport logged at the notify boundary.
 //
 // The `name` argument tags the listener in log summaries — use the
-// listener function's canonical name (e.g., "reconfigureRouter").
+// listener function's canonical name (e.g., "handleClusterModeReload").
 func (s *NodeConfigStore) OnChange(name string, fn func(*NodeConfig) ReloadDisposition) {
 	s.mu.Lock()
 	s.listeners = append(s.listeners, listenerEntry{name: name, fn: fn})

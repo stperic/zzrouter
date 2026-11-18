@@ -1,8 +1,9 @@
 // Package role provides a single source of truth for the cluster
-// mode of a zzrouter node. Mode is runtime-dynamic (promote on
-// pairing completion, demote on cert expiry / revocation / config
-// reload); consumers read role.Manager rather than sampling config
-// fields scattered across the codebase.
+// mode of a zzrouter node. A worker's mode changes at runtime (Worker
+// on pairing completion, Unclaimed on cert expiry / revocation); a
+// change across the coordinator boundary ends the node, which restarts
+// in its new mode. Consumers read role.Manager rather than sampling
+// config fields scattered across the codebase.
 //
 // # Node vs role (read this before using the predicates)
 //

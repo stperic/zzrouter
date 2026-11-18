@@ -186,7 +186,9 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 				_, _, err := coordinator.accessStore.RotateKey(t.Context(), "provider-browser-cluster-reader", audit.Event{})
 				require.NoError(t, err)
 			case "demotion":
-				require.NoError(t, coordinator.role.Set(t.Context(), role.RoleWorker, "demote with active browser socket"))
+				// The crossing ends the node, whose stop closes browser streams first.
+				crossRole(t, coordinator, role.RoleWorker)
+				require.NoError(t, coordinator.stopProviderBrowser(t.Context()))
 			case "route policy":
 				_, err := coordinator.services.Teams.UpdateTeam(t.Context(), reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
 				require.NoError(t, err)

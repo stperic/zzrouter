@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Remove `POST /zzrouter/v1/state/snapshot` and `POST /zzrouter/v1/state/restore`; retire `POST /zzrouter/v1/keys/reload` with `410 Gone`.
-- A failed write to `keys.yaml` or `teams.yaml` no longer leaves the running node ahead of the file, and an unreadable `keys.yaml` now stops the start, on workers too. A key or team request cancelled before its write changes nothing, and a change that would leave a record the node cannot load (such as a key with an empty name) is refused with `400`. Rotating a key now updates its `updated_at`. Key descriptions are now saved to `keys.yaml`.
+- A failed write to `keys.yaml` or `teams.yaml` no longer leaves the running node ahead of the file, and an unreadable `keys.yaml` now stops the start. A key or team request cancelled before its write changes nothing, and a change that would leave a record the node cannot load (such as a key with an empty name) is refused with `400`. Rotating a key now updates its `updated_at`. Key descriptions are now saved to `keys.yaml`.
+- A worker no longer loads `keys.yaml` or `teams.yaml`: only static installation keys (node.yaml or environment) authenticate on a worker. A node whose role crosses the coordinator boundary while it runs now exits, so its service manager restarts it in the new role.
 
 - Expand shortened OpenRouter descriptions on demand from the public model page.
 - Render model-card Markdown and safe links across Discover, and show the

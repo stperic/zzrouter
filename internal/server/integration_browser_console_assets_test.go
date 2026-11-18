@@ -73,7 +73,7 @@ func TestIntegrationBrowserConsoleEveryEmbeddedPublicAsset(t *testing.T) {
 	assert.Equal(t, http.StatusTemporaryRedirect, rec.Code)
 	assert.Equal(t, "/console/", rec.Header().Get("Location"))
 
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "embedded asset gate fixture"))
+	crossRole(t, s, role.RoleWorker)
 	withoutAuthority := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, OAuthEnabled: new(false)})
 	for _, route := range routes {
 		for _, server := range []*Server{s, withoutAuthority} {

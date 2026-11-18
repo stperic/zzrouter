@@ -142,20 +142,19 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// Teams and Keys controllers are constructed here (the general public
 	// API depends on them being wired up for the rest of startup), but their
 	// HTTP routes are registered under a separate group — see
-	// RegisterAccessControlAPIRoutes below.
-	if s.accessStore != nil && s.access != nil {
-		s.services.Teams = NewTeamsService(s.accessStore, s.access)
-		s.controllers.Teams = NewTeamsController(s.services.Teams)
+	// RegisterAccessControlAPIRoutes below. Only a node that booted as a
+	// coordinator registers these routes, and it always holds the store.
+	s.services.Teams = NewTeamsService(s.accessStore, s.access)
+	s.controllers.Teams = NewTeamsController(s.services.Teams)
 
-		// Sweep orphan personal teams — any kind=personal team with zero
-		// referencing keys is the result of a crash mid-create-key and
-		// should be garbage-collected before serving traffic. The audit
-		// sink is still audit.Null here, so the sweep is not audited.
-		s.services.Teams.ReconcilePersonalTeams()
+	// Sweep orphan personal teams — any kind=personal team with zero
+	// referencing keys is the result of a crash mid-create-key and
+	// should be garbage-collected before serving traffic. The audit
+	// sink is still audit.Null here, so the sweep is not audited.
+	s.services.Teams.ReconcilePersonalTeams()
 
-		s.services.Keys = NewKeysService(s.accessStore, s.services.Teams, s.access)
-		s.controllers.Keys = NewKeysController(s.services.Keys)
-	}
+	s.services.Keys = NewKeysService(s.accessStore, s.services.Teams, s.access)
+	s.controllers.Keys = NewKeysController(s.services.Keys)
 
 	// Config reload: POST /config/reload re-reads providers/ from disk,
 	// runs every listener, returns the per-listener ReloadReport.

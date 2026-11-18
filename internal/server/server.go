@@ -59,11 +59,7 @@ type Server struct {
 		healthChecker   *fallback.HealthChecker       // Background health probes (read by /state)
 		routeEvents     *route_events.Bus             // Lifecycle event fan-out → /model-groups/events SSE
 		// groupReaperDone closes when the reaper goroutine exits.
-		// groupReaperCancel terminates the reaper independent of shutdownCtx
-		// so role-demote (coord → worker) stops the reaper without waiting
-		// for full server shutdown. A re-promote mints a fresh pair.
-		groupReaperDone   <-chan struct{}
-		groupReaperCancel context.CancelFunc
+		groupReaperDone <-chan struct{}
 		// syncFanOut pushes the provider tree to every worker. Held here
 		// because it fires on three triggers, not one: a config mutation,
 		// a worker coming up, and the maintenance tick.
@@ -76,8 +72,7 @@ type Server struct {
 
 	cluster struct {
 		coordinator *mesh.Cluster                // Cluster coordinator
-		router      routing.Router               // Request router handed to services; always the Swappable below
-		routerSwap  *routing.Swappable           // Swap handle — flips LocalOnly ↔ ClusterAware on mode transitions
+		router      routing.Router               // Request router handed to services; fixed by the boot mode
 		node        *clusterResourceGroup        // Owns Start/Stop lifecycle for resource tracker + mDNS
 		listener    *clusternode.Node            // mTLS cluster HTTP server — constructed here, Start/Stop wired in mTLS PR 2 step 4
 		resources   *mesh.ResourceTracker        // Access handle for wiring; same object Node starts/stops
@@ -97,16 +92,16 @@ type Server struct {
 
 	// === Cluster role ===
 
-	role *role.Manager // Single source of truth for cluster mode; gates coordinator subsystems + per-request route access
+	role *role.Manager // Single source of truth for cluster mode; gates per-request route access
 
 	// === Access control ===
 
 	access         *AccessControl // Unified auth + quota enforcement
 	spendEvents    *SpendEventBus // Quota breach event bus → /spend/events SSE
-	accessStore    access.Store   // Keys, teams and people
+	accessStore    access.Store   // Keys, teams and people; nil unless the node booted as a coordinator
 	auditMu        sync.RWMutex
 	auditSink      audit.Sink // Append-only audit log for key/team/quota mutations; audit.Null until wired
-	auditConfigDir string     // configDir captured for lazy audit-sink open on coordinator promote
+	auditConfigDir string     // configDir for the coordinator's audit log and owner proof
 	ownerRecovery  *localproof.Proof
 
 	// === Infrastructure ===
@@ -210,9 +205,9 @@ func (s *Server) openAIModelRuntimeLookup(model, endpoint string) *OpenAIModelRu
 
 // IsWorker reports whether the node is currently acting as a cluster
 // worker. Reads through role.Manager so interface consumers (NodeNamer,
-// mocks) observe runtime transitions (promote/demote); use
-// s.node.IsWorker() only for config-source-of-truth identity checks
-// that must not flip with role.
+// mocks) observe runtime transitions (pairing, leaving); what the boot
+// role decides (store, coordinator group, routes) reads s.node.IsWorker(),
+// which never flips with role.
 func (s *Server) IsWorker() bool {
 	return s.role.Current().IsWorker()
 }

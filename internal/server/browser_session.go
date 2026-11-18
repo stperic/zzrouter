@@ -223,8 +223,8 @@ func (s *Server) registerBrowserSessionRoutes() {
 	self.DELETE("/connections/:id", s.handleBrowserRevoke)
 }
 
-// Mounted routes retain their handlers across live role transitions. Gate them
-// on the current role rather than destroying durable authority on demotion.
+// A node leaving the coordinator role keeps its routes until it exits. Gate them
+// on the live role so that window refuses coordinator requests.
 func (s *Server) browserCoordinatorOnly(c *gin.Context) {
 	if s.role.Current().IsCoordinator() {
 		c.Next()
@@ -296,7 +296,7 @@ func (s *Server) handleBrowserMe(c *gin.Context) {
 	info.Kind = "key"
 	if ac.Key.Kind == control.KindPerson {
 		info.Kind = "person"
-		if person := s.accessStore.Snapshot().Person(ac.Key.ID); person != nil {
+		if person := s.accessSnapshot().Person(ac.Key.ID); person != nil {
 			info.Username, info.Owner = person.Username, person.Owner
 		}
 		info.Usage = &browserUsage{PersonID: ac.Key.ID, Usage: quota.CurrentUsage(ac.Key.Quotas, s.access.core.GetPersonSpend(ac.Key.ID))}

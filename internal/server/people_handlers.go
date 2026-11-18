@@ -22,7 +22,7 @@ func (s *Server) registerPeopleRoutes() {
 	}
 	group := s.engine.Group("/zzrouter/v1", s.browserCoordinatorOnly, browserResponseHeaders)
 	group.GET("/access/setup", s.browserOriginOnly, func(c *gin.Context) {
-		respondRetrievalSuccess(c, "Setup", gin.H{"initialized": s.accessStore.Snapshot().Initialized()})
+		respondRetrievalSuccess(c, "Setup", gin.H{"initialized": s.accessSnapshot().Initialized()})
 	})
 	group.POST("/session/password", s.handlePasswordLogin)
 	public := group.Group("/access", s.requirePeopleBrowserProof)
@@ -138,7 +138,7 @@ func (s *Server) handleConsoleGrantCreate(c *gin.Context) {
 	request := people.GrantRequest{Purpose: people.PurposeSession, Issuer: issuer, TTL: 10 * time.Minute}
 	var grant *people.IssuedGrant
 	err = s.mutatePeople(func() error {
-		if !s.accessStore.Snapshot().Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin {
+		if !s.accessSnapshot().Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin {
 			teamID, err := s.initialOwnerTeam(c.Request.Context())
 			if err != nil {
 				return err
@@ -296,7 +296,7 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 		Forbidden(c, "Local installation proof is invalid")
 		return
 	}
-	owner := s.accessStore.Snapshot().Owner()
+	owner := s.accessSnapshot().Owner()
 	if owner == nil {
 		Conflict(c, "Create the owner account through console setup first")
 		return
@@ -318,12 +318,12 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 }
 
 func (s *Server) handlePeopleList(c *gin.Context) {
-	items := s.accessStore.Snapshot().People()
+	items := s.accessSnapshot().People()
 	respondList(c, items, len(items), false)
 }
 
 func (s *Server) handlePersonGet(c *gin.Context) {
-	person := s.accessStore.Snapshot().Person(c.Param("id"))
+	person := s.accessSnapshot().Person(c.Param("id"))
 	if person == nil {
 		writePeopleError(c, people.ErrNotFound)
 		return
@@ -350,7 +350,7 @@ func (s *Server) handlePersonUpdate(c *gin.Context) {
 }
 
 func (s *Server) handleInvitationsList(c *gin.Context) {
-	items := s.accessStore.Snapshot().Invitations()
+	items := s.accessSnapshot().Invitations()
 	respondList(c, items, len(items), false)
 }
 
@@ -378,7 +378,7 @@ func (s *Server) handleMemberRecovery(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	person := s.accessStore.Snapshot().Person(c.Param("id"))
+	person := s.accessSnapshot().Person(c.Param("id"))
 	if person == nil {
 		writePeopleError(c, people.ErrNotFound)
 		return
@@ -431,7 +431,7 @@ func (s *Server) currentPerson(c *gin.Context) *people.Person {
 		Forbidden(c, "Sign in with a person account to manage its password and sessions")
 		return nil
 	}
-	person := s.accessStore.Snapshot().Person(ref.ID)
+	person := s.accessSnapshot().Person(ref.ID)
 	// Preserve the authenticated revision. A reset between middleware and this
 	// handler must not grant an older session the authority of the new revision.
 	if person == nil || person.Revision != ref.Version {

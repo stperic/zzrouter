@@ -87,7 +87,10 @@ func TestProviderBrowserBindFailureClosesAdministrativeListener(t *testing.T) {
 	require.NoError(t, listener.Close())
 }
 
-func TestProviderBrowserFailedPromotionRemainsUnready(t *testing.T) {
+// A coordinator whose provider browser cannot bind is unready. Leaving and
+// re-entering the coordinator role ends the node instead of retrying the
+// browser in process; only the restart starts it again.
+func TestProviderBrowserFailedStartRemainsUnready(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer occupied.Close()
@@ -95,18 +98,15 @@ func TestProviderBrowserFailedPromotionRemainsUnready(t *testing.T) {
 	cfg.ProviderBrowser = config.ProviderBrowserConfig{Origin: "https://comfy.example.com", Listen: occupied.Addr().String()}
 	s := createTestNode(t, cfg)
 	s.providerBrowser.authority = &browserAuthorityFixture{}
-	close(s.listenerReady)
-	require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "occupied browser bind"))
-	require.False(t, s.role.Transitioning())
+	require.Error(t, s.startProviderBrowser(s.shutdownCtx))
 	require.Equal(t, "provider_browser_unavailable", s.readinessUnavailable())
 	w := httptest.NewRecorder()
 	s.engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), "provider_browser_unavailable")
 	require.NoError(t, occupied.Close())
-	require.NoError(t, s.role.Set(t.Context(), role.RoleDisabled, "demote"))
-	require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "promote after bind released"))
-	require.Empty(t, s.readinessUnavailable())
-	require.NoError(t, s.role.Set(t.Context(), role.RoleDisabled, "demote and close browser"))
+	crossRole(t, s, role.RoleDisabled)
+	crossRole(t, s, role.RoleCoordinator)
 	require.Nil(t, s.providerBrowser.gateway)
+	require.Equal(t, "provider_browser_unavailable", s.readinessUnavailable())
 }

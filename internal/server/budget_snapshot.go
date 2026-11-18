@@ -21,12 +21,12 @@ import (
 //     Delete/Settle, multiplying the surface area where the gauges
 //     can drift from reality.
 type budgetSnapshotter struct {
-	store  interface{ Snapshot() *access.Snapshot }
-	access *AccessControl
+	snapshot func() *access.Snapshot
+	access   *AccessControl
 }
 
-func newBudgetSnapshotter(store interface{ Snapshot() *access.Snapshot }, ac *AccessControl) *budgetSnapshotter {
-	return &budgetSnapshotter{store: store, access: ac}
+func newBudgetSnapshotter(snapshot func() *access.Snapshot, ac *AccessControl) *budgetSnapshotter {
+	return &budgetSnapshotter{snapshot: snapshot, access: ac}
 }
 
 // SnapshotKeyBudgets returns one row per virtual key with a
@@ -42,10 +42,7 @@ func newBudgetSnapshotter(store interface{ Snapshot() *access.Snapshot }, ac *Ac
 // would otherwise contend with concurrent settle traffic on every
 // scrape.
 func (s *budgetSnapshotter) SnapshotKeyBudgets() []spend.KeyBudget {
-	if s == nil || s.store == nil {
-		return nil
-	}
-	snap := s.store.Snapshot()
+	snap := s.snapshot()
 	// Single mutex acquisition on the spend tracker; keyed by
 	// SpendScope.String() = "key:<id>:". Empty Model segment matches
 	// the unscoped per-key entry RecordSpendByKey writes.

@@ -71,7 +71,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 	if s.inference.logBridge != nil {
 		var responseDone, appDone atomic.Bool
 		store := s.accessStore.People()
-		progress := s.accessStore.Snapshot().Progress()
+		progress := s.accessSnapshot().Progress()
 		responseDone.Store(progress.ResponseVerified)
 		appDone.Store(progress.AppConnected)
 		s.inference.logBridge.SetOnboardingObserver(func(subject control.Subject) {
@@ -81,7 +81,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 						slog.Warn("Could not save onboarding response milestone")
 					}
 				} else {
-					responseDone.Store(s.accessStore.Snapshot().Progress().ResponseVerified)
+					responseDone.Store(s.accessSnapshot().Progress().ResponseVerified)
 				}
 			} else if subject.Kind != control.KindPerson && subject.ID != "" && !appDone.Load() {
 				if err := store.MarkAppConnected(ctx); err != nil {
@@ -132,7 +132,7 @@ func (s *Server) mutatePeople(change func() error) error {
 
 func (s *Server) initialOwnerTeam(ctx context.Context) (string, error) {
 	// Caller holds TeamsService.mu. A published team is already durable.
-	for id, team := range s.accessStore.Snapshot().Teams() {
+	for id, team := range s.accessSnapshot().Teams() {
 		if team.Kind == teams.KindShared && !team.Suspended && team.Metadata["owner_workspace"] == "true" {
 			return id, nil
 		}
@@ -157,6 +157,15 @@ func peopleIssuer(ref control.CredentialReference) (people.Issuer, error) {
 func localRecoveryRequest(rhost string) bool {
 	host, _, err := net.SplitHostPort(rhost)
 	return err == nil && localproof.Address(host)
+}
+
+// accessSnapshot is the server's one read of access records. A node that
+// did not boot as a coordinator holds no store and reads empty.
+func (s *Server) accessSnapshot() *access.Snapshot {
+	if s.accessStore == nil {
+		return nil
+	}
+	return s.accessStore.Snapshot()
 }
 
 // closeAccess releases the owner proof before the store and its people lock.

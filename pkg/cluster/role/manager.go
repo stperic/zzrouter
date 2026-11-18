@@ -18,9 +18,9 @@ type Transition struct {
 }
 
 // Subscriber is notified on every role change. It runs synchronously
-// under the transition mutex; expensive work (subsystem teardown) is
-// expected. Panics are recovered so one bad subscriber does not break
-// the chain.
+// under the transition mutex, so it must not wait on work that needs
+// the role manager. Panics are recovered so one bad subscriber does not
+// break the chain.
 type Subscriber func(Transition)
 
 // Manager is the single driver of cluster-mode transitions. All role

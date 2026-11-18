@@ -1030,7 +1030,7 @@ func TestBudgetSnapshotter_IncludesReservedInCurrentSpend(t *testing.T) {
 	require.Greater(t, state.ReservedMicro, int64(0),
 		"sanity: Enforce must reserve when SpendLimit configured")
 
-	snap := newBudgetSnapshotter(rig.store, rig.access)
+	snap := newBudgetSnapshotter(rig.store.Snapshot, rig.access)
 	rows := snap.SnapshotKeyBudgets()
 	require.Len(t, rows, 1, "expected exactly one row for alice")
 
@@ -1060,7 +1060,7 @@ func TestBudgetSnapshotter_FiltersUnenforced(t *testing.T) {
 		QuotaConfig: quota.QuotaConfig{SpendLimit: 0}, // unenforced
 	})
 
-	snap := newBudgetSnapshotter(rig.store, rig.access)
+	snap := newBudgetSnapshotter(rig.store.Snapshot, rig.access)
 	rows := snap.SnapshotKeyBudgets()
 
 	if len(rows) != 1 {

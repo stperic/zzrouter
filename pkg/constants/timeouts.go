@@ -152,12 +152,6 @@ const (
 	// SupervisorStopTimeout leaves a force-wait margin beyond the node's budget.
 	SupervisorStopTimeout = ShutdownMaxTimeout + EngineForceTimeout
 
-	// RoleDemoteTimeout bounds the coordinator-subsystem teardown when the
-	// role manager transitions the node out of coordinator mode. Kept tight
-	// so a flapping role can't stall promote/demote — unlike full shutdown,
-	// no spend flush is on the critical path here.
-	RoleDemoteTimeout = 30 * time.Second
-
 	// ProcessWaitTimeout is time to wait for process.Wait()
 	// Used for: Ensuring process cleanup completes
 	ProcessWaitTimeout = 2 * time.Second
