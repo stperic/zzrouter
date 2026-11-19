@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/config/assets"
 
 	"gopkg.in/yaml.v3"
 )
@@ -537,7 +538,7 @@ func cleanupNodeModelSpec(sc *ServiceConfig, node, model string) {
 // provider subdirs (present on disk but no longer in c.providers) are
 // removed so the tree mirrors the in-memory config.
 func (c *AppsConfig) SaveToDir(dir string) error {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, assets.DirMode); err != nil {
 		return fmt.Errorf("create providers dir: %w", err)
 	}
 
@@ -564,14 +565,14 @@ func (c *AppsConfig) SaveToDir(dir string) error {
 		}
 
 		if len(bodies) > 0 {
-			if err := os.MkdirAll(subdir, 0755); err != nil {
+			if err := os.MkdirAll(subdir, assets.DirMode); err != nil {
 				return fmt.Errorf("create %s: %w", subdir, err)
 			}
 		}
 		for _, name := range slices.Sorted(maps.Keys(bodies)) {
 			data := bodies[name]
 			providerDir := filepath.Join(subdir, name)
-			if err := os.MkdirAll(providerDir, 0755); err != nil {
+			if err := os.MkdirAll(providerDir, assets.DirMode); err != nil {
 				return fmt.Errorf("create %s: %w", providerDir, err)
 			}
 			fpath := filepath.Join(providerDir, "config.yaml")

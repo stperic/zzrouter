@@ -167,28 +167,11 @@ func TestActivationPublishesTheStagedDatabase(t *testing.T) {
 	spend.States[probeScope.String()] = &quota.SpendState{Kind: quota.ScopeKey, EntityID: "probe", SpendMicro: 7}
 	require.NoError(t, quota.SaveSpend(spendPath, spend))
 	previous := storeFiles(t, dir)
-	unchanged := tree(t, dir)
-	owned := map[string]bool{}
-	ctx := sqlitedb.WithStep(t.Context(), func(step string) {
-		if given, ok := strings.CutPrefix(step, "owned "); ok {
-			for _, rel := range strings.Split(given, ", ") {
-				owned[rel] = true
-			}
-		}
-	})
 
-	a, err := Activate(ctx, dir, staging, ActivateOptions{})
+	a, err := Activate(t.Context(), dir, staging, ActivateOptions{})
 	require.NoError(t, err)
 	gen := manifest.Staged.Generation
 	require.Equal(t, Activation{Profile: ProfileDatabase, Store: a.Store, RollbackID: gen, RollbackDir: filepath.Join(dir, rollbackDir, gen), Replaced: []string{"store"}}, a)
-	for path, content := range tree(t, dir) {
-		if unchanged[path] != content {
-			rel, err := filepath.Rel(dir, path)
-			require.NoError(t, err)
-			require.True(t, owned[filepath.ToSlash(rel)], "%s was written without being given the installation's owner", rel)
-		}
-	}
-	require.True(t, owned[activationFile], "the activation marker was given the installation's owner")
 	require.Equal(t, gen, a.Store.Generation)
 	require.NoDirExists(t, staging, "D4: the staging directory is removed")
 	rollbacks, err := Rollbacks(dir)
@@ -286,7 +269,7 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 			require.NoError(t, store.Close())
 		}, reason: ForeignStore},
 		"an incomplete activation of another directory": {prepare: func(t *testing.T, dir, _ string) {
-			require.NoError(t, os.WriteFile(filepath.Join(dir, activationFile), []byte(`{"version":1,"profile":"database","staging":"/elsewhere","generation":"g"}`), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, activationFile), []byte(`{"version":1,"profile":"database","staging":"/elsewhere","generation":"8a1b5c3e-0d2f-4e6a-9b7c-1d2e3f4a5b6c"}`), 0o600))
 		}, reason: ActivationIncomplete},
 		"an activated directory": {prepare: func(t *testing.T, dir, staging string) {
 			var m Manifest
@@ -456,10 +439,8 @@ func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 	dir, staging, manifest := activationFixture(t)
 	before := storeFiles(t, dir)
 	steps := stepsOf(t, dir, copyTree(t, staging), false)
-	r := rollbackDir + "/" + manifest.Staged.Generation
-	require.Equal(t, []string{"activation marker", "owned " + activationFile, "made " + rollbackDir, "made " + manifest.Staged.Generation, "rollback record",
-		"owned " + rollbackDir + ", " + r + ", " + r + "/" + rollbackFile, "staged", "made store", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker",
-		"owned access, access/access.sqlite, access-store.json, " + r + "/store, " + r + "/store/kept.json, " + r + "/store/access.sqlite, " + r + "/store/access-store.json",
+	require.Equal(t, []string{"activation marker", "made " + rollbackDir, "made " + manifest.Staged.Generation, "rollback record",
+		"staged", "made store", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker",
 		"activation marker removed"}, steps)
 	for k, step := range steps {
 		t.Run(step, func(t *testing.T) {
@@ -492,7 +473,7 @@ func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 	replaced := copyTree(t, dir)
 	require.Equal(t, steps[len(steps)-2], killAt(t, replaced, staging, len(steps)-1, false))
 	undo := stepsOf(t, replaced, staging, true)
-	require.Equal(t, []string{"restored access.sqlite", "restored access.sqlite-journal", "restored access-store.json", "owned access/access.sqlite, access-store.json, access", "rollback directory removed", "activation marker removed"}, undo)
+	require.Equal(t, []string{"restored access.sqlite", "restored access.sqlite-journal", "restored access-store.json", "rollback directory removed", "activation marker removed"}, undo)
 	for j, step := range undo {
 		t.Run("rollback/"+step, func(t *testing.T) {
 			killed, staged := copyTree(t, dir), copyTree(t, staging)

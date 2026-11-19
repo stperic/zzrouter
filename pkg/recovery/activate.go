@@ -11,8 +11,12 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
+	"github.com/google/uuid"
 	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
@@ -54,12 +58,18 @@ const (
 	// NotCoordinator means the installation would not start as a coordinator,
 	// or is still paired with a cluster.
 	NotCoordinator Reason = "not_coordinator"
-	// ReplaceRequired means a handoff would replace the installation's own
-	// access store, provider connections or cloud or registry definitions.
+	// ReplaceRequired means a handoff would replace or remove something the
+	// installation holds.
 	ReplaceRequired Reason = "replace_required"
 	// KeyMismatch means the installation's explicit credential key is not the
 	// one the handoff's provider connections need.
 	KeyMismatch Reason = "key_mismatch"
+	// UnsafePath means a link, or a file where a directory belongs, lies on a
+	// path a handoff writes.
+	UnsafePath Reason = "unsafe_path"
+	// NotOwner means a recovery command that touches an installation runs as
+	// another account than the installation's owner, or names it by a link.
+	NotOwner Reason = "not_owner"
 )
 
 // Refusal is an activation refused before it changed anything, or a start
@@ -74,8 +84,8 @@ func (r *Refusal) Error() string { return string(r.Reason) + ": " + r.Detail + "
 
 // ActivateOptions selects what Activate does: Rollback undoes an incomplete
 // activation instead; DryRun runs every check and changes nothing. A handoff
-// needs SourceStopped, and Replace to replace what the installation holds of
-// its own; a rerun that finishes one needs neither.
+// needs SourceStopped, and Replace when it replaces or removes anything; a
+// rerun that finishes one needs neither.
 type ActivateOptions struct{ Rollback, DryRun, SourceStopped, Replace bool }
 
 // Activation describes an activation: the staged image it publishes, its
@@ -121,12 +131,12 @@ type plan struct {
 // bundle (a handoff with SourceStopped), exactly its entries with their
 // digests, the image's check and generation as staged, the installation's
 // store identity (sqlstore.AdmitStoreID), a handoff's own checks
-// (checkHandoff), and a generation that is neither live nor kept in a rollback
-// directory. A refusal changes nothing. It then writes the activation marker
+// (checkHandoff), a generation that is neither live nor kept in a rollback
+// directory, and, for a handoff without Replace, nothing it would replace or
+// remove. A refusal changes nothing. It then writes the activation marker
 // and the rollback directory, replaces the store (sqlstore.Replace) with the
 // bytes it checked, then a handoff's configuration targets (replaceFiles),
-// gives what it wrote the installation's owner, and removes the marker and the
-// staging directory. A crash in between leaves the marker, which stops the
+// and removes the marker and the staging directory. A crash in between leaves the marker, which stops the
 // node (PendingActivation): a rerun completes the activation, and Rollback
 // instead restores what the rollback directory keeps. DryRun stops after the
 // checks.
@@ -187,23 +197,15 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 
 // replaceStore runs the steps between the activation marker and its removal:
 // the store gets the bytes checked at p.sum, then each of a handoff's targets
-// its staged file, and everything written gets the installation's owner
-// before the marker goes. It returns the replaced targets whose previous
+// its staged file. It returns the replaced targets whose previous
 // content is lost (sqlstore.Replacement, replaceFiles). A handoff admits
 // another store ID: checkHandoff decided whether it may replace this one.
 func replaceStore(ctx context.Context, dir, staging string, p plan, record activation) ([]string, error) {
-	marker := filepath.Join(dir, activationFile)
-	if err := sqlitedb.GiveOwner(ctx, dir, marker); err != nil {
-		return nil, err
-	}
 	rollback := filepath.Join(dir, rollbackDir, record.Generation)
 	if err := sqlitedb.MakeDir(ctx, rollback); err != nil {
 		return nil, err
 	}
 	if err := writeRecord(ctx, filepath.Join(rollback, rollbackFile), record, "rollback record"); err != nil {
-		return nil, err
-	}
-	if err := sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback), rollback, filepath.Join(rollback, rollbackFile)); err != nil {
 		return nil, err
 	}
 	rep, err := sqlstore.Replace(ctx, dir, stagedImage(staging), p.sum, filepath.Join(rollback, "store"), record.Profile == ProfileHandoff)
@@ -280,8 +282,7 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation,
 		a.Replaced = []string{"store"}
 	}
 	if m.Profile == ProfileHandoff {
-		foreign := installed.StoreID != "" && installed.StoreID != img.StoreID
-		if p.targets, a.References, err = checkHandoff(ctx, dir, staging, m, pending, o.Replace, foreign); err != nil {
+		if p.targets, a.References, err = checkHandoff(ctx, dir, staging, m, pending); err != nil {
 			return Activation{}, plan{}, err
 		}
 		for _, t := range p.targets {
@@ -294,17 +295,31 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation,
 		a.Replaced = pending.Replaced
 		return a, p, nil
 	}
-	again := "Delete the staging directory, which holds credential hashes. To activate this backup again, restore its archive into a new staging directory, which gives it a new generation."
-	if installed.Generation == img.Generation {
-		return a, plan{}, &Refusal{AlreadyActivated, "the access store already is generation " + img.Generation, again}
-	}
-	if _, err := os.Lstat(rollback); !errors.Is(err, fs.ErrNotExist) {
-		if err == nil {
-			err = &Refusal{AlreadyActivated, "generation " + img.Generation + " was activated here before: " + rollback + " exists", again}
-		}
+	if err := checkFirstRun(a, installed.Generation, o.Replace); err != nil {
 		return a, plan{}, err
 	}
 	return a, p, nil
+}
+
+// checkFirstRun refuses an activation a that is not resuming: its generation
+// is the live store's (installed) or has a rollback directory, or it is a
+// handoff that would replace or remove anything without replace.
+func checkFirstRun(a Activation, installed string, replace bool) error {
+	again := "Delete the staging directory, which holds credential hashes. To activate this backup again, restore its archive into a new staging directory, which gives it a new generation."
+	if installed == a.RollbackID {
+		return &Refusal{AlreadyActivated, "the access store already is generation " + a.RollbackID, again}
+	}
+	if _, err := os.Lstat(a.RollbackDir); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = &Refusal{AlreadyActivated, "generation " + a.RollbackID + " was activated here before: " + a.RollbackDir + " exists", again}
+		}
+		return err
+	}
+	if a.Profile == ProfileHandoff && len(a.Replaced) > 0 && !replace {
+		return &Refusal{ReplaceRequired, "the handoff would replace or remove what this installation holds: " + strings.Join(a.Replaced, ", "),
+			"Each goes to the rollback directory: review the list with --dry-run --replace, then run this again with --replace."}
+	}
+	return nil
 }
 
 // checkEntries refuses, as staging_invalid, a staging directory of m whose
@@ -394,9 +409,8 @@ func resolved(path string) string {
 	return abs
 }
 
-// rollBack restores what the incomplete activation pending replaced and gives
-// it the installation's owner, then removes the rollback directory and the
-// marker. Without a marker there is nothing it may undo: a finished activation
+// rollBack restores what the incomplete activation pending replaced, then
+// removes the rollback directory and the marker. Without a marker there is nothing it may undo: a finished activation
 // is restored by hand.
 func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool) (Activation, error) {
 	if pending == nil {
@@ -407,11 +421,14 @@ func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool)
 	if dryRun {
 		return a, nil
 	}
-	// The reverse of the activation's order: its configuration targets, then
-	// the store.
-	err := revertFiles(ctx, dir, rollback, pending.Targets)
+	// Every check before any move, the store's inside Revert, so a refused
+	// rollback changes nothing; then the store, then the files.
+	err := checkKept(ctx, dir, rollback, pending.Targets)
 	if err == nil {
 		err = sqlstore.Revert(ctx, dir, filepath.Join(rollback, "store"), pending.Generation)
+	}
+	if err == nil {
+		err = revertFiles(ctx, dir, rollback, pending.Targets)
 	}
 	var file keptLost
 	if errors.Is(err, sqlstore.ErrKeptLost) || errors.As(err, &file) {
@@ -426,16 +443,12 @@ func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool)
 	if err == nil {
 		err = os.RemoveAll(rollback)
 	}
-	// The parent, which this activation may have created, goes when empty and
-	// is handed over otherwise, before the marker.
+	// The parent, which this activation may have created, goes when empty.
 	if err == nil {
 		err = sqlitedb.RemoveDirIfEmpty(filepath.Dir(rollback))
 	}
 	if err == nil {
 		sqlitedb.Step(ctx, "rollback directory removed")
-		err = sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback))
-	}
-	if err == nil {
 		err = removeMarker(ctx, dir)
 	}
 	if err != nil {
@@ -487,7 +500,8 @@ func incomplete(dir string, a *activation, cause error) error {
 	return errors.Join(refused, cause)
 }
 
-// readActivation reads dir's activation marker: nil without one.
+// readActivation reads dir's activation marker: nil without one, and refuses a
+// corrupted record before anything uses it.
 func readActivation(dir string) (*activation, error) {
 	data, err := readBounded(filepath.Join(dir, activationFile), 1<<20)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -500,7 +514,37 @@ func readActivation(dir string) (*activation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("activation marker %s: %w", activationFile, err)
 	}
-	return &a, nil
+	return &a, a.check(dir)
+}
+
+// check refuses, as activation_incomplete, a corrupted record that would
+// steer a move out of the installation: a generation that is not a canonical
+// UUID, the form every store generation takes, or a target name that is not
+// local.
+func (a *activation) check(dir string) error {
+	bad := ""
+	switch {
+	case !canonicalUUID(a.Generation):
+		bad = "generation " + strconv.Quote(a.Generation)
+	case !filepath.IsAbs(a.Staging) || strings.ContainsFunc(a.Staging, unicode.IsControl): // printed to operators
+		bad = "staging directory " + strconv.Quote(a.Staging)
+	}
+	for _, t := range a.Targets {
+		if !filepath.IsLocal(filepath.FromSlash(strings.TrimSuffix(t.Name, "/"))) && bad == "" {
+			bad = "target " + strconv.Quote(t.Name)
+		}
+	}
+	if bad == "" {
+		return nil
+	}
+	return &Refusal{ActivationIncomplete, "the activation marker " + filepath.Join(dir, activationFile) + " names " + bad + ", which no activation writes",
+		"Check the installation and its rollback directory by hand, put back from there what an activation replaced, then delete the marker."}
+}
+
+// canonicalUUID reports whether s is a UUID in the form uuid.NewString writes.
+func canonicalUUID(s string) bool {
+	id, err := uuid.Parse(s)
+	return err == nil && id.String() == s
 }
 
 // writeRecord writes record to path durably and reports step.

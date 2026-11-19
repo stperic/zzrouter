@@ -15,6 +15,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// FileMode is the mode model_groups.yaml is written with.
+const FileMode = 0o644
+
 // ErrGroupNotFound is returned by ApplyPatch when the named group is absent.
 // Callers can errors.Is-match to produce a 404 with closed-enum body.
 var ErrGroupNotFound = errors.New("model group not found")
@@ -357,7 +360,7 @@ func (s *GroupStore) SaveToFile(path string) error {
 		return fmt.Errorf("failed to marshal model groups: %w", err)
 	}
 
-	writeErr := atomicfile.WriteFile(path, data, 0o644)
+	writeErr := atomicfile.WriteFile(path, data, FileMode)
 	if errors.Is(writeErr, atomicfile.ErrPostRenameDurability) {
 		slog.Warn("Model groups committed with uncertain durability", "error", writeErr)
 		return nil

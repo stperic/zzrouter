@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/security"
 )
@@ -226,31 +225,6 @@ func RemoveDirIfEmpty(path string) error {
 	return SyncDir(filepath.Dir(path))
 }
 
-// GiveOwner is the wrapper through which a multi-file operation hands what it
-// wrote to the installation's owner: it gives each of paths that exists the
-// owner of the installation directory dir (security.GiveOwner), and reports
-// them, relative to dir, to the WithStep observer as one step.
-func GiveOwner(ctx context.Context, dir string, paths ...string) error {
-	var given []string
-	for _, path := range paths {
-		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err := security.GiveOwner(path, dir); err != nil {
-			return fmt.Errorf("give %s the installation's owner: %w", path, err)
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		given = append(given, filepath.ToSlash(rel))
-	}
-	if len(given) > 0 {
-		Step(ctx, "owned "+strings.Join(given, ", "))
-	}
-	return nil
-}
-
 // Rename moves a closed file, such as a database, and syncs the destination
 // directory, so the move survives a power loss. Windows refuses to move an
 // open file.
@@ -259,6 +233,27 @@ func Rename(from, to string) error {
 		return err
 	}
 	return SyncDir(filepath.Dir(to))
+}
+
+// RemoveFile removes the file at path, if there is one, and syncs its
+// directory, so the removal survives a power loss.
+func RemoveFile(path string) error {
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+// Exists reports whether path names anything, a link included.
+func Exists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func syncFile(path string) error {

@@ -234,6 +234,9 @@ func runNodeConfigNodename() error {
 
 // runNodeConfigAppsUpdate handles app configuration
 func runNodeConfigAppsUpdate() error {
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
 	fmt.Println()
 	fmt.Println("Updating app configuration...")
 	fmt.Println()

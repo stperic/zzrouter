@@ -314,10 +314,12 @@ handoff has its own rules, below), and
 publishes exactly the bytes it checked, so an image swapped after its checks
 (for example for an unprepared copy, under which old sessions would resolve) is
 refused. A staged generation is refused while the live store is at it, or while
-a rollback directory for it still exists. Run by an administrator, activation and
-its rollback give what they write the owner of the configuration directory. A
-node, a backup and a privileged update run refuse while an activation is
-incomplete. Activation removes the
+a rollback directory for it still exists. On Unix, `recovery inventory`,
+`backup`, `restore` and `activate` refuse unless they run as the owner of the
+installation's configuration directory, and refuse a directory named by a link
+(`not_owner`): the service account controls that directory, so a privileged
+process acting there could be steered outside it. A node, a backup and a
+privileged update run refuse while an activation is incomplete. Activation removes the
 staging directory, which holds credential hashes, and keeps what it replaced in
 `rollback/<generation>/` in the configuration directory: the previous database
 and store marker, with every password and app-key hash. Nothing removes it, and
@@ -349,15 +351,18 @@ short plain text, or no provider definition; a refusal quotes the entry name.
 two real machines) only into a stopped installation that starts as a coordinator
 and is not paired with a cluster, and only with `--source-stopped`: zzRouter never
 probes the source, because a health check is not an identity check, so fencing
-and stopping it is the operator's. Without `--replace` it refuses to replace an
-access store with another store ID, or the installation's own provider
-connections or cloud and registry definitions. It writes only the paths a
+and stopping it is the operator's. Without `--replace` it refuses to replace or
+remove anything the installation holds, naming each item. It writes only the paths a
 handoff carries, the directories they need, and the exported key at the default
-key location; an explicit `security.credentials.key_file` is read-only and must
-already be the handoff's key. It never writes `node.yaml`, the dotenv files, the
+key location, never through a link (`unsafe_path`); an explicit
+`security.credentials.key_file` is read-only and must already be the handoff's
+key. It never writes `node.yaml`, the dotenv files, the
 CA, the identity or OAuth state, and never rewrites a node name in routes or
-provider definitions: it reports them for review through the API. Each file is
-published as the bytes checked against the manifest, and everything it writes
-gets the owner and group of the configuration directory. What it replaces,
+provider definitions: it reports route replicas whose node changes meaning, and
+providers the source had enabled for itself, for review through the API. A
+corrupted activation marker (a generation that is not a canonical UUID, a target
+name that leaves the installation) is refused before anything moves. Each file
+is published as the bytes checked against the manifest, by the installation's
+owner, who runs the command. What it replaces,
 including the installation's own access records, connections and key, stays in
 `rollback/<generation>/` until the operator deletes it.

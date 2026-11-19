@@ -24,8 +24,17 @@ provider volume with unchanged configuration. Never-created optional state is
 listed in the manifest’s `missing_optional` field and counted in CLI output.
 Inspect that list, especially after installing a provider since the last startup.
 
-Run maintenance as the installation owner or an administrator who can read its
-protected files. Finish other installer/configuration work and stop the node and
+On Unix, run every recovery command that touches an installation (`recovery
+inventory`, `backup`, `restore` and `activate`) as the owner of its
+configuration directory, for example `sudo -u zzrouter zzrouter-node recovery
+...` on a Linux system installation: the service account controls that
+directory, so a privileged process acting there could be steered outside it. Run
+otherwise, or with `--dir` naming a link, a command refuses with `not_owner`
+before it reads anything there, and names the command to repeat. `recovery
+check` reads only the archive and its key and asks for no owner. Windows checks
+no owner: the service runs as LocalSystem. Write archives, keys and staging
+directories where that owner can write, and move them as an administrator
+afterwards. Finish other installer/configuration work and stop the node and
 managed providers first. Node startup and backup share an exclusive installation
 lock. Independently managed providers and external writers must also be quiesced.
 Do not remove lock files to bypass an ownership refusal.
@@ -461,16 +470,13 @@ removes the activation marker and the staging directory, which holds credential
 hashes. It prints what it replaced, the new generation and the rollback
 directory's absolute path, and the next step: start the node.
 
-Recovery commands may run as an administrator. Everything activation or a
-rollback creates or replaces inside the installation (the database, the store
-marker, the rollback directory and its files, the activation marker) gets the
-owner and group of the installation's configuration directory, so a node running
-as its own service account can open them after an administrator activated or
-rolled back. That includes the `access/` and `rollback/` directories an
-activation may have created; a rollback removes them when they are left empty,
-as on a fresh installation. Run as that owner, nothing changes hands; on Windows,
-access follows the restricted ACL instead. A failure to hand a file over stops
-the step like any other failure, and a rerun repeats it.
+Activation and its rollback run as the installation's owner (see
+[Before a backup](#before-a-backup)), so everything they create or replace
+inside the installation (the database, the store marker, the rollback directory
+and its files, the activation marker) already belongs to the account the node
+runs as; nothing changes hands. A rollback removes the `access/` and `rollback/`
+directories an activation created when they are left empty, as on a fresh
+installation. On Windows, access follows the restricted ACL.
 
 A crash or an interrupt (Ctrl-C) between the activation marker and its removal
 leaves the marker, and the node then refuses to start with
@@ -601,7 +607,8 @@ platform, and `separate`, what the operator moves or recreates by hand:
  "files": [{"name": "config/credentials.enc", "size": 204, "sha256": "3ceac6a1…"}, "…"]}
 ```
 
-The runbook, in order:
+The runbook, in order. On each machine, run every recovery command as that
+installation's owner, as [Before a backup](#before-a-backup) says:
 
 1. Prepare the destination. Install the matching release and its service. Write
    its own `node.yaml`: node name, listen address, TLS, storage paths,
@@ -609,9 +616,12 @@ The runbook, in order:
    coordinator). Start it once, so it records its recovery layout and creates its
    installation lock, then stop it through its supervisor with restarts disabled.
    On a node that is a worker today, first reset its pairing while it runs with
-   `zzrouter-node cluster pair --reset --cancel`, which removes its `cluster/`
-   trust and closes the pairing window, then stop it and set
-   `cluster.mode: coordinator`. Its provider tree is a cache of its old
+   `zzrouter-node cluster pair --reset --cancel` (it calls the running node's
+   `POST /zzrouter/v1/cluster/reset` with the admin key). That leaves the node
+   unclaimed: its `cluster/` directory, the old coordinator's CA and URL, is
+   removed, `identity/` is kept so its fingerprint survives, and `--cancel` opens
+   no pairing window (it prints `No active pairing window.`). Then stop it and
+   set `cluster.mode: coordinator`. Its provider tree is a cache of its old
    coordinator's: the handoff's replaces it, and its own cloud and registry
    definitions and connections go to the rollback directory, so it needs
    `--replace`.
@@ -669,10 +679,12 @@ The runbook, in order:
      --source-stopped --replace
    ```
 
-   A destination that ever started as a coordinator holds an access store of its
-   own, so it needs `--replace`; without it the command refuses and lists what it
-   would replace. The dry run runs every check and prints what would be replaced
-   and the node names to review, exactly as the activation then prints them.
+   Run the dry run first: it runs every check and prints every file the
+   activation would replace or remove, and the route replicas to review, exactly
+   as the activation then prints them. When that list is not empty, the
+   activation needs `--replace`; without it the command refuses and names the
+   same list. A destination that ever started as a coordinator holds an access
+   store, so in practice it needs `--replace`.
 7. Start the destination.
 8. Fix the node names the activation reported, through the running API (below).
 9. Move clients: repoint them, or move the stable public address, to the new
@@ -704,7 +716,8 @@ and the staging directory byte for byte as they were, in a dry run too:
 | `staging_invalid` | The staging directory holds other entries than its manifest names, an entry's SHA-256 differs from the manifest's, `protection/credentials.key` is missing while the provider connections travel, or the staged provider tree or routes do not load in this release. | Stage the handoff again into a new directory. |
 | `not_coordinator` | The destination's `node.yaml` does not start it as a coordinator (`cluster.mode: worker`), or its `cluster/` directory still pairs it with a cluster. | Reset its pairing while it runs (`zzrouter-node cluster pair --reset --cancel`), stop it, set `cluster.mode: coordinator`, then activate with `--replace`. |
 | `key_mismatch` | `security.credentials.key_file` names a key whose SHA-256 is not the handoff's `key_sha256`, or that cannot be read. Explicit keys are read-only. | Place the key exported with the handoff at that path, owner-only. |
-| `replace_required` | Without `--replace`, the destination holds an access store with another store ID, its own `credentials.enc`, or a cloud or registry definition, schema or asset that differs from the handoff's or that the handoff lacks. | Review with `--dry-run --replace`, then activate with `--replace`. |
+| `unsafe_path` | A link, or a file where a directory belongs, lies on a path the activation would write, such as a provider directory linked from elsewhere. Activation never writes through a link. | Replace it with the plain directory or file it stands for, or move it aside. |
+| `replace_required` | Without `--replace`, the activation would replace or remove anything the destination holds: its access store (whatever its store ID or generation), or any file it would replace or remove. The refusal names exactly that list, as the dry run prints it. | Review with `--dry-run --replace`, then activate with `--replace`. |
 
 `in_use`, `foreign_store` (a database whose store ID cannot be read and has no
 store marker), `already_activated`, `activation_incomplete` and the image's own
@@ -733,19 +746,27 @@ moves into `rollback/<generation>/files/<path>` before the staged copy takes its
 place: the copy is made in the rollback directory, its SHA-256 checked against the
 manifest's, and renamed into place. The activation record (`rollback.json`, and the
 activation marker while it runs) lists every target with the SHA-256 of what it
-held before, so one marker and one rollback record cover the store and every
-file. Everything published, created or kept gets the owner and group of the
-configuration directory, as for a database activation.
+held before and the staged entry and SHA-256 it becomes, so one marker and one
+rollback record cover the store and every file, and a rerun publishes what the
+first run planned even if `node.yaml` changed meanwhile. Everything published,
+created or kept belongs to the installation's owner, who runs the command, and
+has the mode the node's own writer gives it:
+`model_groups.yaml` and the provider tree's new directories are readable by the
+group, as the node writes them; provider definitions, assets, spend, pricing
+overrides, connections and the key stay owner-only, as do `private/` and the
+rollback directory.
 
 A crash or an interrupt leaves the marker, and the node refuses to start with
 `activation_incomplete`. Run the same `recovery activate` command again, with or
 without the flags, to finish: a target already holding the staged content is
-done. `--rollback` instead puts every replaced file back from
-`rollback/<generation>/files/`, removes every file and directory the activation
-created, then restores the access store, so the installation is byte for byte as
-it was; it needs no staging directory. If a replaced file is neither as it was
-nor kept (its copy in the rollback directory was deleted), the rollback refuses
-with `activation_incomplete`, changing nothing, and offers finishing instead,
+done. `--rollback` instead first checks that everything it must put back is
+still as it was or kept, the access store's database included; then it restores
+the access store, puts every replaced file back from
+`rollback/<generation>/files/` and removes every file and directory the
+activation created, so the installation is byte for byte as it was; it needs no
+staging directory. If anything replaced is neither as it was nor kept (its copy
+in the rollback directory was deleted), the rollback refuses with
+`activation_incomplete` before it moves anything, and offers finishing instead,
 which then reports the file as not kept. `--rollback` works only while the
 marker exists.
 
@@ -755,19 +776,29 @@ coordinator is qualified.
 
 ### Node names to review
 
-A handoff never rewrites node names (`nodes.<name>` describes a machine, and
-stays right if that machine joins again under its name). Activation and its dry
-run report, in `Activation.References` and on the terminal, each name that meant
-a machine of the source's cluster, with the call that changes it once the node
-runs:
+A handoff never rewrites node names. Activation and its dry run report, in
+`Activation.References` and on the terminal, each route replica whose node meant
+a machine of the source's cluster: one with no node, which served on the source
+and now serves on this node, and one pinned to the source's node name. One pinned
+to this node's name keeps its meaning and is not reported, nor is a cloud
+replica: any node serves it. Change
+one once the node runs with
+`zz_api {"method": "PATCH", "path": "/zzrouter/v1/model-groups/<route>/replicas/<replica>", "body": {"node": "<node>"}}`.
 
-- a route replica with no node, which served on the source and now serves on
-  this node; one pinned to the source's node name; one pinned to this node's
-  name. Cloud replicas are not reported: any node serves them. Fix with
-  `zz_api {"method": "PATCH", "path": "/zzrouter/v1/model-groups/<route>/replicas/<replica>", "body": {"node": "<node>"}}`;
-- a provider's `nodes.<source>` and `nodes.<destination>` entries. Keep them if
-  that machine rejoins under its name, or remove one with
-  `zz_params_set {"provider": "<provider>", "patch": {"nodes": {"<node>": null}}}`.
+Provider `nodes.<name>` entries describe machines and are left as they are,
+but one matters at once: a synced provider's enable is its `nodes.<node>.enabled`
+entry, and the shipped definitions are disabled, so a provider the source had
+enabled for itself is off on this node. Activation and its dry run report each
+provider whose `nodes.<source>.enabled` is true, with the call that installs and
+enables it here once the node runs:
+`zz_provider_install {"provider": "<provider>"}` (its finalization records this
+node's enable; the `nodes.<source>` entry stays for the old machine).
+
+Every command that reads the activation marker, a start included, refuses a
+corrupted one with `activation_incomplete` before anything moves: a generation
+that is not one canonical UUID, or a target name that leaves the installation.
+Check the installation and its rollback directory by hand, then delete the
+marker.
 
 What the operator moves or recreates by hand, as `separate` lists:
 

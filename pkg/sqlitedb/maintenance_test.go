@@ -300,21 +300,6 @@ func TestRenameMovesAClosedFile(t *testing.T) {
 
 func second[T any](_ T, err error) error { return err }
 
-// TestGiveOwnerReportsWhatItGave: the paths that exist get the installation's
-// owner and are reported relative to it in one step; absent ones are skipped,
-// and an absent installation directory, whose owner is the one given, fails.
-func TestGiveOwnerReportsWhatItGave(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "file"), nil, 0o600))
-	var steps []string
-	ctx := sqlitedb.WithStep(t.Context(), func(step string) { steps = append(steps, step) })
-	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "sub"), filepath.Join(dir, "absent"), filepath.Join(dir, "sub", "file")))
-	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "absent")))
-	require.Equal(t, []string{"owned sub, sub/file"}, steps, "a call that gave nothing reports nothing")
-	require.ErrorIs(t, sqlitedb.GiveOwner(ctx, filepath.Join(dir, "absent"), filepath.Join(dir, "sub")), os.ErrNotExist, "the owner is the installation directory's")
-}
-
 // TestMakeDirSyncsEveryLevelItCreates: each missing level is created, made
 // owner-only and its parent synced, top down, before the next; an existing
 // directory reports nothing, and a file on the way is refused. The step comes

@@ -178,8 +178,9 @@ func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
 		t.Skip("needs a directory the process cannot read")
 	}
 	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
-	require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "recovery-activation.json"), []byte(`{"version":1,"generation":"pending"}`), 0o600))
-	for _, id := range []string{"pending", "unreadable"} {
+	const pending = "8a1b5c3e-0d2f-4e6a-9b7c-1d2e3f4a5b6c"
+	require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "recovery-activation.json"), []byte(`{"version":1,"profile":"database","staging":"/staged","generation":"`+pending+`"}`), 0o600))
+	for _, id := range []string{pending, "unreadable"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(s.configDir, "rollback", id, "store"), 0o700))
 	}
 	_, raw := readStoreState(t, s)
@@ -187,7 +188,7 @@ func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
 	require.Len(t, copies, 2)
 	for _, entry := range copies {
 		entry := entry.(map[string]any)
-		assert.Equal(t, entry["id"] == "pending", entry["pending"] == true, "%v", entry)
+		assert.Equal(t, entry["id"] == pending, entry["pending"] == true, "%v", entry)
 	}
 	require.NoError(t, os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0))
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0o700) })

@@ -250,7 +250,7 @@ func TestUpdateRunRefusesDuringAnIncompleteActivation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ZZROUTER_TEST_HOME", dir)
 	t.Setenv("ZZROUTER_CONFIG_DIR", dir)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"database","staging":"/staged","generation":"g"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"database","staging":"/staged","generation":"8a1b5c3e-0d2f-4e6a-9b7c-1d2e3f4a5b6c"}`), 0o600))
 	h := update.NewHandoff(t.TempDir(), t.TempDir())
 	err := executeUpdateRequest(t.Context(), h, &update.Request{Action: update.ActionApply, TargetVersion: "9.9.9", RequestedBy: "cli"}, false,
 		func() (*pkgConfig.NodeConfig, error) { return &pkgConfig.NodeConfig{}, nil })
@@ -299,7 +299,7 @@ func TestRecoveryActivateHandoffCommand(t *testing.T) {
 	require.Equal(t, recovery.ReplaceRequired, refusal.Reason)
 	out, err := runRecovery(t, dir, "activate", staging, "--dry-run", "--source-stopped", "--replace")
 	require.NoError(t, err)
-	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+manifest.Store.StoreID+" and the handoff's coordinator configuration.\nIt would replace, keeping each in "+rollback+": store.\n"+references+"A dry run publishes nothing")
+	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+manifest.Store.StoreID+" and the handoff's coordinator configuration.\nIt would replace or remove, keeping each in "+rollback+": store.\n"+references+"A dry run publishes nothing")
 
 	crashAt(t, dir, staging, "published model_groups.yaml", recovery.ActivateOptions{SourceStopped: true, Replace: true})
 	out, err = runRecovery(t, dir, "activate", staging, "--rollback", "--dry-run")
@@ -312,24 +312,54 @@ func TestRecoveryActivateHandoffCommand(t *testing.T) {
 
 	out, err = runRecovery(t, dir, "activate", staging, "--source-stopped", "--replace")
 	require.NoError(t, err)
-	require.Contains(t, out, "Activated generation "+generation+" of access store "+manifest.Store.StoreID+" (schema version 1, revision 0, sequence 1) and the handoff's coordinator configuration.\nReplaced from this installation and kept in "+rollback+" until you delete it, credential hashes and connections included: store.\n"+references+"The staging directory is removed. Next: start the node")
+	require.Contains(t, out, "Activated generation "+generation+" of access store "+manifest.Store.StoreID+" (schema version 1, revision 0, sequence 1) and the handoff's coordinator configuration.\nReplaced or removed, and kept in "+rollback+" until you delete it, credential hashes and connections included: store.\n"+references+"The staging directory is removed. Next: start the node")
 	require.NotContains(t, out, "—")
 	require.FileExists(t, filepath.Join(dir, "model_groups.yaml"))
 }
 
-// TestTemplateWritersRefuseDuringAnIncompleteActivation: init and config reset,
-// which write provider templates without the installation lock, refuse with
-// activation_incomplete and write nothing while an activation is incomplete.
+// TestTemplateWritersRefuseDuringAnIncompleteActivation: the offline writers of
+// the provider tree (init, config reset, config providers, providers
+// enable), which take no installation lock, refuse with activation_incomplete
+// and write nothing while an activation is incomplete.
 func TestTemplateWritersRefuseDuringAnIncompleteActivation(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("ZZROUTER_TEST_HOME", dir)
 	t.Setenv("ZZROUTER_CONFIG_DIR", dir)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"handoff","staging":"/staged","generation":"g"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"handoff","staging":"/staged","generation":"8a1b5c3e-0d2f-4e6a-9b7c-1d2e3f4a5b6c"}`), 0o600))
 	installation := treeOf(t, dir)
-	for name, run := range map[string]func() error{"init": func() error { return runNodeInit(true) }, "config reset": func() error { return runNodeConfigReset(true) }} {
+	for name, run := range map[string]func() error{"init": func() error { return runNodeInit(true) }, "config reset": func() error { return runNodeConfigReset(true) },
+		"config providers": runNodeConfigAppsUpdate, "providers enable": func() error { return toggleApp("llamacpp", true) }} {
 		var refusal *recovery.Refusal
 		require.ErrorAs(t, run(), &refusal, name)
 		require.Equal(t, recovery.ActivationIncomplete, refusal.Reason, name)
 		require.Equal(t, installation, treeOf(t, dir), "%s wrote nothing", name)
 	}
+}
+
+// TestRecoveryCommandsRunAsTheOwner: a recovery command that touches an
+// installation named by a link refuses with not_owner before it reads
+// anything there, here a marker it could not decode; check, which reads only
+// the archive and its key, asks for no owner.
+func TestRecoveryCommandsRunAsTheOwner(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows checks no owner: the service runs as LocalSystem")
+	}
+	dir, _ := recoveryInstallation(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte("not a marker"), 0o600))
+	installation := treeOf(t, dir)
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(dir, link))
+	scratch := t.TempDir()
+	for _, command := range [][]string{
+		{"activate", filepath.Join(scratch, "staged"), "--rollback"}, {"inventory"},
+		{"backup", "--output", filepath.Join(scratch, "backup.tar.gz")}, {"restore", filepath.Join(scratch, "backup.tar.gz"), "--to", filepath.Join(scratch, "restored")},
+	} {
+		_, err := runRecovery(t, link, command...)
+		var refusal *recovery.Refusal
+		require.ErrorAs(t, err, &refusal, "%v", command)
+		require.Equal(t, recovery.NotOwner, refusal.Reason)
+		require.Equal(t, installation, treeOf(t, dir), "%v read nothing and wrote nothing", command)
+	}
+	_, err := runRecovery(t, link, "check", filepath.Join(scratch, "absent.tar.gz"))
+	require.NotErrorAs(t, err, new(*recovery.Refusal), "check asks for no owner")
 }
