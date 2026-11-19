@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -235,6 +236,16 @@ func TestRecoveryBackupSettlesTheAccessStore(t *testing.T) {
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, sqlstore.Unreadable, refusal.Reason)
 	require.NoFileExists(t, output)
+
+	// A rolled-back binary still backs up the newer release's database before restoring over it.
+	dir, output, keyOutput = recoveryFixture(t)
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "access", "access.sqlite")))
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), "PRAGMA user_version = 99")
+	require.NoError(t, errors.Join(err, db.Close()))
+	manifest, err = Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access/access.sqlite" }))
 }
 
 func writeTestBundle(t *testing.T, files map[string][]byte) string {

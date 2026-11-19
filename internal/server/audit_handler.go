@@ -30,7 +30,9 @@ func (s *Server) handleAccessAudit(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		ServiceUnavailable(c, "Could not read audit history")
+		if !respondKnownFailure(c, err) {
+			ServiceUnavailable(c, "Could not read audit history")
+		}
 		return
 	}
 	respondRetrievalSuccess(c, "Audit history", auditPage{Events: events, Next: next})

@@ -49,10 +49,11 @@ func isCorrupt(err error) bool {
 	return errors.As(err, &e) && (e.Code()&0xff == sqlite3.SQLITE_CORRUPT || e.Code()&0xff == sqlite3.SQLITE_NOTADB)
 }
 
-// IsBusy reports whether err is SQLite giving up on a lock another connection held.
+// IsBusy reports whether err is SQLite giving up on a lock another connection
+// held. SQLITE_LOCKED is a conflict inside one connection, a bug, not busy.
 func IsBusy(err error) bool {
 	var e *sqlite.Error
-	return errors.As(err, &e) && (e.Code()&0xff == sqlite3.SQLITE_BUSY || e.Code()&0xff == sqlite3.SQLITE_LOCKED)
+	return errors.As(err, &e) && e.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func openError(path string, err error) error {

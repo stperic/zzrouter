@@ -103,3 +103,25 @@ func TestAuditTableIsAppendOnly(t *testing.T) {
 	require.NoError(t, err, "appending still works")
 	assert.Equal(t, []string{"first", "second", "third"}, subjects(storedEvents(t, dir)))
 }
+
+// TestAuditPageWhileAnotherProgramHoldsTheDatabase: a read another program's
+// lock refuses past the busy timeout is ErrBusy, and reads work once it lets go.
+func TestAuditPageWhileAnotherProgramHoldsTheDatabase(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{})
+	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "operator", Subject: "reader"})
+	_, err := s.db.SQL().ExecContext(t.Context(), "PRAGMA busy_timeout = 50") // the store's one connection keeps it
+	require.NoError(t, err)
+	other := rawDB(t, dir)
+	_, err = other.ExecContext(t.Context(), "BEGIN EXCLUSIVE")
+	require.NoError(t, err)
+	_, _, err = s.AuditPage(t.Context(), "", 10)
+	require.ErrorIs(t, err, ErrBusy)
+	assert.Equal(t, ErrBusy.Error(), err.Error(), "no database text")
+	_, err = other.ExecContext(t.Context(), "ROLLBACK")
+	require.NoError(t, err)
+	events, _, err := s.AuditPage(t.Context(), "", 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"reader"}, subjects(events))
+}

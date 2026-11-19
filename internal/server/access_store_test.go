@@ -100,8 +100,9 @@ func TestAccessStoreFailureEndsStart(t *testing.T) {
 }
 
 // TestAccessStoreBusyAnswers503: while another tool holds the live file past
-// the busy timeout, key, team and people writes answer 503 with a closed code
-// and Retry-After, change nothing, and work again once the lock is gone.
+// the busy timeout, team and people writes, and audit reads under a write
+// lock, answer 503 with a closed code and Retry-After, change nothing, and
+// work again once the lock is gone.
 func TestAccessStoreBusyAnswers503(t *testing.T) {
 	s, _ := oauthTestNode(t, pkgConfig.ClusterModeCoordinator)
 	writes := []struct{ name, path string }{
@@ -129,6 +130,16 @@ func TestAccessStoreBusyAnswers503(t *testing.T) {
 		result := makeAuthRequest(t, s, http.MethodPost, write.path, TestAdminKey, body(write.path))
 		require.Equal(t, http.StatusCreated, result.Code, "%s: %s", write.name, result.Body)
 	}
+	held := liveDatabase(t, s)
+	_, err := held.ExecContext(t.Context(), "BEGIN EXCLUSIVE")
+	require.NoError(t, err)
+	result := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/access/audit", TestAdminKey, nil)
+	_, err = held.ExecContext(t.Context(), "ROLLBACK")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, result.Code, "audit: %s", result.Body)
+	require.Equal(t, string(httperr.CodeAccessStoreBusy), problemCode(t, result.Body), "audit")
+	require.NotEmpty(t, result.Headers.Get("Retry-After"), "audit")
+	require.Equal(t, http.StatusOK, makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/access/audit", TestAdminKey, nil).Code)
 	select {
 	case err := <-s.servingErrors:
 		t.Fatalf("a busy store must not end the node: %v", err)

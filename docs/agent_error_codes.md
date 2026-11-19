@@ -120,7 +120,7 @@ probe or dispatch failures. Node health is separate from provider cooldowns.
 
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
-| `access_store_busy` | 503 | Another process held the coordinator's access database past the busy timeout. The change was not made. | Honor `Retry-After` and retry the same request; if it persists, an operator tool holds the live file. |
+| `access_store_busy` | 503 | Another process held the coordinator's access database past the busy timeout, on a change or an access-history read. Nothing was changed. | Honor `Retry-After` and retry the same request; if it persists, an operator tool holds the live file. |
 | `access_store_failed` | 503 | The coordinator's access store can no longer vouch for its records. The change may or may not have been made, and the node is exiting so its service manager restarts it. | Wait until the node answers `/health` again, then read the record before retrying the change. |
 
 ### Install preflight (`POST /providers/:n/install`)

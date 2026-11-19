@@ -14,6 +14,8 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stretchr/testify/require"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func rawDB(t *testing.T, path string) *sql.DB {
@@ -373,5 +375,20 @@ func TestIsBusy(t *testing.T) {
 	_, err = db.SQL().ExecContext(t.Context(), "SELECT * FROM missing")
 	require.Error(t, err)
 	require.False(t, sqlitedb.IsBusy(err), "a failed statement is not busy: %v", err)
+	// A table dropped under the connection's own open cursor is SQLITE_LOCKED.
+	execSQL(t, locker, "ROLLBACK")
+	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'row'), (2, 'row')")
+	conn, err := db.SQL().Conn(t.Context())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, conn.Close()) }()
+	rows, err := conn.QueryContext(t.Context(), "SELECT * FROM parents")
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	_, err = conn.ExecContext(t.Context(), "DROP TABLE parents")
+	require.NoError(t, rows.Close())
+	var locked *sqlite.Error
+	require.ErrorAs(t, err, &locked)
+	require.Equal(t, sqlite3.SQLITE_LOCKED, locked.Code()&0xff, "%v", err)
+	require.False(t, sqlitedb.IsBusy(err), "a conflict inside one connection is not busy: %v", err)
 	require.False(t, sqlitedb.IsBusy(errors.New("database is locked")), "text alone classifies nothing")
 }

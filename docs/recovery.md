@@ -71,7 +71,7 @@ an access database journal or unpublished staged store are excluded. Before it
 copies anything, backup finishes SQLite's recovery of a journal a crash left
 beside the access database, so the copy holds exactly the committed
 transactions. A database it cannot read stops the backup with the store's
-`unreadable` reason. A node creates fresh transient state after startup.
+`unreadable` reason; one a newer release wrote is settled and backed up. A node creates fresh transient state after startup.
 Archives are limited to 20,000 files and 4 GiB; they are recovery state bundles,
 not model-library or complete operating-system images.
 

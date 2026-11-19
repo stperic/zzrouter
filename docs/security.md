@@ -251,7 +251,9 @@ The database file is internal, not an interface. Inspect a backup copy, never
 the live file. While a tool holds the live file, each key, team or people
 change waits five seconds for it and then answers `503 access_store_busy`
 with `Retry-After`; nothing is changed, and a retry succeeds once the tool lets
-go. If the coordinator cannot even tell whether a change was committed, it
+go. An access-history read answers the same way while the tool writes. A node
+that cannot open its store because a tool holds the file stops with a message
+saying so, not a damage reason. If the coordinator cannot even tell whether a change was committed, it
 answers `503 access_store_failed` and exits so its service manager restarts it.
 
 Offline recovery shares an installation lock with node startup. Restore only

@@ -51,7 +51,7 @@ func (s *Store) AuditPage(ctx context.Context, cursor string, limit int) ([]audi
 	}
 	s.gate.Unlock()
 	if err != nil {
-		return nil, "", err
+		return nil, "", busy(err)
 	}
 	next := ""
 	if len(found) > limit {

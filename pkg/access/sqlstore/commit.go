@@ -24,10 +24,19 @@ var (
 	// ErrFailed refuses every write after the store lost track of what it holds:
 	// a COMMIT failed and reading the database back failed too.
 	ErrFailed = errors.New("access store cannot vouch for its state")
-	// ErrBusy refuses one write because another process held the database past
-	// the busy timeout; nothing changed, and a retry may succeed.
-	ErrBusy = errors.New("access store is busy: another process holds its database")
+	// ErrBusy refuses an open, a write or an audit read because another process
+	// held the database past the busy timeout; nothing changed, and a retry may
+	// succeed.
+	ErrBusy = errors.New("access store is busy: another program is holding the access database")
 )
+
+// busy is ErrBusy for an operation another process's lock refused, err otherwise.
+func busy(err error) error {
+	if sqlitedb.IsBusy(err) {
+		return ErrBusy
+	}
+	return err
+}
 
 // writes is the SQL of one commit, its values encoded before the transaction opens.
 type writes struct {
@@ -154,7 +163,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 	published := &state{records: t.records, snap: snap, meta: m}
 	if uncertain, err := s.write(ctx, w); err != nil {
 		if !uncertain {
-			return nil, err
+			return nil, busy(err)
 		}
 		if published, err = s.reload(ctx, err, m.sequence); err != nil {
 			if errors.Is(err, ErrFailed) && s.fatal != nil {
@@ -180,9 +189,6 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 func (s *Store) write(ctx context.Context, w *writes) (uncertain bool, err error) {
 	ctx = context.WithoutCancel(ctx)
 	tx, err := s.db.SQL().BeginTx(ctx, nil)
-	if sqlitedb.IsBusy(err) {
-		return false, ErrBusy
-	}
 	if err != nil {
 		return false, fmt.Errorf("begin access commit: %w", err)
 	}
@@ -211,10 +217,7 @@ func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*
 		return nil, s.refusal
 	}
 	if stored.meta.sequence != sequence {
-		if sqlitedb.IsBusy(commitErr) {
-			return nil, ErrBusy
-		}
-		return nil, commitErr
+		return nil, busy(commitErr)
 	}
 	return stored, nil
 }

@@ -130,14 +130,16 @@ type Store struct {
 var _ access.Store = (*Store)(nil)
 
 // Open opens dir's store, creating an empty one on first start. The caller
-// holds the installation lock. A damaged or newer store is a *Refusal; a
-// cancelled open returns the context's error and a file-system failure its own.
+// holds the installation lock. A damaged or newer store is a *Refusal; one
+// another program held past the busy timeout is ErrBusy, since the file is
+// intact; a cancelled open returns the context's error and a file-system
+// failure its own.
 func Open(ctx context.Context, dir string, opts Options) (*Store, error) {
 	s, err := open(ctx, dir, opts)
 	if err != nil && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return s, err
+	return s, busy(err)
 }
 
 func open(ctx context.Context, dir string, opts Options) (*Store, error) {
@@ -244,14 +246,18 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 // Settle finishes SQLite's recovery of a journal a crash left beside dir's
 // database, so a copy of the file holds exactly the committed transactions.
 // The caller holds the installation lock. No database is nothing to settle;
-// a file this release would refuse to open is that Refusal.
+// an unreadable or foreign file is the Refusal Open would give.
 func Settle(ctx context.Context, dir string) error {
 	h, err := sqlitedb.Probe(ctx, filepath.Join(dir, "access", fileName))
 	if errors.Is(err, sqlitedb.ErrNotExist) {
 		return nil
 	}
 	if err == nil {
-		err = schema.Admit(h)
+		// A journal settles whatever the schema version, so a newer release's
+		// database can still be backed up before it is restored over.
+		if err = schema.Admit(h); errors.Is(err, sqlitedb.ErrNewer) {
+			return nil
+		}
 	}
 	return fileRefusal(err)
 }

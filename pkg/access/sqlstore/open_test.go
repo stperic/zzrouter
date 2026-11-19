@@ -285,7 +285,8 @@ func TestSettle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, committed, settled, "the file holds exactly the committed transactions")
 
-	// Settle refuses what Open refuses, for the same reason.
+	// Settle refuses an unreadable or foreign file for Open's reason, and
+	// settles a newer release's database, which Open refuses.
 	foreign, newer := copyStore(t, dir), copyStore(t, dir)
 	_, err = rawDB(t, foreign).ExecContext(t.Context(), "PRAGMA application_id = 1")
 	require.NoError(t, err)
@@ -297,12 +298,14 @@ func TestSettle(t *testing.T) {
 	for name, tc := range map[string]struct {
 		dir    string
 		reason Reason
-	}{"junk": {junk, Unreadable}, "another application": {foreign, Unreadable}, "a newer schema": {newer, SchemaNewer}} {
+	}{"junk": {junk, Unreadable}, "another application": {foreign, Unreadable}} {
 		var refusal *Refusal
 		require.ErrorAs(t, Settle(t.Context(), tc.dir), &refusal, name)
 		assert.Equal(t, tc.reason, refusal.Reason, name)
 		requireRefusal(t, tc.dir, tc.reason)
 	}
+	require.NoError(t, Settle(t.Context(), newer), "a newer schema is settled and can be backed up")
+	requireRefusal(t, newer, SchemaNewer)
 }
 
 // TestOpenRefusesRecordsThatBreakTheRulesBetweenThem damages how records
@@ -328,4 +331,27 @@ func TestOpenRefusesRecordsThatBreakTheRulesBetweenThem(t *testing.T) {
 			requireRefusal(t, dir, IntegrityFailed)
 		})
 	}
+}
+
+// TestOpenWhileAnotherProgramHoldsTheDatabase: an open that waits out another
+// program's lock is ErrBusy, not a Refusal (the file is intact), with no path
+// or database text, and the store opens once the program lets go.
+func TestOpenWhileAnotherProgramHoldsTheDatabase(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, openStore(t, dir, Options{}).Close())
+	other := rawDB(t, dir)
+	_, err := other.ExecContext(t.Context(), "BEGIN EXCLUSIVE")
+	require.NoError(t, err)
+	s, err := Open(t.Context(), dir, Options{})
+	require.Nil(t, s)
+	require.ErrorIs(t, err, ErrBusy)
+	var refusal *Refusal
+	assert.False(t, errors.As(err, &refusal), "a held file is not a damaged one")
+	assert.Contains(t, err.Error(), "another program is holding the access database")
+	assert.NotContains(t, err.Error(), dir, "the message names no path")
+	assert.NotContains(t, err.Error(), "locked", "the message carries no database text")
+	_, err = other.ExecContext(t.Context(), "ROLLBACK")
+	require.NoError(t, err)
+	require.NoError(t, openStore(t, dir, Options{}).Close())
 }
