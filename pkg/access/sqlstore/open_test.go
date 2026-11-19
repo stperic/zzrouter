@@ -223,7 +223,8 @@ func TestOpenFailuresThatAreNotDamage(t *testing.T) {
 }
 
 // TestOpenLabelsOnlyDamage refuses with integrity_failed only for a failed
-// check or a record that breaks its rule; a failure to read is plain.
+// check, schema objects this release does not create or a record that breaks
+// its rule; a failure to read is plain.
 func TestOpenLabelsOnlyDamage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -236,11 +237,42 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	var refusal *Refusal
 	require.False(t, errors.As(err, &refusal), "a check that cannot run is not a failed check: %v", err)
 
-	_, err = rawDB(t, dir).ExecContext(t.Context(), "ALTER TABLE grants RENAME TO lost")
+	// A temporary view on the connection shadows a table the loader reads, so
+	// every check passes and the load's query fails without a broken record.
+	db, err = sqlitedb.Open(t.Context(), dbPath(dir), schema)
 	require.NoError(t, err)
-	_, err = Open(t.Context(), dir, Options{})
-	require.Error(t, err)
+	_, err = db.SQL().ExecContext(t.Context(), "CREATE TEMP VIEW keys AS SELECT 1 AS unrelated")
+	require.NoError(t, err)
+	_, err = check(t.Context(), db, false)
+	require.Error(t, err, "a load that cannot read")
 	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
+	require.NoError(t, db.Close())
+}
+
+// TestOpenRefusesSchemaObjectsThisReleaseDoesNotCreate: a live database
+// another tool altered, even by an index or the statistics ANALYZE adds, is
+// integrity_failed at open, as recovery would refuse to back it up.
+func TestOpenRefusesSchemaObjectsThisReleaseDoesNotCreate(t *testing.T) {
+	t.Parallel()
+	for name, alteration := range map[string]string{
+		"an added index":   "CREATE INDEX extra ON keys(name)",
+		"ANALYZE":          "ANALYZE",
+		"a renamed table":  "ALTER TABLE grants RENAME TO lost",
+		"an added trigger": "CREATE TRIGGER planted AFTER INSERT ON teams BEGIN SELECT 1; END",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			s := openStore(t, dir, contractOptions)
+			claim(t, s)
+			require.NoError(t, s.Close())
+			_, err := rawDB(t, dir).ExecContext(t.Context(), alteration)
+			require.NoError(t, err)
+			requireRefusal(t, dir, IntegrityFailed)
+			_, err = Open(t.Context(), dir, Options{})
+			assert.Contains(t, err.Error(), "integrity_failed (its schema objects differ from this release's)", "an altered file is told apart from a damaged one")
+		})
+	}
 }
 
 // crashedMidCommit returns the directory of a store holding one committed
@@ -304,6 +336,8 @@ func TestOpenRefusesRecordsThatBreakTheRulesBetweenThem(t *testing.T) {
 			_, err = rawDB(t, dir).ExecContext(t.Context(), damage)
 			require.NoError(t, err)
 			requireRefusal(t, dir, IntegrityFailed)
+			_, err = Open(t.Context(), dir, Options{})
+			assert.NotContains(t, err.Error(), "schema objects", "damage is not called an altered schema")
 		})
 	}
 }

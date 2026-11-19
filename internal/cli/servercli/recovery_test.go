@@ -2,6 +2,7 @@ package servercli
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
@@ -256,12 +259,106 @@ const recoveryChildArgs = "ZZROUTER_RECOVERY_CHILD_ARGS"
 // recoveryChildArgs; it is TestRecoveryCommandsStopOnInterrupt's child.
 func TestRecoveryInterruptChild(t *testing.T) {
 	args := os.Getenv(recoveryChildArgs)
-	if args == "" {
+	switch args {
+	case "":
 		return
+	case "slow cleanup":
+		// An operation whose cleanup outlasts the first interrupt.
+		cmd := &cobra.Command{RunE: interruptible(func(cmd *cobra.Command, _ []string) error {
+			fmt.Println("ready")
+			<-cmd.Context().Done()
+			fmt.Println("cancelled")
+			time.Sleep(time.Minute)
+			return nil
+		})}
+		cmd.SetArgs([]string{})
+		require.NoError(t, cmd.Execute())
+	default:
+		cmd := NewRecoveryCmd()
+		cmd.SetArgs(strings.Split(args, "\n"))
+		require.NoError(t, cmd.Execute())
 	}
-	cmd := NewRecoveryCmd()
-	cmd.SetArgs(strings.Split(args, "\n"))
-	require.NoError(t, cmd.Execute())
+}
+
+// TestRecoveryCommandsEndOnASecondInterrupt: once an interrupt cancelled an
+// operation, the next one ends the process at once, whatever its cleanup does.
+func TestRecoveryCommandsEndOnASecondInterrupt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot send an interrupt to another process")
+	}
+	t.Setenv(recoveryChildArgs, "slow cleanup") // the child inherits it
+	child := host.Command(os.Args[0], "-test.run=^TestRecoveryInterruptChild$", "-test.count=1")
+	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, child.Start())
+	t.Cleanup(func() { _ = child.Process.Kill() })
+	lines := bufio.NewScanner(stdout)
+	waitFor := func(want string) {
+		t.Helper()
+		for lines.Scan() {
+			if lines.Text() == want {
+				return
+			}
+		}
+		t.Fatalf("the child never printed %q", want)
+	}
+	waitFor("ready")
+	require.NoError(t, child.Process.Signal(os.Interrupt))
+	waitFor("cancelled")
+	exited := make(chan struct{})
+	go func() { _ = child.Wait(); close(exited) }()
+	// The handler is released just after the cancellation, so interrupt until
+	// the process ends; a swallowed interrupt leaves it sleeping.
+	deadline := time.After(30 * time.Second)
+	for ended := false; !ended; {
+		_ = child.Process.Signal(os.Interrupt)
+		select {
+		case <-exited:
+			ended = true
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("a second interrupt did not end the process")
+		}
+	}
+	require.Equal(t, -1, child.ProcessState.ExitCode(), "ended by the signal: %s", child.ProcessState)
+}
+
+// TestRecoveryBackupSaysWhenItsCheckWasInterrupted: an interrupt during the
+// check that follows a backup fails the command and says the archive was
+// written but not checked, and which command checks it.
+func TestRecoveryBackupSaysWhenItsCheckWasInterrupted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot send an interrupt to another process")
+	}
+	dir, _ := recoveryInstallation(t)
+	// A large compressible file keeps the check busy once it began.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "large.bin"), make([]byte, 64<<20), 0o600))
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	temp := t.TempDir()
+	// The child inherits these.
+	t.Setenv("TMPDIR", temp)
+	t.Setenv(recoveryChildArgs, strings.Join([]string{"backup", "--output", archive, "--dir", dir}, "\n"))
+	child := host.Command(os.Args[0], "-test.run=^TestRecoveryInterruptChild$", "-test.count=1")
+	var printed bytes.Buffer
+	child.Stdout, child.Stderr = &printed, &printed
+	require.NoError(t, child.Start())
+	t.Cleanup(func() { _ = child.Process.Kill() })
+	require.Eventually(t, func() bool {
+		if _, err := os.Stat(archive); err != nil {
+			return false
+		}
+		entries, err := os.ReadDir(temp)
+		return err == nil && len(entries) > 0 && strings.HasPrefix(entries[0].Name(), "zzrouter-recovery-")
+	}, time.Minute, time.Millisecond, "the backup was published and its check began")
+	require.NoError(t, child.Process.Signal(os.Interrupt))
+	require.Error(t, child.Wait(), "the command fails")
+	require.Contains(t, printed.String(), "the backup was written, but its check was interrupted: run zzrouter-node recovery check "+archive+" before relying on it")
+	require.NotContains(t, printed.String(), "do not use this archive")
+	_, err := recovery.Check(t.Context(), archive, "")
+	require.NoError(t, err, "the archive is complete")
+	entries, err := os.ReadDir(temp)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the interrupted check removed its temporary directory")
 }
 
 // TestRecoveryCommandsStopOnInterrupt interrupts a running recovery check: it

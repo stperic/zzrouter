@@ -62,14 +62,24 @@ var nextActions = map[Reason]string{
 // the error chain for logs.
 type Refusal struct {
 	Reason Reason
+	detail string // a fixed phrase of the store's naming a cause it tells apart
 	cause  error
 }
 
 func refuse(reason Reason, cause error) *Refusal { return &Refusal{Reason: reason, cause: cause} }
 
-// Error names the reason and the next action.
+// Error names the reason, with Summary's phrase, and the next action.
 func (r *Refusal) Error() string {
-	return "access store cannot open: " + string(r.Reason) + ". " + r.NextAction()
+	return "access store cannot open: " + r.Summary() + ". " + r.NextAction()
+}
+
+// Summary is the reason, followed by the store's own phrase for the cause when
+// it tells one apart, such as schema objects another tool changed.
+func (r *Refusal) Summary() string {
+	if r.detail == "" {
+		return string(r.Reason)
+	}
+	return string(r.Reason) + " (" + r.detail + ")"
 }
 
 // Unwrap returns the cause, for logs.
@@ -314,10 +324,11 @@ func initialize(ctx context.Context, tx *sql.Tx, storeID string) error {
 	return err
 }
 
-// check refuses a database that fails its checks or holds a record its rules
-// refuse. A live store gets quick_check and migrates before loading, because
-// the loader reads the latest schema; an image gets integrity_check and, never
-// being migrated, must already be at the latest schema, with exactly its objects.
+// check refuses a database that fails its checks, holds schema objects this
+// release does not create or a record its rules refuse. A live store gets
+// quick_check and migrates before loading, because the loader reads the latest
+// schema; an image gets integrity_check and, never being migrated, must already
+// be at the latest schema.
 func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
 	if err := db.Check(ctx, image); err != nil {
 		return nil, fileRefusal(err)
@@ -326,11 +337,11 @@ func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
 		if err := atLatest(ctx, db); err != nil {
 			return nil, err
 		}
-		if err := sameObjects(ctx, db); err != nil {
-			return nil, err
-		}
 	} else if _, _, err := db.Migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate access store: %w", err)
+	}
+	if err := sameObjects(ctx, db); err != nil {
+		return nil, err
 	}
 	st, err := load(ctx, db.SQL(), 1)
 	if errors.Is(err, errBroken) {

@@ -193,12 +193,13 @@ func (e *imageRefusal) Error() string {
 	if e.refusal.Reason == sqlstore.SchemaNewer {
 		advice = "A newer release wrote it: only that release can check or restore this archive."
 	}
-	return "the archive's access database image is refused: " + string(e.refusal.Reason) + ". " + advice
+	return "the archive's access database image is refused: " + e.refusal.Summary() + ". " + advice
 }
 
 func (e *imageRefusal) Unwrap() error { return e.refusal }
 
-// archiveImage gives an image operation's refusal the archive's advice.
+// archiveImage gives a refusal of an archive's image, or of its staged copy,
+// the archive's advice instead of the live store's.
 func archiveImage(err error) error {
 	var refusal *sqlstore.Refusal
 	if errors.As(err, &refusal) {
@@ -221,7 +222,10 @@ func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
 }
 
 // prepareImage readies the staged image to replace a store's content, checks
-// the file it wrote and describes it for the staging manifest.
+// the file it wrote and describes it for the staging manifest. The check pass
+// judged these bytes already, so a refusal here comes from the staged copy
+// itself, such as a read error of its medium that SQLite reports as
+// corruption; its advice is still about the restore, never the live store.
 func prepareImage(ctx context.Context, root *os.Root) (*Staged, error) {
 	prepared, err := sqlstore.PrepareImage(ctx, imagePath(root))
 	if err != nil {
