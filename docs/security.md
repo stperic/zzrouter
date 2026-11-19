@@ -242,9 +242,16 @@ proof. History is append-only: the database refuses updates and deletions of
 recorded events.
 
 **System → Access history** is administrator-only and reads bounded pages of
-that history, newest first. It does not record every OAuth login/logout. A page
-cursor survives new events and restarts; a malformed cursor, or one another
-store issued, is refused and the reader refreshes. Define retention
+that history, newest first, optionally filtered by actor, subject, action and
+time. It does not record every OAuth login/logout. A filter value is matched
+literally as a bound query argument, never as SQL or a pattern. The store stamps
+each event's time and never lets it go backwards, so a time range is a span of
+the history's order. A page walks one index within that span, the most selective
+exact filter's (subject, then actor, then action) or the history's own, and
+checks the other filters on the rows it reads: a page reads at most that one
+index's events in the span, and never sorts. A page cursor survives new events
+and restarts; a malformed cursor, one another store issued, or one sent with
+other filters is refused and the reader refreshes. Define retention
 operationally; nothing prunes the history automatically.
 
 The database file is internal, not an interface. Inspect a backup copy, never

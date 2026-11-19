@@ -146,9 +146,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 	}
 	for _, ev := range t.events {
 		row := auditRow{Event: audit.Attribute(ctx, ev)}
-		if row.Time.IsZero() {
-			row.Time = utils.NowUTC()
-		}
+		row.Time = utils.NowUTC() // auditAppend keeps it at or after the newest event
 		if err := row.Validate(); err != nil {
 			return nil, err
 		}

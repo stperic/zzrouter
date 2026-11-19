@@ -1,7 +1,12 @@
 package audit
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"math"
+	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -10,6 +15,7 @@ func TestValidateRefusesIncompleteEvent(t *testing.T) {
 	t.Parallel()
 	for name, ev := range map[string]Event{
 		"missing action":  {Actor: "a", Subject: "s"},
+		"unknown action":  {Action: "key.create", Actor: "a", Subject: "s"},
 		"missing actor":   {Action: ActionKeyCreated, Subject: "s"},
 		"missing subject": {Action: ActionKeyCreated, Actor: "a"},
 	} {
@@ -61,5 +67,37 @@ func TestValidateRefusesMetadataJSONWouldAlter(t *testing.T) {
 		if err := ev.Validate(); err == nil {
 			t.Errorf("%s: metadata accepted", name)
 		}
+	}
+}
+
+// TestActionsListsEveryConstant: Actions is the set a history filter accepts,
+// so an Action constant missing from it could be recorded but never filtered.
+func TestActionsListsEveryConstant(t *testing.T) {
+	t.Parallel()
+	file, err := parser.ParseFile(token.NewFileSet(), "audit.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declared, listed []string
+	for _, decl := range file.Decls {
+		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
+			for _, spec := range gen.Specs {
+				if vs := spec.(*ast.ValueSpec); vs.Type != nil && vs.Type.(*ast.Ident).Name == "Action" {
+					value, err := strconv.Unquote(vs.Values[0].(*ast.BasicLit).Value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					declared = append(declared, value)
+				}
+			}
+		}
+	}
+	for _, action := range Actions() {
+		listed = append(listed, string(action))
+	}
+	slices.Sort(declared)
+	slices.Sort(listed)
+	if len(declared) == 0 || !slices.Equal(declared, listed) {
+		t.Errorf("Actions lists %v; audit.go declares %v", listed, declared)
 	}
 }

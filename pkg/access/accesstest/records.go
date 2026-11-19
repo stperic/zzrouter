@@ -286,7 +286,7 @@ func testAuditRowsOfOneCommit(t *testing.T, h Harness) {
 	for _, limit := range []int{1, 2, 4, 100} {
 		var got []string
 		for cursor := ""; ; {
-			page, next, err := s.AuditPage(t.Context(), cursor, limit)
+			page, next, err := s.AuditPage(t.Context(), audit.Filter{}, cursor, limit)
 			require.NoError(t, err)
 			for _, ev := range page {
 				got = append(got, ev.Subject)

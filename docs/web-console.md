@@ -140,7 +140,8 @@ from retained list buffers. Live reset/dropped-event evidence remains visible;
 disconnecting is not completion. Payloads stay only in the current panel.
 
 System groups general settings, guided setup, software, pricing, access history
-and recovery. Access history shows committed access changes in bounded pages.
+and recovery. Access history shows committed access changes in bounded pages,
+filtered by exact actor, subject and action and by a time range.
 Recovery shows the node’s recorded scope and local offline commands, with
 separate key custody and staging before activation; see [recovery](recovery.md). Software shows each
 node's version and partial failures, history, explicit release/target rollouts,

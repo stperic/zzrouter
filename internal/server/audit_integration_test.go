@@ -30,7 +30,7 @@ func auditHistory(t *testing.T, store access.Store) []audit.Event {
 	t.Helper()
 	var events []audit.Event
 	for cursor := ""; ; {
-		page, next, err := store.AuditPage(t.Context(), cursor, 2)
+		page, next, err := store.AuditPage(t.Context(), audit.Filter{}, cursor, 2)
 		require.NoError(t, err)
 		events = append(events, page...)
 		if next == "" {
@@ -217,7 +217,7 @@ func TestAccessAuditPagesThroughTheAPI(t *testing.T) {
 	for range 2 {
 		other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "other", Subject: "elsewhere"})
 	}
-	_, foreign, err := other.AuditPage(t.Context(), "", 1)
+	_, foreign, err := other.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.NoError(t, err)
 	require.NotEmpty(t, foreign)
 	stale := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/access/audit?cursor="+url.QueryEscape(foreign), TestAdminKey, nil)
