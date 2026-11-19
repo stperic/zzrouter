@@ -76,11 +76,15 @@ func (s *Server) handleCreateBackup(c *gin.Context) {
 }
 
 // retainedCopies lists the copies of access records the coordinator keeps
-// beside the live database, by kind, without paths.
-func retainedCopies(backups []recovery.OnlineBackup) []retainedCopy {
-	copies := make([]retainedCopy, 0, len(backups))
+// beside the live database, by kind, without paths: its online backups and
+// the rollback directories offline activations kept.
+func retainedCopies(backups []recovery.OnlineBackup, rollbacks []recovery.Rollback) []retainedCopy {
+	copies := make([]retainedCopy, 0, len(backups)+len(rollbacks))
 	for _, backup := range backups {
 		copies = append(copies, retainedCopy{Kind: "online_backup", ID: backup.ID, CreatedAt: backup.CreatedAt, SizeBytes: backup.SizeBytes})
+	}
+	for _, rollback := range rollbacks {
+		copies = append(copies, retainedCopy{Kind: "activation_rollback", ID: rollback.ID, CreatedAt: rollback.CreatedAt, SizeBytes: rollback.SizeBytes, Pending: rollback.Pending})
 	}
 	return copies
 }

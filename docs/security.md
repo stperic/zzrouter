@@ -265,10 +265,10 @@ The database file is internal, not an interface. Inspect a backup copy, never th
 live file, and change it with no other tool, its schema included: a node refuses
 to start, with `integrity_failed`, on a database whose schema objects (tables,
 indexes, triggers, views, or the statistics `ANALYZE` adds) are not exactly those
-its release creates. If that happened, restore a checked backup: until an
-activation command exists, place a staged, prepared image by hand as
-[recovery](recovery.md) describes. While a tool holds the live file, each key,
-team or people change waits five seconds for it and then answers `503
+its release creates. If that happened, restore a checked backup as
+[recovery](recovery.md) describes: `zzrouter-node recovery activate` publishes a
+database bundle. While a tool holds the live file, each key, team or people
+change waits five seconds for it and then answers `503
 access_store_busy` with `Retry-After`; nothing is changed, and a retry succeeds
 once the tool lets go. An access-history read answers the same way while the tool
 writes. A node that cannot open its store because a tool holds the file stops
@@ -308,7 +308,21 @@ any field named `*_token`.
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.
 It prepares the staged access database image so that sessions, delegated tokens
-and app-key references issued before the restore stop resolving.
+and app-key references issued before the restore stop resolving. `recovery
+activate` publishes a staged database bundle only into a stopped installation
+whose store marker, or database, names the same store, or into a fresh one, and
+publishes exactly the bytes it checked, so an image swapped after its checks
+(for example for an unprepared copy, under which old sessions would resolve) is
+refused. A staged generation is refused while the live store is at it, or while
+a rollback directory for it still exists. Run by an administrator, activation and
+its rollback give what they write the owner of the configuration directory. A
+node, a backup and a privileged update run refuse while an activation is
+incomplete. Activation removes the
+staging directory, which holds credential hashes, and keeps what it replaced in
+`rollback/<generation>/` in the configuration directory: the previous database
+and store marker, with every password and app-key hash. Nothing removes it, and
+no backup carries it; delete it once the restored node is qualified.
+`GET /zzrouter/v1/system/state` lists each one as a retained copy.
 See [recovery](recovery.md) for included data, separate dependencies and required
 post-activation checks. Restoring an old valid backup can resurrect revoked access.
 

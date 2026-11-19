@@ -174,15 +174,24 @@ func (r *archiveReader) check(ctx context.Context, keyFile string, x extraction)
 }
 
 func readManifest(reader *tar.Reader) (Manifest, error) {
-	var manifest Manifest
 	header, err := reader.Next()
 	if err != nil || header.Name != "manifest.json" || header.Typeflag != tar.TypeReg || header.Size < 1 || header.Size > maxManifest {
-		return manifest, errors.New("invalid recovery manifest header")
+		return Manifest{}, errors.New("invalid recovery manifest header")
 	}
 	data, err := io.ReadAll(reader)
 	if err != nil {
+		return Manifest{}, err
+	}
+	manifest, err := decodeManifest(data)
+	if err != nil {
 		return manifest, err
 	}
+	return manifest, validateManifest(manifest)
+}
+
+// decodeManifest decodes a manifest strictly: no unknown field, no trailing data.
+func decodeManifest(data []byte) (Manifest, error) {
+	var manifest Manifest
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
@@ -191,7 +200,7 @@ func readManifest(reader *tar.Reader) (Manifest, error) {
 	if decoder.Decode(new(any)) != io.EOF {
 		return manifest, errors.New("recovery manifest contains trailing data")
 	}
-	return manifest, validateManifest(manifest)
+	return manifest, nil
 }
 
 func imagePath(root *os.Root) string {
@@ -281,6 +290,9 @@ func recoveryKey(manifest Manifest, keyFile string) ([]byte, error) {
 	return key, nil
 }
 
+// incompleteName marks a staging directory restore has not finished.
+const incompleteName = "INCOMPLETE"
+
 func stagingRoot(destination string) (*os.Root, error) {
 	if err := os.Mkdir(destination, 0o700); err != nil {
 		return nil, fmt.Errorf("restore requires a new directory: %w", err)
@@ -288,7 +300,7 @@ func stagingRoot(destination string) (*os.Root, error) {
 	if err := security.RestrictDirectoryPermissions(destination); err != nil {
 		return nil, err
 	}
-	if err := writeExclusive(filepath.Join(destination, "INCOMPLETE"), []byte("Recovery has not passed validation. Do not activate this directory.\n")); err != nil {
+	if err := writeExclusive(filepath.Join(destination, incompleteName), []byte("Recovery has not passed validation. Do not activate this directory.\n")); err != nil {
 		return nil, err
 	}
 	return os.OpenRoot(destination)
@@ -321,7 +333,7 @@ func finishStaging(ctx context.Context, root *os.Root, manifest *Manifest, key [
 	if err := writeExclusive(filepath.Join(destination, "manifest.json"), data); err != nil {
 		return err
 	}
-	return root.Remove("INCOMPLETE")
+	return root.Remove(incompleteName)
 }
 
 // readEntries verifies every entry, keeping the files validateContent names in

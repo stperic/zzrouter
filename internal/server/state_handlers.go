@@ -1,9 +1,11 @@
 package server
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -20,14 +22,19 @@ type storeState struct {
 	Size           storeSize      `json:"size"`
 	Integrity      storeIntegrity `json:"integrity"`
 	RetainedCopies []retainedCopy `json:"retained_copies"`
+	// RetainedCopiesError says, without a path, that retained copies could
+	// not be listed; the store's state still stands.
+	RetainedCopiesError string `json:"retained_copies_error,omitempty"`
 }
 
 // retainedCopy is a copy of the access records that holds credentials.
+// Pending marks the rollback directory an incomplete activation still needs.
 type retainedCopy struct {
 	Kind      string    `json:"kind"`
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	SizeBytes int64     `json:"size_bytes"`
+	Pending   bool      `json:"pending,omitempty"`
 }
 
 type storeSize struct {
@@ -43,7 +50,8 @@ type storeIntegrity struct {
 	Outcome   string    `json:"outcome"` // ok: a failed check stops the node at startup
 }
 
-// handleStoreState reports the access store without a query or the writer gate.
+// handleStoreState reports the access store without a query or the writer
+// gate, and the retained copies of its records.
 func (s *Server) handleStoreState(c *gin.Context) {
 	observed := utils.NowUTC()
 	st, err := s.stateStore.Status()
@@ -56,9 +64,15 @@ func (s *Server) handleStoreState(c *gin.Context) {
 	for _, backup := range backups {
 		backupBytes += backup.SizeBytes
 	}
+	copiesErr := ""
+	rollbacks, err := recovery.Rollbacks(s.configDir)
+	if err != nil {
+		slog.WarnContext(c.Request.Context(), "Activation rollback directories could not be listed", "error", err)
+		copiesErr = "the activation rollback directories could not be listed; the node's log names the cause"
+	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: retainedCopies(backups),
+		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: retainedCopies(backups, rollbacks), RetainedCopiesError: copiesErr,
 		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes, BackupBytes: backupBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})

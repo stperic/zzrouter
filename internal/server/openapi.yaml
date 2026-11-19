@@ -14113,16 +14113,31 @@ components:
             outcome: { type: string, enum: [ok] }
         retained_copies:
           type: array
-          description: Copies of the access records the coordinator keeps beside the live database; they hold credentials.
+          description: >-
+            Copies of the access records the coordinator keeps beside the live database, which hold credential hashes:
+            online backups, then the rollback directories offline activations kept, each oldest first.
           items:
             type: object
             additionalProperties: false
             required: [kind, id, created_at, size_bytes]
             properties:
-              kind: { type: string, enum: [online_backup] }
-              id: { type: string }
+              kind:
+                type: string
+                enum: [online_backup, activation_rollback]
+                description: >-
+                  `online_backup`: a retained online backup. `activation_rollback`: what an offline activation
+                  replaced, kept in its rollback directory until the operator removes it.
+              id: { type: string, description: "The backup's ID, or the generation the activation published." }
               created_at: { type: string, format: date-time }
               size_bytes: { type: integer, minimum: 0 }
+              pending:
+                type: boolean
+                description: >-
+                  Present and true on the `activation_rollback` of an activation that did not finish, so the node does
+                  not start. Do not remove that directory; rolling the activation back needs it.
+        retained_copies_error:
+          type: string
+          description: Present, without a path, when retained copies could not be listed; the store's state still stands. The coordinator's log names the cause.
     StateBackup:
       description: >-
         A retained online backup of the access store: a `database` recovery archive. No filesystem path or content.

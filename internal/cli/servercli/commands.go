@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/service"
 	"github.com/stperic/zzrouter/pkg/update"
@@ -258,6 +259,11 @@ func runNormalStart(cmd *cobra.Command, configDir string, svcMgr service.Service
 		return err
 	}
 	defer func() { _ = lock.Close() }()
+	// Before anything writes into the configuration: an activation that did
+	// not finish leaves a half-replaced installation.
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
 
 	// Check if running as the service user
 	if svcMgr.IsServiceUser() {

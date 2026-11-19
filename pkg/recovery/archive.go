@@ -127,6 +127,10 @@ func BackupProfile(ctx context.Context, profile Profile, dir, output, keyOutput 
 		return manifest, err
 	}
 	defer func() { _ = lock.Close() }()
+	// As a start does: a half-replaced installation is not backed up.
+	if err := PendingActivation(dir); err != nil {
+		return manifest, err
+	}
 	inventory, err := Read(ctx, dir)
 	if err != nil {
 		return manifest, err

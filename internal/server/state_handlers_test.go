@@ -3,8 +3,12 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -135,4 +139,60 @@ func TestSystemStateExampleMatchesSchema(t *testing.T) {
 	var example map[string]any
 	require.NoError(t, json.Unmarshal(data, &example))
 	require.NoError(t, browserSchema(t, "StoreState").Validate(example))
+}
+
+// TestSystemStateListsActivationRollbacks: each rollback directory an offline
+// activation kept is a retained copy, oldest first, by kind, ID, creation
+// time and size, with no path.
+func TestSystemStateListsActivationRollbacks(t *testing.T) {
+	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	created := map[string]string{"older": "2026-11-18T10:00:00Z", "newer": "2026-11-19T10:00:00Z"}
+	for id, at := range created {
+		store := filepath.Join(s.configDir, "rollback", id, "store")
+		require.NoError(t, os.MkdirAll(store, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "rollback", id, "rollback.json"), []byte(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+at+`"}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(store, "access.sqlite"), make([]byte, 4096), 0o600))
+		when, err := time.Parse(time.RFC3339, at)
+		require.NoError(t, err)
+		require.NoError(t, os.Chtimes(filepath.Join(s.configDir, "rollback", id), when, when), "a rollback is dated by its directory")
+	}
+	_, raw := readStoreState(t, s)
+	copies, ok := raw["retained_copies"].([]any)
+	require.True(t, ok)
+	require.Len(t, copies, 2)
+	for i, id := range []string{"older", "newer"} {
+		entry := copies[i].(map[string]any)
+		assert.Equal(t, "activation_rollback", entry["kind"])
+		assert.Equal(t, id, entry["id"])
+		assert.Equal(t, created[id], entry["created_at"])
+		size := len(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+created[id]+`"}`) + 4096
+		assert.EqualValues(t, size, entry["size_bytes"])
+	}
+}
+
+// TestSystemStateSurvivesAnUnreadableRollback: a rollback directory the node
+// cannot read leaves the store's state answered, with the listing problem in
+// its own field and no path; a pending rollback is marked.
+func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the process cannot read")
+	}
+	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "recovery-activation.json"), []byte(`{"version":1,"generation":"pending"}`), 0o600))
+	for _, id := range []string{"pending", "unreadable"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(s.configDir, "rollback", id, "store"), 0o700))
+	}
+	_, raw := readStoreState(t, s)
+	copies := raw["retained_copies"].([]any)
+	require.Len(t, copies, 2)
+	for _, entry := range copies {
+		entry := entry.(map[string]any)
+		assert.Equal(t, entry["id"] == "pending", entry["pending"] == true, "%v", entry)
+	}
+	require.NoError(t, os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0o700) })
+	state, raw := readStoreState(t, s)
+	assert.Equal(t, "setup_required", state.Status, "the store's state is answered")
+	assert.Equal(t, []any{}, raw["retained_copies"])
+	assert.Contains(t, raw["retained_copies_error"], "could not be listed; the node's log names the cause")
 }

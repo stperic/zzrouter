@@ -15,6 +15,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/host"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/service"
 	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -123,6 +124,11 @@ func executeUpdateRequest(ctx context.Context, handoff *update.Handoff, req *upd
 	}
 	if fromTimer && !cfg.Update.IsEnabled() {
 		return nil
+	}
+	// Before anything is installed: an incomplete activation stops the node, so
+	// the restart would fail and the update be rolled back for it.
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
 	}
 	applyPrivilegedSourcePolicy(&cfg.Update)
 	if err := cfg.Update.Validate(); err != nil {

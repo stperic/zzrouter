@@ -23,7 +23,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
-	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -239,11 +238,7 @@ func teamCheck(records map[string]*teams.Team) people.TeamCheck {
 // ensureFile restricts the access directory and returns the database path,
 // publishing an empty database on first start.
 func ensureFile(ctx context.Context, dir string) (string, error) {
-	accessDir := filepath.Join(dir, "access")
-	if err := os.MkdirAll(accessDir, 0o700); err != nil {
-		return "", err
-	}
-	if err := security.RestrictDirectoryPermissions(accessDir); err != nil {
+	if err := sqlitedb.MakeDir(ctx, filepath.Join(dir, "access")); err != nil {
 		return "", err
 	}
 	path := databasePath(dir)

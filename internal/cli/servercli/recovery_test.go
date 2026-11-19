@@ -213,7 +213,7 @@ func TestRecoveryInventoryReportsTheStore(t *testing.T) {
 		return printed.Store
 	}
 	require.Equal(t, map[string]any{"state": "setup_required", "store_id": meta.StoreID, "generation": meta.Generation,
-		"schema_version": 1.0, "revision": 0.0, "sequence": 0.0, "archives": []any{}}, inspect())
+		"schema_version": 1.0, "revision": 0.0, "sequence": 0.0, "archives": []any{}, "rollbacks": []any{}}, inspect())
 
 	lock, err := pkgConfig.LockInstallation(dir)
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestRecoveryInventoryReportsTheStore(t *testing.T) {
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "access", "access.sqlite")))
 	require.Equal(t, map[string]any{"state": "refused", "reason": "missing", "evidence": "missing",
-		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Missing}).NextAction(), "archives": []any{}}, inspect())
+		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Missing}).NextAction(), "archives": []any{}, "rollbacks": []any{}}, inspect())
 }
 
 // TestRecoveryInventoryWithoutALayout: a store refused at the first start
@@ -239,7 +239,7 @@ func TestRecoveryInventoryWithoutALayout(t *testing.T) {
 	require.ErrorContains(t, err, "read recovery inventory")
 	require.Nil(t, printed.Inventory)
 	require.Equal(t, map[string]any{"state": "refused", "reason": "unreadable", "evidence": "unreadable",
-		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), "archives": []any{}}, printed.Store)
+		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), "archives": []any{}, "rollbacks": []any{}}, printed.Store)
 }
 
 // TestRecoveryInventoryUnknownPrintsBothSections: an inspection that cannot

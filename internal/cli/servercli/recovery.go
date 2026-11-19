@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -16,10 +17,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/recovery"
 )
 
-// NewRecoveryCmd exposes local offline inventory, backup, checking and staging.
+// NewRecoveryCmd exposes local offline inventory, backup, checking, staging
+// and activation.
 func NewRecoveryCmd() *cobra.Command {
 	var dir string
-	command := &cobra.Command{Use: "recovery", Short: "Inspect, back up and stage an installation recovery"}
+	command := &cobra.Command{Use: "recovery", Short: "Inspect, back up, stage and activate an installation recovery"}
 	command.PersistentFlags().StringVarP(&dir, "dir", "C", config.Paths().GetConfigDir(), "Installation configuration directory")
 	command.AddCommand(&cobra.Command{Use: "inventory", Short: "Show included state, separate recovery dependencies and the access store", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
 		// The store is inspected even without a layout: a store refused at
@@ -87,7 +89,9 @@ func NewRecoveryCmd() *cobra.Command {
 			if operation == "check" {
 				manifest, err = recovery.Check(cmd.Context(), args[0], keyFile)
 			} else {
-				manifest, err = recovery.Restore(cmd.Context(), args[0], keyFile, destination)
+				if err = recovery.CheckStagingDir(dir, destination); err == nil {
+					manifest, err = recovery.Restore(cmd.Context(), args[0], keyFile, destination)
+				}
 			}
 			if err != nil {
 				return err
@@ -96,9 +100,13 @@ func NewRecoveryCmd() *cobra.Command {
 			if staged := manifest.Staged; staged != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Prepared the staged access database as generation %s: once it is activated, sessions, delegated tokens and app-key references issued before this restore do not resolve.\n", staged.Generation)
 			}
-			if operation == "restore" && manifest.Profile == recovery.ProfileHandoff {
+			switch {
+			case operation == "restore" && manifest.Profile == recovery.ProfileDatabase:
+				staged, installation := absolute(destination), absolute(dir)
+				fmt.Fprintf(cmd.OutOrStdout(), "Staged only. Keep the node stopped and publish it with zzrouter-node recovery activate %s --dir %s, after a --dry-run. See docs/recovery.md.\n", staged, installation)
+			case operation == "restore" && manifest.Profile == recovery.ProfileHandoff:
 				fmt.Fprintln(cmd.OutOrStdout(), "Staged only. This release checks and stages a handoff bundle; activating it on a new coordinator arrives in a later release. See docs/recovery.md.")
-			} else if operation == "restore" {
+			case operation == "restore":
 				fmt.Fprintln(cmd.OutOrStdout(), "Staged only. Keep the node stopped, review manifest.json and restore paths, ownership and separate dependencies before activation. See docs/recovery.md.")
 			}
 			return nil
@@ -109,6 +117,18 @@ func NewRecoveryCmd() *cobra.Command {
 		}
 		command.AddCommand(child)
 	}
+	var activation recovery.ActivateOptions
+	activate := &cobra.Command{Use: "activate STAGING", Short: "Publish a staged database bundle as this stopped installation's access store", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := recovery.Activate(cmd.Context(), dir, args[0], activation)
+		if err != nil {
+			return err
+		}
+		describeActivation(cmd.OutOrStdout(), a, activation, args[0])
+		return nil
+	}}
+	activate.Flags().BoolVar(&activation.DryRun, "dry-run", false, "Run every check and report what would change, publishing and replacing nothing")
+	activate.Flags().BoolVar(&activation.Rollback, "rollback", false, "Undo an activation that did not finish")
+	command.AddCommand(activate)
 	for _, child := range command.Commands() {
 		child.RunE = interruptible(child.RunE)
 	}
@@ -155,4 +175,55 @@ func describeBundle(w io.Writer, verb string, m recovery.Manifest) {
 	for _, item := range m.Separate {
 		fmt.Fprintln(w, "  - "+item)
 	}
+}
+
+// describeActivation names what an activation replaced, its generation, its
+// rollback directory and the next step, or what a dry run or a rollback did;
+// staging is the staging directory the command named.
+func describeActivation(w io.Writer, a recovery.Activation, o recovery.ActivateOptions, staging string) {
+	fresh := len(a.Replaced) == 0 && len(a.Lost) == 0
+	switch {
+	case o.Rollback && o.DryRun && fresh:
+		fmt.Fprintf(w, "Dry run: rolling back activation %s would remove the access store it published, since this installation had none before. A dry run changes nothing.\n", a.RollbackID)
+	case o.Rollback && o.DryRun:
+		fmt.Fprintf(w, "Dry run: rolling back activation %s would put back the access store's database and store marker kept in %s. A dry run changes nothing.\n", a.RollbackID, a.RollbackDir)
+	case o.Rollback:
+		if fresh {
+			fmt.Fprintf(w, "Rolled back activation %s: the access store it published is removed, since this installation had none before.", a.RollbackID)
+		} else {
+			fmt.Fprintf(w, "Rolled back activation %s: the access store's database and store marker are as they were before.", a.RollbackID)
+		}
+		if _, err := os.Stat(staging); err == nil {
+			fmt.Fprint(w, " The staging directory is kept.")
+		}
+		fmt.Fprintln(w)
+	case o.DryRun:
+		fmt.Fprintf(w, "Dry run: activating would publish generation %s of access store %s.\n", a.Store.Generation, a.Store.StoreID)
+		if fresh {
+			fmt.Fprintln(w, "This installation has no access store, so nothing would be replaced.")
+		} else {
+			fmt.Fprintf(w, "It would replace this installation's access store, keeping its database and store marker in %s.\n", a.RollbackDir)
+		}
+		fmt.Fprintln(w, "A dry run publishes nothing, replaces nothing and creates no rollback directory; reading the database may have let SQLite finish recovering a journal a crash left beside it, as the next start would.")
+	default:
+		s := a.Store
+		fmt.Fprintf(w, "Activated generation %s of access store %s (schema version %d, revision %d, sequence %d).\n", s.Generation, s.StoreID, s.SchemaVersion, s.Revision, s.Sequence)
+		switch {
+		case len(a.Lost) > 0:
+			fmt.Fprintf(w, "The previous database and store marker were not kept: the rollback directory was deleted while the activation was incomplete, so %s holds only the activation's record.\n", a.RollbackDir)
+		case fresh:
+			fmt.Fprintf(w, "This installation had no access store, so nothing was replaced; %s records the activation.\n", a.RollbackDir)
+		default:
+			fmt.Fprintf(w, "The previous database and store marker, credential hashes included, are kept in %s until you delete it.\n", a.RollbackDir)
+		}
+		fmt.Fprintln(w, "The staging directory is removed. Next: start the node. Every session and delegated access issued before this restore is invalid: people, the owner included, sign in again with their passwords, and app keys keep working.")
+	}
+}
+
+// absolute is path made absolute, or path as given when that fails.
+func absolute(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }

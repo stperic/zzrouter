@@ -151,7 +151,7 @@ func CaptureStopped(ctx context.Context, dir, dst string) (Image, error) {
 		if m, err := loadMeta(ctx, db.SQL()); err == nil {
 			img.Meta = m
 		}
-		if err := sqlitedb.CopyFile(ctx, path, dst); err != nil {
+		if _, err := sqlitedb.CopyFile(ctx, path, dst); err != nil {
 			return Image{}, err
 		}
 		return img, nil

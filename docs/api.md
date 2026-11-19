@@ -316,10 +316,17 @@ claims the installation, then `ready`), `observed_at`, `size` in integer bytes
 (`database_bytes`, `journal_bytes`, 0 outside a write, `free_page_bytes`, as
 the latest commit left it, and `backup_bytes`; `null` marks a measurement the node
 could not take), `integrity` (the `quick_check` run when the store opened, with
-`checked_at` and `outcome`) and `retained_copies`, each with `kind`
-(`online_backup`), `id`, `created_at` and `size_bytes`; `backup_bytes` totals the
-retained online backups. The read runs no database
-query and never waits for an access write; it names no path and carries no secret.
+`checked_at` and `outcome`) and `retained_copies`: each copy of access records
+outside the database, which holds credential hashes, by `kind`, `id`,
+`created_at` and `size_bytes`. The kinds are `online_backup` and
+`activation_rollback`, the rollback directory an offline activation keeps until
+the operator removes it (see [recovery](recovery.md)); `pending: true` marks the
+one an activation that did not finish still needs. When the copies cannot be
+listed, `retained_copies_error` says so without a path (the node's log names the
+cause) and the store's state is
+still answered. `backup_bytes` totals the retained online backups. The read runs
+no database query and never waits for an access write; it names no path and
+carries no secret.
 A worker answers 421, and a store that can no longer vouch for its records answers
 503 `access_store_failed` while the coordinator restarts.
 

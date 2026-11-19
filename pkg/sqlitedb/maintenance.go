@@ -2,7 +2,9 @@ package sqlitedb
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/security"
 )
@@ -105,12 +108,13 @@ func (d *DB) CopyTo(ctx context.Context, dst string) error {
 }
 
 // CopyFile copies the database file at path byte for byte to dst, which must
-// not exist, owner-only and synced (its directory entry is not); a failure,
-// cancellation included, leaves no file. Nothing parses it, so it copies a file
-// this release cannot read. The caller settles a journal first (Probe) and
-// keeps writers out.
-func CopyFile(ctx context.Context, path, dst string) error {
-	return createFile(dst, func() error {
+// not exist, owner-only and synced (its directory entry is not), and returns
+// the SHA-256 of the bytes it wrote; a failure, cancellation included, leaves
+// no file. Nothing parses it, so it copies a file this release cannot read.
+// The caller settles a journal first (Probe) and keeps writers out.
+func CopyFile(ctx context.Context, path, dst string) (string, error) {
+	hash := sha256.New()
+	err := createFile(dst, func() error {
 		in, err := os.Open(path)
 		if err != nil {
 			return err
@@ -120,9 +124,13 @@ func CopyFile(ctx context.Context, path, dst string) error {
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(out, contextReader{ctx, in})
+		_, err = io.Copy(io.MultiWriter(out, hash), contextReader{ctx, in})
 		return errors.Join(err, out.Sync(), out.Close())
 	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // contextReader stops reading once its context is done.
@@ -163,6 +171,86 @@ func createFile(path string, fill func() error) (err error) {
 	return fill()
 }
 
+// MakeDir creates the directory at path with any missing parents, level by
+// level: each level it creates is restricted to its owner and its parent
+// synced, then reported to the WithStep observer as "made <name>", so the
+// whole chain is owner-only and survives a power loss before it returns. An
+// existing directory is restricted.
+func MakeDir(ctx context.Context, path string) error {
+	var missing []string
+	for level := filepath.Clean(path); filepath.Dir(level) != level; level = filepath.Dir(level) {
+		info, err := os.Stat(level)
+		if err == nil && !info.IsDir() {
+			return fmt.Errorf("make %s: %s is not a directory", path, level)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			if err != nil {
+				return err
+			}
+			break
+		}
+		missing = append(missing, level)
+	}
+	if len(missing) == 0 {
+		return security.RestrictDirectoryPermissions(path)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		level := missing[i]
+		if err := os.Mkdir(level, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		if err := errors.Join(security.RestrictDirectoryPermissions(level), SyncDir(filepath.Dir(level))); err != nil {
+			return err
+		}
+		Step(ctx, "made "+filepath.Base(level))
+	}
+	return nil
+}
+
+// RemoveDirIfEmpty removes the directory at path when it holds nothing and
+// syncs its parent, or syncs it when it holds something, so the removals made
+// in it survive a power loss; an absent directory is left as it is.
+func RemoveDirIfEmpty(path string) error {
+	entries, err := os.ReadDir(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case len(entries) > 0:
+		return SyncDir(path)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+// GiveOwner is the wrapper through which a multi-file operation hands what it
+// wrote to the installation's owner: it gives each of paths that exists the
+// owner of the installation directory dir (security.GiveOwner), and reports
+// them, relative to dir, to the WithStep observer as one step.
+func GiveOwner(ctx context.Context, dir string, paths ...string) error {
+	var given []string
+	for _, path := range paths {
+		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err := security.GiveOwner(path, dir); err != nil {
+			return fmt.Errorf("give %s the installation's owner: %w", path, err)
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		given = append(given, filepath.ToSlash(rel))
+	}
+	if len(given) > 0 {
+		Step(ctx, "owned "+strings.Join(given, ", "))
+	}
+	return nil
+}
+
 // Rename moves a closed file, such as a database, and syncs the destination
 // directory, so the move survives a power loss. Windows refuses to move an
 // open file.
@@ -170,7 +258,7 @@ func Rename(from, to string) error {
 	if err := os.Rename(from, to); err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(to))
+	return SyncDir(filepath.Dir(to))
 }
 
 func syncFile(path string) error {
@@ -181,10 +269,12 @@ func syncFile(path string) error {
 	if err = errors.Join(f.Sync(), f.Close()); err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(path))
+	return SyncDir(filepath.Dir(path))
 }
 
-func syncDir(path string) error {
+// SyncDir syncs the directory at path, so the entries created, renamed or
+// removed in it survive a power loss; Windows cannot sync a directory.
+func SyncDir(path string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -193,4 +283,20 @@ func syncDir(path string) error {
 		return err
 	}
 	return errors.Join(dir.Sync(), dir.Close())
+}
+
+type stepKey struct{}
+
+// WithStep is a test seam: it returns ctx carrying observe, which an
+// operation that must survive a crash calls after each durable step, so a test
+// process can stop there and be killed. Without an observer, Step does nothing.
+func WithStep(ctx context.Context, observe func(step string)) context.Context {
+	return context.WithValue(ctx, stepKey{}, observe)
+}
+
+// Step reports a durable step to the observer ctx carries, if any.
+func Step(ctx context.Context, step string) {
+	if observe, ok := ctx.Value(stepKey{}).(func(string)); ok {
+		observe(step)
+	}
 }
