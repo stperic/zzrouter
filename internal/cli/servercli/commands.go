@@ -78,9 +78,7 @@ Examples:
 				if err != nil {
 					return err
 				}
-				if err := os.Setenv("ZZROUTER_CONFIG_DIR", absolute); err != nil {
-					return err
-				}
+				pkgConfig.UseConfigDir(absolute)
 				configDir = absolute
 			}
 			// Get the service manager for the current platform

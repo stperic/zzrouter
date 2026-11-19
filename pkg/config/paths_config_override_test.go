@@ -63,3 +63,19 @@ func TestTestHomeOverrideStillWins(t *testing.T) {
 	p := NewPathResolver("zzrouter")
 	assert.Equal(t, home, p.GetConfigDir())
 }
+
+// TestUseConfigDirWinsOverTheEnvironment: a --dir pin beats
+// ZZROUTER_CONFIG_DIR, and "" removes the pin.
+func TestUseConfigDirWinsOverTheEnvironment(t *testing.T) {
+	env, flag := t.TempDir(), t.TempDir()
+	t.Setenv(envConfigDirOverride, env)
+	UseConfigDir(flag)
+	t.Cleanup(func() { UseConfigDir("") })
+	if got := NewPathResolver("zzrouter").GetConfigDir(); got != flag {
+		t.Fatalf("GetConfigDir = %q, want the pinned %q", got, flag)
+	}
+	UseConfigDir("")
+	if got := NewPathResolver("zzrouter").GetConfigDir(); got != env {
+		t.Fatalf("GetConfigDir = %q, want the environment's %q", got, env)
+	}
+}
