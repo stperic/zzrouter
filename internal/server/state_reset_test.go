@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -187,4 +188,37 @@ func TestStateResetGate(t *testing.T) {
 	}
 	assert.Empty(t, resetRows(t, s))
 	assert.Equal(t, backup.ID, previewReset(t, s, backup.ID).BackupID, "the local operator is admitted")
+}
+
+// TestBacksResetJudgesTheBackupItself: a backup backs a reset only when it is
+// this store's, of this generation and revision, and still inside its
+// protected window; the window ends at protected_until itself.
+func TestBacksResetJudgesTheBackupItself(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	t.Cleanup(utils.SetClock(utils.FixedClock(now)))
+	live := sqlstore.Meta{StoreID: "store", Generation: "generation", Revision: 7}
+	backup := func(edit func(*recovery.OnlineBackup)) recovery.OnlineBackup {
+		b := recovery.OnlineBackup{ProtectedUntil: now.Add(time.Second)}
+		b.StoreMeta = &recovery.StoreMeta{StoreID: live.StoreID, Generation: live.Generation, Revision: live.Revision}
+		if edit != nil {
+			edit(&b)
+		}
+		return b
+	}
+	require.NoError(t, backsReset(backup(nil), nil, live))
+	for name, tc := range map[string]struct {
+		edit func(*recovery.OnlineBackup)
+		want error
+	}{
+		"another store":              {func(b *recovery.OnlineBackup) { b.StoreID = "other" }, errStateRevisionChanged},
+		"another generation":         {func(b *recovery.OnlineBackup) { b.Generation = "earlier" }, errStateRevisionChanged},
+		"another revision":           {func(b *recovery.OnlineBackup) { b.Revision = 6 }, errStateRevisionChanged},
+		"exactly at protected_until": {func(b *recovery.OnlineBackup) { b.ProtectedUntil = now }, errBackupUnprotected},
+		"past protected_until":       {func(b *recovery.OnlineBackup) { b.ProtectedUntil = now.Add(-time.Hour) }, errBackupUnprotected},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorIs(t, backsReset(backup(tc.edit), nil, live), tc.want)
+		})
+	}
+	require.ErrorIs(t, backsReset(backup(nil), recovery.ErrBackupNotFound, live), recovery.ErrBackupNotFound)
 }

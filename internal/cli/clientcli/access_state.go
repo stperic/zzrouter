@@ -116,7 +116,7 @@ func resetAccessState(ctx context.Context, out io.Writer, dir, id string, yes bo
 		return err
 	}
 	_, err = fmt.Fprintf(out, "Reset %s committed at revision %d.\nThe owner signs in again with their password (zzrouter access recover-owner if it is lost), then creates new app keys.\n"+
-		"To undo it while backup %s is retained: zzrouter access state export --backup-id %s --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING, then zzrouter-node recovery activate STAGING --dir %s, after a --dry-run. The spend of removed keys and teams does not come back.\n",
+		"To undo it while backup %s is retained: zzrouter access state export --backup-id %s --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING --dir %[5]s, then zzrouter-node recovery activate STAGING --dir %[5]s, after a --dry-run. The spend of removed keys and teams does not come back.\n",
 		result.Data.OperationID, result.Data.NewRevision, id, id, session.dir)
 	return err
 }

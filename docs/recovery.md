@@ -344,9 +344,10 @@ The backup must hold the records' current revision and be inside its
 changed since the preview and retention cannot remove the backup first. If
 anything changed the records (`409 state_revision_changed`) or the backup is
 past its protected window (`409 state_backup_unprotected`), nothing is reset:
-run the command again without `--backup-id`. A reset sent twice is applied once:
-the second meets the changed revision, and the access history shows the first
-as `store.reset`.
+run the command again without `--backup-id`. A reset that removed anything is
+applied once: a repeat meets the changed revision, and the access history shows
+the first as `store.reset`. On a store with no owner and nothing to remove, a
+repeat changes nothing and only adds another `store.reset` event.
 
 To undo a reset, restore the backup it named while it is retained. Export it,
 stop the service, stage the copy and activate it as
@@ -355,7 +356,7 @@ stop the service, stage the copy and activate it as
 ```sh
 zzrouter access state export --backup-id ID --output /secure-backups/access.tar.gz
 # stop the service
-zzrouter-node recovery restore /secure-backups/access.tar.gz --to /new/private/restore-staging
+zzrouter-node recovery restore /secure-backups/access.tar.gz --to /new/private/restore-staging --dir /path/to/installation
 zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation --dry-run
 zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation
 ```

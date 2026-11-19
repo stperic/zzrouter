@@ -222,7 +222,7 @@ func TestStateResetBacksUpPreviewsAndResets(t *testing.T) {
 		"removes app keys: 3, teams: 2, people: 1, invitation and sign-in grants: 4,",
 		`keeps the owner owner, who must sign in again, and their team "Personal workspace"`,
 		"Reset op-1 committed at revision 8.",
-		"zzrouter access state export --backup-id b1 --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING, then zzrouter-node recovery activate STAGING --dir " + dir,
+		"zzrouter access state export --backup-id b1 --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING --dir " + dir + ", then zzrouter-node recovery activate STAGING --dir " + dir,
 		"The spend of removed keys and teams does not come back.",
 	} {
 		require.Contains(t, out, line)
