@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -704,4 +705,21 @@ func TestCaptureStopped(t *testing.T) {
 			assert.NoFileExists(t, image, "a refused capture leaves no file")
 		})
 	}
+}
+
+// TestReadsSchema: this release reads only its latest schema version, and a
+// fault in its own embedded schema is an error, never a verdict on a version.
+func TestReadsSchema(t *testing.T) {
+	latest, err := schema.Latest()
+	require.NoError(t, err)
+	for v, want := range map[int]bool{latest - 1: false, latest: true, latest + 1: false} {
+		reads, err := ReadsSchema(v)
+		require.NoError(t, err)
+		require.Equal(t, want, reads, "schema version %d", v)
+	}
+	released := schema
+	t.Cleanup(func() { schema = released })
+	schema = sqlitedb.Schema{AppID: released.AppID, FS: fstest.MapFS{"0002_gap.sql": {Data: []byte("SELECT 1;")}}}
+	_, err = ReadsSchema(latest)
+	require.Error(t, err)
 }

@@ -43,13 +43,9 @@ func (s *Server) handleStoreState(c *gin.Context) {
 		RespondToError(c, err)
 		return
 	}
-	status := "setup_required"
-	if st.Initialized {
-		status = "ready"
-	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: status, ObservedAt: observed, RetainedCopies: []struct{}{},
+		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: []struct{}{},
 		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})

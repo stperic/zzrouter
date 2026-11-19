@@ -3,16 +3,21 @@
 package recovery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -229,6 +234,183 @@ func Read(ctx context.Context, dir string) (Inventory, error) {
 		current.Sources[i].Required = current.Sources[i].Required || previous[current.Sources[i].Name]
 	}
 	return current, nil
+}
+
+// StoreState is what recovery inventory found of the access store.
+type StoreState string
+
+const (
+	StoreReady         = StoreState(sqlstore.Ready)         // passes a backup's check; an owner exists
+	StoreSetupRequired = StoreState(sqlstore.SetupRequired) // passes a backup's check; no owner yet
+	// StoreAbsent is neither a database nor a store marker, as on a worker.
+	StoreAbsent StoreState = "absent"
+	// StoreInUse is the installation lock held by a running node or another
+	// recovery command.
+	StoreInUse StoreState = "in_use"
+	// StoreRefused is a store that fails the check a backup runs, for Reason.
+	// A start refuses for the same reasons, except that it runs SQLite's quick
+	// check and can still open a store whose only damage is in an index.
+	StoreRefused StoreState = "refused"
+	// StoreUnknown is a store the inspection could not judge; Evidence says why.
+	StoreUnknown StoreState = "unknown"
+)
+
+// StoreSection is recovery inventory's report on the access store, never
+// persisted. The store's identity is present when it can be read. Reason and
+// Evidence, a refusal's Summary or an inspection's error, explain a refusal or
+// an unknown state. ArchivesError is why the archives could not be listed; the
+// store's verdict stands.
+type StoreSection struct {
+	State StoreState `json:"state"`
+	*StoreMeta
+	Reason        sqlstore.Reason `json:"reason,omitempty"`
+	Evidence      string          `json:"evidence,omitempty"`
+	NextAction    string          `json:"next_action,omitempty"`
+	Archives      []Archive       `json:"archives"`
+	ArchivesError string          `json:"archives_error,omitempty"`
+}
+
+// Archive is an online backup archive in the installation's access directory,
+// described from its manifest alone. One that is not a database bundle is aged
+// by its file's modification time.
+type Archive struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	SizeBytes int64     `json:"size_bytes"`
+	*StoreMeta
+	// Readable says the manifest names a database bundle at a schema version
+	// this release reads. It is not a check: Check is.
+	Readable bool `json:"readable"`
+}
+
+const (
+	inUseAction   = "The installation is locked by a running node or another recovery command. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none. To inspect it here, stop the service or let the other command finish, then run recovery inventory again."
+	unknownAction = "Resolve the cause in evidence, for example by running as the installation owner or freeing space in the system's temporary directory, then run recovery inventory again."
+)
+
+// InspectStore reports dir's access store and its online backup archives.
+// While the installation lock is held it opens nothing and points at the
+// running node. Otherwise it takes the lock when its file exists and judges a
+// copy, checked as a backup checks it, in the system's temporary directory, so
+// the live database is never migrated. It writes to the installation in one
+// case: a journal a crash left beside a stopped store is recovered into the
+// live file, as the next start would. A store it cannot judge is StoreUnknown;
+// archives it cannot list keep the store's verdict and set ArchivesError.
+// Either returns its error.
+func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
+	lock, err := lockInstallation(dir)
+	if errors.Is(err, atomicfile.ErrLocked) {
+		return StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}}, nil
+	}
+	if err == nil {
+		defer func() { _ = lock.Close() }()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return unknown(err)
+	}
+	temp, err := privateDir(filepath.Join(os.TempDir(), "zzrouter-recovery"))
+	if err != nil {
+		return unknown(err)
+	}
+	defer func() { _ = os.RemoveAll(temp) }()
+	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, "image.sqlite"))
+	if err == nil {
+		var reads bool
+		if reads, err = sqlstore.ReadsSchema(img.SchemaVersion); err == nil && !reads {
+			err = &sqlstore.Refusal{Reason: sqlstore.SchemaNewer} // a newer release's database is copied unchecked
+		}
+	}
+	section := StoreSection{State: StoreState(img.Readiness())}
+	if img.StoreID != "" {
+		meta := StoreMeta(img.Meta)
+		section.StoreMeta = &meta
+	}
+	var refusal *sqlstore.Refusal
+	switch {
+	case errors.Is(err, sqlstore.ErrNoStore):
+		section.State = StoreAbsent
+	case errors.As(err, &refusal):
+		section.State, section.Reason, section.Evidence, section.NextAction = StoreRefused, refusal.Reason, refusal.Summary(), refusal.NextAction()
+	case err != nil:
+		return unknown(err)
+	}
+	if section.Archives, err = readArchives(dir); err != nil {
+		section.Archives, section.ArchivesError = []Archive{}, err.Error()
+	}
+	return section, err
+}
+
+// unknown is the section for a store the inspection could not judge.
+func unknown(err error) (StoreSection, error) {
+	return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, err
+}
+
+// readArchives lists the online backup archives newest first, then by ID. It
+// never follows a link: a link on the way to the backup directory is an error,
+// and only regular files are listed, temporary ones (.tmp) excepted. A file
+// that is not an archive is listed as unreadable, never an error.
+func readArchives(dir string) ([]Archive, error) {
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []Archive{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	backups := filepath.Join("access", "backups")
+	var entries []fs.DirEntry
+	if err = rejectLinks(root, backups); err == nil {
+		entries, err = fs.ReadDir(root.FS(), filepath.ToSlash(backups))
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	archives := []Archive{}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tar.gz") && entry.Type().IsRegular() {
+			archive, err := describeArchive(root, filepath.Join(backups, entry.Name()), entry)
+			if err != nil {
+				return nil, err
+			}
+			archives = append(archives, archive)
+		}
+	}
+	slices.SortFunc(archives, func(a, b Archive) int {
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
+	})
+	return archives, nil
+}
+
+// describeArchive describes the archive at name under root from its manifest;
+// one that does not open as an archive is unreadable, aged by its file.
+func describeArchive(root *os.Root, name string, entry fs.DirEntry) (Archive, error) {
+	archive := Archive{ID: strings.TrimSuffix(entry.Name(), ".tar.gz")}
+	if info, err := entry.Info(); err == nil {
+		archive.CreatedAt, archive.SizeBytes = info.ModTime().UTC(), info.Size()
+	}
+	m, ok := manifestAt(root, name)
+	if !ok || m.Profile != ProfileDatabase {
+		return archive, nil
+	}
+	var err error
+	archive.CreatedAt, archive.StoreMeta = m.Created, m.Store
+	archive.Readable, err = sqlstore.ReadsSchema(m.Store.SchemaVersion)
+	return archive, err
+}
+
+// manifestAt reads the manifest of the regular file at name under root; false
+// when it does not open as an archive.
+func manifestAt(root *os.Root, name string) (Manifest, bool) {
+	f, err := openRootRegular(root, name)
+	if err != nil {
+		return Manifest{}, false
+	}
+	r, err := readArchiveManifest(f)
+	if err != nil {
+		return Manifest{}, false
+	}
+	_ = r.Close()
+	return r.manifest, true
 }
 
 // Bind daemon-resolved paths to the declarations that produced them. Resolving

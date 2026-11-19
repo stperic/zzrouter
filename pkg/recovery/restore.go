@@ -66,28 +66,53 @@ type extraction struct {
 	checked *Manifest
 }
 
-func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Manifest, error) {
-	var manifest Manifest
+// archiveReader is an archive opened at its first entry, its manifest read.
+type archiveReader struct {
+	file       *os.File
+	buffered   *bufio.Reader
+	compressed *gzip.Reader
+	entries    *tar.Reader
+	manifest   Manifest
+}
+
+// openArchive opens archive, refusing a temporary file, and reads and
+// validates its manifest; the caller closes the reader.
+func openArchive(archive string) (*archiveReader, error) {
 	if err := refuseLeftover(archive); err != nil {
-		return manifest, err
+		return nil, err
 	}
 	f, err := openRegular(archive)
 	if err != nil {
-		return manifest, err
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-	buffered := bufio.NewReader(f)
-	compressed, err := gzip.NewReader(buffered)
+	return readArchiveManifest(f)
+}
+
+// readArchiveManifest reads and validates the manifest of the archive f holds;
+// it closes f when it fails.
+func readArchiveManifest(f *os.File) (*archiveReader, error) {
+	r := &archiveReader{file: f, buffered: bufio.NewReader(f)}
+	var err error
+	if r.compressed, err = gzip.NewReader(r.buffered); err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	r.compressed.Multistream(false)
+	r.entries = tar.NewReader(io.LimitReader(r.compressed, maxTotal+maxManifest+maxFiles*1024))
+	if r.manifest, err = readManifest(r.entries); err != nil {
+		return nil, errors.Join(err, r.Close())
+	}
+	return r, nil
+}
+
+func (r *archiveReader) Close() error { return errors.Join(r.compressed.Close(), r.file.Close()) }
+
+func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Manifest, error) {
+	r, err := openArchive(archive)
 	if err != nil {
-		return manifest, err
+		return Manifest{}, err
 	}
-	defer func() { _ = compressed.Close() }()
-	compressed.Multistream(false)
-	reader := tar.NewReader(io.LimitReader(compressed, maxTotal+maxManifest+maxFiles*1024))
-	manifest, err = readManifest(reader)
-	if err != nil {
-		return manifest, err
-	}
+	defer func() { _ = r.Close() }()
+	manifest := r.manifest
 	if x.checked != nil && !reflect.DeepEqual(*x.checked, manifest) {
 		return manifest, errors.New("the recovery archive changed while it was restored")
 	}
@@ -108,7 +133,7 @@ func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Ma
 		}
 		defer func() { _ = images.Close() }()
 	}
-	snapshots, err := readEntries(ctx, reader, manifest, x.root, images)
+	snapshots, err := readEntries(ctx, r.entries, manifest, x.root, images)
 	defer func() {
 		for _, data := range snapshots {
 			clear(data)
@@ -117,15 +142,15 @@ func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Ma
 	if err != nil {
 		return manifest, err
 	}
-	if _, err := reader.Next(); err != io.EOF {
+	if _, err := r.entries.Next(); err != io.EOF {
 		return manifest, errors.New("unexpected or damaged recovery archive entries")
 	}
 	// Consume the gzip trailer so truncation or corruption beyond tar's terminator
 	// cannot be mistaken for a complete archive.
-	if extra, err := io.Copy(io.Discard, io.LimitReader(compressed, 1025)); err != nil || extra != 0 {
+	if extra, err := io.Copy(io.Discard, io.LimitReader(r.compressed, 1025)); err != nil || extra != 0 {
 		return manifest, errors.New("damaged or trailing recovery payload")
 	}
-	if _, err := buffered.Peek(1); err != io.EOF {
+	if _, err := r.buffered.Peek(1); err != io.EOF {
 		return manifest, errors.New("trailing recovery archive data")
 	}
 	if err := validateSnapshots(snapshots, key, manifest.Store); err != nil {

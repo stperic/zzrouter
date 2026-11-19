@@ -119,16 +119,10 @@ func BackupProfile(ctx context.Context, profile Profile, dir, output, keyOutput 
 	if _, err := Read(ctx, dir); err != nil {
 		return manifest, err
 	}
-	// Only the daemon creates this inode, under its own service account. A
-	// privileged failed backup must not leave a root-owned lock behind.
-	lockFile, err := openRegular(filepath.Join(dir, "installation.lock"))
-	if err != nil {
-		return manifest, fmt.Errorf("missing installation lock; start this installation with the current release first: %w", err)
+	lock, err := lockInstallation(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = fmt.Errorf("missing installation lock; start this installation with the current release first: %w", err)
 	}
-	if err := lockFile.Close(); err != nil {
-		return manifest, err
-	}
-	lock, err := config.LockInstallation(dir)
 	if err != nil {
 		return manifest, err
 	}
@@ -201,6 +195,21 @@ func BackupProfile(ctx context.Context, profile Profile, dir, output, keyOutput 
 		return manifest, err
 	}
 	return manifest, nil
+}
+
+// lockInstallation takes the installation lock without creating its file:
+// only the daemon creates that inode, under its own service account, so a
+// privileged recovery command leaves no lock behind. An absent file is
+// fs.ErrNotExist, and a lock a running node holds atomicfile.ErrLocked.
+func lockInstallation(dir string) (*os.File, error) {
+	f, err := openRegular(filepath.Join(dir, "installation.lock"))
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	return config.LockInstallation(dir)
 }
 
 // captureImage adds the image of the stopped store in dir to manifest; a
