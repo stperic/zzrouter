@@ -428,7 +428,12 @@ func collectSource(ctx context.Context, manifest *Manifest, inventory Inventory,
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if excluded(rel, source.Exclude) {
+		name := path.Join(source.Name, rel)
+		folded := strings.ToLower(name)
+		// In a handoff the allow-list, not the installation's exclusions,
+		// judges what lies on its paths.
+		onHandoffPath := manifest.Profile == ProfileHandoff && (handoffEntry(folded) || handoffDir(folded))
+		if !onHandoffPath && excluded(rel, source.Exclude) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -437,18 +442,20 @@ func collectSource(ctx context.Context, manifest *Manifest, inventory Inventory,
 		if entry.IsDir() || filepath.Join(base, filepath.FromSlash(full)) == inventory.KeyFile {
 			return nil
 		}
-		name := path.Join(source.Name, rel)
 		if manifest.Profile == ProfileHandoff && !handoffEntry(name) {
-			// What the node's loader would read under another spelling or
-			// through a link is refused, never dropped.
-			folded := strings.ToLower(name)
-			if handoffEntry(folded) {
-				return fmt.Errorf("a handoff refuses %s: it differs only in case from an entry a handoff carries; give it that entry's exact name", name)
-			}
-			if handoffDir(folded) {
+			// What the node's loader would read through a link, or under
+			// another spelling of the same file on a case-insensitive
+			// filesystem, is refused, never dropped.
+			if handoffDir(name) {
 				return rejectLinks(root, filepath.FromSlash(full))
 			}
-			return nil
+			if !onHandoffPath || !sameFile(root, full, path.Join(filepath.ToSlash(relative), strings.ToLower(rel))) {
+				return nil
+			}
+			if handoffEntry(folded) {
+				return fmt.Errorf("a handoff refuses %s: on this filesystem it is the same file as a name a handoff carries, spelled in another case; rename it to the spelling zzRouter writes", name)
+			}
+			return rejectLinks(root, filepath.FromSlash(full))
 		}
 		if !safeName(name) || seen[strings.ToLower(name)] {
 			return fmt.Errorf("unsafe or duplicate recovery path: %s", name)
@@ -528,6 +535,17 @@ func sourcePath(inventory Inventory, source Source) (string, string, error) {
 		return "", "", errors.New("recovery source is outside its recorded root")
 	}
 	return base, relative, nil
+}
+
+// sameFile reports whether the slash paths a and b under root name one file,
+// as two spellings do on a case-insensitive filesystem.
+func sameFile(root *os.Root, a, b string) bool {
+	first, err := root.Lstat(filepath.FromSlash(a))
+	if err != nil {
+		return false
+	}
+	second, err := root.Lstat(filepath.FromSlash(b))
+	return err == nil && os.SameFile(first, second)
 }
 
 func rejectLinks(root *os.Root, relative string) error {

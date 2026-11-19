@@ -55,9 +55,9 @@ func providerParts(name string) ([]string, bool) {
 }
 
 // validateHandoff applies a handoff bundle's own rules: the image and its
-// store, no inventory, its source and separate list as plain text, only what
-// handoffEntry admits, and at least one provider definition, without which
-// the node's provider loader refuses to start.
+// store, no inventory, its source, separate list and entry names as plain
+// text, only what handoffEntry admits, and at least one provider definition,
+// so an archive that lost its provider tree is refused.
 func validateHandoff(manifest Manifest, image bool) error {
 	if !image || manifest.Inventory != nil || len(manifest.MissingOptional) > 0 {
 		return errors.New("a handoff bundle holds the access database image and its store, and no inventory")
@@ -68,15 +68,15 @@ func validateHandoff(manifest Manifest, image bool) error {
 		return errors.New("a handoff bundle names its source and what moves separately in plain text")
 	}
 	for _, file := range manifest.Files {
-		if !handoffEntry(file.Name) {
-			return fmt.Errorf("a handoff bundle does not carry %s", file.Name)
+		if !handoffEntry(file.Name) || !plainText(file.Name) {
+			return fmt.Errorf("a handoff bundle does not carry %q", file.Name)
 		}
 	}
 	if !slices.ContainsFunc(manifest.Files, func(file File) bool {
 		parts, ok := providerParts(file.Name)
 		return ok && len(parts) == 3 && parts[2] == "config.yaml"
 	}) {
-		return errors.New("a handoff bundle carries at least one provider definition: a node loads no providers without one")
+		return errors.New("a handoff bundle without a provider definition has lost its provider tree")
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -259,10 +260,11 @@ func TestRecoveryHandoffCheckRefusesOtherEntries(t *testing.T) {
 		"connections without a key":     {with("config/credentials.enc", []byte("ciphertext")), handoff, "protection-key fingerprint"},
 		"a database naming a source":    {map[string][]byte{imageName: content}, withHandoff(func(m *Manifest) { m.Profile = ProfileDatabase }), "names its source"},
 		"an installation with separate": {map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}")}, func(m *Manifest) { m.Separate = handoffSeparate() }, "names its source"},
-		"no provider definition":        {image2, handoff, "at least one provider definition"},
-		"only a provider schema":        {map[string][]byte{imageName: content, "config/providers/external/ollama/schema.yaml": []byte("{}")}, handoff, "at least one provider definition"},
+		"no provider definition":        {image2, handoff, "has lost its provider tree"},
+		"only a provider schema":        {map[string][]byte{imageName: content, "config/providers/external/ollama/schema.yaml": []byte("{}")}, handoff, "has lost its provider tree"},
 		"an empty source":               {base, withHandoff(func(m *Manifest) { m.Source = &Origin{} }), "in plain text"},
 		"a source without its node":     {base, withHandoff(func(m *Manifest) { m.Source.Node = "" }), "in plain text"},
+		"a source without its platform": {base, withHandoff(func(m *Manifest) { m.Source.Platform = "" }), "in plain text"},
 		"a source with a newline":       {base, withHandoff(func(m *Manifest) { m.Source.Release = "0.3.0\nall clear" }), "in plain text"},
 		"no separate list":              {base, withHandoff(func(m *Manifest) { m.Separate = nil }), "in plain text"},
 		"an empty separate item":        {base, withHandoff(func(m *Manifest) { m.Separate = append(m.Separate, "") }), "in plain text"},
@@ -274,8 +276,19 @@ func TestRecoveryHandoffCheckRefusesOtherEntries(t *testing.T) {
 		t.Run(name, func(t *testing.T) { refuse(t, writeTestBundle(t, tc.files, tc.edit), tc.want) })
 	}
 	t.Run("a link in place of a definition", func(t *testing.T) {
-		refuse(t, linkBundle(t, content, handoff, definition), "does not match manifest: "+definition)
+		refuse(t, linkBundle(t, content, handoff, definition), "does not match manifest: "+strconv.Quote(definition))
 	})
+	// An entry name the operator would read is plain text too, and a refusal
+	// quotes it rather than print it.
+	for _, provider := range []string{"\x1b[2Jevil", "a\u202eb", "a\tb", "a\u200db"} {
+		t.Run(strconv.Quote(provider), func(t *testing.T) {
+			entry := "config/providers/cloud/" + provider + "/config.yaml"
+			archive := writeTestBundle(t, with(entry, []byte("enabled: false\n")), handoff)
+			refuse(t, archive, "does not carry "+strconv.Quote(entry))
+			_, err := Check(t.Context(), archive, "")
+			require.NotContains(t, err.Error(), provider, "the name is not printed raw")
+		})
+	}
 }
 
 // linkBundle writes a handoff bundle of image whose entry name, which its
@@ -345,19 +358,19 @@ func TestRecoveryHandoffRefusalsWriteNothing(t *testing.T) {
 }
 
 // TestRecoveryHandoffRefusesLinksAndCaseVariants: what the node's loader
-// would read through a link or under another spelling on a case-insensitive
-// filesystem is refused by a handoff backup, never silently dropped, with
-// the installation profile's reason for a link; links elsewhere in the tree,
-// such as a provider install's environment, are not carried and do not stop
-// it. A refusal writes nothing.
+// would read through a link, or under another spelling of the same file on a
+// case-insensitive filesystem, is refused by a handoff backup, never silently
+// dropped, with the installation profile's reason for a link. A spelling that
+// is a distinct file the loader ignores, on a case-sensitive filesystem, and
+// links elsewhere in the tree, such as a provider install's environment, are
+// not carried and do not stop it. A refusal writes nothing.
 func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
-	// link moves dir's rel out of the tree and links it back.
-	link := func(t *testing.T, dir, rel string) {
+	// link moves dir's rel out of the tree and links it back as as.
+	link := func(t *testing.T, dir, rel, as string) {
 		t.Helper()
-		path := filepath.Join(dir, filepath.FromSlash(rel))
 		moved := filepath.Join(t.TempDir(), "moved")
-		require.NoError(t, os.Rename(path, moved))
-		if err := os.Symlink(moved, path); err != nil {
+		require.NoError(t, os.Rename(filepath.Join(dir, filepath.FromSlash(rel)), moved))
+		if err := os.Symlink(moved, filepath.Join(dir, filepath.FromSlash(as))); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
 	}
@@ -367,29 +380,41 @@ func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
 		}
 	}
 	linked := func(rel string) func(t *testing.T, dir string) {
-		return func(t *testing.T, dir string) { link(t, dir, rel) }
+		return func(t *testing.T, dir string) { link(t, dir, rel, rel) }
 	}
 	withAsset := func(rel string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
 			_, err := assets.NewDir(filepath.Join(dir, "providers", "cloud", "openai")).Write("template.jinja", []byte("{{ messages }}"))
 			require.NoError(t, err)
-			link(t, dir, rel)
+			link(t, dir, rel, rel)
 		}
 	}
+	const insensitive, sensitive = "case-insensitive", "case-sensitive"
 	for name, tc := range map[string]struct {
+		only     string // the filesystem the case needs, or any
 		edit     func(t *testing.T, dir string)
-		provider string // a provider the loader still reads after edit
-		want     string
+		provider string // a provider the loader reads after edit
+		want     string // the refusal, or none
+		carried  string // an entry a backup that succeeds carries
 	}{
-		"a linked provider tree":      {linked("providers"), "openai", "must not contain links: providers"},
-		"a linked kind":               {linked("providers/cloud"), "openai", "must not contain links: " + filepath.Join("providers", "cloud")},
-		"a linked provider":           {linked("providers/cloud/openai"), "openai", "must not contain links: " + filepath.Join("providers", "cloud", "openai")},
-		"a linked definition":         {linked("providers/cloud/groq/config.yaml"), "groq", "must not contain links: " + filepath.Join("providers", "cloud", "groq", "config.yaml")},
-		"linked assets":               {withAsset("providers/cloud/openai/assets"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets")},
-		"a linked asset":              {withAsset("providers/cloud/openai/assets/template.jinja"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets", "template.jinja")},
-		"a definition's case variant": {rename("providers/cloud/groq/config.yaml", "providers/cloud/groq/Config.yaml"), "", "a handoff refuses config/providers/cloud/groq/Config.yaml"},
-		"a kind's case variant":       {rename("providers/registries", "providers/Registries"), "", "a handoff refuses config/providers/Registries/huggingface/config.yaml"},
-		"links in a provider's install": {func(t *testing.T, dir string) {
+		"a linked provider tree": {"", linked("providers"), "openai", "must not contain links: providers", ""},
+		"a linked kind":          {"", linked("providers/cloud"), "openai", "must not contain links: " + filepath.Join("providers", "cloud"), ""},
+		"a linked provider":      {"", linked("providers/cloud/openai"), "openai", "must not contain links: " + filepath.Join("providers", "cloud", "openai"), ""},
+		"a linked definition":    {"", linked("providers/cloud/groq/config.yaml"), "groq", "must not contain links: " + filepath.Join("providers", "cloud", "groq", "config.yaml"), ""},
+		"linked assets":          {"", withAsset("providers/cloud/openai/assets"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets"), ""},
+		"a linked asset":         {"", withAsset("providers/cloud/openai/assets/template.jinja"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets", "template.jinja"), ""},
+		"a linked provider with an upper-case name": {"", func(t *testing.T, dir string) {
+			copyProvider(t, dir, "cloud/groq", "cloud/MyProv")
+			restart(t, dir, "")
+			link(t, dir, "providers/cloud/MyProv", "providers/cloud/MyProv")
+		}, "MyProv", "must not contain links: " + filepath.Join("providers", "cloud", "MyProv"), ""},
+		"a definition's case variant":   {insensitive, rename("providers/cloud/groq/config.yaml", "providers/cloud/groq/Config.yaml"), "groq", "a handoff refuses config/providers/cloud/groq/Config.yaml", ""},
+		"a kind's case variant":         {insensitive, rename("providers/registries", "providers/Registries"), "huggingface", "a handoff refuses config/providers/Registries/huggingface/config.yaml", ""},
+		"a case-variant link to a kind": {insensitive, func(t *testing.T, dir string) { link(t, dir, "providers/cloud", "providers/Cloud") }, "openai", "must not contain links: " + filepath.Join("providers", "Cloud"), ""},
+		"a distinct case variant": {sensitive, func(t *testing.T, dir string) {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "cloud", "groq", "Config.yaml"), []byte("not what the loader reads"), 0o600))
+		}, "groq", "", "config/providers/cloud/groq/config.yaml"},
+		"links in a provider's install": {"", func(t *testing.T, dir string) {
 			for _, rel := range []string{"providers/mlx-vlm/venv/bin/python", "providers/on-demand/mlx/venv"} {
 				path := filepath.Join(dir, filepath.FromSlash(rel))
 				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
@@ -397,9 +422,15 @@ func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
 					t.Skipf("symlinks unavailable: %v", err)
 				}
 			}
-		}, "mlx", ""},
+		}, "mlx", "", "config/providers/on-demand/mlx/config.yaml"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			switch folds := caseInsensitive(t); {
+			case tc.only == insensitive && !folds:
+				t.Skip("this filesystem keeps spellings that differ only in case apart, so the node never reads the variant")
+			case tc.only == sensitive && folds:
+				t.Skip("this filesystem cannot hold two spellings that differ only in case")
+			}
 			dir, output, keyOutput := recoveryFixture(t)
 			tc.edit(t, dir)
 			if tc.provider != "" {
@@ -411,8 +442,10 @@ func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
 			manifest, err := BackupProfile(t.Context(), ProfileHandoff, dir, output, keyOutput)
 			if tc.want == "" {
 				require.NoError(t, err)
+				require.Contains(t, names(manifest.Files), tc.carried)
 				for _, file := range manifest.Files {
 					require.NotContains(t, file.Name, "venv")
+					require.NotContains(t, file.Name, "Config.yaml")
 				}
 				return
 			}
@@ -423,6 +456,96 @@ func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
 	}
 }
 
+// TestRecoveryHandoffCarriesWhatExclusionsWouldDrop: in a handoff the
+// allow-list, not the installation's exclusions, decides. A provider or an
+// asset named like a temporary, lock or PID file, and on the in-tree layout a
+// provider named like its kind, whose install directory is the kind's, travel
+// and pass the check.
+func TestRecoveryHandoffCarriesWhatExclusionsWouldDrop(t *testing.T) {
+	cases := map[string]struct {
+		edit     func(t *testing.T, dir string)
+		provider string
+		carried  []string
+	}{
+		"assets named like temporaries": {func(t *testing.T, dir string) {
+			for _, name := range []string{"chat.tmp", "template.lock", "grammar.pid"} {
+				_, err := assets.NewDir(filepath.Join(dir, "providers", "cloud", "openai")).Write(name, []byte("{{ messages }}"))
+				require.NoError(t, err)
+			}
+		}, "openai", []string{"config/providers/cloud/openai/assets/chat.tmp", "config/providers/cloud/openai/assets/grammar.pid", "config/providers/cloud/openai/assets/template.lock"}},
+		"a provider named like its kind, installed in the tree": {func(t *testing.T, dir string) {
+			copyProvider(t, dir, "external/ollama", "external/external")
+			restart(t, dir, filepath.Join(dir, "providers"))
+		}, "external", []string{"config/providers/external/external/config.yaml", "config/providers/external/ollama/config.yaml", "config/providers/external/ollama/schema.yaml"}},
+	}
+	for _, suffix := range []string{".tmp", ".lock", ".pid"} {
+		cases["a provider named like a "+suffix+" file"] = struct {
+			edit     func(t *testing.T, dir string)
+			provider string
+			carried  []string
+		}{func(t *testing.T, dir string) {
+			require.NoError(t, os.Rename(filepath.Join(dir, "providers", "cloud", "groq"), filepath.Join(dir, "providers", "cloud", "groq"+suffix)))
+			restart(t, dir, "")
+		}, "groq" + suffix, []string{"config/providers/cloud/groq" + suffix + "/config.yaml"}}
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, output, keyOutput := recoveryFixture(t)
+			tc.edit(t, dir)
+			apps, err := config.LoadAppsConfig(filepath.Join(dir, "providers"))
+			require.NoError(t, err)
+			_, ok := apps.LookupApp(tc.provider)
+			require.True(t, ok, "the loader reads %s", tc.provider)
+			manifest, err := BackupProfile(t.Context(), ProfileHandoff, dir, output, keyOutput)
+			require.NoError(t, err)
+			for _, want := range tc.carried {
+				require.Contains(t, names(manifest.Files), want)
+			}
+			_, err = Check(t.Context(), output, keyOutput)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// copyProvider copies the provider definition at from, under dir's provider
+// tree, to a new provider at to.
+func copyProvider(t *testing.T, dir, from, to string) {
+	t.Helper()
+	target := filepath.Join(dir, "providers", filepath.FromSlash(to))
+	require.NoError(t, os.MkdirAll(target, 0o700))
+	data := readBytes(t, filepath.Join(dir, "providers", filepath.FromSlash(from), "config.yaml"))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "config.yaml"), data, 0o600))
+}
+
+// restart records dir's inventory again, as a node start does after its
+// provider declarations changed; providerRoot, when given, replaces the
+// recorded provider install root.
+func restart(t *testing.T, dir, providerRoot string) {
+	t.Helper()
+	var previous Inventory
+	require.NoError(t, json.Unmarshal(readBytes(t, filepath.Join(dir, InventoryFile)), &previous))
+	if providerRoot == "" {
+		providerRoot = previous.ProviderDir
+	}
+	cfg, err := config.ReadExistingNodeConfig(dir)
+	require.NoError(t, err)
+	apps, err := config.LoadAppsConfig(filepath.Join(dir, "providers"))
+	require.NoError(t, err)
+	inventory, err := describe(t.Context(), cfg, apps, dir, previous.DataDir, providerRoot, previous.ModelPaths)
+	require.NoError(t, err)
+	require.NoError(t, Save(t.Context(), inventory))
+}
+
+// caseInsensitive reports whether the test's temporary filesystem treats two
+// spellings that differ only in case as one name.
+func caseInsensitive(t *testing.T) bool {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "probe"), nil, 0o600))
+	_, err := os.Lstat(filepath.Join(dir, "PROBE"))
+	return err == nil
+}
+
 // TestRecoveryBackupRefusesWhatItsCheckRefuses: the checker's rules hold
 // before a backup publishes anything, so an installation holding an
 // authority file under another spelling writes no archive and no key.
@@ -430,7 +553,7 @@ func TestRecoveryBackupRefusesWhatItsCheckRefuses(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "OAuth.json"), []byte("{}"), 0o600))
 	_, err := Backup(t.Context(), dir, output, keyOutput)
-	require.ErrorContains(t, err, "canonical spelling: config/OAuth.json")
+	require.ErrorContains(t, err, `canonical spelling: "config/OAuth.json"`)
 	emptyDir(t, filepath.Dir(output), "no archive and no temporary beside it")
 	emptyDir(t, filepath.Dir(keyOutput), "no key and no temporary beside it")
 }

@@ -299,8 +299,10 @@ until that release has been rehearsed on a real two-node cluster.
 
 A handoff carries exactly these entries, and `recovery check` and `recovery
 restore` refuse a handoff that carries any other, naming the entry. They also
-refuse one with no provider definition, without which a node loads no providers,
-and one whose `source` or `separate` list is not short plain text:
+refuse one with no provider definition, which has lost its provider tree, and one
+whose `source`, `separate` list or entry names are not short plain text. The
+list alone decides what a handoff carries: a provider or an asset named like a
+temporary, lock or PID file travels like any other:
 
 | Entry | What it is |
 | --- | --- |
@@ -352,10 +354,12 @@ The flow, up to staging:
    interrupt. A worker, or a node that never ran as a coordinator, has no access
    database and so no handoff: the command stops with `no access store` and writes
    nothing. A link in place of the provider tree, a kind, a provider, its assets
-   or a carried file, and a name that differs only in case from a carried entry,
-   also stop it, naming the path: the node would read them, so a handoff refuses
-   them rather than leave them behind. Links elsewhere, such as a provider
-   install's environment, are not carried. The command prints what the bundle
+   or a carried file, and, on a case-insensitive filesystem, a name that is a
+   carried entry spelled in another case, also stop it, naming the path: the
+   node would read them, so a handoff refuses them rather than leave them behind.
+   On a case-sensitive filesystem such a spelling is a separate file the node
+   ignores, and it is not carried. Links elsewhere, such as a provider install's
+   environment, are not carried either. The command prints what the bundle
    carries and the `separate` list.
 4. Check it, and stage it on the destination:
 

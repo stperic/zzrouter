@@ -298,5 +298,5 @@ and `ZZROUTER_API_KEY`, provider credentials such as `OPENAI_API_KEY` or
 on the destination, where a connection that reads its key from the environment
 fails without it. Workers pair again with the new coordinator, and browsers and
 delegated clients sign in again. `recovery check` refuses a handoff carrying any
-entry beyond its fixed list, a source or `separate` list that is not short plain
-text, or no provider definition.
+entry beyond its fixed list, a source, `separate` list or entry name that is not
+short plain text, or no provider definition; a refusal quotes the entry name.
