@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -80,9 +81,12 @@ func (k *VirtualKey) IsExpired() bool {
 	return utils.Now().After(*k.ExpiresAt)
 }
 
-// Validate holds the invariants every stored key keeps.
+// Validate holds the invariants every stored key keeps. An ID holds no ':',
+// which names callers that are not app keys ("static:admin", "person:<id>").
 func (k *VirtualKey) Validate() error {
 	switch {
+	case strings.Contains(k.ID, ":"):
+		return fmt.Errorf("%w: id %q must not contain ':'", ErrInvalid, k.ID)
 	case k.Name == "":
 		return fmt.Errorf("%w: missing name", ErrInvalid)
 	case k.HashedKey == "":

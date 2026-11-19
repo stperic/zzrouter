@@ -254,7 +254,7 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 	if none, err := noStore(dir); !none {
 		return path, err
 	}
-	if err := removeLeftovers(path + "-journal"); err != nil {
+	if err := removeLeftovers(sqlitedb.Journal(path)); err != nil {
 		return "", err
 	}
 	storeID := uuid.NewString()

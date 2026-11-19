@@ -64,7 +64,7 @@ func (s *Store) Status() (Status, error) {
 		st.FreePageBytes = new(published.freeBytes.Int64)
 	}
 	st.DatabaseBytes, _ = fileBytes(s.path)
-	journal, err := fileBytes(s.path + "-journal")
+	journal, err := fileBytes(sqlitedb.Journal(s.path))
 	if errors.Is(err, fs.ErrNotExist) {
 		journal = new(int64)
 	}

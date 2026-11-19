@@ -16,7 +16,7 @@ import (
 func (s *Server) registerStateBackups(router *gin.RouterGroup) {
 	router.GET("/system/state/backups", s.browserCoordinatorOnly, browserResponseHeaders, s.handleListBackups)
 	router.GET("/system/state/backups/:id", s.browserCoordinatorOnly, browserResponseHeaders, s.handleGetBackup)
-	s.localRoute(http.MethodPost, "/system/state/backups", true, s.auth.browserAdminAuthMiddleware(), s.handleCreateBackup)
+	s.localRoute(http.MethodPost, "/system/state/backups", true, true, s.handleCreateBackup)
 }
 
 func (s *Server) handleListBackups(c *gin.Context) {

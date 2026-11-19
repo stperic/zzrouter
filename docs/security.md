@@ -235,8 +235,9 @@ mutations, password changes, authority revocations and app-key/team/quota change
 An event for a change to access records commits in the same transaction as the
 change, so a change is never kept without its record. Usage and spend resets,
 whose state lives outside the database, are recorded after their own commit,
-best effort. Actors identify accounts or keys, static installation authority,
-or a verified local operator. Events contain identifiers and safe change
+best effort. Actors identify a person as `person:<id>`, an app key by its ID
+(which never contains `:`), static installation authority as `static:<id>`, or a
+verified local operator as `local:operator`. Events contain identifiers and safe change
 metadata, not passwords, grant tokens, credential references or local recovery
 proof. History is append-only: the database refuses updates and deletions of
 recorded events.

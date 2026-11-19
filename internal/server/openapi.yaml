@@ -12675,7 +12675,7 @@ paths:
       description: >-
         Administrator only, coordinator only. Lists the retained online backups of the access store, newest first, from
         the coordinator's index: no file is read. The answer carries no filesystem path or archive content. An archive
-        holds credential hashes and access policy; only the local export command retrieves one.
+        holds credential hashes and access policy, and no route serves its content.
       security:
         - AdminKey: []
         - BrowserSession: []
@@ -12703,9 +12703,9 @@ paths:
       operationId: createStateBackup
       summary: Back up the access store online
       description: >-
-        Coordinator only, for an administrator or, from the installed host, the local operator's proof (the local
-        export and reset commands back up with the proof alone; a request carrying the proof header is judged by the
-        proof only). Copies the access store at one committed revision while the coordinator serves, checks the copy
+        Coordinator only, for an administrator or, from the installed host, the local operator's proof in the
+        `X-Zzrouter-Local-Proof` header. A request carrying that header, even empty, is judged by the proof alone and
+        never by an API key or session. Copies the access store at one committed revision while the coordinator serves, checks the copy
         as a start would with SQLite's full integrity check, writes it as a `database` recovery archive, records one
         `store.backup_created` access-history event and only then lists the archive. Access writes wait only while
         the database is copied. A failed or interrupted backup lists nothing and leaves no file. The body is an empty
@@ -12762,16 +12762,19 @@ paths:
         '503':
           description: >-
             `access_store_busy`: another process holds the access database; retry after `Retry-After`.
-            `access_store_failed`: the coordinator is restarting. Nothing was kept.
+            `access_store_failed`: the coordinator is restarting. `service_unavailable`: the coordinator is stopping;
+            retry after `Retry-After`. Nothing was kept.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '507':
           description: >-
-            `state_backup_capacity_exceeded`, nothing kept. `capacity` is `byte_cap` when the retained backups and the
-            new one would exceed the 1 GiB cap, counting what retention removes, with `limit_bytes`,
-            `retained_bytes`, `required_bytes` and, when a retained backup will expire, `frees_at`: retry after it. It
-            is `disk` when the disk had no room: free space on the coordinator, then retry.
+            `state_backup_capacity_exceeded`, nothing kept. `capacity` is `byte_cap` when the retained backups, counting
+            only what retention keeps, reach the 1 GiB cap or leave no room for the written archive, with
+            `limit_bytes`, `retained_bytes` and `required_bytes` (0 when refused before the copy): wait for retention to
+            remove older backups (their `expires_at`), or take an offline backup with `zzrouter-node recovery backup`
+            while the node is stopped. It is `disk` when the disk had no room: free space on the coordinator, then
+            retry.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13916,7 +13919,7 @@ components:
         id: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
         size_bytes: { type: integer, minimum: 0, description: Length of the archive. }
-        store_id: { type: string }
+        store_id: { type: string, description: "As the manifest names it: a bundle of another store copied in names that store." }
         generation: { type: string }
         schema_version: { type: integer, minimum: 1 }
         revision: { type: integer, minimum: 0, description: The store's revision the backup holds. }

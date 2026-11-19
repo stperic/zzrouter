@@ -111,15 +111,16 @@ func (s *Server) localOperator(c *gin.Context) {
 	c.Next()
 }
 
-// localRoute is the only mount behind localOperator. It records the route, so the catalog
-// reports it as local and neither zz_api nor discovery offers it; replay mounts it through
-// s.idempotent, which then runs after the gate. With admin set, a request without the proof
-// header goes through admin instead and the route keeps its admin tier, since zz_api reaches
-// it with the caller's key; a request with the header never reaches admin.
-func (s *Server) localRoute(method, route string, replay bool, admin, handler gin.HandlerFunc) {
+// localRoute is the only mount behind localOperator. Replay mounts the route through
+// s.idempotent, which then runs after the gate. A route behind the proof alone is recorded,
+// so the catalog reports it as local and neither zz_api nor discovery offers it. With
+// orAdmin, a request carrying no proof header, not even an empty one, goes through the
+// browser-admin gate instead, and the route keeps its admin tier, since zz_api reaches it
+// with the caller's key; a request with the header never reaches that gate.
+func (s *Server) localRoute(method, route string, replay, orAdmin bool, handler gin.HandlerFunc) {
 	gate := s.localOperator
-	if admin != nil {
-		local := gate
+	if orAdmin {
+		local, admin := gate, s.auth.browserAdminAuthMiddleware()
 		gate = func(c *gin.Context) {
 			if len(c.Request.Header.Values(localproof.Header)) == 0 {
 				admin(c)
@@ -134,7 +135,7 @@ func (s *Server) localRoute(method, route string, replay bool, admin, handler gi
 	} else {
 		group.Handle(method, route, handler)
 	}
-	if admin == nil {
+	if !orAdmin {
 		s.localRoutes[method+" "+path.Join(group.BasePath(), route)] = struct{}{}
 	}
 }

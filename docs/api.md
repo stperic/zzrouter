@@ -326,9 +326,9 @@ A worker answers 421, and a store that can no longer vouch for its records answe
 `POST /zzrouter/v1/system/state/backups` backs up the access database online and
 answers 201 with the backup; it takes an empty JSON object and an optional
 `Idempotency-Key`, and accepts an administrator or, from the installed host, the
-local proof in `X-Zzrouter-Local-Proof` (a request carrying that header is judged
-by the proof alone). `GET /zzrouter/v1/system/state/backups` lists the retained
-backups and `GET /zzrouter/v1/system/state/backups/{id}` reads one, for
+local proof in `X-Zzrouter-Local-Proof` (a request carrying that header, even
+empty, is judged by the proof alone). `GET /zzrouter/v1/system/state/backups`
+lists the retained backups and `GET /zzrouter/v1/system/state/backups/{id}` reads one, for
 administrators: `id`, `created_at`, `size_bytes`, the store identity it holds,
 `readable`, the archive's `sha256`, `protected_until` and `expires_at`. An unknown
 or expired ID is 404 `state_backup_not_found`; a full cap or disk is 507

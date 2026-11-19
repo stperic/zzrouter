@@ -81,12 +81,12 @@ in the configuration's `access/backups` directory, newest first and then by
 schema version this release writes. It is not a check, since the inventory
 reads nothing but the manifest; `recovery check` checks an archive, so run it
 before you restore one. A file named like an archive that is not one is listed
-as `readable: false` and aged by its modification time. Other files (`.tmp`
-leftovers of an interrupted backup, files under other names), links,
+as `readable: false` and aged by its modification time. Other files (the
+temporary files of an interrupted backup, files under other names), links,
 directories and other special files are not listed, and the inventory never
-follows a link and deletes nothing. A coordinator deletes, when it starts, the
-regular files there that are not database archives under a backup's name.
-While the lock is held (`in_use`) the
+follows a link and deletes nothing. A coordinator lists only the database
+archives among them, and when it starts deletes only the temporary files an
+interrupted backup left there. While the lock is held (`in_use`) the
 list is empty, because a running node owns that directory and its status lists
 them. Archives that cannot be listed, for example because a link stands on the
 way to `access/backups`, leave the store's state as it is: `archives` is empty,
@@ -211,13 +211,12 @@ operational compatibility when the recovered node starts.
 A running coordinator backs up its access database on request:
 `POST /zzrouter/v1/system/state/backups` with an empty JSON object, as an
 administrator (the API or `zz_api`) or, from the installed host, with the local
-proof in the `X-Zzrouter-Local-Proof` header, which the local commands use. It
-copies the database at one committed revision with SQLite's `VACUUM INTO` while
-the node serves, checks the copy as a start would, with SQLite's full integrity
-check, writes it as a `database` bundle (the image and a manifest naming its
-store ID, generation, schema version, revision, sequence and creation time),
-records one `store.backup_created` event in the access history and only then
-lists it.
+proof in the `X-Zzrouter-Local-Proof` header. It copies the database at one
+committed revision with SQLite's `VACUUM INTO` while the node serves, checks the
+copy as a start would, with SQLite's full integrity check, writes it as a
+`database` bundle (the image and a manifest naming its store ID, generation,
+schema version, revision, sequence and creation time), records one
+`store.backup_created` event in the access history and only then lists it.
 `GET /zzrouter/v1/system/state/backups` lists the retained backups and
 `GET /zzrouter/v1/system/state/backups/{id}` reads one, with the SHA-256 of its
 archive, `protected_until` and `expires_at`; `GET /zzrouter/v1/system/state`
@@ -232,30 +231,29 @@ is also not a copy elsewhere: the archives live in the configuration's
 `access/backups` directory, owner-only, beside the database, and retention
 deletes them. They never travel in an installation bundle. To keep one, copy
 `access/backups/<id>.tar.gz` as the installation account into your own
-protected backup storage, then run `recovery check` on the copy; a local export
-command comes later.
+protected backup storage, then run `recovery check` on the copy.
 
 A failed or interrupted backup lists nothing and leaves no file. A copy that
 fails its check answers `500 state_image_check_failed`: the live database may be
 damaged, so stop the service and run `recovery inventory`. The same
 `Idempotency-Key` and body replay the original `201` while the coordinator
-process lives; a retry after a restart creates a second backup. If the process
-dies after the `store.backup_created` event is committed and before the archive
-is in place, the history holds an event for a backup that was never listed: the
-order is deliberate, so a listed backup always has its event, and the next start
-deletes the unfinished file.
+process lives; a retry after a restart creates a second backup. The
+`store.backup_created` event is committed before the archive is published, so a
+listed backup always has its event; if the process dies after the event, or
+publishing the archive then fails, the history holds an event for a backup that
+was never listed, and nothing of it remains on disk once the next start has run.
 
 Every backup is kept for at least the 24-hour replay window
 (`protected_until`), so a replayed create never names a backup that is gone.
 Past it, the three newest backups are kept, and none from seven days on. Pruning
 runs at start, after each backup and hourly; on Windows a file another program
 holds open is removed at a later pruning. Retained backups may hold at most
-1 GiB: a backup that would exceed it, counting only what retention keeps, is
-refused with `507 state_backup_capacity_exceeded`, whose `frees_at` says when
-the next retained backup expires. Before copying, the new archive is reckoned at
-the database's size, in practice an upper bound since the archive is a
-compressed compact copy; once written, at its own size. A full disk answers the same code with
-`capacity: disk`.
+1 GiB, counting only what retention keeps: a create is refused with
+`507 state_backup_capacity_exceeded` before anything is copied when they already
+fill it, and after the archive is written when it does not fit beside them. Wait
+for retention to remove older backups (each one's `expires_at`), or take an
+offline `recovery backup` with the node stopped. A full disk answers the same
+code with `capacity: disk`.
 
 A backup holds access writes (key, team and people changes, console sign-ins)
 only while it copies the database. On an Apple M5 Max laptop SSD that took

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,8 +138,12 @@ func (c contextReader) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
 
+// Journal names the rollback journal SQLite keeps beside the database at path.
+func Journal(path string) string { return path + "-journal" }
+
 // createFile makes path, which must not exist, an empty owner-only file and
-// runs fill; if either fails, it removes the file.
+// runs fill; if either fails, it removes the file and the journal SQLite can
+// strand beside it, as a full disk does during VACUUM INTO.
 func createFile(path string, fill func() error) (err error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -147,6 +152,9 @@ func createFile(path string, fill func() error) (err error) {
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, os.Remove(path))
+			if journalErr := os.Remove(Journal(path)); !errors.Is(journalErr, fs.ErrNotExist) {
+				err = errors.Join(err, journalErr)
+			}
 		}
 	}()
 	if err = errors.Join(f.Close(), security.RestrictFilePermissions(path)); err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -113,6 +114,7 @@ func TestStateBackupsCreateListReadReplay(t *testing.T) {
 	missing := makeAuthRequest(t, s, http.MethodGet, backupsPath+"/0f6b5f7e-3f0e-4d56-9a43-2f4f5b0f6c11", TestAdminKey, nil)
 	require.Equal(t, http.StatusNotFound, missing.Code, string(missing.Body))
 	assert.Equal(t, string(httperr.CodeStateBackupNotFound), problemCode(t, missing.Body))
+	assert.Contains(t, string(missing.Body), "zz_api operation listStateBackups", "the next step names the tool")
 	backupAnswer(t, s, missing.Code, missing.Body, secret)
 
 	state, raw2 := readStoreState(t, s)
@@ -140,13 +142,21 @@ func TestStateBackupsCreateListReadReplay(t *testing.T) {
 	assert.Equal(t, "admin", s.authTier(http.MethodPost, backupsPath), "the create keeps its admin tier")
 }
 
-// TestStateBackupsAuthorities: the create answers the local proof alone and
-// an administrator key alone; a request carrying a bad proof is refused even
-// with an administrator key. The reads refuse the proof alone, a user key is
-// refused everywhere, and a worker answers the coordinator-role 421.
+// TestStateBackupsAuthorities: the create answers the local proof alone, an
+// administrator key alone and an administrator's browser session with its
+// CSRF token; a session without the token is refused, and so is a request
+// carrying a bad or an empty proof header even with an administrator key.
+// The reads refuse the proof alone, a user key is refused everywhere, and a
+// worker answers the coordinator-role 421.
 func TestStateBackupsAuthorities(t *testing.T) {
-	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	s, endpoint := oauthTestNode(t, config.ClusterModeCoordinator)
 	file := readLocalProof(t, s)
+	browser := newSessionBrowser(t, endpoint, TestAdminKey)
+	status, body := browser.call(t, http.MethodPost, backupsPath, map[string]any{}, nil)
+	require.Equal(t, http.StatusCreated, status, string(body))
+	status, body = browser.call(t, http.MethodPost, backupsPath, map[string]any{}, map[string]string{"X-CSRF-Token": ""})
+	require.Equal(t, http.StatusForbidden, status, string(body))
+	require.Len(t, s.backups.List(), 1)
 
 	local := serveLocalGate(s, localGateRequest(http.MethodPost, backupsPath, file.Proof, "{}"))
 	require.Equal(t, http.StatusCreated, local.Code, local.Body.String())
@@ -160,11 +170,14 @@ func TestStateBackupsAuthorities(t *testing.T) {
 	for _, ev := range events {
 		actors[ev.Subject] = ev.Actor
 	}
-	assert.Equal(t, map[string]string{byOperator.ID: audit.ActorLocalOperator, byAdmin.ID: "static:admin"}, actors)
+	assert.Equal(t, audit.ActorLocalOperator, actors[byOperator.ID])
+	assert.Equal(t, "static:admin", actors[byAdmin.ID])
 
-	badProof := localGateRequest(http.MethodPost, backupsPath, strings.Repeat("x", 43), "{}")
-	badProof.Header.Set("X-API-Key", TestAdminKey)
-	assert.Equal(t, http.StatusForbidden, serveLocalGate(s, badProof).Code, "a proof is judged alone")
+	for _, proof := range []string{strings.Repeat("x", 43), ""} {
+		r := localGateRequest(http.MethodPost, backupsPath, proof, "{}")
+		r.Header.Set("X-API-Key", TestAdminKey)
+		assert.Equal(t, http.StatusForbidden, serveLocalGate(s, r).Code, "a proof header %q is judged alone", proof)
+	}
 	for _, path := range []string{backupsPath, backupsPath + "/" + byAdmin.ID} {
 		w := serveLocalGate(s, localGateRequest(http.MethodGet, path, file.Proof, ""))
 		assert.Equal(t, http.StatusUnauthorized, w.Code, "%s refuses the proof alone: %s", path, w.Body.String())
@@ -193,7 +206,54 @@ func TestStateBackupsAuthorities(t *testing.T) {
 		assert.Equal(t, c.code, result.Code, "%s %s with %q: %s", c.method, c.path, c.key, result.Body)
 		assert.NotContains(t, string(result.Body), c.node.configDir)
 	}
-	require.Len(t, s.backups.List(), 2, "no refused request created a backup")
+	require.Len(t, s.backups.List(), 3, "no refused request created a backup")
+}
+
+// TestStateBackupPrincipalsNeverCollide: an app key ID with ':' is refused,
+// so no key can take a name of another kind of caller; a key whose ID is
+// "admin" neither replays the static administrator's answer nor is audited as
+// it, and the local operator and an administrator do not replay each other.
+func TestStateBackupPrincipalsNeverCollide(t *testing.T) {
+	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	for _, body := range []map[string]any{
+		{"id": "local:operator", "name": "Twin", "role": "admin"},
+		{"id": "static:admin", "name": "Twin", "role": "admin"},
+		{"id": "a:b", "name": "Twin", "team_id": "missing"}, // malformed before any record is consulted
+	} {
+		refused := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey, body)
+		require.Equal(t, http.StatusBadRequest, refused.Code, "%v: %s", body, refused.Body)
+	}
+	file := readLocalProof(t, s)
+	byOperator := func() string {
+		r := localGateRequest(http.MethodPost, backupsPath, file.Proof, "{}")
+		r.Header.Set(idempotencyHeader, "same")
+		w := serveLocalGate(s, r)
+		require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+		return decodeBackup(t, backupAnswer(t, s, w.Code, w.Body.Bytes())).ID
+	}
+	byKey := func(key string) string {
+		created := createBackupAs(t, s, key, "same", map[string]any{})
+		require.Equal(t, http.StatusCreated, created.Code, string(created.Body))
+		return decodeBackup(t, backupAnswer(t, s, created.Code, created.Body)).ID
+	}
+	operator, static := byOperator(), byKey(TestAdminKey)
+	require.Equal(t, operator, byOperator(), "the operator replays its own answer")
+	require.Equal(t, static, byKey(TestAdminKey))
+	key := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey, map[string]any{"id": "admin", "name": "Twin", "role": "admin"})
+	require.Equal(t, http.StatusCreated, key.Code, string(key.Body))
+	var raw struct {
+		Data CreateKeyResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(key.Body, &raw))
+	twin := byKey(raw.Data.RawKey)
+	require.NotContains(t, []string{operator, static}, twin, "no replay across callers")
+	events, _, err := s.accessStore.AuditPage(t.Context(), audit.Filter{Action: audit.ActionBackupCreated}, "", audit.MaxPage)
+	require.NoError(t, err)
+	actors := map[string]string{}
+	for _, ev := range events {
+		actors[ev.Subject] = ev.Actor
+	}
+	require.Equal(t, map[string]string{operator: audit.ActorLocalOperator, static: "static:admin", twin: "admin"}, actors)
 }
 
 // hookedStore is the server's live store with a test's Capture or Record.
@@ -275,7 +335,7 @@ func TestStateBackupFailureAnswers(t *testing.T) {
 			},
 			code: http.StatusInsufficientStorage, problem: string(httperr.CodeStateBackupCapacityExceeded), extra: map[string]any{"capacity": "disk"},
 		},
-		"a copy that fails its check": {
+		"a copy that is not the capture's": {
 			capture: func(h *hookedStore) func(context.Context, string) (sqlstore.Meta, error) {
 				return func(ctx context.Context, dst string) (sqlstore.Meta, error) {
 					meta, err := h.Store.Capture(ctx, dst)
@@ -290,6 +350,12 @@ func TestStateBackupFailureAnswers(t *testing.T) {
 				return func(context.Context, string) (sqlstore.Meta, error) { return sqlstore.Meta{}, sqlstore.ErrBusy }
 			},
 			code: http.StatusServiceUnavailable, problem: string(httperr.CodeAccessStoreBusy),
+		},
+		"a stopping coordinator": {
+			capture: func(*hookedStore) func(context.Context, string) (sqlstore.Meta, error) {
+				return func(context.Context, string) (sqlstore.Meta, error) { return sqlstore.Meta{}, access.ErrClosed }
+			},
+			code: http.StatusServiceUnavailable, problem: "service_unavailable",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -308,22 +374,25 @@ func TestStateBackupFailureAnswers(t *testing.T) {
 				assert.Equal(t, want, problem[key], key)
 			}
 			assert.Empty(t, s.backups.List())
+			if tc.code == http.StatusServiceUnavailable {
+				assert.NotEmpty(t, result.Headers.Get("Retry-After"))
+			}
 		})
 	}
 }
 
 // TestBackupCapacityAnswerCarriesItsFigures: the byte cap's 507 names the
-// cap, what is retained, what the backup needs and when space frees; with
-// nothing to free, frees_at is absent.
+// cap, what is retained and what the backup needs, and one next step that
+// never says to retry at a time; a full disk says to free space.
 func TestBackupCapacityAnswerCarriesItsFigures(t *testing.T) {
-	frees := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
-	wire, ok := knownFailure(fmt.Errorf("create: %w", &recovery.CapacityError{LimitBytes: 100, RetainedBytes: 70, RequiredBytes: 40, FreesAt: frees}))
+	wire, ok := knownFailure(fmt.Errorf("create: %w", &recovery.CapacityError{LimitBytes: 100, RetainedBytes: 70, RequiredBytes: 40}))
 	require.True(t, ok)
 	assert.Equal(t, http.StatusInsufficientStorage, wire.Status)
 	assert.Equal(t, string(httperr.CodeStateBackupCapacityExceeded), wire.Code)
-	assert.Equal(t, map[string]any{"capacity": "byte_cap", "limit_bytes": int64(100), "retained_bytes": int64(70), "required_bytes": int64(40), "frees_at": frees}, wire.Extra)
-	wire, _ = knownFailure(&recovery.CapacityError{LimitBytes: 100, RequiredBytes: 140})
-	assert.NotContains(t, wire.Extra, "frees_at")
+	assert.Equal(t, map[string]any{"capacity": "byte_cap", "limit_bytes": int64(100), "retained_bytes": int64(70), "required_bytes": int64(40)}, wire.Extra)
+	assert.Contains(t, wire.Message, "expires_at")
+	assert.Contains(t, wire.Message, "zzrouter-node recovery backup")
+	assert.NotContains(t, strings.ToLower(wire.Message), "retry")
 }
 
 // TestStateBackupExampleMatchesSchema: the published example is a valid answer.
@@ -340,4 +409,36 @@ func TestStateBackupExampleMatchesSchema(t *testing.T) {
 	var example map[string]any
 	require.NoError(t, json.Unmarshal(data, &example))
 	require.NoError(t, browserSchema(t, "StateBackup").Validate(example))
+}
+
+// TestStatePersonAndKeyNeverShareAName: an app key whose ID is a person's ID
+// neither replays that person's idempotent answer nor is audited as the
+// person, who acts as person:<id>.
+func TestStatePersonAndKeyNeverShareAName(t *testing.T) {
+	s, endpoint := oauthTestNode(t, config.ClusterModeCoordinator)
+	browser, owner := createBrowserOwner(t, s, endpoint)
+	byPerson := func() string {
+		status, body := browser.call(t, http.MethodPost, backupsPath, map[string]any{}, map[string]string{idempotencyHeader: "same"})
+		require.Equal(t, http.StatusCreated, status, string(body))
+		return decodeBackup(t, backupAnswer(t, s, status, body)).ID
+	}
+	person := byPerson()
+	require.Equal(t, person, byPerson(), "the person replays its own answer")
+	key := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey, map[string]any{"id": owner.ID, "name": "Twin", "role": "admin"})
+	require.Equal(t, http.StatusCreated, key.Code, string(key.Body))
+	var raw struct {
+		Data CreateKeyResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(key.Body, &raw))
+	created := createBackupAs(t, s, raw.Data.RawKey, "same", map[string]any{})
+	require.Equal(t, http.StatusCreated, created.Code, string(created.Body))
+	twin := decodeBackup(t, backupAnswer(t, s, created.Code, created.Body)).ID
+	require.NotEqual(t, person, twin, "the key does not replay the person's answer")
+	events, _, err := s.accessStore.AuditPage(t.Context(), audit.Filter{Action: audit.ActionBackupCreated}, "", audit.MaxPage)
+	require.NoError(t, err)
+	actors := map[string]string{}
+	for _, ev := range events {
+		actors[ev.Subject] = ev.Actor
+	}
+	require.Equal(t, map[string]string{person: "person:" + owner.ID, twin: owner.ID}, actors)
 }

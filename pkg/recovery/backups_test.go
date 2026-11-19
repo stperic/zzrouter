@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -166,10 +168,11 @@ func platformDiskFull() error {
 	return &fs.PathError{Op: "write", Path: "image", Err: errno}
 }
 
-// TestOnlineBackupFailuresListNothing: a corrupt image, a failing audit row,
-// a full disk (the platform's error or SQLite's, wrapped) and the byte cap
-// each fail the create with their own error, list nothing, record nothing and
-// leave no file in the backup directory.
+// TestOnlineBackupFailuresListNothing: a corrupt image, an image that is not
+// the state the capture reported, a failing audit row, a full disk (the
+// platform's error or SQLite's, wrapped) and an archive larger than the byte
+// cap each fail the create with their own error, list nothing, record nothing
+// and leave no file in the backup directory.
 func TestOnlineBackupFailuresListNothing(t *testing.T) {
 	errInjected := errors.New("injected audit failure")
 	for name, tc := range map[string]struct {
@@ -189,6 +192,20 @@ func TestOnlineBackupFailuresListNothing(t *testing.T) {
 				require.ErrorIs(t, err, ErrImageCheck)
 				var refusal *sqlstore.Refusal
 				require.ErrorAs(t, err, &refusal)
+			},
+		},
+		"an image that is not the capture's": {
+			hook: func(_ *testing.T, h *hooked) {
+				h.capture = func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+					meta, err := h.Store.Capture(ctx, dst)
+					meta.Sequence++
+					return meta, err
+				}
+			},
+			check: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, ErrImageCheck)
+				var refusal *sqlstore.Refusal
+				require.False(t, errors.As(err, &refusal), "zzRouter's fault, not a refused image")
 			},
 		},
 		"a failing audit row": {
@@ -214,15 +231,14 @@ func TestOnlineBackupFailuresListNothing(t *testing.T) {
 			},
 			check: requireDiskFull,
 		},
-		"the byte cap": {
+		"an archive larger than the byte cap": {
 			limit: 1,
 			check: func(t *testing.T, err error) {
 				var full *CapacityError
 				require.ErrorAs(t, err, &full)
 				require.Equal(t, int64(1), full.LimitBytes)
-				require.Positive(t, full.RequiredBytes)
+				require.Positive(t, full.RequiredBytes, "refused once written, at its size")
 				require.Zero(t, full.RetainedBytes)
-				require.True(t, full.FreesAt.IsZero(), "nothing retained frees anything")
 			},
 		},
 	} {
@@ -249,7 +265,7 @@ func requireDiskFull(t *testing.T, err error) {
 	t.Helper()
 	var full *CapacityError
 	require.ErrorAs(t, err, &full)
-	require.Zero(t, full.LimitBytes, "a full disk has no figures")
+	require.Equal(t, CapacityError{disk: full.disk}, *full, "a full disk has no figures")
 }
 
 // TestOnlineBackupCancellation: a create cancelled during the copy or after
@@ -324,12 +340,14 @@ func TestOnlineBackupAuditRowComesFirst(t *testing.T) {
 	require.FileExists(t, archiveOf(dir, backup.ID))
 }
 
-// TestOnlineBackupsOpenRemovesLeftovers: opening deletes temporary files, a
-// file not named after a backup, one with a non-canonical ID, a garbage
-// archive, an installation bundle and an expired backup, and keeps the
-// backup, a directory and a link. The inventory lists the unreadable ones
-// beforehand and deletes nothing.
-func TestOnlineBackupsOpenRemovesLeftovers(t *testing.T) {
+// TestOnlineBackupsOpenDeletesOnlyItsTemporaries: opening deletes a create's
+// temporary files, the copy's journal included, and nothing else. It indexes
+// the database bundles under a backup's name, a newer release's listed as
+// unreadable, and prunes an expired one; a file under a backup's name that is
+// not a database bundle (garbage, an installation bundle), other names, a
+// directory and a link are neither listed nor touched. The inventory lists
+// every archive under a backup's name beforehand and deletes nothing.
+func TestOnlineBackupsOpenDeletesOnlyItsTemporaries(t *testing.T) {
 	store, dir := liveStore(t)
 	first := openBackups(t, dir, store)
 	kept, err := first.Create(t.Context())
@@ -341,18 +359,23 @@ func TestOnlineBackupsOpenRemovesLeftovers(t *testing.T) {
 	}
 	valid := readBytes(t, archiveOf(dir, kept.ID))
 	id := uuid.NewString()
-	place(id+".image.tmp", valid)
-	place(id+".tar.gz.tmp", valid)
-	place("notes.txt", valid)
-	place(strings.ToUpper(uuid.NewString())+".tar.gz", valid)
-	garbage, installation, expired := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	temporaries := []string{id + ".image.tmp", id + ".image.tmp-journal", id + ".tar.gz.tmp"}
+	for _, name := range temporaries {
+		place(name, valid)
+	}
+	for _, name := range []string{"notes.txt", strings.ToUpper(uuid.NewString()) + ".tar.gz", uuid.NewString() + ".tmp"} {
+		place(name, valid)
+	}
+	garbage, installation, newer, expired := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
 	place(garbage+".tar.gz", []byte("not an archive"))
 	place(installation+".tar.gz", readBytes(t, writeTestBundle(t, map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}")})))
 	image, meta := capturedImage(t)
+	newerMeta := meta
+	newerMeta.SchemaVersion = 99
+	place(newer+".tar.gz", readBytes(t, databaseBundle(t, image, newerMeta)))
 	place(expired+".tar.gz", readBytes(t, databaseBundle(t, image, meta, func(m *Manifest) { m.Created = utils.NowUTC().Add(-8 * 24 * time.Hour) })))
 	require.NoError(t, os.Mkdir(filepath.Join(backups, uuid.NewString()+".tar.gz"), 0o700))
-	link := uuid.NewString() + ".tar.gz"
-	linked := os.Symlink(archiveOf(dir, kept.ID), filepath.Join(backups, link)) == nil
+	_ = os.Symlink(archiveOf(dir, kept.ID), filepath.Join(backups, uuid.NewString()+".tar.gz"))
 
 	listed, err := readArchives(dir)
 	require.NoError(t, err)
@@ -360,14 +383,23 @@ func TestOnlineBackupsOpenRemovesLeftovers(t *testing.T) {
 	for _, archive := range listed {
 		readable[archive.ID] = archive.Readable
 	}
-	require.Equal(t, map[string]bool{kept.ID: true, garbage: false, installation: false, expired: true}, readable)
-	require.Len(t, backupFiles(t, dir), 10-map[bool]int{true: 0, false: 1}[linked], "the inventory deletes nothing")
+	require.Equal(t, map[string]bool{kept.ID: true, garbage: false, installation: false, newer: false, expired: true}, readable)
+	before := backupFiles(t, dir)
 
 	b := openBackups(t, dir, store)
-	require.Equal(t, []string{kept.ID}, ids(b.List()))
-	remaining := backupFiles(t, dir)
-	require.Contains(t, remaining, kept.ID+".tar.gz")
-	require.Len(t, remaining, 2+map[bool]int{true: 1, false: 0}[linked], "the backup, the directory and the link: %v", remaining)
+	retained := map[string]bool{}
+	for _, backup := range b.List() {
+		retained[backup.ID] = backup.Readable
+		require.Len(t, backup.SHA256, 64)
+	}
+	require.Equal(t, map[string]bool{kept.ID: true, newer: false}, retained, "database bundles only; the expired one pruned")
+	want := []string{}
+	for _, name := range before {
+		if !slices.Contains(temporaries, name) && name != expired+".tar.gz" {
+			want = append(want, name)
+		}
+	}
+	require.Equal(t, want, backupFiles(t, dir), "only temporaries and the expired backup go")
 }
 
 func ids(backups []OnlineBackup) []string {
@@ -431,38 +463,103 @@ func backupsAt(t *testing.T, b *Backups, at time.Time, n int) []OnlineBackup {
 }
 
 // TestOnlineBackupCapCountsWhatRetentionKeeps: three expired backups pruning
-// has not removed yet never block a create the cap holds beside nothing else,
-// and the create prunes them; three retained ones refuse it with the figures
-// and when the oldest expires. Not parallel: it sets the clock.
+// has not removed yet, though they fill the cap, never block a create, and
+// the create prunes them. Three retained ones that fill it refuse a create
+// before anything is copied; with room for less than the new archive, the
+// written archive is refused at its own size. Not parallel: it sets the clock.
 func TestOnlineBackupCapCountsWhatRetentionKeeps(t *testing.T) {
-	// roomForOne limits b to one new backup of the database's size.
-	roomForOne := func(store *sqlstore.Store, b *Backups) int64 {
-		st, err := store.Status()
-		require.NoError(t, err)
-		b.limit = *st.DatabaseBytes + 1
-		return *st.DatabaseBytes
+	sum := func(backups []OnlineBackup) (bytes int64) {
+		for _, backup := range backups {
+			bytes += backup.SizeBytes
+		}
+		return bytes
 	}
 	store, dir := liveStore(t)
 	b := openBackups(t, dir, store)
 	old := backupsAt(t, b, utils.NowUTC().Add(-8*24*time.Hour), 3)
 	require.Empty(t, b.List(), "expired")
 	require.Len(t, backupFiles(t, dir), 3, "but not pruned yet")
-	roomForOne(store, b)
+	b.limit = sum(old)
 	backup, err := b.Create(t.Context())
 	require.NoError(t, err, "the expired backups do not count")
-	require.Equal(t, []string{backup.ID + ".tar.gz"}, backupFiles(t, dir), "the create pruned them: %v", ids(old))
+	require.Equal(t, []string{backup.ID + ".tar.gz"}, backupFiles(t, dir), "the create pruned them")
 
 	store, dir = liveStore(t)
 	b = openBackups(t, dir, store)
 	retained := backupsAt(t, b, utils.NowUTC().Add(-2*24*time.Hour), 3)
-	required := roomForOne(store, b)
-	_, err = b.Create(t.Context())
+	copies := 0
+	b.src = &hooked{Store: store, capture: func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+		copies++
+		return store.Capture(ctx, dst)
+	}}
 	var full *CapacityError
+	b.limit = sum(retained)
+	_, err = b.Create(t.Context())
 	require.ErrorAs(t, err, &full)
-	require.Equal(t, CapacityError{LimitBytes: b.limit, RetainedBytes: retained[0].SizeBytes + retained[1].SizeBytes + retained[2].SizeBytes,
-		RequiredBytes: required, FreesAt: retained[0].CreatedAt.Add(7 * 24 * time.Hour)}, *full)
+	require.Equal(t, CapacityError{LimitBytes: b.limit, RetainedBytes: sum(retained)}, *full, "refused before the copy, the size unknown")
+	b.limit = sum(retained) + 1
+	_, err = b.Create(t.Context())
+	require.ErrorAs(t, err, &full)
+	require.Equal(t, sum(retained), full.RetainedBytes)
+	require.Positive(t, full.RequiredBytes, "the written archive is refused at its size")
+	require.Equal(t, 1, copies)
 	require.Len(t, b.List(), 3)
 	require.Len(t, backupFiles(t, dir), 3)
+}
+
+// TestOnlineBackupsCreateOneAtATime: two creates at once with room for one:
+// the slot makes exactly one succeed and the other meet the cap, even when
+// the first is held after its own checks passed.
+func TestOnlineBackupsCreateOneAtATime(t *testing.T) {
+	store, dir := liveStore(t)
+	var calls atomic.Int32
+	second := make(chan struct{})
+	h := &hooked{Store: store}
+	h.record = func(ctx context.Context, ev audit.Event) error {
+		if calls.Add(1) == 2 {
+			close(second)
+		} else {
+			select { // the first waits for a second create past its checks, which the slot keeps out
+			case <-second:
+			case <-time.After(time.Second):
+			}
+		}
+		return store.Record(ctx, ev)
+	}
+	b := openBackups(t, dir, h)
+	probe, err := b.Create(t.Context())
+	require.NoError(t, err)
+	calls.Store(0)
+	b.limit = probe.SizeBytes * 5 / 2 // room for the probe and one more
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Go(func() { _, errs[i] = b.Create(t.Context()) })
+	}
+	wg.Wait()
+	slices.SortFunc(errs, func(a, b error) int { return cmp.Compare(fmt.Sprint(a), fmt.Sprint(b)) })
+	require.NoError(t, errs[0])
+	var full *CapacityError
+	require.ErrorAs(t, errs[1], &full)
+	require.Len(t, b.List(), 2)
+	require.Len(t, backupFiles(t, dir), 2)
+}
+
+// TestOnlineBackupFailedPublishLeavesNothing: when the archive is under its
+// final name and its directory sync then fails, the create fails and the
+// archive is removed; only the audit row, already committed, remains.
+func TestOnlineBackupFailedPublishLeavesNothing(t *testing.T) {
+	store, dir := liveStore(t)
+	b := openBackups(t, dir, store)
+	b.rename = func(from, to string) error {
+		require.NoError(t, os.Rename(from, to))
+		return errors.New("injected: directory sync failed")
+	}
+	_, err := b.Create(t.Context())
+	require.ErrorContains(t, err, "directory sync failed")
+	require.Empty(t, b.List())
+	require.Empty(t, backupFiles(t, dir))
+	require.Len(t, recorded(t, store), 1, "an event without a backup")
 }
 
 // TestOnlineBackupsSurviveARestart: after the backups and the store close and

@@ -30,6 +30,8 @@ const BackupCap int64 = 1 << 30
 const (
 	backupDir     = "access/backups" // under the configuration directory
 	archiveSuffix = ".tar.gz"        // an online backup's file is <id>.tar.gz
+	imageSuffix   = ".image.tmp"     // a create's temporary files: <id>.image.tmp,
+	tempSuffix    = ".tar.gz.tmp"    // its journal and <id>.tar.gz.tmp
 	// Past the replay window, the three newest archives younger than seven days are kept.
 	backupKeep          = 3
 	backupMaxAge        = 7 * 24 * time.Hour
@@ -47,11 +49,11 @@ var (
 type LiveStore interface {
 	Capture(ctx context.Context, dst string) (sqlstore.Meta, error)
 	Record(ctx context.Context, ev audit.Event) error
-	Status() (sqlstore.Status, error)
 }
 
 // OnlineBackup is a retained online backup: its archive, the SHA-256 of the
-// archive's bytes, and when retention may remove it.
+// archive's bytes, and when retention may remove it. Its store identity is
+// its manifest's, which names another store for a bundle copied in.
 type OnlineBackup struct {
 	Archive
 	SHA256 string `json:"sha256"`
@@ -62,10 +64,9 @@ type OnlineBackup struct {
 }
 
 // CapacityError refuses a backup that the byte cap, counting what retention
-// removes once it exists, or the disk cannot hold. A full disk has no figures.
+// keeps, or the disk cannot hold. A full disk has no figures.
 type CapacityError struct {
-	LimitBytes, RetainedBytes, RequiredBytes int64
-	FreesAt                                  time.Time // when a retained backup next expires; zero if none does
+	LimitBytes, RetainedBytes, RequiredBytes int64 // RequiredBytes is 0 before the archive is written
 	disk                                     error
 }
 
@@ -84,7 +85,8 @@ type Backups struct {
 	src     LiveStore
 	dir     string
 	limit   int64
-	slot    chan struct{} // held by a create; Close takes it for good
+	rename  func(from, to string) error // publishes an archive under its final name
+	slot    chan struct{}               // held by a create; Close takes it for good
 	closing chan struct{}
 	done    chan struct{} // closed when pruning stops
 	once    sync.Once
@@ -95,12 +97,12 @@ type Backups struct {
 
 // OpenBackups opens the online backups of the installation whose
 // configuration directory is dir, in an owner-only directory it creates, and
-// prunes them hourly until Close. It deletes what a create never keeps:
-// temporary files of one that failed, files not named after a backup and
-// archives that are not database bundles. A link on the way is an error.
+// prunes them hourly until Close. It indexes the database bundles there,
+// deletes only the temporary files a create left and leaves anything else
+// alone. A link on the way is an error.
 func OpenBackups(ctx context.Context, dir string, src LiveStore) (*Backups, error) {
 	b := &Backups{src: src, dir: filepath.Join(dir, filepath.FromSlash(backupDir)), limit: BackupCap,
-		slot: make(chan struct{}, 1), closing: make(chan struct{}), done: make(chan struct{})}
+		rename: sqlitedb.Rename, slot: make(chan struct{}, 1), closing: make(chan struct{}), done: make(chan struct{})}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
@@ -109,16 +111,18 @@ func OpenBackups(ctx context.Context, dir string, src LiveStore) (*Backups, erro
 	if err := root.MkdirAll(filepath.FromSlash(backupDir), 0o700); err != nil {
 		return nil, err
 	}
-	archives, others, err := readBackupDir(root)
+	archives, temporaries, err := readBackupDir(root)
 	if err == nil {
 		err = security.RestrictDirectoryPermissions(b.dir)
 	}
 	if err != nil {
 		return nil, err
 	}
+	for _, name := range temporaries {
+		b.remove(name, "a temporary file of an interrupted backup")
+	}
 	for _, archive := range archives {
-		if archive.StoreMeta == nil {
-			others = append(others, archive.ID+archiveSuffix)
+		if archive.StoreMeta == nil { // not a database bundle this release reads
 			continue
 		}
 		_, sum, err := hashFile(ctx, b.dir, archive.ID+archiveSuffix)
@@ -126,9 +130,6 @@ func OpenBackups(ctx context.Context, dir string, src LiveStore) (*Backups, erro
 			return nil, err
 		}
 		b.index = append(b.index, OnlineBackup{Archive: archive, SHA256: sum})
-	}
-	for _, name := range others {
-		b.remove(name)
 	}
 	retain(b.index)
 	b.prune()
@@ -138,10 +139,11 @@ func OpenBackups(ctx context.Context, dir string, src LiveStore) (*Backups, erro
 
 // readBackupDir describes the backup directory under the configuration root
 // without following a link: a link on the way is an error, and only regular
-// files are read. A file named after a backup ID is described from its
-// manifest, newest first, then by ID; others names the rest. An absent
-// directory holds nothing.
-func readBackupDir(root *os.Root) (archives []Archive, others []string, err error) {
+// files are read. A file named after a backup is described from its manifest,
+// newest first, then by ID, readable or not; temporaries names a create's
+// temporary files. Every other file is ignored. An absent directory holds
+// nothing.
+func readBackupDir(root *os.Root) (archives []Archive, temporaries []string, err error) {
 	var entries []fs.DirEntry
 	if err = rejectLinks(root, filepath.FromSlash(backupDir)); err == nil {
 		entries, err = fs.ReadDir(root.FS(), backupDir)
@@ -151,22 +153,27 @@ func readBackupDir(root *os.Root) (archives []Archive, others []string, err erro
 	}
 	archives = []Archive{}
 	for _, entry := range entries {
-		if !entry.Type().IsRegular() {
-			continue
+		switch name := entry.Name(); {
+		case !entry.Type().IsRegular():
+		case named(name, archiveSuffix):
+			described, err := describeArchive(root, filepath.Join(filepath.FromSlash(backupDir), name), entry)
+			if err != nil {
+				return nil, nil, err
+			}
+			archives = append(archives, described)
+		case named(name, imageSuffix), named(name, sqlitedb.Journal(imageSuffix)), named(name, tempSuffix):
+			temporaries = append(temporaries, name)
 		}
-		id, archive := strings.CutSuffix(entry.Name(), archiveSuffix)
-		if parsed, err := uuid.Parse(id); !archive || err != nil || parsed.String() != id {
-			others = append(others, entry.Name())
-			continue
-		}
-		described, err := describeArchive(root, filepath.Join(filepath.FromSlash(backupDir), entry.Name()), entry)
-		if err != nil {
-			return nil, nil, err
-		}
-		archives = append(archives, described)
 	}
 	slices.SortFunc(archives, newestFirst)
-	return archives, others, nil
+	return archives, temporaries, nil
+}
+
+// named reports whether name is a canonical backup ID followed by suffix.
+func named(name, suffix string) bool {
+	id, ok := strings.CutSuffix(name, suffix)
+	parsed, err := uuid.Parse(id)
+	return ok && err == nil && parsed.String() == id
 }
 
 func newestFirst(a, b Archive) int {
@@ -215,8 +222,8 @@ func (b *Backups) Get(id string) (OnlineBackup, error) {
 
 // Create copies the live store into a checked archive, commits the "backup
 // created" audit row, then lists the archive. A failure or cancellation lists
-// nothing and leaves no temporary file; after the audit row, cancellation no
-// longer stops it. Creates run one at a time.
+// nothing and leaves no file; after the audit row, cancellation no longer
+// stops it. Creates run one at a time.
 func (b *Backups) Create(ctx context.Context) (OnlineBackup, error) {
 	select {
 	case b.slot <- struct{}{}:
@@ -233,23 +240,18 @@ func (b *Backups) Create(ctx context.Context) (OnlineBackup, error) {
 	return backup, err
 }
 
-func (b *Backups) create(ctx context.Context) (OnlineBackup, error) {
-	st, err := b.src.Status()
-	if err != nil {
-		return OnlineBackup{}, err
-	}
-	var estimate int64 // an archive is a compressed compact copy of the database
-	if st.DatabaseBytes != nil {
-		estimate = *st.DatabaseBytes
-	}
-	if err := b.fits(estimate); err != nil {
+func (b *Backups) create(ctx context.Context) (_ OnlineBackup, err error) {
+	if err := b.fits(0); err != nil {
 		return OnlineBackup{}, err
 	}
 	id := uuid.NewString()
-	image, temp, name := id+".image.tmp", id+archiveSuffix+".tmp", id+archiveSuffix
+	image, temp, name := id+imageSuffix, id+tempSuffix, id+archiveSuffix
 	defer func() {
 		_ = os.Remove(b.path(image))
 		_ = os.Remove(b.path(temp))
+		if err != nil { // published, then failed: nothing is kept
+			_ = os.Remove(b.path(name))
+		}
 	}()
 	meta, err := b.src.Capture(ctx, b.path(image))
 	if err != nil {
@@ -286,29 +288,30 @@ func (b *Backups) create(ctx context.Context) (OnlineBackup, error) {
 		Metadata: map[string]any{"generation": meta.Generation, "revision": meta.Revision, "sequence": meta.Sequence}}); err != nil {
 		return OnlineBackup{}, err
 	}
-	if err := sqlitedb.Rename(b.path(temp), b.path(name)); err != nil {
+	if err := b.rename(b.path(temp), b.path(name)); err != nil {
 		return OnlineBackup{}, err
 	}
 	// CheckImage refuses every schema but this release's, so the archive is readable.
 	b.mu.Lock()
 	b.index = append(b.index, OnlineBackup{Archive: Archive{ID: id, CreatedAt: manifest.Created, SizeBytes: size, StoreMeta: &store, Readable: true}, SHA256: sum})
 	retain(b.index)
+	created := b.index[slices.IndexFunc(b.index, func(backup OnlineBackup) bool { return backup.ID == id })]
 	b.mu.Unlock()
 	b.prune()
-	return b.Get(id)
+	return created, nil
 }
 
 // fits refuses, with a *CapacityError, a new archive of size bytes that the
-// cap cannot hold beside the archives retention keeps. A new archive ends no
-// other's retention before it leaves the replay window, so this is retention
-// projected over the archive.
+// cap cannot hold beside the archives retention keeps. Before the archive is
+// written its size is unknown, so size is 0 and only a full cap refuses. A
+// new archive ends no other's retention before it leaves the replay window,
+// so this is retention projected over it.
 func (b *Backups) fits(size int64) error {
 	full := CapacityError{LimitBytes: b.limit, RequiredBytes: size}
 	for _, kept := range b.List() {
 		full.RetainedBytes += kept.SizeBytes
-		full.FreesAt = kept.ExpiresAt // expiry follows age, so the oldest frees first
 	}
-	if full.RetainedBytes+size <= b.limit {
+	if full.RetainedBytes+max(size, 1) <= b.limit {
 		return nil
 	}
 	return &full
@@ -321,7 +324,7 @@ func (b *Backups) prune() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.index = slices.DeleteFunc(b.index, func(backup OnlineBackup) bool {
-		return !now.Before(backup.ExpiresAt) && b.remove(backup.ID+archiveSuffix)
+		return !now.Before(backup.ExpiresAt) && b.remove(backup.ID+archiveSuffix, "an expired backup")
 	})
 }
 
@@ -339,12 +342,15 @@ func (b *Backups) pruneEvery(interval time.Duration) {
 	}
 }
 
-// remove deletes name from the backup directory; a failure is logged and
-// left for a later prune or open.
-func (b *Backups) remove(name string) bool {
+// remove deletes name, described by what, from the backup directory and logs
+// it; a failure is logged and left for a later prune or open.
+func (b *Backups) remove(name, what string) bool {
 	err := os.Remove(b.path(name))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		slog.Warn("Could not remove an online backup file; retrying later", "file", name, "error", err)
+	switch {
+	case err == nil:
+		slog.Info("Removed "+what, "file", name)
+	case !errors.Is(err, fs.ErrNotExist):
+		slog.Warn("Could not remove "+what+"; retrying later", "file", name, "error", err)
 		return false
 	}
 	return true

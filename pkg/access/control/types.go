@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -25,7 +26,7 @@ type IdentityKind string
 
 const (
 	// KindPerson denotes a local human account.
-	KindPerson IdentityKind = "person"
+	KindPerson IdentityKind = people.Kind
 	// KindKey denotes a managed application key.
 	KindKey IdentityKind = "key"
 	// KindStatic denotes an installation credential.
