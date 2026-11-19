@@ -5552,10 +5552,22 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Team' }
+        '400':
+          description: >-
+            A malformed body, an unknown field, a `members` object, an invalid `reset_period`, route or provider policy, or
+            a change that would leave a team the node cannot load.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '403': { $ref: '#/components/responses/MgmtForbidden' }
         '404':
           description: Not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: The team is a key's personal team, which cannot be edited.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -12604,6 +12616,57 @@ paths:
         '403': { $ref: '#/components/responses/Access403' }
         '503': { $ref: '#/components/responses/Access503' }
 
+  /zzrouter/v1/system/state:
+    get:
+      tags: [System]
+      operationId: getStoreState
+      summary: Read the access store's status and size
+      description: >-
+        Administrator only, coordinator only. Reports the access store's identity, revision and sequence, whether owner
+        setup is still required, its file sizes and the integrity check the coordinator ran when it opened the store. The
+        read runs no database query and never waits for an access write. The answer contains no filesystem path, secret
+        or database error. `GET /zzrouter/v1/system/recovery` still describes the whole installation.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        '200':
+          description: The access store's current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/StoreState' }
+              example:
+                success: true
+                message: Access store state retrieved successfully
+                data:
+                  store_id: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  generation: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  schema_version: 1
+                  revision: 3
+                  sequence: 4
+                  status: ready
+                  observed_at: '2026-11-19T08:14:15.584169Z'
+                  size: { database_bytes: 94208, journal_bytes: 0, free_page_bytes: 0, backup_bytes: 0 }
+                  integrity: { checked_at: '2026-11-19T08:14:15.331629Z', check: quick_check, outcome: ok }
+                  retained_copies: []
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator; a paired worker names the coordinator's host in `detail`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting. Read
+            again once it answers.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /zzrouter/v1/operations:
     get:
       tags: [Operations]
@@ -13636,6 +13699,45 @@ components:
             properties:
               path: { type: string }
               reason: { type: string }
+    StoreState:
+      description: The coordinator's access store, read without a database query. Contains no filesystem path, secret or database error.
+      type: object
+      additionalProperties: false
+      required: [store_id, generation, schema_version, revision, sequence, status, observed_at, size, integrity, retained_copies]
+      properties:
+        store_id: { type: string, description: Immutable identity of this installation's access store. }
+        generation: { type: string, description: Replaced when a restore publishes another copy of the store. }
+        schema_version: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 0, description: Advances with every change to keys, teams, people or invitations. }
+        sequence: { type: integer, minimum: 0, description: Advances with every commit, including one that records an audit event alone. }
+        status:
+          type: string
+          enum: [ready, setup_required]
+          description: '`setup_required` until the owner claims the installation. A store in any other state stopped the node at startup.'
+        observed_at: { type: string, format: date-time }
+        size:
+          type: object
+          additionalProperties: false
+          required: [database_bytes, journal_bytes, free_page_bytes, backup_bytes]
+          description: Integer bytes. File lengths are observations that may change during a write; `null` is a measurement the coordinator could not take.
+          properties:
+            database_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the main database file. }
+            journal_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the rollback journal, 0 outside a write. }
+            free_page_bytes: { type: integer, minimum: 0, nullable: true, description: Reusable space inside the database file, read after the latest commit. }
+            backup_bytes: { type: integer, minimum: 0, description: Total bytes in retained online backups, separate from the live database. 0 until online backups exist. }
+        integrity:
+          type: object
+          additionalProperties: false
+          required: [checked_at, check, outcome]
+          description: The check the coordinator ran when it opened the store. A failed check stops the node at startup, so an answering coordinator reports `ok`.
+          properties:
+            checked_at: { type: string, format: date-time }
+            check: { type: string, enum: [quick_check], description: SQLite quick_check, followed by foreign_key_check. }
+            outcome: { type: string, enum: [ok] }
+        retained_copies:
+          type: array
+          description: Retained copies of the store, which hold credentials. Empty until online backups exist.
+          items: { type: object }
     TeamMembership:
       type: object
       description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.

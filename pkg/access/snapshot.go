@@ -155,8 +155,11 @@ func (s *Snapshot) People() []people.Person { return s.PeopleState().People() }
 // Owner returns the initial owner, or nil.
 func (s *Snapshot) Owner() *people.Person { return s.PeopleState().Owner() }
 
+// Failed reports a FailedSnapshot: its store can no longer vouch for its state.
+func (s *Snapshot) Failed() bool { return s != nil && s.failed }
+
 // Initialized reports the permanent owner-claim marker.
-func (s *Snapshot) Initialized() bool { return s != nil && s.failed || s.PeopleState().Initialized() }
+func (s *Snapshot) Initialized() bool { return s.Failed() || s.PeopleState().Initialized() }
 
 // Progress returns the persisted onboarding state.
 func (s *Snapshot) Progress() people.Progress { return s.PeopleState().Progress() }

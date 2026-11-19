@@ -27,6 +27,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const (
@@ -115,8 +116,9 @@ type records struct {
 // state is one published commit.
 type state struct {
 	records
-	snap *access.Snapshot
-	meta Meta
+	snap      *access.Snapshot
+	meta      Meta
+	freeBytes sql.NullInt64 // reusable space the commit left; invalid when unread
 }
 
 // Store is access.Store over access.sqlite.
@@ -125,6 +127,9 @@ type Store struct {
 	people *people.Store
 	fatal  func(error)
 	pub    atomic.Pointer[state]
+
+	path      string    // the database file, set by attach
+	integrity Integrity // the check attach ran
 
 	gate         sync.Mutex // serializes commits and guards the fields below
 	subs         []func(access.Commit)
@@ -186,7 +191,8 @@ func (s *Store) attach(ctx context.Context, path string, image bool) error {
 		_ = db.Close()
 		return err
 	}
-	s.db = db
+	s.db, s.path, s.integrity = db, path, Integrity{Check: sqlitedb.CheckName(image), CheckedAt: utils.NowUTC()}
+	st.freeBytes = freeBytes(ctx, db.SQL())
 	s.pub.Store(st)
 	return nil
 }

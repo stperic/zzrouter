@@ -164,7 +164,8 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 	w.exec(updateMeta, strconv.FormatUint(m.Revision, 10), "revision")
 	w.exec(updateMeta, strconv.FormatUint(m.Sequence, 10), "sequence")
 	published := &state{records: t.records, snap: snap, meta: m}
-	if uncertain, err := s.write(ctx, w); err != nil {
+	free, uncertain, err := s.write(ctx, w)
+	if err != nil {
 		if !uncertain {
 			return nil, busy(err)
 		}
@@ -175,6 +176,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 			return nil, err
 		}
 	}
+	published.freeBytes = free
 	s.pub.Store(published)
 	if !changed {
 		return nil, nil
@@ -188,25 +190,28 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 }
 
 // write runs w in one immediate transaction that the caller's cancellation
-// cannot cut short. uncertain marks a failed COMMIT, which may have committed.
-func (s *Store) write(ctx context.Context, w *writes) (uncertain bool, err error) {
+// cannot cut short, and returns the free-page bytes it leaves, read under the
+// transaction's lock so nothing waits between the COMMIT and the publication.
+// uncertain marks a failed COMMIT, which may have committed.
+func (s *Store) write(ctx context.Context, w *writes) (free sql.NullInt64, uncertain bool, err error) {
 	ctx = context.WithoutCancel(ctx)
 	tx, err := s.db.SQL().BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin access commit: %w", err)
+		return free, false, fmt.Errorf("begin access commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	for _, st := range w.stmts {
 		if _, err := tx.ExecContext(ctx, st.query, st.args...); err != nil {
-			return false, fmt.Errorf("write access records: %w", err)
+			return free, false, fmt.Errorf("write access records: %w", err)
 		}
 	}
+	free = freeBytes(ctx, tx)
 	if s.beforeCommit != nil {
 		if err := s.beforeCommit(tx); err != nil {
-			return false, err
+			return free, false, err
 		}
 	}
-	return true, tx.Commit()
+	return free, true, tx.Commit()
 }
 
 // reload settles a failed COMMIT by the stored sequence. If the database cannot

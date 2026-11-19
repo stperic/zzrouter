@@ -463,7 +463,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			if err != nil {
 				return nil, err
 			}
-			s.accessStore = store
+			s.accessStore, s.stateStore = store, store
 			if err := s.initLocalProof(context.Background(), issuer); err != nil {
 				return nil, err
 			}
