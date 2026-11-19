@@ -99,7 +99,7 @@ Invitation URLs may carry a bearer token in the fragment only. Remove the fragme
 
 ## Recovery authority
 
-Implement `zzrouter access recover-owner --dir <installation>` as an online local operation. The running daemon creates a restricted local proof file for that installation, rotates it on restart, retains only its expected proof in memory, and removes it when closed. The command reads that file internally and submits it to the local endpoint; it does not print the proof. Reject browser Origin, nonlocal requests, wrong/stale proof and mismatched installation. Loopback alone is not authority. Normal virtual administrator keys cannot replace this proof.
+Implement `zzrouter access recover-owner --dir <installation>` as an online local operation. Every coordinator creates a restricted local proof file for its installation at start, with or without browser sign-in, rotates it on restart, retains only its expected proof in memory, and removes it when closed. The command reads that file internally and sends it to the local endpoint in the `X-Zzrouter-Local-Proof` header, never in a URL or body; it does not print the proof. One gate (`localOperator`) admits the request only from an address assigned to the host, with no Origin, Cookie, X-CSRF-Token, Sec-Fetch-*, Via or forwarding header, and answers every refusal with the same 403; it removes the header before the handler runs, and no upstream forward carries it. Loopback alone is not authority. Normal virtual administrator keys cannot replace this proof, and MCP tools cannot send it.
 
 Account recovery belongs to the user-facing `zzrouter` command tree. Move the
 existing command and its local HTTP client from `servercli` to `clientcli`, with

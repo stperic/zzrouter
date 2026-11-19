@@ -49,8 +49,9 @@ func TestAPIDiscovery_NoMissingRoutes(t *testing.T) {
 		// The invariant is "every route a client can CALL is advertised",
 		// not "every route that is mounted". A retired route only answers
 		// 410, so advertising it hands a caller a guaranteed dead end —
-		// see TestAPIDiscoveryOmitsRetiredRoutes.
-		if isRetiredRoute(r.Handler) {
+		// see TestAPIDiscoveryOmitsRetiredRoutes. A local route takes only
+		// the host's local proof, so no key-holding client can call it.
+		if isRetiredRoute(r.Handler) || server.authTier(r.Method, r.Path) == authLocal {
 			continue
 		}
 		key := r.Method + " " + uriTemplatePath(r.Path)

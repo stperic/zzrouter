@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,6 +35,7 @@ func TestLocalRecoveryProofLifecycle(t *testing.T) {
 	replacement, err := New(t.Context(), dir, descriptor)
 	require.NoError(t, err)
 	require.False(t, replacement.ValidReference(authority.Reference()))
+	require.False(t, replacement.Verify(file.Proof), "a new process lifetime refuses the previous proof")
 	require.NoError(t, authority.Close(), "old owner must preserve a newer daemon's proof")
 	file, err = Read(t.Context(), dir)
 	require.NoError(t, err)
@@ -70,6 +72,14 @@ func TestLocalRecoveryRejectsInvalidFilesAndCanceledWork(t *testing.T) {
 	require.True(t, errors.Is(err, os.ErrNotExist))
 	_, err = Read(ctx, dir)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// Log text that names the header never keeps the proof.
+func TestHeaderIsRedactedFromLogText(t *testing.T) {
+	proof := strings.Repeat("A", 43)
+	for _, line := range []string{Header + ": " + proof, strings.ToLower(Header) + "=" + proof} {
+		require.NotContains(t, security.RedactSensitive(line), proof, line)
+	}
 }
 
 func TestLocalRecoveryAddressRefusesDNSAndRemoteHosts(t *testing.T) {

@@ -12338,8 +12338,9 @@ paths:
       tags: ["Access"]
       operationId: "beginLocalOwnerRecovery"
       summary: "Prove host filesystem authority and issue owner recovery code"
-      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
-      security: []
+      description: "Coordinator with browser sign-in only. Called by `zzrouter access recover-owner` on the installed host: the local proof travels in the `X-Zzrouter-Local-Proof` header, never in the body, and every refused proof, peer or header answers the same `403`. The body is an empty object, limited to 8192 bytes."
+      security:
+        - LocalProof: []
       requestBody:
         required: true
         content:
@@ -12347,11 +12348,6 @@ paths:
             schema:
               type: "object"
               additionalProperties: false
-              properties:
-                proof:
-                  type: "string"
-                  maxLength: 43
-              required: ["proof"]
       responses:
         "200":
           description: "Success"
@@ -12799,6 +12795,16 @@ components:
       in: header
       name: X-API-Key
       description: Admin API key for `/zzrouter/v1/*`.
+    LocalProof:
+      type: apiKey
+      in: header
+      name: X-Zzrouter-Local-Proof
+      description: >-
+        The running coordinator's local proof, read by the zzrouter client from the installation's protected
+        file and replaced at every node start. Accepted only from an address assigned to the node's host, on a
+        request with no Origin, Cookie, X-CSRF-Token, Sec-Fetch-*, Forwarded, Via, X-Forwarded-* or X-Real-IP
+        header. No API key or browser session substitutes for it, MCP tools cannot send it, and the node never
+        forwards it upstream.
     InferenceBearer:
       type: http
       scheme: bearer
@@ -17669,8 +17675,8 @@ components:
           description: Which API group the route belongs to.
         auth:
           type: string
-          enum: [none, optional, user, admin, cluster]
-          description: Credential tier the route expects.
+          enum: [none, optional, user, admin, cluster, local]
+          description: Credential tier the route expects. `local` routes take only the local proof (the `LocalProof` scheme); `zz_api` refuses them and discovery does not list them.
         streaming:
           type: string
           enum: [sse, chunked]

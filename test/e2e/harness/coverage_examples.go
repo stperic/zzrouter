@@ -2,10 +2,12 @@ package harness
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/stperic/zzrouter/pkg/security"
 )
@@ -59,8 +61,8 @@ var (
 // as dropped so the reporter can say the examples are incomplete
 // instead of presenting a partial set as the whole.
 func storeExample(key callKey, ex Example) {
-	ex.RequestBody = string(security.RedactJSON([]byte(ex.RequestBody)))
-	ex.ResponseBody = string(security.RedactJSON([]byte(ex.ResponseBody)))
+	ex.RequestBody = exampleText(ex.RequestBody)
+	ex.ResponseBody = exampleText(ex.ResponseBody)
 
 	coverageMu.Lock()
 	defer coverageMu.Unlock()
@@ -72,6 +74,20 @@ func storeExample(key callKey, ex Example) {
 		return
 	}
 	examples[key] = ex
+}
+
+// exampleText redacts a text body. Binary bytes, such as an exported
+// archive, are kept only as their length: redaction cannot read them.
+func exampleText(body string) string {
+	for rest := body; rest != ""; {
+		r, size := utf8.DecodeRuneInString(rest)
+		// A rune the capture cap cut in half still ends text.
+		if r == 0 || r == utf8.RuneError && size == 1 && utf8.FullRuneInString(rest) {
+			return fmt.Sprintf("[%d bytes of binary content not retained]", len(body))
+		}
+		rest = rest[size:]
+	}
+	return string(security.RedactJSON([]byte(body)))
 }
 
 // ObservedExamples returns captured examples sorted for stable ledger

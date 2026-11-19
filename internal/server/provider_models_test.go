@@ -257,7 +257,7 @@ func TestProviderModelsTwoNodeDownloadListDelete(t *testing.T) {
 	}
 	for _, method := range []string{"GET", "POST", "DELETE"} {
 		want := map[string]string{"GET": "listProviderModels", "POST": "downloadProviderModel", "DELETE": "deleteProviderModel"}[method]
-		catalog := catalogRoute(gin.RouteInfo{Method: method, Path: "/zzrouter/v1/providers/:name/models"})
+		catalog := (&Server{}).catalogRoute(gin.RouteInfo{Method: method, Path: "/zzrouter/v1/providers/:name/models"})
 		require.Equal(t, "admin", catalog.Auth)
 		require.Equal(t, method == "POST", catalog.Async)
 		id, err := (&Server{engine: h.public}).eligibleAPIRoute(method, "/zzrouter/v1/providers/studio/models")

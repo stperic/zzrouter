@@ -25,6 +25,9 @@ func resolveActor(callerKeyID string) string {
 // from gin and convert to an audit-actor string. Controllers call this
 // directly so the service layer receives an already-resolved actor.
 func auditActor(c *gin.Context) string {
+	if isLocalOperator(c) {
+		return audit.ActorLocalOperator
+	}
 	ac := GetAccessContext(c)
 	if ac == nil || ac.Key == nil {
 		return "unknown"

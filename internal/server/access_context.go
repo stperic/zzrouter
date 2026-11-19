@@ -7,6 +7,7 @@ package server
 import (
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 )
@@ -33,6 +34,9 @@ func GetAccessContext(c *gin.Context) *AccessContext {
 // as createdBy so CreatedBy attribution survives every later authz
 // refactor.
 func PrincipalFromContext(c *gin.Context) string {
+	if isLocalOperator(c) {
+		return audit.ActorLocalOperator // Constant: a proof-derived value would change at restart and break replay.
+	}
 	ac := GetAccessContext(c)
 	if ac == nil || ac.Key == nil {
 		return ""

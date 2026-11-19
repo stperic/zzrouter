@@ -27,9 +27,7 @@ func (s *Server) initOAuth(issuer string) error {
 	if issuer == "" {
 		return nil
 	}
-	if err := s.initPeople(context.Background(), issuer); err != nil {
-		return err
-	}
+	s.initPeople(context.Background())
 	browser := oauth.BrowserOptions{SessionCookie: browserSessionCookie, CSRFCookie: browserCSRFCookie, LegacyPath: "/oauth"}
 	if strings.HasPrefix(issuer, "https://") {
 		browser = oauth.BrowserOptions{SessionCookie: browserHostSessionCookie, CSRFCookie: browserHostCSRFCookie}

@@ -233,7 +233,7 @@ func collectAPIDiscoveryGroups(s *Server) map[string][]string {
 		if _, hidden := apiDiscoveryHidden[r.Path]; hidden {
 			continue
 		}
-		if isRetiredRoute(r.Handler) {
+		if isRetiredRoute(r.Handler) || s.authTier(r.Method, r.Path) == authLocal {
 			continue
 		}
 		group := apiDiscoveryGroupFor(r.Path)
