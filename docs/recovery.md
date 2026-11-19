@@ -41,6 +41,53 @@ Linux system installations normally use `/etc/zzrouter`; Windows services use
 `C:\ProgramData\zzrouter`. Use the exact path shown by your console. Follow the
 existing [service instructions](install.md#supervised-services) to stop and start it.
 
+### The access store section
+
+`recovery inventory` prints `{"inventory": ..., "store": ...}`. The `store`
+section reports the access database as the check a backup runs finds it. It is
+worked out on each run and saved nowhere, neither in `recovery-layout.json` nor
+in any manifest. The store is inspected even when the installation section
+cannot be read: a store refused at the first start stops the node before it
+records `recovery-layout.json`, so the command then prints `"inventory": null`
+with the store section and exits with an error. The section prints no secret,
+and no path except in an `unknown` state's `evidence` and in `archives_error`,
+which are error texts.
+
+| `state` | Meaning | What to do |
+| --- | --- | --- |
+| `ready` | The database passes the check a backup runs and an owner exists. | Nothing. |
+| `setup_required` | The database passes the check a backup runs; nobody has claimed the owner account yet. | Start the node and finish owner setup. |
+| `absent` | Neither a database nor a store marker: a worker, or a node that never ran as a coordinator. A coordinator start creates an empty store, at owner setup. | Nothing on a worker. |
+| `in_use` | The installation lock is held, by a running node or another recovery command, so the inventory opened neither the database nor its journal. | On a coordinator, read the store's state from `GET /zzrouter/v1/system/state`; a worker has no store. Or stop the service, or let the other command finish, and run the inventory again. |
+| `refused` | The database fails the check a backup runs, for `reason`: `missing` (the store marker exists and the database is gone), `schema_newer` (a newer release wrote it), `integrity_failed` (it opens but fails its checks) or `unreadable` (it cannot be opened). A start refuses for the same reasons, except that it runs SQLite's quick check and can still open a store whose only damage is in an index. `evidence` is the reason with the store's phrase for a cause it tells apart, such as `integrity_failed (its schema objects differ from this release's)` for an index, trigger or `ANALYZE` table another tool added. `next_action` is the text the node logs when it refuses to start. | Follow `next_action`; each one starts with stopping the service. |
+| `unknown` | The inventory could not judge the store: for example, the account cannot open or write the installation lock (a held lock is `in_use` instead), or the system's temporary directory is not writable or full. `evidence` is the error. The command exits with an error. | Resolve the cause in `evidence` and run the inventory again. |
+
+When it can read the store's identity, the section carries `store_id`,
+`generation`, `schema_version`, `revision` and `sequence`, also for
+`schema_newer`, since every release keeps that table's layout. With the node
+stopped, the inventory takes the installation lock (only when its file exists,
+so it never creates one owned by your account), copies the database into a
+private directory in the system's temporary directory and checks the copy with
+SQLite's full integrity check, so the live database is never migrated. It
+writes to the installation in one case: when a crash left a journal beside a
+stopped database, copying it first recovers that journal into the live file,
+exactly as the next start would.
+
+`archives` lists the online backups in the configuration's `access/backups`
+directory, newest first and then by `id`: each archive's `id` (its file is
+`<id>.tar.gz`), `created_at`, `size_bytes`, the store identity its manifest
+names, and `readable`. `readable` says only what the manifest states: a
+`database` bundle at the schema version this release writes. It is not a check,
+since the inventory reads nothing but the manifest; `recovery check` checks an
+archive, so run it before you restore one. A regular file that is not such an
+archive is listed as `readable: false` and aged by its modification time;
+`.tmp` leftovers, links, directories and other special files are not listed,
+and the inventory never follows a link. While the lock is held (`in_use`) the
+list is empty, because a running node owns that directory and its status lists
+them. Archives that cannot be listed, for example because a link stands on the
+way to `access/backups`, leave the store's state as it is: `archives` is empty,
+`archives_error` holds the error, and the command exits with an error.
+
 ## Included and separate state
 
 The archive includes configuration and provider definitions/assets/ownership

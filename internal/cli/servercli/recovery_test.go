@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,115 @@ func TestRecoveryCommandsNameTheProfileAndStore(t *testing.T) {
 	out, err = runRecovery(t, dir, "backup", "--output", filepath.Join(t.TempDir(), "worker.tar.gz"))
 	require.NoError(t, err)
 	require.Contains(t, out, "No access store")
+}
+
+// inventoryOutput is what recovery inventory printed.
+type inventoryOutput struct {
+	Inventory *recovery.Inventory `json:"inventory"`
+	Store     map[string]any      `json:"store"`
+}
+
+// runInventory runs recovery inventory on dir and decodes its standard
+// output, which must be the two sections and nothing else, also on an error.
+func runInventory(t *testing.T, dir string) (inventoryOutput, error) {
+	t.Helper()
+	cmd := NewRecoveryCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"inventory", "--dir", dir})
+	err := cmd.ExecuteContext(t.Context())
+	t.Logf("zzrouter-node recovery inventory:\n%s%s", stdout.String(), stderr.String())
+	var printed inventoryOutput
+	decoder := json.NewDecoder(&stdout)
+	decoder.DisallowUnknownFields()
+	require.NoError(t, decoder.Decode(&printed))
+	require.False(t, decoder.More(), "nothing follows the sections on standard output")
+	return printed, err
+}
+
+// sortedExclusions sorts each source's exclusions, which follow the
+// providers' map order.
+func sortedExclusions(inventory recovery.Inventory) recovery.Inventory {
+	for _, source := range inventory.Sources {
+		slices.Sort(source.Exclude)
+	}
+	return inventory
+}
+
+// TestRecoveryInventoryReportsTheStore: recovery inventory prints the
+// inventory as before and a store section that holds only the closed fields:
+// its state, the store's identity, a refusal's reason, evidence and next
+// action, and the archives, with no path and no secret; with the node running
+// it is in_use.
+func TestRecoveryInventoryReportsTheStore(t *testing.T) {
+	dir, meta := recoveryInstallation(t)
+	temp := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	inventory, err := recovery.Read(t.Context(), dir)
+	require.NoError(t, err)
+	inspect := func() map[string]any {
+		t.Helper()
+		printed, err := runInventory(t, dir)
+		require.NoError(t, err)
+		require.NotNil(t, printed.Inventory)
+		require.Equal(t, sortedExclusions(inventory), sortedExclusions(*printed.Inventory), "the inventory is printed as before")
+		encoded, err := json.Marshal(printed.Store)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded), temp, "the copy's path is not printed")
+		return printed.Store
+	}
+	require.Equal(t, map[string]any{"state": "setup_required", "store_id": meta.StoreID, "generation": meta.Generation,
+		"schema_version": 1.0, "revision": 0.0, "sequence": 0.0, "archives": []any{}}, inspect())
+
+	lock, err := pkgConfig.LockInstallation(dir)
+	require.NoError(t, err)
+	inUse := inspect()
+	require.Equal(t, "in_use", inUse["state"])
+	require.Contains(t, inUse["next_action"], "The installation is locked by a running node or another recovery command. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none.")
+	require.NoError(t, lock.Close())
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "access", "access.sqlite")))
+	require.Equal(t, map[string]any{"state": "refused", "reason": "missing", "evidence": "missing",
+		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Missing}).NextAction(), "archives": []any{}}, inspect())
+}
+
+// TestRecoveryInventoryWithoutALayout: a store refused at the first start
+// stops the node before it records its layout; the inventory still prints the
+// store section, with a null installation section, and fails with the
+// layout's error.
+func TestRecoveryInventoryWithoutALayout(t *testing.T) {
+	dir, _ := recoveryInstallation(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, recovery.InventoryFile)))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
+	printed, err := runInventory(t, dir)
+	require.ErrorContains(t, err, "read recovery inventory")
+	require.Nil(t, printed.Inventory)
+	require.Equal(t, map[string]any{"state": "refused", "reason": "unreadable", "evidence": "unreadable",
+		"next_action": (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), "archives": []any{}}, printed.Store)
+}
+
+// TestRecoveryInventoryUnknownPrintsBothSections: an inspection that cannot
+// finish prints the installation section and an unknown store section whose
+// evidence is the error, and fails; a lock file it cannot write is not a
+// running node.
+func TestRecoveryInventoryUnknownPrintsBothSections(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs Unix permissions that bind the test's account")
+	}
+	dir, _ := recoveryInstallation(t)
+	lock := filepath.Join(dir, "installation.lock")
+	require.NoError(t, os.Chmod(lock, 0o400))
+	t.Cleanup(func() { _ = os.Chmod(lock, 0o600) })
+	printed, err := runInventory(t, dir)
+	require.Error(t, err)
+	require.NotNil(t, printed.Inventory, "the installation section is printed")
+	require.Equal(t, "unknown", printed.Store["state"])
+	require.Equal(t, err.Error(), printed.Store["evidence"])
+	require.NotContains(t, err.Error(), "in use")
+	require.Contains(t, printed.Store["next_action"], "Resolve the cause in evidence")
 }
 
 // rewriteImage rewrites archive with its database image replaced by what edit

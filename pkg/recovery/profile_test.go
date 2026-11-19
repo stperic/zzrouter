@@ -35,13 +35,16 @@ func capturedImage(t *testing.T) (string, StoreMeta) {
 }
 
 // databaseBundle writes a database bundle of the image at path through the
-// production writer.
-func databaseBundle(t *testing.T, path string, meta StoreMeta) string {
+// production writer, its manifest changed by edits.
+func databaseBundle(t *testing.T, path string, meta StoreMeta, edits ...func(*Manifest)) string {
 	t.Helper()
 	size, sum, err := hashFile(t.Context(), filepath.Dir(path), filepath.Base(path))
 	require.NoError(t, err)
 	manifest := Manifest{Version: 1, Profile: ProfileDatabase, Created: utils.NowUTC(), Store: &meta,
 		Files: []File{{Name: imageName, Size: size, SHA256: sum, root: filepath.Dir(path), source: filepath.Base(path)}}}
+	for _, edit := range edits {
+		edit(&manifest)
+	}
 	output := filepath.Join(t.TempDir(), "database.tar.gz")
 	require.NoError(t, writeBundle(t.Context(), manifest, output))
 	return output

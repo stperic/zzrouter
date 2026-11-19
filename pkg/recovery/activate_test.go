@@ -73,26 +73,6 @@ func activationFixture(t *testing.T) (dir, staging string, manifest Manifest) {
 	return dir, staging, manifest
 }
 
-// tree maps every entry under root to its content's digest, "" for a directory.
-func tree(t *testing.T, root string) map[string]string {
-	t.Helper()
-	entries := map[string]string{}
-	require.NoError(t, filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || d.IsDir() {
-			entries[rel] = ""
-			return err
-		}
-		data, err := os.ReadFile(path)
-		entries[rel] = digest(data)
-		return err
-	}))
-	return entries
-}
-
 // copyTree copies the tree at root into a new directory and returns it.
 func copyTree(t *testing.T, root string) string {
 	t.Helper()

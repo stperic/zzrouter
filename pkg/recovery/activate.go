@@ -14,7 +14,6 @@ import (
 
 	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -370,18 +369,4 @@ func Rollbacks(dir string) ([]Rollback, error) {
 	}
 	slices.SortFunc(list, func(a, b Rollback) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return list, nil
-}
-
-// lockInstallation takes the installation lock of an installation that
-// started once, never creating the lock file: an absent one is
-// fs.ErrNotExist, a held one atomicfile.ErrLocked.
-func lockInstallation(dir string) (*os.File, error) {
-	lockFile, err := openRegular(filepath.Join(dir, "installation.lock"))
-	if err != nil {
-		return nil, err
-	}
-	if err := lockFile.Close(); err != nil {
-		return nil, err
-	}
-	return config.LockInstallation(dir)
 }

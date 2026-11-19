@@ -274,17 +274,13 @@ func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
 	require.Error(t, err, "gzip truncation must be detected")
 }
 
-// TestRecoveryBackupCapturesExactlyTheCommittedState: a coordinator killed
-// mid-commit leaves uncommitted pages in the file and a hot journal beside it;
-// the bundle's image holds exactly the committed state, recovering the journal
-// is the only change to the live file, and the restored node opens the image.
-func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
-	dir, output, keyOutput := recoveryFixture(t)
-	committedMeta := issue(t, dir).meta
-	dbFile := filepath.Join(dir, "access", "access.sqlite")
+// crashMidCommit leaves the database at dbFile as a coordinator killed
+// mid-commit would: uncommitted pages in the file and a hot journal beside it.
+// It returns the committed file's bytes.
+func crashMidCommit(t *testing.T, dbFile string) []byte {
+	t.Helper()
 	committed, err := os.ReadFile(dbFile)
 	require.NoError(t, err)
-
 	// A transaction larger than the page cache writes into the file before COMMIT.
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?_pragma=synchronous(OFF)&_pragma=cache_size(10)")
 	require.NoError(t, err)
@@ -305,6 +301,18 @@ func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
 	require.NoError(t, os.WriteFile(dbFile, inFlight, 0o600))
 	require.NoError(t, os.WriteFile(dbFile+"-journal", journal, 0o600))
 	require.NotEqual(t, committed, inFlight, "the crash left uncommitted pages in the file")
+	return committed
+}
+
+// TestRecoveryBackupCapturesExactlyTheCommittedState: a coordinator killed
+// mid-commit leaves uncommitted pages in the file and a hot journal beside it;
+// the bundle's image holds exactly the committed state, recovering the journal
+// is the only change to the live file, and the restored node opens the image.
+func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
+	dir, output, keyOutput := recoveryFixture(t)
+	committedMeta := issue(t, dir).meta
+	dbFile := filepath.Join(dir, "access", "access.sqlite")
+	committed := crashMidCommit(t, dbFile)
 
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
@@ -404,11 +412,10 @@ func privateTemp(t *testing.T) string {
 	return temp
 }
 
-// TestRecoveryBackupRefusalsWriteNothing: a live store that will not open
-// stops the backup with its own reason and next action, and leaves no
-// archive, no key and no temporary anywhere.
-func TestRecoveryBackupRefusalsWriteNothing(t *testing.T) {
-	for reason, damage := range map[sqlstore.Reason]func(t *testing.T, database string){
+// storeDamages damages a live database so that a start refuses it for each
+// reason Backup refuses too.
+func storeDamages() map[sqlstore.Reason]func(t *testing.T, database string) {
+	return map[sqlstore.Reason]func(t *testing.T, database string){
 		sqlstore.Missing: func(t *testing.T, database string) { require.NoError(t, os.Remove(database)) },
 		sqlstore.Unreadable: func(t *testing.T, database string) {
 			require.NoError(t, os.WriteFile(database, []byte("not a database, just text long enough to have a header"), 0o600))
@@ -425,7 +432,14 @@ func TestRecoveryBackupRefusalsWriteNothing(t *testing.T) {
 			data[(page-1)*size] = 0xff
 			require.NoError(t, os.WriteFile(database, data, 0o600))
 		},
-	} {
+	}
+}
+
+// TestRecoveryBackupRefusalsWriteNothing: a live store that will not open
+// stops the backup with its own reason and next action, and leaves no
+// archive, no key and no temporary anywhere.
+func TestRecoveryBackupRefusalsWriteNothing(t *testing.T) {
+	for reason, damage := range storeDamages() {
 		t.Run(string(reason), func(t *testing.T) {
 			dir, output, keyOutput := recoveryFixture(t)
 			temp := privateTemp(t)
