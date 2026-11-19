@@ -60,7 +60,7 @@ func TestCopyFile(t *testing.T) {
 	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'kept')")
 	require.NoError(t, db.Close())
 	dst := filepath.Join(dir, "copy.sqlite")
-	require.NoError(t, sqlitedb.CopyFile(path, dst))
+	require.NoError(t, sqlitedb.CopyFile(t.Context(), path, dst))
 	source, err := os.ReadFile(path)
 	require.NoError(t, err)
 	copied, err := os.ReadFile(dst)
@@ -69,13 +69,17 @@ func TestCopyFile(t *testing.T) {
 	ownerOnly(t, dst)
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "occupied"), []byte("preserve"), 0o600))
-	require.ErrorIs(t, sqlitedb.CopyFile(path, filepath.Join(dir, "occupied")), os.ErrExist)
+	require.ErrorIs(t, sqlitedb.CopyFile(t.Context(), path, filepath.Join(dir, "occupied")), os.ErrExist)
 	data, err := os.ReadFile(filepath.Join(dir, "occupied"))
 	require.NoError(t, err)
 	require.Equal(t, "preserve", string(data))
 	failed := filepath.Join(dir, "failed.sqlite")
-	require.ErrorIs(t, sqlitedb.CopyFile(filepath.Join(dir, "absent.sqlite"), failed), os.ErrNotExist)
+	require.ErrorIs(t, sqlitedb.CopyFile(t.Context(), filepath.Join(dir, "absent.sqlite"), failed), os.ErrNotExist)
 	require.NoFileExists(t, failed)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.ErrorIs(t, sqlitedb.CopyFile(cancelled, path, failed), context.Canceled)
+	require.NoFileExists(t, failed, "a cancelled copy leaves no file")
 }
 
 func TestCheckCorruptPage(t *testing.T) {

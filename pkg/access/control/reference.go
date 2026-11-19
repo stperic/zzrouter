@@ -26,7 +26,9 @@ func credentialVersion(secret string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-// virtualVersion includes the generation, which changes only when the stored content is replaced.
+// virtualVersion includes the generation. A staged restore prepares its image
+// under a new one (sqlstore.PrepareImage), so a reference issued before the
+// restore stops resolving while the key itself still authenticates.
 func virtualVersion(generation string, k *keys.VirtualKey) string {
 	return credentialVersion(generation + "\x00" + k.UUID + "\x00" + k.HashedKey)
 }

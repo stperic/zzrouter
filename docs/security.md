@@ -271,5 +271,7 @@ answers `503 access_store_failed` and exits so its service manager restarts it.
 
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.
+It prepares the staged access database image so that sessions, delegated tokens
+and app-key references issued before the restore stop resolving.
 See [recovery](recovery.md) for included data, separate dependencies and required
 post-activation checks. Restoring an old valid backup can resurrect revoked access.

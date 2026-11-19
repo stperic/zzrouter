@@ -18,16 +18,23 @@ import (
 	"strings"
 
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/security"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Check validates a bundle without writing installation state or creating stores.
+// Check validates a bundle of either profile without writing installation
+// state or creating stores. A database image streams to a private temporary
+// file, where sqlstore.CheckImage checks it, and must match the manifest.
 func Check(ctx context.Context, archive, keyFile string) (Manifest, error) {
 	return readArchive(ctx, archive, keyFile, "")
 }
 
 // Restore writes only into a new, protected staging directory. Nothing is
-// activated. A failed operation leaves INCOMPLETE; it never overwrites state.
+// activated. A staged database image is prepared to replace a store's content
+// and checked again, and the staging manifest records it in Staged, so nothing
+// publishes an image as archived. A failed operation leaves INCOMPLETE; it
+// never overwrites state.
 func Restore(ctx context.Context, archive, keyFile, destination string) (Manifest, error) {
 	if destination == "" {
 		return Manifest{}, errors.New("a new restore staging directory is required")
@@ -53,7 +60,7 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 	defer func() { _ = compressed.Close() }()
 	compressed.Multistream(false)
 	reader := tar.NewReader(io.LimitReader(compressed, maxTotal+maxManifest+maxFiles*1024))
-	manifest, data, err := readManifest(reader)
+	manifest, err = readManifest(reader)
 	if err != nil {
 		return manifest, err
 	}
@@ -69,7 +76,19 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 	if root != nil {
 		defer func() { _ = root.Close() }()
 	}
-	snapshots, err := readEntries(ctx, reader, manifest, root)
+	images := root
+	if images == nil && manifest.Store != nil {
+		temp, err := privateDir()
+		if err != nil {
+			return manifest, err
+		}
+		defer func() { _ = os.RemoveAll(temp) }()
+		if images, err = os.OpenRoot(temp); err != nil {
+			return manifest, err
+		}
+		defer func() { _ = images.Close() }()
+	}
+	snapshots, err := readEntries(ctx, reader, manifest, root, images)
 	defer func() {
 		for _, data := range snapshots {
 			clear(data)
@@ -92,28 +111,72 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 	if err := validateSnapshots(snapshots, key); err != nil {
 		return manifest, err
 	}
-	return manifest, finishStaging(root, destination, data, key)
+	// Last, so a refusal for a newer schema means everything else passed.
+	if manifest.Store != nil {
+		if err := checkImage(ctx, images, *manifest.Store); err != nil {
+			return manifest, err
+		}
+	}
+	return manifest, finishStaging(ctx, root, destination, &manifest, key)
 }
 
-func readManifest(reader *tar.Reader) (Manifest, []byte, error) {
+func readManifest(reader *tar.Reader) (Manifest, error) {
 	var manifest Manifest
 	header, err := reader.Next()
 	if err != nil || header.Name != "manifest.json" || header.Typeflag != tar.TypeReg || header.Size < 1 || header.Size > maxManifest {
-		return manifest, nil, errors.New("invalid recovery manifest header")
+		return manifest, errors.New("invalid recovery manifest header")
 	}
 	data, err := io.ReadAll(reader)
 	if err != nil {
-		return manifest, nil, err
+		return manifest, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&manifest); err != nil {
-		return manifest, nil, err
+		return manifest, err
 	}
 	if decoder.Decode(new(any)) != io.EOF {
-		return manifest, nil, errors.New("recovery manifest contains trailing data")
+		return manifest, errors.New("recovery manifest contains trailing data")
 	}
-	return manifest, data, validateManifest(manifest)
+	return manifest, validateManifest(manifest)
+}
+
+func imagePath(root *os.Root) string {
+	return filepath.Join(root.Name(), filepath.FromSlash(imageName))
+}
+
+// checkImage refuses an image sqlstore.CheckImage refuses, with its *Refusal,
+// or whose meta is not the manifest's store description.
+func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
+	img, err := sqlstore.CheckImage(ctx, imagePath(images))
+	if err != nil {
+		return err
+	}
+	if StoreMeta(img.Meta) != want {
+		return errors.New("the database image does not match the manifest's store description")
+	}
+	return nil
+}
+
+// prepareImage readies the staged image to replace a store's content, checks
+// it again and describes it for the staging manifest.
+func prepareImage(ctx context.Context, root *os.Root) (*Staged, error) {
+	prepared, err := sqlstore.PrepareImage(ctx, imagePath(root))
+	if err != nil {
+		return nil, err
+	}
+	checked, err := sqlstore.CheckImage(ctx, imagePath(root))
+	if err != nil {
+		return nil, err
+	}
+	if checked != prepared {
+		return nil, errors.New("the prepared database image does not check as prepared")
+	}
+	_, sum, err := hashFile(ctx, root.Name(), filepath.FromSlash(imageName))
+	if err != nil {
+		return nil, err
+	}
+	return &Staged{ImageSHA256: sum, Generation: prepared.Generation, PreparedAt: utils.NowUTC()}, nil
 }
 
 func recoveryKey(manifest Manifest, keyFile string) ([]byte, error) {
@@ -150,9 +213,16 @@ func stagingRoot(destination string) (*os.Root, error) {
 	return os.OpenRoot(destination)
 }
 
-func finishStaging(root *os.Root, destination string, data, key []byte) error {
+func finishStaging(ctx context.Context, root *os.Root, destination string, manifest *Manifest, key []byte) error {
 	if root == nil {
 		return nil
+	}
+	if manifest.Store != nil {
+		staged, err := prepareImage(ctx, root)
+		if err != nil {
+			return err
+		}
+		manifest.Staged = staged
 	}
 	if len(key) > 0 {
 		if err := root.Mkdir("protection", 0o700); err != nil {
@@ -162,13 +232,20 @@ func finishStaging(root *os.Root, destination string, data, key []byte) error {
 			return err
 		}
 	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
 	if err := writeExclusive(filepath.Join(destination, "manifest.json"), data); err != nil {
 		return err
 	}
 	return root.Remove("INCOMPLETE")
 }
 
-func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, root *os.Root) (map[string][]byte, error) {
+// readEntries verifies every entry, keeping the files validateContent names in
+// memory. It writes every entry into root when staging, and the image into
+// images, never into memory.
+func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, root, images *os.Root) (map[string][]byte, error) {
 	snapshots := make(map[string][]byte)
 	var retained int64
 	for _, expected := range manifest.Files {
@@ -189,16 +266,20 @@ func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, roo
 			}
 			writers = append(writers, &content)
 		}
+		dest := root
+		if expected.Name == imageName {
+			dest = images
+		}
 		var target *os.File
-		if root != nil {
-			if err := root.MkdirAll(filepath.FromSlash(path.Dir(expected.Name)), 0o700); err != nil {
+		if dest != nil {
+			if err := dest.MkdirAll(filepath.FromSlash(path.Dir(expected.Name)), 0o700); err != nil {
 				return snapshots, err
 			}
 			mode := os.FileMode(0o600)
 			if expected.Executable {
 				mode = 0o700
 			}
-			target, err = root.OpenFile(filepath.FromSlash(expected.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+			target, err = dest.OpenFile(filepath.FromSlash(expected.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 			if err != nil {
 				return snapshots, err
 			}
@@ -222,8 +303,11 @@ func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, roo
 }
 
 func validateManifest(manifest Manifest) error {
-	if manifest.Version != 1 || manifest.Inventory.Version != 1 || len(manifest.Files) == 0 || len(manifest.Files) > maxFiles {
+	if manifest.Version != 1 || len(manifest.Files) == 0 || len(manifest.Files) > maxFiles {
 		return errors.New("unsupported or empty recovery bundle")
+	}
+	if manifest.Staged != nil {
+		return errors.New("a staging manifest is not a recovery bundle; restore from the original archive")
 	}
 	seen := make(map[string]bool)
 	spellings := make(map[string]string)
@@ -233,7 +317,7 @@ func validateManifest(manifest Manifest) error {
 		if validateContent(lower) && file.Name != lower {
 			return fmt.Errorf("authority path must use canonical spelling: %s", file.Name)
 		}
-		if !safeName(file.Name) || !strings.HasPrefix(file.Name, "config/") && !strings.HasPrefix(file.Name, "data/") && !strings.HasPrefix(file.Name, "providers/") || strings.HasPrefix(lower, "config/") && excluded(strings.TrimPrefix(lower, "config/"), configExclusions()) || excluded(lower, nil) || seen[lower] {
+		if !safeName(file.Name) || !strings.HasPrefix(file.Name, "config/") && !strings.HasPrefix(file.Name, "data/") && !strings.HasPrefix(file.Name, "providers/") && file.Name != imageName || strings.HasPrefix(lower, "config/") && excluded(strings.TrimPrefix(lower, "config/"), configExclusions()) || excluded(lower, nil) || seen[lower] {
 			return fmt.Errorf("unsafe or duplicate recovery entry: %s", file.Name)
 		}
 		if file.Size < 0 || file.Size > maxTotal || len(file.SHA256) != 64 {
@@ -262,11 +346,37 @@ func validateManifest(manifest Manifest) error {
 			}
 		}
 	}
-	if !seen["config/node.yaml"] {
-		return errors.New("recovery bundle requires node.yaml")
+	return validateProfile(manifest, seen)
+}
+
+// validateProfile applies the rules of manifest's profile; seen holds its
+// entries' names in lower case.
+func validateProfile(manifest Manifest, seen map[string]bool) error {
+	image := seen[imageName]
+	if image != (manifest.Store != nil) {
+		return errors.New("a database image and its store description travel together")
 	}
-	if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
-		return errors.New("encrypted state requires its separate protection-key fingerprint")
+	switch manifest.Profile {
+	case ProfileInstallation:
+		if manifest.Inventory == nil || manifest.Inventory.Version != 1 {
+			return errors.New("an installation bundle requires its inventory")
+		}
+		if !seen["config/node.yaml"] {
+			return errors.New("recovery bundle requires node.yaml")
+		}
+		if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
+			return errors.New("encrypted state requires its separate protection-key fingerprint")
+		}
+		// A marker without its database would stop the restored node as missing.
+		if seen["config/"+sqlstore.MarkerName] && !image {
+			return errors.New("the store marker requires the database image")
+		}
+	case ProfileDatabase:
+		if !image || len(manifest.Files) != 1 || manifest.Inventory != nil || manifest.KeySHA256 != "" || len(manifest.MissingOptional) > 0 {
+			return errors.New("a database bundle holds the database image alone")
+		}
+	default:
+		return fmt.Errorf("unknown recovery bundle profile %q", manifest.Profile)
 	}
 	return nil
 }

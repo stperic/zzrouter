@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/stperic/common/atomicfile"
-	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -22,9 +21,12 @@ import (
 // InventoryFile records the paths resolved by the daemon account.
 const InventoryFile = "recovery-layout.json"
 
-// These are neither durable user state nor safe to replay after recovery.
+// These are neither durable user state nor safe to replay after recovery. The
+// access directory travels only as the database image: its live database, any
+// journal or staged file, online backups and the owner-recovery proof are
+// never raw sources.
 func configExclusions() []string {
-	return append([]string{"private", "models", "cache", "logs", "pids", "bin", "versions", "backups", "pairing.txt", "access/owner-recovery.json", InventoryFile, "update", "update-operation.json", "update-pending-confirm.json"}, sqlstore.Excluded()...)
+	return []string{"private", "models", "cache", "logs", "pids", "bin", "versions", "backups", "pairing.txt", "access", InventoryFile, "update", "update-operation.json", "update-pending-confirm.json"}
 }
 
 // Source paths are captured by the daemon, not inferred from the backup user's

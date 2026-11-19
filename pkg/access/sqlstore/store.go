@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -30,8 +29,10 @@ import (
 )
 
 const (
-	fileName   = "access.sqlite"
-	markerName = "access-store.json" // beside node.yaml: tells a lost database from a fresh install
+	fileName = "access.sqlite"
+	// MarkerName is the store marker beside node.yaml: it tells a lost
+	// database from a fresh install, and recovery bundles carry it.
+	MarkerName = "access-store.json"
 )
 
 // Reason is the closed cause of a Refusal.
@@ -168,14 +169,12 @@ func open(ctx context.Context, dir string, opts Options) (*Store, error) {
 	return s, nil
 }
 
-// errLiveImage refuses an image operation on the live database's file, which
-// an open store would overwrite with what it publishes.
-var errLiveImage = errors.New("an image cannot be the live access database file")
-
 // attach opens the database at path into s, refusing it for a start's reasons.
 func (s *Store) attach(ctx context.Context, path string, image bool) error {
-	if image && strings.EqualFold(filepath.Base(path), fileName) {
-		return errLiveImage
+	if image {
+		if err := admitImage(path); err != nil {
+			return err
+		}
 	}
 	db, err := sqlitedb.Open(ctx, path, schema)
 	if err != nil {
@@ -266,32 +265,13 @@ func noStore(dir string) (bool, error) {
 	if _, err := os.Lstat(databasePath(dir)); !errors.Is(err, fs.ErrNotExist) {
 		return false, nil // any other failure is the opener's to report
 	}
-	if _, err := os.Lstat(filepath.Join(dir, markerName)); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Lstat(filepath.Join(dir, MarkerName)); !errors.Is(err, fs.ErrNotExist) {
 		if err == nil {
 			err = refuse(Missing, nil)
 		}
 		return false, err
 	}
 	return true, nil
-}
-
-// Settle finishes SQLite's recovery of a journal a crash left beside dir's
-// database, so a copy of the file holds exactly the committed transactions.
-// The caller holds the installation lock. No database is nothing to settle;
-// an unreadable or foreign file is the Refusal Open would give.
-func Settle(ctx context.Context, dir string) error {
-	h, err := sqlitedb.Probe(ctx, databasePath(dir))
-	if errors.Is(err, sqlitedb.ErrNotExist) {
-		return nil
-	}
-	if err == nil {
-		// A journal settles whatever the schema version, so a newer release's
-		// database can still be backed up before it is restored over.
-		if err = schema.Admit(h); errors.Is(err, sqlitedb.ErrNewer) {
-			return nil
-		}
-	}
-	return fileRefusal(err)
 }
 
 // fileRefusal is the store's reason for a file sqlitedb would not open or
@@ -307,14 +287,6 @@ func fileRefusal(err error) error {
 		return refuse(Unreadable, err)
 	}
 	return err
-}
-
-// Excluded lists, slash-separated and relative to dir, the files beside the
-// database that a copy of dir must not carry: a journal belongs to the moment
-// it was left, and a staged file was never published.
-func Excluded() []string {
-	name := "access/" + fileName
-	return []string{name + "-journal", name + ".staged"}
 }
 
 // removeLeftovers removes files an earlier attempt left. SQLite drops a journal
@@ -381,7 +353,7 @@ type marker struct {
 
 // ensureMarker writes the marker unless it already names storeID.
 func ensureMarker(dir, storeID string) error {
-	path := filepath.Join(dir, markerName)
+	path := filepath.Join(dir, MarkerName)
 	want := marker{1, storeID}
 	data, err := os.ReadFile(path)
 	var current marker

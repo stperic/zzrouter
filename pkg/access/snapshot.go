@@ -30,8 +30,9 @@ func FailedSnapshot() *Snapshot {
 
 // NewSnapshot owns k and t: the caller never changes them or their records
 // again. A nil p means no people. generation names the stored content the
-// records belong to and changes only when that content is replaced;
-// keysVersion is above zero and changes whenever a key record does.
+// records belong to; a staged restore prepares its image under a new one, so
+// references bound to the old one stop resolving. keysVersion is above zero
+// and changes whenever a key record does.
 func NewSnapshot(generation string, keysVersion uint64, k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
 	s := &Snapshot{generation: generation, keysVersion: keysVersion, keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
 	for id, key := range k {

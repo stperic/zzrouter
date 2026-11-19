@@ -3,7 +3,10 @@ package sqlstore
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/access/people"
@@ -22,6 +25,38 @@ type Image struct {
 	// Initialized reports that an owner exists. It is false for an image a
 	// newer release wrote, whose records this release cannot read.
 	Initialized bool
+}
+
+// errLiveImage refuses an image operation on the live database's file, which
+// an open store would overwrite with what it publishes, and on anything but a
+// regular file, since a link can name that file under another name.
+var errLiveImage = errors.New("an image must be a regular file other than the live access database")
+
+// admitImage refuses, before anything opens it, a path errLiveImage names and
+// an image in WAL mode, as Unreadable: opening it read-write rewrites its header.
+func admitImage(path string) error {
+	if strings.EqualFold(filepath.Base(path), fileName) {
+		return errLiveImage
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errLiveImage
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	// The file format versions, header bytes 18 and 19, are 2 in WAL mode; a
+	// shorter file is SQLite's to judge.
+	var header [20]byte
+	if _, err := io.ReadFull(f, header[:]); err == nil && (header[18] == 2 || header[19] == 2) {
+		return refuse(Unreadable, errors.New("the image is in WAL mode"))
+	}
+	return nil
 }
 
 func (s *Store) image() Image {
@@ -75,7 +110,7 @@ func CaptureStopped(ctx context.Context, dir, dst string) (Image, error) {
 		if m, err := loadMeta(ctx, db.SQL()); err == nil {
 			img.Meta = m
 		}
-		if err := sqlitedb.CopyFile(path, dst); err != nil {
+		if err := sqlitedb.CopyFile(ctx, path, dst); err != nil {
 			return Image{}, err
 		}
 		return img, nil
@@ -100,7 +135,8 @@ func CaptureStopped(ctx context.Context, dir, dst string) (Image, error) {
 // Unreadable, since images are never migrated. It never changes the image's
 // content, size or modification time, but restricts the file to its owner as
 // every open does; where that fails, on a read-only medium, it returns a plain
-// error, not a Refusal. The live database's file is refused.
+// error, not a Refusal. The live database's file, a path that is not a
+// regular file and an image in WAL mode are refused before anything opens them.
 func CheckImage(ctx context.Context, path string) (Image, error) {
 	s := &Store{}
 	if err := s.attach(ctx, path, true); err != nil {

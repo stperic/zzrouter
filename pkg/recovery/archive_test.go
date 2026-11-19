@@ -10,11 +10,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -23,6 +26,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,36 +81,136 @@ func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	return
 }
 
+// issued is what a running coordinator handed out before a backup: the
+// owner's session reference, an app key and its reference, at meta.
+type issued struct {
+	meta         sqlstore.Meta
+	session, app control.CredentialReference
+	raw          string
+}
+
+// issue opens dir's stopped store as a running node would and issues references.
+func issue(t *testing.T, dir string) issued {
+	t.Helper()
+	store, err := sqlstore.Open(t.Context(), dir, peopleOptions)
+	require.NoError(t, err)
+	var i issued
+	_, i.raw, err = store.CreateKey(t.Context(), "probe", keys.VirtualKey{Name: "Probe", Role: "user", TeamID: "workspace", TeamRole: "member"}, audit.Event{})
+	require.NoError(t, err)
+	core := control.NewCore(control.StaticKeySet{}, store, nil, nil, nil)
+	i.session, err = core.PersonReference(store.Snapshot().Owner())
+	require.NoError(t, err)
+	i.app, err = core.Reference(i.raw)
+	require.NoError(t, err)
+	i.meta = store.Meta()
+	require.NoError(t, store.Close())
+	return i
+}
+
+// activate places the staged image as docs/recovery.md tells the operator to,
+// at the staged configuration's access/access.sqlite, and opens that store.
+func activate(t *testing.T, destination string) *sqlstore.Store {
+	t.Helper()
+	config := filepath.Join(destination, "config")
+	require.NoError(t, os.MkdirAll(filepath.Join(config, "access"), 0o700))
+	data, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(imageName)))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(config, "access", "access.sqlite"), data, 0o600))
+	store, err := sqlstore.Open(t.Context(), config, peopleOptions)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+// requireStaged requires destination to hold a prepared image of want and a
+// staging manifest equal to manifest that records it, and returns the image.
+func requireStaged(t *testing.T, destination string, manifest Manifest, want StoreMeta) sqlstore.Image {
+	t.Helper()
+	require.NoFileExists(t, filepath.Join(destination, "INCOMPLETE"))
+	data, err := os.ReadFile(filepath.Join(destination, "manifest.json"))
+	require.NoError(t, err)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var staging Manifest
+	require.NoError(t, decoder.Decode(&staging))
+	require.NotNil(t, staging.Staged)
+	require.Equal(t, *manifest.Staged, *staging.Staged)
+	require.Equal(t, want, *staging.Store, "the archived store description is kept")
+	image := filepath.Join(destination, filepath.FromSlash(imageName))
+	content, err := os.ReadFile(image)
+	require.NoError(t, err)
+	require.Equal(t, digest(content), staging.Staged.ImageSHA256, "the staged digest is the prepared image's")
+	img, err := sqlstore.CheckImage(t.Context(), image)
+	require.NoError(t, err)
+	require.Equal(t, staging.Staged.Generation, img.Generation)
+	require.NotEqual(t, want.Generation, img.Generation, "the image is never published as archived")
+	require.Equal(t, [2]any{want.StoreID, want.Sequence + 1}, [2]any{img.StoreID, img.Sequence}, "the store ID is kept; preparation is one commit")
+	require.WithinDuration(t, utils.NowUTC(), staging.Staged.PreparedAt, time.Minute)
+	return img
+}
+
+// TestRecoveryRoundTripPreservesAuthorityAndSpend backs up, checks and stages
+// an installation with people, keys and teams. The staged image opens as a
+// store where the owner signs in with the same password while every session
+// and app-key reference issued before does not resolve, and its history
+// records the restore. Every image copy lives in a private temporary
+// directory that is gone afterwards.
 func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
+	before := issue(t, dir)
+	destination := filepath.Join(t.TempDir(), "restored")
+	temp := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
+	require.Equal(t, ProfileInstallation, manifest.Profile)
+	require.Equal(t, StoreMeta(before.meta), *manifest.Store)
+	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
 	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool {
-		return file.Name == "config/private/credentials.key" || file.Name == "config/pairing.txt" || file.Name == "config/installation.lock"
-	}))
+		return file.Name == "config/private/credentials.key" || file.Name == "config/pairing.txt" || file.Name == "config/installation.lock" || strings.HasPrefix(file.Name, "config/access/")
+	}), "the access directory travels only as the image")
 	checked, err := Check(t.Context(), output, keyOutput)
 	require.NoError(t, err)
 	require.Equal(t, len(manifest.Files), len(checked.Files))
+	require.Equal(t, manifest.Store, checked.Store)
 	require.NotEmpty(t, checked.MissingOptional, "never-installed providers are explicitly reported, not silently omitted")
-	destination := filepath.Join(t.TempDir(), "restored")
-	_, err = Restore(t.Context(), output, keyOutput, destination)
+	restored, err := Restore(t.Context(), output, keyOutput, destination)
 	require.NoError(t, err)
-	// The database and its marker travel as ordinary files.
-	for _, name := range []string{"node.yaml", "spend.json", "access/access.sqlite", "access-store.json", "credentials.enc"} {
+	entries, err := os.ReadDir(temp)
+	require.NoError(t, err)
+	require.Empty(t, entries, "no image copy is left behind")
+	img := requireStaged(t, destination, restored, *manifest.Store)
+	// The marker travels raw, and preparation keeps the store ID it holds.
+	for _, name := range []string{"node.yaml", "spend.json", "access-store.json", "credentials.enc"} {
 		before, err := os.ReadFile(filepath.Join(dir, name))
 		require.NoError(t, err)
 		after, err := os.ReadFile(filepath.Join(destination, "config", name))
 		require.NoError(t, err)
 		require.Equal(t, before, after, name)
 	}
-	restoredStore, err := sqlstore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
-	require.NoError(t, err)
+	require.NoDirExists(t, filepath.Join(destination, "config", "access"))
+
+	restoredStore := activate(t, destination)
+	require.Equal(t, img.Meta, restoredStore.Meta())
 	person, err := restoredStore.People().Authenticate(t.Context(), "owner", "a long test password")
-	require.NoError(t, err)
+	require.NoError(t, err, "the owner signs in with the same password")
 	require.Equal(t, "admin", person.Role)
 	require.Equal(t, "workspace", person.TeamID)
 	require.Equal(t, "workspace", restoredStore.Snapshot().Key("editor").TeamID)
-	require.NoError(t, restoredStore.Close())
+	core := control.NewCore(control.StaticKeySet{}, restoredStore, nil, nil, nil)
+	_, err = core.AuthenticateReference(before.session)
+	require.ErrorIs(t, err, control.ErrInvalidKey, "the owner's session from before does not resolve")
+	_, err = core.AuthenticateReference(before.app)
+	require.ErrorIs(t, err, control.ErrInvalidKey, "an app-key reference from before does not resolve")
+	_, err = core.Reference(before.raw)
+	require.NoError(t, err, "the app key itself still signs in")
+	events, _, err := restoredStore.AuditPage(t.Context(), audit.Filter{Action: audit.ActionRestorePrepared}, "", 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1, "the history records the restore")
+	require.Equal(t, restored.Staged.Generation, events[0].Metadata["generation"])
+
 	spend, err := quota.LoadSpend(filepath.Join(destination, "config", "spend.json"))
 	require.NoError(t, err)
 	require.EqualValues(t, 1750000, spend.States["team:workspace:"].SpendMicro)
@@ -119,8 +223,6 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "synthetic-provider-secret", record.Values["token"])
 	require.NoError(t, vault.Close())
-	_, err = os.Stat(filepath.Join(destination, "INCOMPLETE"))
-	require.ErrorIs(t, err, os.ErrNotExist)
 	_, err = Restore(t.Context(), output, keyOutput, destination)
 	require.ErrorContains(t, err, "new directory")
 }
@@ -152,7 +254,7 @@ func TestRecoveryRefusesLiveNodeAndInvalidAuthority(t *testing.T) {
 }
 
 func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
-	for _, name := range []string{"../escape", "config/../../escape", "config/C:drive", "config/CON", "config/name.", "config\\escape", "config/private/key", "config/owner.lock", "config/update-pending-confirm.json", "config/update-operation.json", "config/backups/executable", "config/SPEND.JSON", "config/OAuth.json", "config/access/access.sqlite-journal", "config/access/access.sqlite.staged", "config/Access/Access.sqlite-Journal"} {
+	for _, name := range []string{"../escape", "config/../../escape", "config/C:drive", "config/CON", "config/name.", "config\\escape", "config/private/key", "config/owner.lock", "config/update-pending-confirm.json", "config/update-operation.json", "config/backups/executable", "config/SPEND.JSON", "config/OAuth.json", "config/access/access.sqlite", "config/access/access.sqlite-journal", "config/access/access.sqlite.staged", "config/Access/Access.sqlite-Journal", "config/access/backups/old.tar.gz", "config/access/people.json", "store/other.sqlite", "Store/image.sqlite", "store/IMAGE.sqlite", "access.sqlite"} {
 		t.Run(name, func(t *testing.T) {
 			archive := writeTestBundle(t, map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}"), name: []byte("unsafe")})
 			_, err := Check(t.Context(), archive, "")
@@ -167,12 +269,13 @@ func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
 	require.Error(t, err, "gzip truncation must be detected")
 }
 
-// TestRecoveryBackupSettlesAJournalLeftByACrash: a coordinator killed
+// TestRecoveryBackupCapturesExactlyTheCommittedState: a coordinator killed
 // mid-commit leaves uncommitted pages in the file and a hot journal beside it;
-// the offline backup carries exactly the committed database, and the restored
-// node opens it.
-func TestRecoveryBackupSettlesAJournalLeftByACrash(t *testing.T) {
+// the bundle's image holds exactly the committed state, recovering the journal
+// is the only change to the live file, and the restored node opens the image.
+func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
+	committedMeta := issue(t, dir).meta
 	dbFile := filepath.Join(dir, "access", "access.sqlite")
 	committed, err := os.ReadFile(dbFile)
 	require.NoError(t, err)
@@ -183,7 +286,8 @@ func TestRecoveryBackupSettlesAJournalLeftByACrash(t *testing.T) {
 	db.SetMaxOpenConns(1)
 	tx, err := db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+	_, err = tx.ExecContext(t.Context(), `UPDATE meta SET value = '999' WHERE key = 'sequence';
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
 		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 100000 + i, 0, 'x', 'a', hex(randomblob(512)), '' FROM n`)
 	require.NoError(t, err)
 	inFlight, err := os.ReadFile(dbFile)
@@ -199,35 +303,42 @@ func TestRecoveryBackupSettlesAJournalLeftByACrash(t *testing.T) {
 
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
-	require.False(t, slices.ContainsFunc(manifest.Files, func(f File) bool { return strings.HasSuffix(f.Name, "-journal") }))
-	require.NoFileExists(t, dbFile+"-journal", "backup settled the journal in place")
+	require.Equal(t, StoreMeta(committedMeta), *manifest.Store, "the image is at the committed sequence")
+	require.NoFileExists(t, dbFile+"-journal", "backup recovered the journal in place")
+	live, err := os.ReadFile(dbFile)
+	require.NoError(t, err)
+	require.Equal(t, committed, live, "recovering the journal is the only change to the live file")
 	_, err = Check(t.Context(), output, keyOutput)
 	require.NoError(t, err)
 	destination := filepath.Join(t.TempDir(), "restored")
-	_, err = Restore(t.Context(), output, keyOutput, destination)
+	restored, err := Restore(t.Context(), output, keyOutput, destination)
 	require.NoError(t, err)
-	restored, err := os.ReadFile(filepath.Join(destination, "config", "access", "access.sqlite"))
+	requireStaged(t, destination, restored, *manifest.Store)
+	store := activate(t, destination)
+	inflight, _, err := store.AuditPage(t.Context(), audit.Filter{Action: "x"}, "", 10)
 	require.NoError(t, err)
-	require.Equal(t, committed, restored, "the bundle holds exactly the committed transactions")
-	store, err := sqlstore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
-	require.NoError(t, err)
+	require.Empty(t, inflight, "no uncommitted row survives")
 	_, err = store.People().Authenticate(t.Context(), "owner", "a long test password")
 	require.NoError(t, err)
-	require.NoError(t, store.Close())
 }
 
-// TestRecoveryBackupSettlesTheAccessStore copies no staged or journal file
-// and refuses a database it cannot read, with the store's reason.
-func TestRecoveryBackupSettlesTheAccessStore(t *testing.T) {
+// TestRecoveryBackupCapturesTheAccessStore never reads the access directory
+// as raw files, stops with the store's reason and writes nothing for a store
+// that refuses to open, captures a newer release's database, and backs up a
+// node without a store with no image.
+func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
-	staged := filepath.Join(dir, "access", "access.sqlite.staged")
-	require.NoError(t, os.WriteFile(staged, []byte("an unpublished store"), 0o600))
+	for _, name := range []string{"access/access.sqlite.staged", "access/backups/old.tar.gz", "access/people.json"} {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		require.NoError(t, os.WriteFile(path, []byte("not a raw source"), 0o600))
+	}
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
-	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access/access.sqlite" }))
-	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool {
-		return strings.HasPrefix(file.Name, "config/access/access.sqlite") && file.Name != "config/access/access.sqlite"
-	}))
+	require.NotNil(t, manifest.Store)
+	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
+	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access-store.json" }))
+	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return strings.HasPrefix(file.Name, "config/access/") }))
 
 	dir, output, keyOutput = recoveryFixture(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
@@ -236,8 +347,10 @@ func TestRecoveryBackupSettlesTheAccessStore(t *testing.T) {
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, sqlstore.Unreadable, refusal.Reason)
 	require.NoFileExists(t, output)
+	require.NoFileExists(t, keyOutput, "a refused backup writes no output at all")
 
-	// A rolled-back binary still backs up the newer release's database before restoring over it.
+	// A rolled-back binary still backs up the newer release's database before
+	// restoring over it, byte for byte; only that release can check it.
 	dir, output, keyOutput = recoveryFixture(t)
 	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "access", "access.sqlite")))
 	require.NoError(t, err)
@@ -245,14 +358,66 @@ func TestRecoveryBackupSettlesTheAccessStore(t *testing.T) {
 	require.NoError(t, errors.Join(err, db.Close()))
 	manifest, err = Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
-	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access/access.sqlite" }))
+	require.Equal(t, 99, manifest.Store.SchemaVersion)
+	live, err := os.ReadFile(filepath.Join(dir, "access", "access.sqlite"))
+	require.NoError(t, err)
+	image := slices.IndexFunc(manifest.Files, func(file File) bool { return file.Name == imageName })
+	require.Equal(t, digest(live), manifest.Files[image].SHA256)
+	_, err = Check(t.Context(), output, keyOutput)
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, sqlstore.SchemaNewer, refusal.Reason)
+
+	// A worker, or a node that never ran as a coordinator, has no store.
+	dir, output, keyOutput = recoveryFixture(t)
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, "access")))
+	require.NoError(t, os.Remove(filepath.Join(dir, "access-store.json")))
+	manifest, err = Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	require.Nil(t, manifest.Store)
+	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
+	checked, err := Check(t.Context(), output, keyOutput)
+	require.NoError(t, err)
+	require.Nil(t, checked.Store)
+	destination := filepath.Join(t.TempDir(), "restored")
+	restored, err := Restore(t.Context(), output, keyOutput, destination)
+	require.NoError(t, err)
+	require.Nil(t, restored.Staged)
+	require.NoFileExists(t, filepath.Join(destination, "INCOMPLETE"))
+	require.NoDirExists(t, filepath.Join(destination, "store"))
 }
 
-func writeTestBundle(t *testing.T, files map[string][]byte) string {
+// TestRecoveryFailedBackupLeavesNoOutput: a bundle that fails while it is
+// written leaves no archive, and Backup then removes the key it exported.
+func TestRecoveryFailedBackupLeavesNoOutput(t *testing.T) {
+	sources := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sources, "node.yaml"), []byte("node: {port: 9090}"), 0o600))
+	output := filepath.Join(t.TempDir(), "backup.tar.gz")
+	changed := Manifest{Version: 1, Profile: ProfileInstallation, Inventory: &Inventory{Version: 1}, Files: []File{{Name: "config/node.yaml", Size: 18, SHA256: digest([]byte("other content, same")), root: sources, source: "node.yaml"}}}
+	require.ErrorContains(t, writeBundle(t.Context(), changed, output), "source changed")
+	require.NoFileExists(t, output, "a failed bundle leaves no partial output")
+
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory its owner cannot write")
+	}
+	dir, output, keyOutput := recoveryFixture(t)
+	require.NoError(t, os.Chmod(filepath.Dir(output), 0o500))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(output), 0o700) })
+	_, err := Backup(t.Context(), dir, output, keyOutput)
+	require.ErrorIs(t, err, os.ErrPermission)
+	require.NoFileExists(t, output)
+	require.NoFileExists(t, keyOutput, "the exported key goes with the failed archive")
+}
+
+// writeTestBundle writes files, with their digests, under an installation
+// manifest that edits may change.
+func writeTestBundle(t *testing.T, files map[string][]byte, edits ...func(*Manifest)) string {
 	t.Helper()
-	manifest := Manifest{Version: 1, Inventory: Inventory{Version: 1}}
+	manifest := Manifest{Version: 1, Profile: ProfileInstallation, Inventory: &Inventory{Version: 1}}
 	for name, data := range files {
 		manifest.Files = append(manifest.Files, File{Name: name, Size: int64(len(data)), SHA256: digest(data)})
+	}
+	for _, edit := range edits {
+		edit(&manifest)
 	}
 	encoded, err := json.Marshal(manifest)
 	require.NoError(t, err)

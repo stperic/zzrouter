@@ -403,7 +403,7 @@ func copyStore(t *testing.T, from string) string {
 	t.Helper()
 	to := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(to, "access"), 0o700))
-	for _, name := range []string{filepath.Join("access", fileName), markerName} {
+	for _, name := range []string{filepath.Join("access", fileName), MarkerName} {
 		data, err := os.ReadFile(filepath.Join(from, name))
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(to, name), data, 0o600))

@@ -19,7 +19,7 @@ import (
 
 func readMarker(t *testing.T, dir string) marker {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, markerName))
+	data, err := os.ReadFile(filepath.Join(dir, MarkerName))
 	require.NoError(t, err)
 	var m marker
 	require.NoError(t, json.Unmarshal(data, &m))
@@ -118,7 +118,7 @@ func TestOpenTidiesStagingAndTheMarker(t *testing.T) {
 	storeID := s.Meta().StoreID
 	require.NoError(t, s.Close())
 	staged := dbPath(dir) + ".staged"
-	marker := filepath.Join(dir, markerName)
+	marker := filepath.Join(dir, MarkerName)
 	for name, prepare := range map[string]func(){
 		"leftover staging": func() { require.NoError(t, os.WriteFile(staged, []byte("interrupted"), 0o600)) },
 		"no marker":        func() { require.NoError(t, os.Remove(marker)) },
@@ -182,7 +182,7 @@ func TestStoreFilesAreOwnerOnly(t *testing.T) {
 	}
 	ownerOnly(filepath.Join(dir, "access"), 0o700)
 	ownerOnly(dbPath(dir), 0o600)
-	ownerOnly(filepath.Join(dir, markerName), 0o600)
+	ownerOnly(filepath.Join(dir, MarkerName), 0o600)
 	journal := errors.New("no journal seen")
 	s.beforeCommit = func(*sql.Tx) error {
 		info, err := os.Stat(dbPath(dir) + "-journal")
@@ -243,12 +243,12 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
 }
 
-// crashedMidCommit returns a closed store holding one committed audit row, a
-// copy of it as a crash mid-commit leaves it (a hot journal beside a file that
+// crashedMidCommit returns the directory of a store holding one committed
+// audit row as a crash mid-commit leaves it (a hot journal beside a file that
 // holds uncommitted pages), and the committed file's bytes.
-func crashedMidCommit(t *testing.T) (dir, crashed string, committed []byte) {
+func crashedMidCommit(t *testing.T) (crashed string, committed []byte) {
 	t.Helper()
-	dir = t.TempDir()
+	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
 	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "committed"})
 	require.NoError(t, s.Close())
@@ -280,43 +280,7 @@ func crashedMidCommit(t *testing.T) (dir, crashed string, committed []byte) {
 	inFlight, err := os.ReadFile(dbPath(crashed))
 	require.NoError(t, err)
 	require.NotEqual(t, committed, inFlight, "the copy holds uncommitted pages")
-	return dir, crashed, committed
-}
-
-// TestSettle rolls back the journal a crash left mid-commit, so a copy of the
-// file holds exactly the committed transactions, and refuses a file it cannot read.
-func TestSettle(t *testing.T) {
-	t.Parallel()
-	require.NoError(t, Settle(t.Context(), t.TempDir()), "no database is nothing to settle")
-
-	dir, crashed, committed := crashedMidCommit(t)
-	require.NoError(t, Settle(t.Context(), crashed))
-	assert.NoFileExists(t, dbPath(crashed)+"-journal")
-	settled, err := os.ReadFile(dbPath(crashed))
-	require.NoError(t, err)
-	assert.Equal(t, committed, settled, "the file holds exactly the committed transactions")
-
-	// Settle refuses an unreadable or foreign file for Open's reason, and
-	// settles a newer release's database, which Open refuses.
-	foreign, newer := copyStore(t, dir), copyStore(t, dir)
-	_, err = rawDB(t, foreign).ExecContext(t.Context(), "PRAGMA application_id = 1")
-	require.NoError(t, err)
-	_, err = rawDB(t, newer).ExecContext(t.Context(), "PRAGMA user_version = 2")
-	require.NoError(t, err)
-	junk := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(junk, "access"), 0o700))
-	require.NoError(t, os.WriteFile(dbPath(junk), []byte("not a database, just text long enough to have a header"), 0o600))
-	for name, tc := range map[string]struct {
-		dir    string
-		reason Reason
-	}{"junk": {junk, Unreadable}, "another application": {foreign, Unreadable}} {
-		var refusal *Refusal
-		require.ErrorAs(t, Settle(t.Context(), tc.dir), &refusal, name)
-		assert.Equal(t, tc.reason, refusal.Reason, name)
-		requireRefusal(t, tc.dir, tc.reason)
-	}
-	require.NoError(t, Settle(t.Context(), newer), "a newer schema is settled and can be backed up")
-	requireRefusal(t, newer, SchemaNewer)
+	return crashed, committed
 }
 
 // TestOpenRefusesRecordsThatBreakTheRulesBetweenThem damages how records

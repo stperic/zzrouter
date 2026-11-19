@@ -263,6 +263,8 @@ func TestCheckImage(t *testing.T) {
 		// Images are never migrated, so a lower version can only be a damaged header.
 		"an older schema version": {func(t *testing.T, path string) { alter(t, path, "PRAGMA user_version = 0") }, Unreadable},
 		"another application":     {func(t *testing.T, path string) { alter(t, path, "PRAGMA application_id = 1") }, Unreadable},
+		// Opening it read-write would rewrite its header to leave WAL mode.
+		"WAL mode": {func(t *testing.T, path string) { alter(t, path, "PRAGMA journal_mode = WAL") }, Unreadable},
 		"junk": {func(t *testing.T, path string) {
 			require.NoError(t, os.WriteFile(path, []byte("not a database, just text long enough to have a header"), 0o600))
 		}, Unreadable},
@@ -279,12 +281,14 @@ func TestCheckImage(t *testing.T) {
 				assert.Equal(t, tc.reason, refusal.Reason, op)
 			}
 			assert.Equal(t, damaged, readFile(t, path), "a refused image is never written")
+			assert.NoFileExists(t, path+"-wal")
 		})
 	}
 }
 
 // TestImageOperationsRefuseTheLiveFile: an image operation pointed at the
-// live database's file is refused before it opens the file, whatever its case.
+// live database's file is refused before it opens the file, whatever its case
+// and whatever link names it.
 func TestImageOperationsRefuseTheLiveFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -293,7 +297,13 @@ func TestImageOperationsRefuseTheLiveFile(t *testing.T) {
 	live := readFile(t, dbPath(dir))
 	upper := filepath.Join(t.TempDir(), "ACCESS.SQLITE")
 	require.NoError(t, os.WriteFile(upper, live, 0o644))
-	for _, path := range []string{dbPath(dir), upper} {
+	paths := []string{dbPath(dir), upper, t.TempDir()}
+	if link := filepath.Join(t.TempDir(), "image.sqlite"); os.Symlink(dbPath(dir), link) == nil {
+		paths = append(paths, link)
+	} else {
+		t.Log("symlinks unavailable")
+	}
+	for _, path := range paths {
 		for op, run := range map[string]func(context.Context, string) (Image, error){"CheckImage": CheckImage, "PrepareImage": PrepareImage} {
 			_, err := run(t.Context(), path)
 			require.ErrorIs(t, err, errLiveImage, "%s %s", op, path)
@@ -578,7 +588,7 @@ func TestCaptureStopped(t *testing.T) {
 	})
 	t.Run("a journal a crash left", func(t *testing.T) {
 		t.Parallel()
-		_, crashed, committed := crashedMidCommit(t)
+		crashed, committed := crashedMidCommit(t)
 		image := dst(t)
 		img, err := CaptureStopped(t.Context(), crashed, image)
 		require.NoError(t, err)

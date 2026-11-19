@@ -93,10 +93,11 @@ func (d *DB) CopyTo(ctx context.Context, dst string) error {
 }
 
 // CopyFile copies the database file at path byte for byte to dst, which must
-// not exist, owner-only and synced (its directory entry is not); a failure
-// leaves no file. Nothing parses it, so it copies a file this release cannot
-// read. The caller settles a journal first (Probe) and keeps writers out.
-func CopyFile(path, dst string) error {
+// not exist, owner-only and synced (its directory entry is not); a failure,
+// cancellation included, leaves no file. Nothing parses it, so it copies a file
+// this release cannot read. The caller settles a journal first (Probe) and
+// keeps writers out.
+func CopyFile(ctx context.Context, path, dst string) error {
 	return createFile(dst, func() error {
 		in, err := os.Open(path)
 		if err != nil {
@@ -107,9 +108,22 @@ func CopyFile(path, dst string) error {
 		if err != nil {
 			return err
 		}
-		_, err = io.Copy(out, in)
+		_, err = io.Copy(out, contextReader{ctx, in})
 		return errors.Join(err, out.Sync(), out.Close())
 	})
+}
+
+// contextReader stops reading once its context is done.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c contextReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // createFile makes path, which must not exist, an empty owner-only file and

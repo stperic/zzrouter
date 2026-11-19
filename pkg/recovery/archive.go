@@ -29,6 +29,40 @@ const maxFiles = 20000
 const maxManifest = 4 << 20
 const maxTotal = int64(4 << 30)
 
+// imageName is the access database image's entry, distinct from every live
+// path, so a raw copy of the live database can never pass for it.
+const imageName = "store/image.sqlite"
+
+// Profile is a bundle's scope. The set is closed: an unknown profile is refused.
+type Profile string
+
+const (
+	// ProfileInstallation is an installation's recovery state, with its access
+	// database image when it holds a store.
+	ProfileInstallation Profile = "installation"
+	// ProfileDatabase is the access database image alone.
+	ProfileDatabase Profile = "database"
+)
+
+// StoreMeta describes the database image a bundle carries: sqlstore.Meta
+// under its wire names.
+type StoreMeta struct {
+	StoreID       string `json:"store_id"`
+	Generation    string `json:"generation"`
+	SchemaVersion int    `json:"schema_version"`
+	Revision      uint64 `json:"revision"`
+	Sequence      uint64 `json:"sequence"`
+}
+
+// Staged records, only in a staging directory's manifest, the image restore
+// prepared: its digest, its new generation and when. The image's files entry
+// keeps the archived digest.
+type Staged struct {
+	ImageSHA256 string    `json:"image_sha256"`
+	Generation  string    `json:"generation"`
+	PreparedAt  time.Time `json:"prepared_at"`
+}
+
 // File is one bounded, integrity-checked archive entry.
 type File struct {
 	Name       string `json:"name"`
@@ -40,18 +74,25 @@ type File struct {
 }
 
 // Manifest describes a recovery bundle and its separately held protection key.
+// Store is present exactly when the bundle carries imageName; Inventory only
+// in an installation bundle.
 type Manifest struct {
-	Version         int       `json:"version"`
-	Created         time.Time `json:"created"`
-	Inventory       Inventory `json:"inventory"`
-	KeySHA256       string    `json:"key_sha256,omitempty"`
-	Files           []File    `json:"files"`
-	MissingOptional []string  `json:"missing_optional,omitempty"`
+	Version         int        `json:"version"`
+	Profile         Profile    `json:"profile"`
+	Created         time.Time  `json:"created"`
+	Store           *StoreMeta `json:"store,omitempty"`
+	Inventory       *Inventory `json:"inventory,omitempty"`
+	KeySHA256       string     `json:"key_sha256,omitempty"`
+	Files           []File     `json:"files"`
+	MissingOptional []string   `json:"missing_optional,omitempty"`
+	Staged          *Staged    `json:"staged,omitempty"`
 	keyInfo         fs.FileInfo
 }
 
 // Backup requires a stopped installation and a fresh output path. The key is
 // exported separately, never packed with the secret-bearing recovery archive.
+// The access database travels as an image sqlstore.CaptureStopped takes; a
+// store that refuses to open stops the backup, and a failure leaves no output.
 func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error) {
 	var manifest Manifest
 	if _, err := Read(ctx, dir); err != nil {
@@ -71,10 +112,6 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 		return manifest, err
 	}
 	defer func() { _ = lock.Close() }()
-	// A journal left by a crash would be copied beside pages it undoes.
-	if err := sqlstore.Settle(ctx, dir); err != nil {
-		return manifest, err
-	}
 	inventory, err := Read(ctx, dir)
 	if err != nil {
 		return manifest, err
@@ -101,14 +138,62 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 			}
 		}
 	}
-	manifest = Manifest{Version: 1, Created: utils.NowUTC(), Inventory: inventory}
+	manifest = Manifest{Version: 1, Profile: ProfileInstallation, Created: utils.NowUTC(), Inventory: &inventory}
+	temp, err := privateDir()
+	if err != nil {
+		return manifest, err
+	}
+	defer func() { _ = os.RemoveAll(temp) }()
+	if err := captureImage(ctx, &manifest, dir, temp); err != nil {
+		return manifest, err
+	}
 	if err := collect(ctx, &manifest); err != nil {
 		return manifest, err
 	}
 	if err := exportKey(&manifest, output, keyOutput); err != nil {
 		return manifest, err
 	}
-	return manifest, writeBundle(ctx, manifest, output)
+	if err := writeBundle(ctx, manifest, output); err != nil {
+		if manifest.KeySHA256 != "" {
+			err = errors.Join(err, os.Remove(keyOutput))
+		}
+		return manifest, err
+	}
+	return manifest, nil
+}
+
+// captureImage adds the image of the stopped store in dir to manifest; a
+// worker or a node that never ran as a coordinator has none.
+func captureImage(ctx context.Context, manifest *Manifest, dir, temp string) error {
+	const name = "image.sqlite"
+	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, name))
+	if errors.Is(err, sqlstore.ErrNoStore) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	size, sum, err := hashFile(ctx, temp, name)
+	if err != nil {
+		return err
+	}
+	store := StoreMeta(img.Meta)
+	manifest.Store = &store
+	manifest.Files = append(manifest.Files, File{Name: imageName, Size: size, SHA256: sum, root: temp, source: name})
+	return nil
+}
+
+// privateDir creates a temporary directory only its owner can enter, for an
+// image; the caller removes it. Its .tmp suffix keeps it out of every source.
+func privateDir() (string, error) {
+	dir, err := os.MkdirTemp("", "zzrouter-recovery-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	if err := security.RestrictDirectoryPermissions(dir); err != nil {
+		return "", errors.Join(err, os.RemoveAll(dir))
+	}
+	return dir, nil
 }
 
 func exportKey(manifest *Manifest, output, keyOutput string) error {
@@ -141,6 +226,8 @@ func exportKey(manifest *Manifest, output, keyOutput string) error {
 	return nil
 }
 
+// writeBundle writes manifest and its files to output, which must not exist;
+// a failure leaves no output.
 func writeBundle(ctx context.Context, manifest Manifest, output string) error {
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -149,44 +236,38 @@ func writeBundle(ctx context.Context, manifest Manifest, output string) error {
 	if len(encoded) > maxManifest {
 		return errors.New("recovery manifest exceeds 4 MiB")
 	}
-	f, err := privateFile(output)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	gzipWriter := gzip.NewWriter(f)
-	writer := tar.NewWriter(gzipWriter)
-	if err := writer.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(encoded))}); err != nil {
-		return err
-	}
-	if _, err := writer.Write(encoded); err != nil {
-		return err
-	}
-	for _, file := range manifest.Files {
-		if err := ctx.Err(); err != nil {
+	return writePrivate(output, func(f io.Writer) error {
+		gzipWriter := gzip.NewWriter(f)
+		writer := tar.NewWriter(gzipWriter)
+		if err := writer.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(encoded))}); err != nil {
 			return err
 		}
-		if err := writer.WriteHeader(&tar.Header{Name: file.Name, Mode: 0o600, Size: file.Size}); err != nil {
+		if _, err := writer.Write(encoded); err != nil {
 			return err
 		}
-		input, err := openSourceFile(file.root, file.source)
-		if err != nil {
-			return err
+		for _, file := range manifest.Files {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := writer.WriteHeader(&tar.Header{Name: file.Name, Mode: 0o600, Size: file.Size}); err != nil {
+				return err
+			}
+			input, err := openSourceFile(file.root, file.source)
+			if err != nil {
+				return err
+			}
+			hash := sha256.New()
+			n, copyErr := copyContext(ctx, io.MultiWriter(writer, hash), input, file.Size)
+			closeErr := input.Close()
+			if err := errors.Join(copyErr, closeErr); err != nil {
+				return err
+			}
+			if n != file.Size || hex.EncodeToString(hash.Sum(nil)) != file.SHA256 {
+				return fmt.Errorf("source changed during backup: %s", file.Name)
+			}
 		}
-		hash := sha256.New()
-		n, copyErr := copyContext(ctx, io.MultiWriter(writer, hash), input, file.Size)
-		closeErr := input.Close()
-		if err := errors.Join(copyErr, closeErr); err != nil {
-			return err
-		}
-		if n != file.Size || hex.EncodeToString(hash.Sum(nil)) != file.SHA256 {
-			return fmt.Errorf("source changed during backup: %s", file.Name)
-		}
-	}
-	if err := errors.Join(writer.Close(), gzipWriter.Close(), f.Sync()); err != nil {
-		return err
-	}
-	return f.Close()
+		return errors.Join(writer.Close(), gzipWriter.Close())
+	})
 }
 
 func collect(ctx context.Context, manifest *Manifest) error {
@@ -197,6 +278,9 @@ func collect(ctx context.Context, manifest *Manifest) error {
 	manifest.keyInfo = keyInfo
 	seen := make(map[string]bool)
 	var total int64
+	for _, file := range manifest.Files { // the image counts toward the limits
+		total += file.Size
+	}
 	for _, source := range manifest.Inventory.Sources {
 		if !safeName(source.Name) || !filepath.IsAbs(source.Path) {
 			return errors.New("invalid recovery source")
@@ -214,7 +298,7 @@ func collect(ctx context.Context, manifest *Manifest) error {
 }
 
 func collectSource(ctx context.Context, manifest *Manifest, source Source, seen map[string]bool, total *int64) error {
-	base, relative, err := sourcePath(manifest.Inventory, source)
+	base, relative, err := sourcePath(*manifest.Inventory, source)
 	if err != nil {
 		return err
 	}
@@ -272,18 +356,38 @@ func collectSource(ctx context.Context, manifest *Manifest, source Source, seen 
 		if *total > maxTotal || len(manifest.Files) >= maxFiles {
 			return errors.New("recovery bundle exceeds 4 GiB or 20000 files; preserve large provider data separately before continuing")
 		}
-		hash := sha256.New()
-		n, err := copyContext(ctx, hash, input, info.Size())
+		sum, err := hashReader(ctx, input, info.Size())
 		if err != nil {
 			return err
 		}
-		if n != info.Size() {
-			return fmt.Errorf("source changed during inventory: %s", name)
-		}
 		seen[strings.ToLower(name)] = true
-		manifest.Files = append(manifest.Files, File{Name: name, Size: info.Size(), SHA256: hex.EncodeToString(hash.Sum(nil)), Executable: info.Mode()&0o100 != 0, root: base, source: filepath.FromSlash(full)})
+		manifest.Files = append(manifest.Files, File{Name: name, Size: info.Size(), SHA256: sum, Executable: info.Mode()&0o100 != 0, root: base, source: filepath.FromSlash(full)})
 		return nil
 	})
+}
+
+// hashFile returns the size and SHA-256 of the regular file relative under base.
+func hashFile(ctx context.Context, base, relative string) (int64, string, error) {
+	f, err := openSourceFile(base, relative)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, "", err
+	}
+	sum, err := hashReader(ctx, f, info.Size())
+	return info.Size(), sum, err
+}
+
+// hashReader returns the SHA-256 of the size bytes r holds.
+func hashReader(ctx context.Context, r io.Reader, size int64) (string, error) {
+	hash := sha256.New()
+	if _, err := copyContext(ctx, hash, r, size); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func missingSource(manifest *Manifest, source Source) error {
@@ -422,30 +526,34 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func privateFile(path string) (*os.File, error) {
+// writePrivate creates path, which must not exist, restricts it to its owner
+// before any byte is written, fills and syncs it; a failure leaves no file.
+func writePrivate(path string, fill func(io.Writer) error) (err error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+			err = errors.Join(err, os.Remove(path))
+		}
+	}()
 	// Restrict before writing secret bytes, including on Windows.
 	if err := security.RestrictFilePermissions(path); err != nil {
-		_ = f.Close()
-		return nil, err
+		return err
 	}
-	return f, nil
+	if err := fill(f); err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 func writeExclusive(path string, data []byte) error {
-	f, err := privateFile(path)
-	if err != nil {
+	return writePrivate(path, func(w io.Writer) error {
+		_, err := w.Write(data)
 		return err
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-
-	return errors.Join(f.Sync(), f.Close())
+	})
 }
 
 func copyContext(ctx context.Context, dst io.Writer, src io.Reader, size int64) (int64, error) {
