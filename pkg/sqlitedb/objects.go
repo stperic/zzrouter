@@ -3,11 +3,9 @@ package sqlitedb
 import (
 	"context"
 	"database/sql"
-	"strings"
 )
 
-// Object is one entry of a database's sqlite_schema, its SQL with runs of
-// whitespace collapsed.
+// Object is one entry of a database's sqlite_schema, its SQL text exact.
 type Object struct {
 	Type, Name, Table, SQL string
 }
@@ -25,7 +23,6 @@ func (d *DB) Objects(ctx context.Context) ([]Object, error) {
 		if err := rows.Scan(&o.Type, &o.Name, &o.Table, &o.SQL); err != nil {
 			return nil, err
 		}
-		o.SQL = strings.Join(strings.Fields(o.SQL), " ")
 		objects = append(objects, o)
 	}
 	return objects, rows.Err()

@@ -67,9 +67,10 @@ var releaseObjects = sync.OnceValues(func() ([]sqlitedb.Object, error) {
 	return schema.Objects(context.Background())
 })
 
-// sameObjects refuses an image whose schema objects are not exactly the ones
-// this release creates: a trigger, view or altered table carried by an archive
-// would persist after activation and run inside the store's transactions.
+// sameObjects refuses a database whose schema objects are not exactly the ones
+// this release creates: a trigger, view or altered table, carried by an archive
+// or added by another tool, would run inside the store's transactions, and the
+// node must not serve a store it would refuse to back up.
 func sameObjects(ctx context.Context, db *sqlitedb.DB) error {
 	want, err := releaseObjects()
 	if err != nil {
@@ -77,7 +78,7 @@ func sameObjects(ctx context.Context, db *sqlitedb.DB) error {
 	}
 	got, err := db.Objects(ctx)
 	if err == nil && !slices.Equal(got, want) {
-		err = refuse(IntegrityFailed, errors.New("the image's schema objects differ from this release's"))
+		err = refuse(IntegrityFailed, errors.New("the schema objects differ from this release's"))
 	}
 	return err
 }
