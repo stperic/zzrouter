@@ -182,7 +182,7 @@ func TestRecoveryInventoryReportsTheStore(t *testing.T) {
 	require.NoError(t, err)
 	inUse := inspect()
 	require.Equal(t, "in_use", inUse["state"])
-	require.Contains(t, inUse["next_action"], "On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none.")
+	require.Contains(t, inUse["next_action"], "The installation is locked by a running node or another recovery command. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none.")
 	require.NoError(t, lock.Close())
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "access", "access.sqlite")))

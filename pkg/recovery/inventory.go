@@ -244,27 +244,30 @@ const (
 	StoreSetupRequired = StoreState(sqlstore.SetupRequired) // passes a backup's check; no owner yet
 	// StoreAbsent is neither a database nor a store marker, as on a worker.
 	StoreAbsent StoreState = "absent"
-	// StoreInUse is a node holding the installation lock.
+	// StoreInUse is the installation lock held by a running node or another
+	// recovery command.
 	StoreInUse StoreState = "in_use"
 	// StoreRefused is a store that fails the check a backup runs, for Reason.
 	// A start refuses for the same reasons, except that it runs SQLite's quick
 	// check and can still open a store whose only damage is in an index.
 	StoreRefused StoreState = "refused"
-	// StoreUnknown is an inspection that could not finish; Evidence says why.
+	// StoreUnknown is a store the inspection could not judge; Evidence says why.
 	StoreUnknown StoreState = "unknown"
 )
 
 // StoreSection is recovery inventory's report on the access store, never
 // persisted. The store's identity is present when it can be read. Reason and
 // Evidence, a refusal's Summary or an inspection's error, explain a refusal or
-// an unknown state.
+// an unknown state. ArchivesError is why the archives could not be listed; the
+// store's verdict stands.
 type StoreSection struct {
 	State StoreState `json:"state"`
 	*StoreMeta
-	Reason     sqlstore.Reason `json:"reason,omitempty"`
-	Evidence   string          `json:"evidence,omitempty"`
-	NextAction string          `json:"next_action,omitempty"`
-	Archives   []Archive       `json:"archives"`
+	Reason        sqlstore.Reason `json:"reason,omitempty"`
+	Evidence      string          `json:"evidence,omitempty"`
+	NextAction    string          `json:"next_action,omitempty"`
+	Archives      []Archive       `json:"archives"`
+	ArchivesError string          `json:"archives_error,omitempty"`
 }
 
 // Archive is an online backup archive in the installation's access directory,
@@ -281,27 +284,20 @@ type Archive struct {
 }
 
 const (
-	inUseAction   = "A node is running. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none. To inspect it here, stop the service and run recovery inventory again."
+	inUseAction   = "The installation is locked by a running node or another recovery command. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none. To inspect it here, stop the service or let the other command finish, then run recovery inventory again."
 	unknownAction = "Resolve the cause in evidence, for example by running as the installation owner or freeing space in the system's temporary directory, then run recovery inventory again."
 )
 
 // InspectStore reports dir's access store and its online backup archives.
-// While a node holds the installation lock it opens nothing and points at the
+// While the installation lock is held it opens nothing and points at the
 // running node. Otherwise it takes the lock when its file exists and judges a
 // copy, checked as a backup checks it, in the system's temporary directory, so
 // the live database is never migrated. It writes to the installation in one
 // case: a journal a crash left beside a stopped store is recovered into the
-// live file, as the next start would. An inspection that cannot finish returns
-// its error with a StoreUnknown section describing it.
+// live file, as the next start would. A store it cannot judge is StoreUnknown;
+// archives it cannot list keep the store's verdict and set ArchivesError.
+// Either returns its error.
 func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
-	section, err := inspectStore(ctx, dir)
-	if err != nil {
-		return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, err
-	}
-	return section, nil
-}
-
-func inspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	lock, err := lockInstallation(dir)
 	if errors.Is(err, atomicfile.ErrLocked) {
 		return StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}}, nil
@@ -309,11 +305,11 @@ func inspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	if err == nil {
 		defer func() { _ = lock.Close() }()
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return StoreSection{}, err
+		return unknown(err)
 	}
 	temp, err := privateDir(filepath.Join(os.TempDir(), "zzrouter-recovery"))
 	if err != nil {
-		return StoreSection{}, err
+		return unknown(err)
 	}
 	defer func() { _ = os.RemoveAll(temp) }()
 	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, "image.sqlite"))
@@ -335,10 +331,17 @@ func inspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	case errors.As(err, &refusal):
 		section.State, section.Reason, section.Evidence, section.NextAction = StoreRefused, refusal.Reason, refusal.Summary(), refusal.NextAction()
 	case err != nil:
-		return StoreSection{}, err
+		return unknown(err)
 	}
-	section.Archives, err = readArchives(dir)
+	if section.Archives, err = readArchives(dir); err != nil {
+		section.Archives, section.ArchivesError = []Archive{}, err.Error()
+	}
 	return section, err
+}
+
+// unknown is the section for a store the inspection could not judge.
+func unknown(err error) (StoreSection, error) {
+	return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, err
 }
 
 // readArchives lists the online backup archives newest first, then by ID. It

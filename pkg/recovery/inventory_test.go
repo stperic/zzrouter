@@ -240,8 +240,8 @@ func TestInspectStoreUnknown(t *testing.T) {
 	}
 }
 
-// TestInspectStoreNeverFollowsLinks: a linked backup directory is an error
-// that lists nothing; a linked entry, a directory and a FIFO named like an
+// TestInspectStoreNeverFollowsLinks: a linked backup directory is a listing
+// error that lists nothing; a linked entry, a directory and a FIFO named like an
 // archive are not listed, and the FIFO is never opened.
 func TestInspectStoreNeverFollowsLinks(t *testing.T) {
 	image, meta := capturedImage(t)
@@ -257,8 +257,7 @@ func TestInspectStoreNeverFollowsLinks(t *testing.T) {
 	}
 	section, err := InspectStore(t.Context(), dir)
 	require.ErrorContains(t, err, "must not contain links")
-	require.Equal(t, StoreUnknown, section.State)
-	require.Empty(t, section.Archives)
+	require.Equal(t, StoreSection{State: StoreAbsent, Archives: []Archive{}, ArchivesError: err.Error()}, section)
 
 	dir = t.TempDir()
 	listed := backupArchive(t, dir, archive, now)
@@ -281,4 +280,19 @@ func TestInspectStoreNeverFollowsLinks(t *testing.T) {
 	}
 	require.NoError(t, err)
 	require.Equal(t, []Archive{listed}, section.Archives, "regular files only")
+}
+
+// TestInspectStoreKeepsTheVerdictWhenListingFails: a refused store whose
+// backup directory cannot be listed keeps its refusal, and the listing error
+// is reported beside it, never in place of it.
+func TestInspectStoreKeepsTheVerdictWhenListingFails(t *testing.T) {
+	dir, _, _ := recoveryFixture(t)
+	storeDamages()[sqlstore.Unreadable](t, filepath.Join(dir, "access", "access.sqlite"))
+	if err := os.Symlink(t.TempDir(), filepath.Join(dir, "access", "backups")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	section, err := InspectStore(t.Context(), dir)
+	require.ErrorContains(t, err, "must not contain links")
+	require.Equal(t, StoreSection{State: StoreRefused, Reason: sqlstore.Unreadable, Evidence: string(sqlstore.Unreadable),
+		NextAction: (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), Archives: []Archive{}, ArchivesError: err.Error()}, section)
 }
