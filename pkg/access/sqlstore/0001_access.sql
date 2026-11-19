@@ -129,14 +129,3 @@ CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
 CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END;
-
-CREATE TABLE maintenance_receipts (
-  operation_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  principal TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  body_sha256 TEXT NOT NULL CHECK (length(body_sha256) = 64),
-  created_at INTEGER NOT NULL,
-  result TEXT NOT NULL CHECK (json_type(result) = 'object'),
-  UNIQUE (kind, principal, idempotency_key)
-) STRICT;

@@ -112,7 +112,7 @@ var crashOps = map[string]crashOp{
 		},
 		events: 1,
 	},
-	// A reset removes records, writes the owner's revision, its audit row and its receipt.
+	// A reset removes records and writes the owner's revision, the installation row and its audit row.
 	"reset access state": {
 		prepare: func(t *testing.T, s *Store) string {
 			claim(t, s)
@@ -121,24 +121,17 @@ var crashOps = map[string]crashOp{
 			return s.Snapshot().Owner().Revision
 		},
 		run: func(s *Store, _ string) error {
-			_, err := s.Reset(context.Background(), resetRequest("crash"), admitAll)
+			_, err := s.Reset(context.Background(), "backup-1", admitAll)
 			return err
 		},
-		done: func(t *testing.T, s *Store, revision string) bool {
-			return s.Snapshot().Key("solo") == nil && s.Snapshot().Owner().Revision != revision && receipts(t, s) == 1
+		done: func(_ *testing.T, s *Store, revision string) bool {
+			return s.Snapshot().Key("solo") == nil && s.Snapshot().Owner().Revision != revision
 		},
-		none: func(t *testing.T, s *Store, revision string) bool {
-			return s.Snapshot().Key("solo") != nil && s.Snapshot().Owner().Revision == revision && receipts(t, s) == 0
+		none: func(_ *testing.T, s *Store, revision string) bool {
+			return s.Snapshot().Key("solo") != nil && s.Snapshot().Owner().Revision == revision
 		},
 		events: 1,
 	},
-}
-
-func receipts(t *testing.T, s *Store) int {
-	t.Helper()
-	var n int
-	require.NoError(t, s.db.SQL().QueryRowContext(t.Context(), "SELECT count(*) FROM maintenance_receipts").Scan(&n))
-	return n
 }
 
 // TestCrashChild is TestKillMidCommit's child process: it runs one crash op on

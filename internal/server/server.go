@@ -105,7 +105,6 @@ type Server struct {
 	configDir   string              // Installation configuration directory: local proof, OAuth state, recovery inventory
 	localProof  *localproof.Proof   // This process's local proof; nil unless the node booted as a coordinator
 	localRoutes map[string]struct{} // "METHOD /path" of every route localRoute mounted behind the local proof alone
-	resetKey    []byte              // Signs reset confirmations; each process draws its own, so a restart voids them
 
 	// === Infrastructure ===
 

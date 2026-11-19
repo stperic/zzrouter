@@ -12901,9 +12901,8 @@ paths:
         of the node's host; an API key or session alone is refused. Called by `zzrouter access state reset`. Names what
         a reset removes from the current records (every app key, every team but the owner's, every person but the
         owner, every grant and the onboarding progress) and what it keeps (the owner and the owner's team, with its
-        policy and spend). The backup must be retained, inside its `protected_until`, and hold the current revision.
-        Answers with a `confirmation_token` that binds this state and this backup until `expires_at`, at most five
-        minutes and never past the backup's `protected_until`; a coordinator restart voids it. Changes nothing.
+        policy and spend). The backup must be retained, inside its `protected_until`, and hold the current revision;
+        the reset checks the same again before it commits. Changes nothing.
       security:
         - LocalProof: []
       requestBody:
@@ -12918,7 +12917,7 @@ paths:
                 backup_id: { type: string, format: uuid, description: A retained online backup of the current records. }
       responses:
         '200':
-          description: What the reset removes and keeps, and its confirmation
+          description: What the reset removes and keeps
           content:
             application/json:
               schema:
@@ -12938,12 +12937,15 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '404':
-          description: '`state_backup_not_found`: no retained backup has this ID, or it is past its `protected_until`. Take a new backup.'
+          description: '`state_backup_not_found`: no retained backup has this ID. Take a new backup.'
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
-          description: '`state_revision_changed`: the records changed after the backup was taken. Take a new backup and preview again.'
+          description: >-
+            `state_revision_changed`: the records changed after the backup was taken. `state_backup_unprotected`: the
+            backup is listed but past its `protected_until`, so it cannot back a reset. Either way, take a new backup
+            and preview again.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -12965,14 +12967,16 @@ paths:
       summary: Reset the access store to its owner
       description: >-
         Local operator only, coordinator only, as the preview. Removes what the preview named, in one transaction with
-        one `store.reset` access-history event and a stored receipt: every app key, every team but the owner's, every
+        one `store.reset` access-history event: every app key, every team but the owner's, every
         person but the owner, every grant and the onboarding progress. The owner keeps their ID and password under a
         new credential revision, so their sessions and delegated grants stop resolving; the owner's team keeps its
         policy and spend. Without an owner nothing stays and owner setup stays open. The access history is kept.
-        Removed keys stop authenticating at once, and their spend and that of removed teams is purged. A receipt
-        stored for this Idempotency-Key answers first, with the original `200`, even after a restart or once the
-        token has expired; another body under the key is `422`. Here the `Idempotency-Key` is required, and its
-        receipt is kept for good. To undo a reset, restore the backup it names.
+        Removed keys stop authenticating at once, and their spend and that of removed teams is purged. Before it
+        commits, the backup must still be retained, inside its `protected_until`, and hold the current revision, so
+        nothing changed since the preview and the backup can undo the reset. An optional Idempotency-Key replays the
+        `200` while the coordinator process lives; a repeat after the reset meets the changed revision with `409
+        state_revision_changed`, and the reset shows in the access history. To undo a reset, restore the backup it
+        names; the purged spend does not come back.
       security:
         - LocalProof: []
       parameters:
@@ -12984,13 +12988,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [backup_id, confirmation_token]
+              required: [backup_id]
               properties:
-                backup_id: { type: string, format: uuid }
-                confirmation_token: { type: string, description: The preview's token for this backup. }
+                backup_id: { type: string, format: uuid, description: The backup the preview named. }
       responses:
         '200':
-          description: The committed reset's receipt
+          description: What the committed reset did
           content:
             application/json:
               schema:
@@ -12998,11 +13001,9 @@ paths:
                 properties:
                   success: { type: boolean }
                   message: { type: string }
-                  data: { $ref: '#/components/schemas/StateResetReceipt' }
+                  data: { $ref: '#/components/schemas/StateResetResult' }
         '400':
-          description: >-
-            `required`: no `Idempotency-Key` header. Otherwise the body is not a JSON object with `backup_id`,
-            `confirmation_token` and nothing else. Answered before any backup, token or revision is judged.
+          description: The body is not a JSON object with `backup_id` and nothing else. Answered before the backup is judged.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13018,9 +13019,9 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
           description: >-
-            Nothing was reset. `state_reset_confirmation_invalid`: the token was not issued by this coordinator since it
-            started, has expired or names another backup; preview again. `state_revision_changed`: the records changed
-            after the preview; take a new backup and preview again.
+            Nothing was reset. `state_revision_changed`: the records changed after the backup was taken; if this reset
+            was already sent, it shows in the access history as `store.reset`. `state_backup_unprotected`: the backup is
+            past its `protected_until`. Either way, take a new backup and preview again.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -14172,7 +14173,7 @@ components:
     StateResetPreview:
       type: object
       additionalProperties: false
-      required: [store_id, generation, revision, backup_id, removes, keeps, confirmation_token, expires_at]
+      required: [store_id, generation, revision, backup_id, removes, keeps]
       properties:
         store_id: { type: string }
         generation: { type: string }
@@ -14190,9 +14191,7 @@ components:
             owner_username: { type: string }
             team_id: { type: string }
             team_name: { type: string }
-        confirmation_token: { type: string, description: 'Opaque; send it to the reset with the same backup_id before expires_at.' }
-        expires_at: { type: string, format: date-time }
-    StateResetReceipt:
+    StateResetResult:
       type: object
       additionalProperties: false
       required: [operation_id, created_at, backup_id, store_id, generation, old_revision, new_revision, sequence, removed]

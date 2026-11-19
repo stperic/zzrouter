@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -204,8 +203,7 @@ func TestResetForgetsAndFlushesTheSpendOfWhatItRemoves(t *testing.T) {
 	})
 	core := startCore(t, store, path)
 
-	_, err = store.Reset(t.Context(), sqlstore.ResetRequest{Principal: "local:operator", IdempotencyKey: "k", BodySHA256: strings.Repeat("0", 64)},
-		func(sqlstore.Meta) error { return nil })
+	_, err = store.Reset(t.Context(), "backup-1", func(sqlstore.Meta) error { return nil })
 	require.NoError(t, err)
 	kept := map[string]int64{"team:" + owner.TeamID + ":": 4}
 	assert.Equal(t, kept, spentBy(core))

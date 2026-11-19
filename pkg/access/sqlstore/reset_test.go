@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,10 +19,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
-
-func resetRequest(key string) ResetRequest {
-	return ResetRequest{Principal: audit.ActorLocalOperator, IdempotencyKey: key, BodySHA256: strings.Repeat("a", 64), BackupID: "backup-1"}
-}
 
 func admitAll(Meta) error { return nil }
 
@@ -59,7 +54,7 @@ func populate(t *testing.T, s *Store) *people.Person {
 // the reset removes, and both keep the owner, under a new credential revision,
 // and the owner's team with its policy; the commit names every removed key
 // and team for the spend subscriber; one store.reset row joins an intact
-// history, and the receipt carries the revisions and sequence it committed.
+// history, and the result reports the revisions and sequence it committed.
 func TestResetRemovesWhatItsPreviewCounts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -79,9 +74,9 @@ func TestResetRemovesWhatItsPreviewCounts(t *testing.T) {
 	assert.Equal(t, before.Team("workspace"), preview.Team)
 
 	ctx := audit.WithIdentity(t.Context(), audit.ActorLocalOperator, "reset-request")
-	receipt, err := s.Reset(ctx, resetRequest("k1"), admitAll)
+	result, err := s.Reset(ctx, "backup-1", admitAll)
 	require.NoError(t, err)
-	assert.Equal(t, preview.Removes, receipt.Removed)
+	assert.Equal(t, preview.Removes, result.Removed)
 	after := s.Snapshot()
 	assert.Empty(t, maps.Collect(after.Keys()))
 	assert.Equal(t, map[string]*teams.Team{"workspace": before.Team("workspace")}, maps.Collect(after.Teams()), "the owner's team keeps its policy")
@@ -89,6 +84,7 @@ func TestResetRemovesWhatItsPreviewCounts(t *testing.T) {
 	kept := after.Owner()
 	assert.Equal(t, owner.ID, kept.ID)
 	assert.NotEqual(t, before.Owner().Revision, kept.Revision, "earlier sessions stop resolving")
+	assert.True(t, kept.UpdatedAt.After(before.Owner().UpdatedAt), "the owner's record changed")
 	_, err = s.People().Authenticate(t.Context(), "owner", testPassword)
 	require.NoError(t, err, "the owner's password still works")
 	assert.Empty(t, after.PeopleState().Records().Grants)
@@ -104,10 +100,10 @@ func TestResetRemovesWhatItsPreviewCounts(t *testing.T) {
 	require.Len(t, stored, len(history)+1)
 	assert.Equal(t, history, stored[:len(history)], "the history before the reset is intact")
 	last := stored[len(history)]
-	assert.Equal(t, [4]any{audit.ActionStoreReset, audit.ActorLocalOperator, s.Meta().StoreID, receipt.OperationID},
-		[4]any{last.Action, last.Actor, last.Subject, last.Metadata["operation_id"]})
-	assert.Equal(t, Receipt{OperationID: receipt.OperationID, CreatedAt: receipt.CreatedAt, BackupID: "backup-1", StoreID: s.Meta().StoreID,
-		Generation: s.Meta().Generation, OldRevision: revision, NewRevision: revision + 1, Sequence: sequence + 1, Removed: preview.Removes}, receipt)
+	assert.Equal(t, [5]any{audit.ActionStoreReset, audit.ActorLocalOperator, s.Meta().StoreID, result.OperationID, "backup-1"},
+		[5]any{last.Action, last.Actor, last.Subject, last.Metadata["operation_id"], last.Metadata["backup_id"]})
+	assert.Equal(t, ResetResult{OperationID: result.OperationID, CreatedAt: result.CreatedAt, BackupID: "backup-1", StoreID: s.Meta().StoreID,
+		Generation: s.Meta().Generation, OldRevision: revision, NewRevision: revision + 1, Sequence: sequence + 1, Removed: preview.Removes}, result)
 	assert.Equal(t, [2]uint64{revision + 1, sequence + 1}, [2]uint64{s.Meta().Revision, s.Meta().Sequence})
 }
 
@@ -128,9 +124,9 @@ func TestResetWithoutOwnerRemovesEverything(t *testing.T) {
 	assert.Nil(t, preview.Owner)
 	assert.Nil(t, preview.Team)
 	assert.Equal(t, ResetCounts{AppKeys: 1, Teams: 3, Grants: 1}, preview.Removes)
-	receipt, err := s.Reset(t.Context(), resetRequest("k1"), admitAll)
+	result, err := s.Reset(t.Context(), "backup-1", admitAll)
 	require.NoError(t, err)
-	assert.Equal(t, preview.Removes, receipt.Removed)
+	assert.Equal(t, preview.Removes, result.Removed)
 	snap := s.Snapshot()
 	assert.Empty(t, maps.Collect(snap.Teams()))
 	assert.Empty(t, maps.Collect(snap.Keys()))
@@ -143,50 +139,8 @@ func TestResetWithoutOwnerRemovesEverything(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestResetReplaysItsReceipt: the receipt for a principal and idempotency key
-// answers before admit, in this process and after a reopen, with no second
-// mutation or audit row; another body under the key is ErrReceiptConflict.
-func TestResetReplaysItsReceipt(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	s := openStore(t, dir, contractOptions)
-	populate(t, s)
-	first, err := s.Reset(t.Context(), resetRequest("k1"), admitAll)
-	require.NoError(t, err)
-	_, _, err = s.CreateKey(t.Context(), "after", readerKey(), audit.Event{})
-	require.NoError(t, err)
-	revision, sequence := versions(s)
-	events := len(storedEvents(t, dir))
-	refused := func(Meta) error { return errors.New("the token expired") }
-
-	replay := func(s *Store) {
-		t.Helper()
-		got, err := s.Reset(t.Context(), resetRequest("k1"), refused)
-		require.NoError(t, err, "the receipt answers before admit")
-		assert.Equal(t, first, got)
-		r, q := versions(s)
-		assert.Equal(t, [2]uint64{revision, sequence}, [2]uint64{r, q}, "no second mutation")
-		assert.NotNil(t, s.Snapshot().Key("after"))
-		assert.Len(t, storedEvents(t, dir), events, "no second audit row")
-	}
-	replay(s)
-	require.NoError(t, s.Close())
-	s = openStore(t, dir, contractOptions)
-	replay(s)
-
-	other := resetRequest("k1")
-	other.BodySHA256 = strings.Repeat("b", 64)
-	_, err = s.Reset(t.Context(), other, admitAll)
-	require.ErrorIs(t, err, ErrReceiptConflict)
-	other = resetRequest("k1")
-	other.Principal = "static:admin"
-	_, err = s.Reset(t.Context(), other, admitAll)
-	require.NoError(t, err, "a receipt answers its own principal only")
-	assert.Nil(t, s.Snapshot().Key("after"))
-}
-
 // TestResetAdmitRefusalChangesNothing: admit sees the published meta, and
-// its refusal returns unchanged with no record, audit row or receipt changed.
+// its refusal returns unchanged with no record or audit row changed.
 func TestResetAdmitRefusalChangesNothing(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -195,14 +149,11 @@ func TestResetAdmitRefusalChangesNothing(t *testing.T) {
 	before, events := s.Snapshot(), len(storedEvents(t, dir))
 	refusal := errors.New("the revision changed")
 	var seen Meta
-	_, err := s.Reset(t.Context(), resetRequest("k1"), func(m Meta) error { seen = m; return refusal })
+	_, err := s.Reset(t.Context(), "backup-1", func(m Meta) error { seen = m; return refusal })
 	require.ErrorIs(t, err, refusal)
 	assert.Equal(t, s.Meta(), seen)
 	assert.Same(t, before, s.Snapshot())
 	assert.Len(t, storedEvents(t, dir), events)
-	_, err = s.Reset(t.Context(), resetRequest("k1"), admitAll)
-	require.NoError(t, err, "a refusal stores no receipt")
-	assert.Empty(t, maps.Collect(s.Snapshot().Keys()))
 }
 
 // TestResetRacesKeyCreation: a key created around a reset is removed by it,
@@ -223,7 +174,7 @@ func TestResetRacesKeyCreation(t *testing.T) {
 			assert.NoError(t, err)
 		}
 		reset := func() {
-			_, err := s.Reset(context.Background(), resetRequest(id), admitAll)
+			_, err := s.Reset(context.Background(), "backup-1", admitAll)
 			assert.NoError(t, err)
 		}
 		if round%2 == 0 {

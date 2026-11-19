@@ -47,9 +47,6 @@ const idempotencyWaitTimeout = 30 * time.Second
 // http.Header — already canonicalized by Go.
 const idempotencyHeader = "Idempotency-Key"
 
-// idempotencyKeyConflictMessage answers a key recorded for another body, here or in a stored receipt.
-const idempotencyKeyConflictMessage = "a different request body has already been recorded under this Idempotency-Key; either change the key or send the original body"
-
 // idemKey scopes idempotency entries to (principal, method, path, canonical
 // query, header value), so one store backs every route and verb without a
 // recorded response replaying for a different request.
@@ -59,22 +56,6 @@ type idemKey struct {
 	path      string
 	query     string
 	value     string
-}
-
-// ctxKeyIdempotency holds the idempotencyRequest of a request whose reply is being recorded.
-const ctxKeyIdempotency contextKey = "zzrouter_idempotency"
-
-// idempotencyRequest is what a handler may bind to its own state so a replay is recognised past this store.
-type idempotencyRequest struct {
-	key      string
-	bodyHash [32]byte
-}
-
-// idempotencyOf returns the Idempotency-Key and body hash the middleware recorded the request under.
-func idempotencyOf(c *gin.Context) (key string, bodyHash [32]byte, ok bool) {
-	value, _ := c.Get(string(ctxKeyIdempotency))
-	request, ok := value.(idempotencyRequest)
-	return request.key, request.bodyHash, ok
 }
 
 // idemEntry becomes immutable when inflight closes, so waiters need no entry lock.
@@ -303,7 +284,6 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			return
 		}
 		if first {
-			c.Set(string(ctxKeyIdempotency), idempotencyRequest{key: headerVal, bodyHash: bodyHash})
 			w := &capturingWriter{ResponseWriter: c.Writer, maxBytes: s.maxEntryBytes}
 			c.Writer = w
 			var status int
@@ -325,7 +305,7 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 				Title:   "Idempotency Key Conflict",
 				Type:    "invalid_request_error",
 				Code:    string(openai.ErrorCodeIdempotencyKeyConflict),
-				Message: idempotencyKeyConflictMessage,
+				Message: "a different request body has already been recorded under this Idempotency-Key; either change the key or send the original body",
 			})
 			c.Abort()
 			return

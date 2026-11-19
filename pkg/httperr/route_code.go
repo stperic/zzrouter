@@ -99,7 +99,7 @@ const (
 	// CodeStateRevisionChanged refuses a reset whose backup no longer holds
 	// the access records' current revision; nothing was reset.
 	CodeStateRevisionChanged RouteErrorCode = "state_revision_changed"
-	// CodeStateResetConfirmationInvalid refuses a reset whose confirmation
-	// token this process did not issue, has expired or names another backup.
-	CodeStateResetConfirmationInvalid RouteErrorCode = "state_reset_confirmation_invalid"
+	// CodeStateBackupUnprotected refuses a reset backed by a retained backup
+	// past its protected_until, which retention may remove; nothing was reset.
+	CodeStateBackupUnprotected RouteErrorCode = "state_backup_unprotected"
 )

@@ -55,13 +55,13 @@ func (w *writes) exec(query string, args ...any) { w.stmts = append(w.stmts, stm
 
 // tx is one commit being built from the published meta: the records it
 // changes, the events it records, in order, a new generation when it replaces
-// the content, and a receipt it stores, stamped with the commit's meta.
+// the content, and where to report the meta it commits, for an operation that does.
 type tx struct {
 	records
 	meta       Meta
 	events     []audit.Event
 	generation string
-	receipt    *receiptRow
+	committed  *Meta
 }
 
 // record adds ev to the commit; a zero event records nothing.
@@ -137,6 +137,9 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 		m.Generation = t.generation
 		w.exec(updateMeta, m.Generation, "generation")
 	}
+	if t.committed != nil {
+		*t.committed = m
+	}
 	changed := len(w.stmts) > 0
 	if !changed && len(t.events) == 0 {
 		return nil, nil
@@ -163,13 +166,6 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 			return nil, err
 		}
 		w.exec(auditAppend, args...)
-	}
-	if t.receipt != nil {
-		args, err := t.receipt.values(prev.meta.Revision, m)
-		if err != nil {
-			return nil, err
-		}
-		w.exec(receiptInsert, args...)
 	}
 	w.exec(updateMeta, strconv.FormatUint(m.Revision, 10), "revision")
 	w.exec(updateMeta, strconv.FormatUint(m.Sequence, 10), "sequence")

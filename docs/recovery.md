@@ -321,8 +321,8 @@ The command takes an online backup (or names the retained one given with
 stays, asks for confirmation (`--yes` skips the question) and resets. A reset
 removes every app key, every team but the owner's, every person but the owner,
 every grant (invitations and setup, sign-in and recovery codes) and the
-onboarding progress, in one transaction with one `store.reset` event in the access history and a stored
-receipt. What survives:
+onboarding progress, in one transaction with one `store.reset` event in the
+access history. What survives:
 
 - the owner, with their ID, name and password, under a new credential revision:
   their console sessions and delegated grants stop resolving, so they sign in
@@ -339,18 +339,29 @@ stays open. The node answers `/zzrouter/v1/system/state/reset/preview` and
 `/zzrouter/v1/system/state/reset` to the local proof only, so no API key,
 session or MCP tool can reset.
 
-The backup must hold the records' current revision, and the preview's
-confirmation lasts five minutes, never past the backup's `protected_until`, and
-no longer than the coordinator process. If anything changes the records after
-the backup (`409 state_revision_changed`) or the confirmation lapses
-(`409 state_reset_confirmation_invalid`), nothing is reset: run the command
-again without `--backup-id`. The reset needs an `Idempotency-Key`; a retry with
-the same key and body answers with the stored receipt, after a restart too.
+The backup must hold the records' current revision and be inside its
+`protected_until`, at the preview and again when the reset commits, so nothing
+changed since the preview and retention cannot remove the backup first. If
+anything changed the records (`409 state_revision_changed`) or the backup is
+past its protected window (`409 state_backup_unprotected`), nothing is reset:
+run the command again without `--backup-id`. A reset sent twice is applied once:
+the second meets the changed revision, and the access history shows the first
+as `store.reset`.
 
-To undo a reset, restore the backup its receipt names, as for any online
-backup: export it, stop the node, stage the copy with `recovery restore` and
-place the prepared image as the next section describes for a staged `database`
-bundle. Export it before retention removes it.
+To undo a reset, restore the backup it named while it is retained. Export it,
+stop the service, stage the copy and activate it as
+[Activate a database bundle](#activate-a-database-bundle) describes:
+
+```sh
+zzrouter access state export --backup-id ID --output /secure-backups/access.tar.gz
+# stop the service
+zzrouter-node recovery restore /secure-backups/access.tar.gz --to /new/private/restore-staging
+zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation --dry-run
+zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation
+```
+
+An undo brings back the records, not the spend: the reset purged the spend of
+the keys and teams it removed, so their budgets start again from zero.
 
 ## Restore and activate deliberately
 

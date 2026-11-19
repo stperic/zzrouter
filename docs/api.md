@@ -348,12 +348,11 @@ records `store.backup_exported` before the first byte; a failed check is 500
 `state_image_check_failed` and an unrecorded export 503, both with nothing sent.
 See [recovery](recovery.md#online-backups-of-the-access-database).
 
-`POST /zzrouter/v1/system/state/reset/preview` (`{backup_id}`) and
-`POST /zzrouter/v1/system/state/reset` (`{backup_id, confirmation_token}`, a
-required `Idempotency-Key`) reset the access records to the owner alone, for the
-local operator only. The preview answers with the counts it removes, what it
-keeps and a five-minute `confirmation_token`; the reset answers with its stored
-receipt, which also answers every retry with the same key and body. A backup
-that no longer holds the current revision is 409 `state_revision_changed`, a bad
-or expired token 409 `state_reset_confirmation_invalid`. See
-[recovery](recovery.md#reset-access-state).
+`POST /zzrouter/v1/system/state/reset/preview` and
+`POST /zzrouter/v1/system/state/reset` (both `{backup_id}`) reset the access
+records to the owner alone, for the local operator only. The preview answers
+with the counts it removes and what it keeps; the reset answers with what it
+did. Both require a retained backup, inside its `protected_until`, that holds
+the current revision: otherwise 409 `state_revision_changed` or 409
+`state_backup_unprotected`, and an unknown backup is 404
+`state_backup_not_found`. See [recovery](recovery.md#reset-access-state).

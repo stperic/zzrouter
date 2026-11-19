@@ -7,7 +7,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -118,7 +117,6 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		servingErrors:       make(chan error, 1),
 		idempotency:         newIdempotencyStore(),
 		localRoutes:         map[string]struct{}{},
-		resetKey:            []byte(rand.Text() + rand.Text()),
 	}
 	constructed := false
 	defer func() {

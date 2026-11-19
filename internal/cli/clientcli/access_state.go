@@ -62,7 +62,7 @@ func newAccessStateCmd() *cobra.Command {
 
 // resetAccessState backs up the access store unless id names a backup,
 // previews the reset against it, prints what goes and what stays, asks unless
-// yes, then resets under one Idempotency-Key and prints the receipt.
+// yes, then resets and prints what the reset did and how to undo it.
 func resetAccessState(ctx context.Context, out io.Writer, dir, id string, yes bool) error {
 	session, err := openLocal(ctx, dir)
 	if err != nil {
@@ -87,48 +87,52 @@ func resetAccessState(ctx context.Context, out io.Writer, dir, id string, yes bo
 				OwnerUsername string `json:"owner_username"`
 				TeamName      string `json:"team_name"`
 			} `json:"keeps"`
-			Token string `json:"confirmation_token"`
 		} `json:"data"`
 	}
 	body, _ := json.Marshal(map[string]string{"backup_id": id}) // a map of strings always encodes
 	if err := session.post(ctx, resetPath+"/preview", body, "", &preview, "reset preview"); err != nil {
-		return resetHint(err)
+		return err
 	}
 	p := preview.Data
-	_, _ = fmt.Fprintf(out, "Backup %s holds the access records at revision %d.\nThe reset removes %d app keys, %d teams, %d people and %d invitation and sign-in grants, and the onboarding progress.\n",
+	_, _ = fmt.Fprintf(out, "Backup %s holds the access records at revision %d.\nThe reset removes app keys: %d, teams: %d, people: %d, invitation and sign-in grants: %d, and the onboarding progress.\n",
 		id, p.Revision, p.Removes.AppKeys, p.Removes.Teams, p.Removes.People, p.Removes.Grants)
 	if p.Keeps == nil {
 		_, _ = fmt.Fprintln(out, "No owner has been claimed: nothing stays, and owner setup stays open.")
 	} else {
 		_, _ = fmt.Fprintf(out, "It keeps the owner %s, who must sign in again, and their team %q with its policy and spend.\n", p.Keeps.OwnerUsername, p.Keeps.TeamName)
 	}
-	if !yes && !confirmYN("Reset the access store? [y/N]: ") {
+	if !yes && !confirmed(ctx, func() bool { return confirmYN("Reset the access store? [y/N]: ") }) {
 		return errors.New("not confirmed: nothing was reset")
 	}
-	var receipt struct {
+	var result struct {
 		Data struct {
 			OperationID string `json:"operation_id"`
 			NewRevision uint64 `json:"new_revision"`
 		} `json:"data"`
 	}
-	body, _ = json.Marshal(map[string]string{"backup_id": id, "confirmation_token": p.Token})
 	// net/http resends a request carrying an Idempotency-Key once when a reused
-	// connection drops it; a committed reset then answers from its receipt.
-	if err = session.post(ctx, resetPath, body, uuid.NewString(), &receipt, "reset"); err != nil {
-		return resetHint(err)
+	// connection drops it, and the node replays a reset it already did.
+	if err = session.post(ctx, resetPath, body, uuid.NewString(), &result, "reset"); err != nil {
+		return err
 	}
-	_, err = fmt.Fprintf(out, "Reset %s committed at revision %d.\nThe owner signs in again with their password (zzrouter access recover-owner if it is lost), then creates new app keys.\nTo undo it, export backup %s and restore it as docs/recovery.md describes, before retention removes it.\n",
-		receipt.Data.OperationID, receipt.Data.NewRevision, id)
+	_, err = fmt.Fprintf(out, "Reset %s committed at revision %d.\nThe owner signs in again with their password (zzrouter access recover-owner if it is lost), then creates new app keys.\n"+
+		"To undo it while backup %s is retained: zzrouter access state export --backup-id %s --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING, then zzrouter-node recovery activate STAGING --dir %s, after a --dry-run. The spend of removed keys and teams does not come back.\n",
+		result.Data.OperationID, result.Data.NewRevision, id, id, session.dir)
 	return err
 }
 
-// resetHint adds the command's own next step to a refused backup or confirmation.
-func resetHint(err error) error {
-	var refused *pkgClient.APIError
-	if errors.As(err, &refused) && (refused.StatusCode == http.StatusNotFound || refused.StatusCode == http.StatusConflict) {
-		return fmt.Errorf("%w\nRun zzrouter access state reset again without --backup-id: it takes a new backup and previews again", err)
+// confirmed asks with ask, answering no as soon as ctx ends, so an interrupt
+// at the prompt stops the command instead of waiting for Enter. The read the
+// prompt left blocked ends with the process.
+func confirmed(ctx context.Context, ask func() bool) bool {
+	answer := make(chan bool, 1)
+	go func() { answer <- ask() }()
+	select {
+	case ok := <-answer:
+		return ok
+	case <-ctx.Done():
+		return false
 	}
-	return err
 }
 
 // exportBackup copies a retained backup, a new one when id is empty, from the

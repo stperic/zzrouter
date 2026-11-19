@@ -155,9 +155,9 @@ func TestStateExportRefusesItsOutput(t *testing.T) {
 	require.Zero(t, requests.Load())
 }
 
-// resetServer serves a backup create, a preview of backup "b1" with token
-// "t1" and the reset; reset answers each reset request, which carries the
-// proof, the preview's token and an Idempotency-Key.
+// resetServer serves a backup create, a preview of backup "b1" and the reset;
+// reset answers each reset request, which carries the proof, the backup and
+// an Idempotency-Key.
 func resetServer(t *testing.T, reset func(w http.ResponseWriter, key string)) (dir string, paths *[]string) {
 	t.Helper()
 	paths = new([]string)
@@ -174,9 +174,9 @@ func resetServer(t *testing.T, reset func(w http.ResponseWriter, key string)) (d
 			_, _ = w.Write([]byte(`{"data":{"id":"b1"}}`))
 		case resetPath + "/preview":
 			require.Equal(t, map[string]string{"backup_id": "b1"}, body)
-			_, _ = w.Write([]byte(`{"data":{"revision":7,"removes":{"app_keys":3,"teams":2,"people":1,"grants":4},"keeps":{"owner_username":"owner","team_name":"Personal workspace"},"confirmation_token":"t1"}}`))
+			_, _ = w.Write([]byte(`{"data":{"revision":7,"removes":{"app_keys":3,"teams":2,"people":1,"grants":4},"keeps":{"owner_username":"owner","team_name":"Personal workspace"}}}`))
 		case resetPath:
-			require.Equal(t, map[string]string{"backup_id": "b1", "confirmation_token": "t1"}, body)
+			require.Equal(t, map[string]string{"backup_id": "b1"}, body)
 			reset(w, r.Header.Get("Idempotency-Key"))
 		}
 	}))
@@ -197,8 +197,8 @@ func runReset(t *testing.T, dir string, args ...string) (string, error) {
 
 // TestStateResetBacksUpPreviewsAndResets: without an ID the command takes a
 // backup, previews against it, prints what goes and what stays, and resets
-// with the preview's token; a response lost on the reused connection is asked
-// again under the same Idempotency-Key, and the receipt and next steps are printed.
+// that backup; a response lost on the reused connection is asked again under
+// the same Idempotency-Key, and the result and the undo steps are printed.
 func TestStateResetBacksUpPreviewsAndResets(t *testing.T) {
 	var keys []string
 	dir, paths := resetServer(t, func(w http.ResponseWriter, key string) {
@@ -219,29 +219,47 @@ func TestStateResetBacksUpPreviewsAndResets(t *testing.T) {
 	require.Equal(t, keys[0], keys[1], "the retry reuses the key")
 	for _, line := range []string{
 		"Backup b1 holds the access records at revision 7.",
-		"removes 3 app keys, 2 teams, 1 people and 4 invitation and sign-in grants",
+		"removes app keys: 3, teams: 2, people: 1, invitation and sign-in grants: 4,",
 		`keeps the owner owner, who must sign in again, and their team "Personal workspace"`,
 		"Reset op-1 committed at revision 8.",
-		"export backup b1",
+		"zzrouter access state export --backup-id b1 --output FILE, stop the service, zzrouter-node recovery restore FILE --to STAGING, then zzrouter-node recovery activate STAGING --dir " + dir,
+		"The spend of removed keys and teams does not come back.",
 	} {
 		require.Contains(t, out, line)
 	}
 }
 
 // TestStateResetStops: unconfirmed with no terminal, it resets nothing; a
-// changed revision stops it with the command's next step.
+// changed revision stops it with the node's next step.
 func TestStateResetStops(t *testing.T) {
 	dir, paths := resetServer(t, func(w http.ResponseWriter, _ string) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusConflict)
-		_, _ = w.Write([]byte(`{"code":"state_revision_changed","detail":"The access records changed after this backup was taken, so nothing was reset."}`))
+		_, _ = w.Write([]byte(`{"code":"state_revision_changed","detail":"The access records changed after this backup was taken, so nothing was reset. Take a new backup and preview the reset with it."}`))
 	})
 	_, err := runReset(t, dir, "--backup-id", "b1")
 	require.ErrorContains(t, err, "not confirmed: nothing was reset")
 	require.Equal(t, []string{resetPath + "/preview"}, *paths)
 
 	_, err = runReset(t, dir, "--backup-id", "b1", "--yes")
-	require.ErrorContains(t, err, "changed after this backup was taken")
-	require.ErrorContains(t, err, "Run zzrouter access state reset again without --backup-id")
+	require.ErrorContains(t, err, "Take a new backup and preview the reset with it.")
 	require.Equal(t, []string{resetPath + "/preview", resetPath + "/preview", resetPath}, *paths, "a refusal is not retried")
+}
+
+// TestStateResetPromptEndsOnInterrupt: an interrupt answers the prompt no at
+// once, without waiting for the read.
+func TestStateResetPromptEndsOnInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	blocked := make(chan struct{})
+	t.Cleanup(func() { close(blocked) })
+	answered := make(chan bool)
+	go func() { answered <- confirmed(ctx, func() bool { <-blocked; return true }) }()
+	cancel()
+	select {
+	case ok := <-answered:
+		require.False(t, ok)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the prompt waited for its read after the interrupt")
+	}
+	require.True(t, confirmed(t.Context(), func() bool { return true }), "an answer before an interrupt counts")
 }
