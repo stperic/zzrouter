@@ -42,7 +42,7 @@ func makeIdemRouter(principal string, release <-chan struct{}) (*gin.Engine, *id
 		// returns the requested key id without spinning up a real
 		// AccessControl + key store.
 		if principal != "" {
-			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: principal}})
+			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: principal, IsVirtual: true}})
 		}
 	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
@@ -109,7 +109,7 @@ func TestIdempotency_FailureIsNotReplayed(t *testing.T) {
 	calls := &atomic.Int64{}
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		if calls.Add(1) == 1 {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wait for readiness"})
@@ -173,7 +173,7 @@ func TestIdempotency_PerPrincipalScoping(t *testing.T) {
 	r.POST("/runs", func(c *gin.Context) {
 		// Principal comes from a request header for test purposes.
 		id := c.GetHeader("X-Test-Principal")
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: id}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: id, IsVirtual: true}})
 	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
 		c.JSON(http.StatusAccepted, gin.H{"job_id": "J" + string(rune('0'+n))})
@@ -239,7 +239,7 @@ func TestIdempotency_PerPathScoping(t *testing.T) {
 	callsA := &atomic.Int64{}
 	callsB := &atomic.Int64{}
 	setup := func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}
 	r := gin.New()
 	r.POST("/a", setup, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
@@ -288,7 +288,7 @@ func TestIdempotency_BodySkipShortCircuits(t *testing.T) {
 	calls := &atomic.Int64{}
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}, store.middlewareWithBodySkip(skipIdempotencyOnStreamingBody), func(c *gin.Context) {
 		n := calls.Add(1)
 		c.JSON(http.StatusOK, gin.H{"id": "R" + string(rune('0'+n))})
@@ -360,7 +360,7 @@ func TestIdempotency_KeyIncludesMethod(t *testing.T) {
 	store := newIdempotencyStore()
 	calls := &atomic.Int64{}
 	setup := func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}
 	handler := func(c *gin.Context) {
 		n := calls.Add(1)
@@ -389,7 +389,7 @@ func TestIdempotency_KeyIncludesQuery(t *testing.T) {
 	calls := &atomic.Int64{}
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
 		c.JSON(http.StatusAccepted, gin.H{"n": n})
@@ -440,7 +440,7 @@ func TestIdempotency_PanicReleasesWaiters(t *testing.T) {
 		r := gin.New()
 		r.Use(gin.Recovery())
 		r.POST("/runs", func(c *gin.Context) {
-			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 		}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 			if calls.Add(1) == 1 {
 				close(entered)
@@ -500,7 +500,7 @@ func TestIdempotency_SharedStoreAcrossRoutes(t *testing.T) {
 	aCalls := &atomic.Int64{}
 	bCalls := &atomic.Int64{}
 	principal := func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}
 	handler := func(calls *atomic.Int64) gin.HandlerFunc {
 		return func(c *gin.Context) {
@@ -534,7 +534,7 @@ func makeIdemStoreRouter(store *idempotencyStore, handler gin.HandlerFunc) *gin.
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 	}, store.middlewareWithBodySkip(nil), handler)
 	return r
 }

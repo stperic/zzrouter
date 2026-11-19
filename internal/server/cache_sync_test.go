@@ -145,6 +145,9 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 	if cfg.prepareProviders != nil {
 		cfg.prepareProviders(providersDir)
 	}
+	if cfg.ClusterMode != pkgConfig.ClusterModeWorker {
+		require.NoError(t, seedTestStore(home))
+	}
 	name := cfg.NodeName
 	if name == "" {
 		name = "test-host"

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -47,6 +48,7 @@ func callerRequestHeaders() http.Header {
 	h.Set("Accept-Encoding", "gzip")
 	h.Set("Content-Encoding", "identity")
 	h.Set("anthropic-version", "2023-06-01")
+	h.Set(localproof.Header, "local-proof-secret")
 	return h
 }
 
@@ -86,11 +88,13 @@ func TestUpstreamHeaders(t *testing.T) {
 				assert.Equal(t, tc.keys[name], got.Get(name), "key header %s", name)
 			}
 			for _, name := range constants.RoutingHintHeaders() {
-				assert.Equal(t, tc.hints, got.Get(name) != "", "routing hint %s", name)
+				// Forwarding preserves existing coordinator hints; it cannot invent a caller identity.
+				assert.Equal(t, tc.hints && src.Get(name) != "", got.Get(name) != "", "routing hint %s", name)
 			}
 			for _, name := range []string{"Connection", "X-Per-Hop", "Proxy-Authorization", "Accept-Encoding"} {
 				assert.Empty(t, got.Get(name), "%s describes the caller's connection", name)
 			}
+			assert.Empty(t, got.Values(localproof.Header), "the local proof stays on this node")
 			assert.Equal(t, "identity", got.Get("Content-Encoding"), "the body travels as it arrived")
 			assert.Equal(t, "2023-06-01", got.Get("anthropic-version"))
 			assert.Equal(t, "X-API-Key-secret", src.Get("X-API-Key"), "the caller's request is not modified")
@@ -174,7 +178,7 @@ func TestDeploymentHealthTarget_CarriesTheDeclaredCredential(t *testing.T) {
 
 	coord, err := mesh.NewCluster(&mesh.Config{}, "http://127.0.0.1:9090", nil, nil, nil)
 	require.NoError(t, err)
-	s.cluster.coordinator = coord
+	useTestCluster(t, s, coord)
 	require.NoError(t, s.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{Name: "worker-1", URL: "http://10.9.9.9:9090"}))
 	base, header = s.deploymentHealthTarget("ollama-nas", "worker-1")
 	assert.Equal(t, "http://10.9.9.9:9090", base)
@@ -187,12 +191,14 @@ func TestPublicEntryDropsCoordinatorProviderHint(t *testing.T) {
 	engine.POST("/v1/chat/completions", func(c *gin.Context) {
 		require.Empty(t, c.GetHeader(constants.HeaderServingProvider))
 		require.Empty(t, c.GetHeader(constants.HeaderServingNode))
+		require.Empty(t, c.GetHeader(constants.HeaderResponseOwner))
 		require.Equal(t, "worker", c.GetHeader("X-Node"), "client node pins remain supported")
 		c.Status(http.StatusNoContent)
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set(constants.HeaderServingProvider, "paid")
 	req.Header.Set(constants.HeaderServingNode, "injected")
+	req.Header.Set(constants.HeaderResponseOwner, "injected-owner")
 	req.Header.Set("X-Node", "worker")
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, req)

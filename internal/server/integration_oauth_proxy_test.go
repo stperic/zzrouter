@@ -142,7 +142,7 @@ func TestIntegrationRemoteProxyOAuth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			public, origin := remoteProxyNode(t)
 			clientID, access, refresh := browserOAuthTokensWithConsent(t, public, tc.key, tc.path, func(page []byte) {
-				for _, disclosure := range []string{"Client name (unverified):", "Integration client", "http://127.0.0.1:44552/callback", public.URL + tc.path} {
+				for _, disclosure := range []string{"Application name (unverified)", "Integration client", "http://127.0.0.1:44552/callback", public.URL + tc.path} {
 					require.True(t, strings.Contains(string(page), disclosure), "consent must disclose %s", disclosure)
 				}
 				require.False(t, strings.Contains(string(page), origin), "consent must not disclose the private origin")

@@ -58,7 +58,8 @@ test('real SDK preserves fragmented Unicode, loading events, reasoning aliases a
   assert.deepEqual(request.body.messages, [{ role: 'system', content: 'Be concise.' }, { role: 'user', content: 'Hello' }]);
   assert.equal(request.body.temperature, 0);
   assert.equal(request.body.top_p, 0.7);
-  assert.equal(request.body.max_tokens, 64);
+  assert.equal(request.body.max_completion_tokens, 64);
+  assert.equal('max_tokens' in request.body, false);
   assert.deepEqual(request.body.stream_options, { include_usage: true });
 });
 
@@ -111,7 +112,7 @@ test('defaults are omitted and DONE alone terminates a valid response', async ()
   const values = await collect(adapter);
   assert.equal(values.at(-1).content[0].text, 'Done');
   assert.equal(values.at(-1).status.type, 'complete');
-  for (const key of ['temperature', 'top_p', 'max_tokens']) assert.equal(key in body, false);
+  for (const key of ['temperature', 'top_p', 'max_tokens', 'max_completion_tokens']) assert.equal(key in body, false);
   assert.equal(body.model, 'alias');
 });
 

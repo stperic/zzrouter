@@ -1,171 +1,46 @@
 package audit
 
 import (
-	"bufio"
-	"context"
-	"encoding/json"
-	"os"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"math"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 )
 
-func TestFileSink_EmitsJSONLine(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
-	sink, err := NewFileSink(path)
-	if err != nil {
-		t.Fatalf("NewFileSink: %v", err)
-	}
-	t.Cleanup(func() { _ = sink.Close() })
-
-	ev := Event{
-		Action:    ActionKeyCreated,
-		Actor:     "static:admin",
-		Subject:   "key-abc",
-		RequestID: "req-1",
-		Metadata:  map[string]any{"team": "team-1"},
-	}
-	if err := sink.Emit(context.Background(), ev); err != nil {
-		t.Fatalf("Emit: %v", err)
-	}
-
-	// Ensure the event is flushed before reading.
-	if err := sink.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	if !s.Scan() {
-		t.Fatalf("expected one line, got none")
-	}
-	var got Event
-	if err := json.Unmarshal(s.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.Action != ActionKeyCreated || got.Actor != "static:admin" || got.Subject != "key-abc" {
-		t.Fatalf("unexpected event: %+v", got)
-	}
-	if got.Time.IsZero() {
-		t.Fatalf("Time should be populated at emit time when caller left it zero")
-	}
-	if s.Scan() {
-		t.Fatalf("expected EOF, got another line: %s", s.Text())
-	}
-}
-
-func TestFileSink_Appends(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
-	sink, err := NewFileSink(path)
-	if err != nil {
-		t.Fatalf("NewFileSink: %v", err)
-	}
-	for i := 0; i < 3; i++ {
-		if err := sink.Emit(context.Background(), Event{
-			Action: ActionTeamCreated, Actor: "static:admin", Subject: "team-" + string(rune('A'+i)),
-		}); err != nil {
-			t.Fatalf("Emit %d: %v", i, err)
+// TestValidateRefusesIncompleteEvent refuses an event a review could not trust.
+func TestValidateRefusesIncompleteEvent(t *testing.T) {
+	t.Parallel()
+	for name, ev := range map[string]Event{
+		"missing action":  {Actor: "a", Subject: "s"},
+		"unknown action":  {Action: "key.create", Actor: "a", Subject: "s"},
+		"missing actor":   {Action: ActionKeyCreated, Subject: "s"},
+		"missing subject": {Action: ActionKeyCreated, Actor: "a"},
+	} {
+		if err := ev.Validate(); err == nil {
+			t.Errorf("%s: event accepted", name)
 		}
-	}
-	_ = sink.Close()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	lines := strings.Count(string(data), "\n")
-	if lines != 3 {
-		t.Fatalf("want 3 lines, got %d: %s", lines, data)
-	}
-}
-
-func TestFileSink_RejectsInvalidEvent(t *testing.T) {
-	dir := t.TempDir()
-	sink, err := NewFileSink(filepath.Join(dir, "audit.jsonl"))
-	if err != nil {
-		t.Fatalf("NewFileSink: %v", err)
-	}
-	t.Cleanup(func() { _ = sink.Close() })
-	cases := []struct {
-		name string
-		ev   Event
-	}{
-		{"missing action", Event{Actor: "a", Subject: "s"}},
-		{"missing actor", Event{Action: ActionKeyCreated, Subject: "s"}},
-		{"missing subject", Event{Action: ActionKeyCreated, Actor: "a"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := sink.Emit(context.Background(), tc.ev); err == nil {
-				t.Fatalf("expected validation error")
-			}
-		})
-	}
-}
-
-func TestFileSink_ConcurrentEmit(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.jsonl")
-	sink, err := NewFileSink(path)
-	if err != nil {
-		t.Fatalf("NewFileSink: %v", err)
-	}
-	const n = 50
-	var wg sync.WaitGroup
-	wg.Add(n)
-	start := time.Now()
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			_ = sink.Emit(context.Background(), Event{
-				Action:  ActionKeyRotated,
-				Actor:   "a",
-				Subject: "s",
-				Metadata: map[string]any{
-					"i": i,
-				},
-			})
-		}()
-	}
-	wg.Wait()
-	_ = sink.Close()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	lines := strings.Count(strings.TrimRight(string(data), "\n"), "\n") + 1
-	if lines != n {
-		t.Fatalf("want %d lines, got %d (elapsed %s)", n, lines, time.Since(start))
 	}
 }
 
 // TestActionConstants_WireFormat pins the stable on-the-wire string for
-// every released Action constant. A rename here would invalidate every
-// historical audit.jsonl line and break compliance tooling that greps
-// for these exact strings.
+// every released Action constant. A rename here would invalidate recorded
+// history and break compliance tooling that greps for these exact strings.
 func TestActionConstants_WireFormat(t *testing.T) {
 	want := map[Action]string{
-		ActionKeyCreated:      "key.created",
-		ActionKeyUpdated:      "key.updated",
-		ActionKeyRotated:      "key.rotated",
-		ActionKeyDeleted:      "key.deleted",
-		ActionKeyUsageReset:   "key.usage_reset",
-		ActionTeamCreated:     "team.created",
-		ActionTeamUpdated:     "team.updated",
-		ActionTeamDeleted:     "team.deleted",
-		ActionTeamUsageReset:  "team.usage_reset",
-		ActionQuotaSpendReset: "quota.spend_reset",
-		ActionStateSnapshot:   "state.snapshot",
-		ActionStateRestore:    "state.restore",
+		ActionKeyCreated:     "key.created",
+		ActionKeyUpdated:     "key.updated",
+		ActionKeyRotated:     "key.rotated",
+		ActionKeyDeleted:     "key.deleted",
+		ActionKeyUsageReset:  "key.usage_reset",
+		ActionTeamCreated:    "team.created",
+		ActionTeamUpdated:    "team.updated",
+		ActionTeamDeleted:    "team.deleted",
+		ActionTeamUsageReset: "team.usage_reset",
 	}
 	for got, expected := range want {
 		if string(got) != expected {
@@ -175,25 +50,83 @@ func TestActionConstants_WireFormat(t *testing.T) {
 	if ActorStaticAdmin != "static:admin" {
 		t.Errorf("ActorStaticAdmin drift: %q", ActorStaticAdmin)
 	}
-	if ActorSystemReconciler != "system:reconciler" {
-		t.Errorf("ActorSystemReconciler drift: %q", ActorSystemReconciler)
+}
+
+func TestValidateRefusesMetadataJSONWouldAlter(t *testing.T) {
+	t.Parallel()
+	valid := Event{Action: ActionKeyCreated, Actor: "a", Subject: "s", Metadata: map[string]any{"purpose": "setup", "n": 1.5, "list": []any{"x"}}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid metadata refused: %v", err)
+	}
+	for name, metadata := range map[string]map[string]any{
+		"invalid UTF-8 key":    {"bad\xffname": 1},
+		"invalid UTF-8 nested": {"list": []any{map[string]any{"k": "bad\xff"}}},
+		"NaN":                  {"n": math.NaN()},
+		"unencodable":          {"c": make(chan int)},
+	} {
+		ev := valid
+		ev.Metadata = metadata
+		if err := ev.Validate(); err == nil {
+			t.Errorf("%s: metadata accepted", name)
+		}
 	}
 }
 
-func TestNull(t *testing.T) {
-	if err := (Null{}).Emit(context.Background(), Event{}); err != nil {
-		t.Fatalf("Null.Emit must be a no-op")
+// TestActionsListsEveryConstant: Actions is the set an event records and a
+// filter names, so an Action constant missing from it, in any file of the
+// package and written either way, could never be recorded.
+func TestActionsListsEveryConstant(t *testing.T) {
+	t.Parallel()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declared, listed []string
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
+				for _, spec := range gen.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for _, value := range vs.Values {
+						if lit := actionLiteral(vs.Type, value); lit != nil {
+							text, err := strconv.Unquote(lit.Value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							declared = append(declared, text)
+						}
+					}
+				}
+			}
+		}
+	}
+	for _, action := range Actions() {
+		listed = append(listed, string(action))
+	}
+	slices.Sort(declared)
+	slices.Sort(listed)
+	if len(declared) == 0 || !slices.Equal(declared, listed) {
+		t.Errorf("Actions lists %v; the package declares %v", listed, declared)
 	}
 }
 
-func TestLog_SwallowsSinkErrors(t *testing.T) {
-	// Using Null ensures no error path; we mainly pin that Log doesn't
-	// panic on a nil sink and doesn't propagate sink errors.
-	Log(context.Background(), nil, Event{Action: ActionKeyCreated, Actor: "a", Subject: "s"})
-	// The errSink below returns an error; Log must swallow it.
-	Log(context.Background(), errSink{}, Event{Action: ActionKeyCreated, Actor: "a", Subject: "s"})
+// actionLiteral is the string of a constant written X Action = "x" or
+// X = Action("x"), and nil for any other constant.
+func actionLiteral(typ, value ast.Expr) *ast.BasicLit {
+	if call, ok := value.(*ast.CallExpr); ok && typ == nil && len(call.Args) == 1 {
+		typ, value = call.Fun, call.Args[0]
+	}
+	ident, isAction := typ.(*ast.Ident)
+	lit, isString := value.(*ast.BasicLit)
+	if isAction && ident.Name == "Action" && isString && lit.Kind == token.STRING {
+		return lit
+	}
+	return nil
 }
-
-type errSink struct{}
-
-func (errSink) Emit(_ context.Context, _ Event) error { return os.ErrClosed }

@@ -12,6 +12,7 @@ import (
 // Feature declares how a provider supplies a model ability. Empty declarations
 // describe built-in support; files are tried in preference order.
 type Feature struct {
+	Listener           *ListenerConfig    `yaml:"listener,omitempty" json:"listener,omitempty"`
 	RequiresParameters []string           `yaml:"requires_parameters,omitempty" json:"requires_parameters,omitempty"`
 	HTTP               *FeatureHTTP       `yaml:"http,omitempty" json:"http,omitempty"`
 	HealthCheck        *HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
@@ -72,7 +73,7 @@ func validateFeatures(features map[string]Feature) error {
 		if f.Default && len(f.Files) == 0 && f.Runtime == "" {
 			return fmt.Errorf("feature %q: default requires files or runtime", name)
 		}
-		if f.Runtime == "" && (f.Execution != nil || f.HealthCheck != nil || len(f.WireEndpoints) > 0 || len(f.ExcludeParameters) > 0) {
+		if f.Runtime == "" && (f.Execution != nil || f.HealthCheck != nil || len(f.WireEndpoints) > 0 || len(f.ExcludeParameters) > 0 || f.Listener != nil) {
 			return fmt.Errorf("feature %q: execution overlay requires a runtime", name)
 		}
 		if f.Runtime != "" {
@@ -90,6 +91,9 @@ func validateFeatures(features map[string]Feature) error {
 }
 
 func validateFeatureRuntime(name string, f Feature) error {
+	if err := f.Listener.Validate(); err != nil {
+		return fmt.Errorf("feature %q: %w", name, err)
+	}
 	if f.HealthCheck != nil {
 		if _, err := f.HealthCheck.ReadinessProbe.StallDuration(); err != nil {
 			return fmt.Errorf("feature %q: %w", name, err)
@@ -112,7 +116,7 @@ func validateFeatureRuntime(name string, f Feature) error {
 
 // marshalFeatureProvider preserves an explicit empty declaration so reconciliation
 // does not mistake a saved opt-out for a config predating features.
-func marshalFeatureProvider(provider any, features map[string]Feature) (any, error) {
+func marshalFeatureProvider(provider any, features map[string]Feature, operations map[string]OperationDefinition) (any, error) {
 	var node yaml.Node
 	if err := node.Encode(provider); err != nil {
 		return nil, err
@@ -120,6 +124,12 @@ func marshalFeatureProvider(provider any, features map[string]Feature) (any, err
 	if features != nil && len(features) == 0 {
 		node.Content = append(node.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "features"},
+			&yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle},
+		)
+	}
+	if operations != nil && len(operations) == 0 {
+		node.Content = append(node.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "operations"},
 			&yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle},
 		)
 	}

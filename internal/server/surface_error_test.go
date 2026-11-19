@@ -158,7 +158,7 @@ func TestIdempotencyConflict_ShapeFollowsSurface(t *testing.T) {
 			router := gin.New()
 			// As mounted for real: the group's responder, then the store.
 			router.Use(httperr.AttachResponder(newResponderSet().dispatcher.For(tc.path)), func(c *gin.Context) {
-				c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+				c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 			}, store.middlewareWithBodySkip(nil))
 			router.POST(tc.path, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 

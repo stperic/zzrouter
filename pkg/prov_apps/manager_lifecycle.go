@@ -1226,6 +1226,7 @@ func (m *ProviderAppManager) prepareLaunchFeatures(ctx context.Context, features
 		resolved: instance.Resolved{Features: states, FeatureHTTP: probes, WorkingDir: launch.WorkingDir, Commitments: features.Commitments, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
 	}
 	prepared.resolved.Browser = m.captureBrowserReceipt(ctx, prepared, port)
+	prepared.resolved.Listener = launchListener(svcCfg, params, env, port)
 	return prepared, nil
 }
 

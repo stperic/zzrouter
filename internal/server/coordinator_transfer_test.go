@@ -379,13 +379,9 @@ func TestCoordinatorOnlyProductionProviderAndCatalogExchange(t *testing.T) {
 	require.NoError(t, err)
 	coordinator.cluster.listener = owner
 	coordinator.clusterMTLSClient = client
-	if coordinator.cluster.coordinator != nil {
-		coordinator.cluster.coordinator.Stop()
-	}
 	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coordinator"}, "http://coordinator.invalid", coordinator, nil, mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client, ClusterPort: workerNode.Addr().(*net.TCPAddr).Port}))
 	require.NoError(t, err)
-	t.Cleanup(cluster.Stop)
-	coordinator.cluster.coordinator = cluster
+	useTestCluster(t, coordinator, cluster)
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
 	coordinator.model.Cache = cache.New(cache.Config{Node: coordinator.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: worker.appsConfig, ClusterClient: coordinator.getClusterClient, ResolveEndpointToNodename: func(string) string { return "worker" }})
 	require.NoError(t, coordinator.model.Cache.RefreshCacheSync(t.Context()))

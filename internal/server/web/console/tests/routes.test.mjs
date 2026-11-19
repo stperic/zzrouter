@@ -114,13 +114,20 @@ test('team preview remains a read-only API operation and uses the evaluated rout
 test('node selection includes worker-only cloud services and assigned-model providers', t => {
  const f = page(t);
  f.root.append(routeForm(f.p, null, { ...options,
-  nodes: [{name:'worker', providers:[{key:'private-cloud',kind:'cloud',cloud:true},{key:'private-engine',kind:'external'},{key:'browser-tool',kind:'python'}]}],
+  nodes: [{name:'coord', health_status:'healthy', providers:[{key:'groq',kind:'cloud',state:'cloud-available'}]},
+   {name:'worker', health_status:'healthy', providers:[{key:'private-cloud',kind:'cloud',cloud:true},
+     {key:'private-engine',kind:'external'}, {key:'browser-tool',kind:'python'}, {key:'ollama',state:'live',running:false}]},
+   {name:'offline', health_status:'down', providers:[{key:'ollama',state:'live'}]}],
   models: [{name:'local',node:'worker',assigned_app:'private-engine'}],
  }, () => {}));
- assert.doesNotMatch(named(f.root, 'provider_0').textContent, /private-cloud|private-engine|browser-tool/);
+ assert.match(named(f.root, 'provider_0').textContent, /Groq/);
+ assert.doesNotMatch(named(f.root, 'provider_0').textContent, /Ollama|private-cloud|private-engine|browser-tool/);
+ const nodes = named(f.root, 'node_0').children;
+ assert.equal(nodes.find(option => option.value === 'offline').disabled, true);
+ assert.equal(nodes.some(option => option.value === 'coord'), false);
  named(f.root, 'node_0').value = 'worker'; named(f.root, 'node_0').dispatchEvent(new Event('change'));
- assert.match(named(f.root, 'provider_0').textContent, /private-engine \(Local\).*private-cloud \(Cloud\)/);
- assert.doesNotMatch(named(f.root, 'provider_0').textContent, /browser-tool/);
+ assert.match(named(f.root, 'provider_0').textContent, /private-engine \(Local\).*Groq \(Cloud\).*private-cloud \(Cloud\)/);
+ assert.doesNotMatch(named(f.root, 'provider_0').textContent, /Ollama|browser-tool/);
 });
 
 
@@ -182,7 +189,11 @@ test('an old conflict recovery read cannot replace a newer editor in the same pa
 test('Refresh reloads optional route picker inventory and a route named new remains a record', async t => {
  const f = page(t); let expanded = false;
  const list = f.p.api.list;
- f.p.api.list = path => path.startsWith('/providers/catalog') && expanded ? [...catalog, { key: 'new-engine', name: 'New engine', protocol: 'openai' }] : list(path);
+ f.p.api.list = path => {
+  if (expanded && path.startsWith('/providers/catalog')) return [...catalog, { key: 'new-engine', name: 'New engine', protocol: 'openai' }];
+  if (expanded && path === '/nodes') return [{ name: 'worker', health_status: 'healthy', providers: [{ key: 'new-engine', state: 'live' }] }];
+  return list(path);
+ };
  await routes(f.p, 'new');
  assert.ok(button(f.root, 'Edit')); assert.equal(walkForms(f.root, 'route-editor').length, 0);
  expanded = true; button(f.root, 'Refresh').dispatchEvent(new Event('click')); await drain();

@@ -11,8 +11,9 @@ export function activityLabel(activity, now = performance.now()) {
   return { active: 'Active at observation', idle: 'No observed work' }[activity.state] || 'Activity unavailable';
 }
 export function activityText(p, activity) {
-  const node = text(activityLabel(activity), 'muted activity-label');
-  const remaining = activityDeadline(activity) - performance.now();
+  const now = performance.now();
+  const node = text(activityLabel(activity, now), 'muted activity-label');
+  const remaining = activityDeadline(activity) - now;
   if (remaining <= 0 || p.scope.signal.aborted) return node;
   const cancel = () => clearTimeout(timer);
   const timer = setTimeout(() => {

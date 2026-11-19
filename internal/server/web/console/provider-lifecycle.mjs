@@ -4,16 +4,31 @@ import { providerName } from './provider-icons.mjs';
 import { parameterSettings } from './parameters.mjs';
 import { installProvider } from './provider-install.mjs';
 import { formSubmission } from './details.mjs';
+import { nodeHealth } from './network-data.mjs';
 
-export function providerControls(p, entry, inventory, back) {
+export function providerControls(p, entry, inventory, back, refreshInventory) {
   const nodes = inventory?.[0]?.status === 'fulfilled' ? inventory[0].value : [];
-  const picker = select('provider_node', [['', 'Choose a compute node…'], ...nodes.map(node => [node.name, `${node.name}${node.health_status === 'down' ? ' (offline)' : ''}`])], '');
-  const manage = leaveButton('Manage runtime', () => { if (picker.value) void providerLifecycle(p.panel.view('Manage provider'), entry, picker.value, back); }, p.api, 'primary');
-  manage.disabled = true; picker.addEventListener('change', () => { manage.disabled = !picker.value; });
-  return el('section', { class: 'access-section' }, el('h3', {}, 'Runtime management'), text('Install, verify, update or control this provider on one compute node.', 'muted'), field('Compute node', picker), actions(manage, leaveButton('Provider defaults', () => parameterSettings(p.panel.view('Provider parameters'), { provider: entry.key, back }), p.api)));
+  const records = inventory?.[1]?.status === 'fulfilled' ? inventory[1].value : [];
+  const choices = p.computeNode ? nodes.filter(node => node.name === p.computeNode) : nodes;
+  const picker = select('provider_node', [['', 'Choose a compute node…']], '');
+  for (const node of choices) {
+    const record = records.find(row => row.node === node.name && row.name === entry.key);
+    const status = node.health_status !== 'healthy' ? nodeHealth(node)[0] :
+      record?.installed === false ? 'Setup required' : record?.enabled === false ? 'Disabled' : '';
+    picker.append(el('option', { value: node.name, disabled: node.health_status !== 'healthy' },
+      status ? `${node.name} (${status})` : node.name));
+  }
+  if (choices.length === 1 && choices[0].health_status === 'healthy') picker.value = choices[0].name;
+  picker.disabled = Boolean(p.computeNode);
+  const canManage = () => choices.some(node => node.name === picker.value && node.health_status === 'healthy');
+  const manage = button('Manage runtime', () => {
+    if (canManage() && p.api.canLeave()) void providerLifecycle(p.panel.view('Manage provider'), entry, picker.value, back, refreshInventory);
+  }, 'primary');
+  manage.disabled = !canManage(); picker.addEventListener('change', () => { manage.disabled = !canManage(); });
+  return el('section', { class: 'access-section' }, el('h3', {}, 'Runtime management'), text('Install, verify, update or control this provider on one compute node.', 'muted'), field('Compute node', picker, p.computeNode && !canManage() ? 'Current compute node is unavailable' : ''), actions(manage, leaveButton('Provider defaults', () => parameterSettings(p.panel.view('Provider parameters'), { provider: entry.key, back }), p.api)));
 }
 
-export async function providerLifecycle(p, entry, node, back) {
+export async function providerLifecycle(p, entry, node, back, refreshInventory) {
   const show = async () => {
     const owner = p.panel.view('Manage provider');
     const content = el('div'), feedback = el('div');
@@ -22,11 +37,13 @@ export async function providerLifecycle(p, entry, node, back) {
         leaveButton('Parameters', () => parameterSettings(owner.panel.view('Provider parameters'), { provider: entry.key, node, back: show }), p.api),
         leaveButton('Service', () => providerService(owner.panel.view('Provider service'), entry, node, show), p.api),
         leaveButton('Versions', () => providerVersions(owner.panel.view('Provider versions'), entry, node, show), p.api), leaveButton('Back', back, p.api)), feedback, content);
-    const reads = await Promise.allSettled([p.api.data(providerPath(entry.key, node), { signal: owner.scope.signal }), p.api.data(providerPath(entry.key, node, '/environment'), { signal: owner.scope.signal, timeoutMs: 60000 })]);
+    const reads = await Promise.allSettled([p.api.data(providerPath(entry.key, node), { signal: owner.scope.signal }), p.api.data(providerPath(entry.key, node, '/environment'), { signal: owner.scope.signal, timeoutMs: 60000 }), refreshInventory?.(owner)]);
     if (!owner.current()) return;
-    const [current, environment] = reads;
+    const [current, environment, inventory] = reads;
+    if (inventory.status === 'rejected') feedback.append(message('The provider list could not be refreshed.', 'warning'), problem(inventory.reason));
     if (current.status === 'fulfilled') {
       const value = current.value;
+      if (value.installed && value.enabled) content.append(actions(leaveButton('Choose a model', () => owner.go('models', undefined, 'discover', node, entry.key), owner.api, 'primary')));
       content.append(facts([['State', value.state || value.status || 'Not reported'], ['Installed', value.installed ? 'Yes' : 'No'], ['Managed', value.managed ? 'Yes' : 'No'], ['Enabled', value.enabled ? 'Yes' : 'No'], ['Version', value.version || 'Not reported']]));
       const toggle = button(value.enabled ? 'Disable on this node' : 'Enable on this node', () => providerOperation(owner, entry, node, { label: value.enabled ? 'Disable provider' : 'Enable provider', method: 'PATCH', body: { enabled: !value.enabled }, confirm: `${value.enabled ? 'Disable' : 'Enable'} ${entry.name} on ${node}?` }, show));
       toggle.setAttribute('data-protected-actions', ''); content.append(toggle);

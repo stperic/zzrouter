@@ -48,11 +48,11 @@ func TestIntegrationBrowserConsoleFixedAssetsAndRoleGate(t *testing.T) {
 		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		assert.Equal(t, http.StatusNotFound, rec.Code, path)
 	}
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "console gate fixture"))
+	crossRole(t, s, role.RoleWorker)
 	rec := httptest.NewRecorder()
 	s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/console/", nil))
 	assert.Equal(t, http.StatusNotFound, rec.Code)
-	require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "console gate restored"))
+	crossRole(t, s, role.RoleCoordinator)
 	rec = httptest.NewRecorder()
 	s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/console/", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
@@ -117,7 +117,7 @@ func TestIntegrationBrowserConsoleTopologyAssets(t *testing.T) {
 		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		assert.Equal(t, http.StatusNotFound, rec.Code)
 	}
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "topology asset gate fixture"))
+	crossRole(t, s, role.RoleWorker)
 	for path := range assets {
 		rec := httptest.NewRecorder()
 		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -163,7 +163,7 @@ func TestIntegrationBrowserRootOpensConsole(t *testing.T) {
 	assert.Contains(t, string(body), "zzRouter")
 	assert.NotContains(t, string(body), ollamaRootProbeBody)
 
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "root gate fixture"))
+	crossRole(t, s, role.RoleWorker)
 	rec := httptest.NewRecorder()
 	s.engine.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusNotFound, rec.Code)

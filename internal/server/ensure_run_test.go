@@ -258,7 +258,7 @@ func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
 			assert.Equal(t, run.StreamJobID, response.Data.JobID)
 			assert.Equal(t, run.Port, response.Data.Port)
 			assert.Equal(t, string(status), response.Data.Status)
-			assert.Equal(t, "worker", response.Data.Node)
+			assert.Equal(t, "node", response.Data.Node, "the executor's canonical node owns the job; routing aliases do not replace it")
 		})
 	}
 }

@@ -73,7 +73,7 @@ func TestPullClusterRoute_RelaysSuccessFrame(t *testing.T) {
 	c.Request = req
 
 	stream := false
-	err := svc.pullClusterRoute(c, "worker-1", "smollm:135m", false, &stream)
+	err := svc.pullProxy(c, "worker-1", "smollm:135m", false, &stream)
 	require.NoError(t, err)
 
 	require.Equal(t, http.StatusOK, w.Code,
@@ -124,7 +124,7 @@ func TestPullClusterRoute_NoInvalidateOn4xx(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
 
-	err := svc.pullClusterRoute(c, "worker-1", "nope:1b", false, nil)
+	err := svc.pullProxy(c, "worker-1", "nope:1b", false, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -142,6 +142,6 @@ func TestPullClusterRoute_NoRouter_503(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = req
 
-	err := svc.pullClusterRoute(c, "worker-1", "x", false, nil)
+	err := svc.pullProxy(c, "worker-1", "x", false, nil)
 	require.Error(t, err, "no router → must surface ServiceUnavailable problem")
 }

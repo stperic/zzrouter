@@ -85,10 +85,10 @@ func TestResponseAffinity_RecordsOnCreate_UsesOnRetrieve(t *testing.T) {
 	// covered by separate dispatch tests. Here we care only that the
 	// retrieval handler consults the map and forwards to the recorded
 	// provider rather than the default backend.
-	server.inference.affinity.Record("resp_affinity_abc", "affinity-provider")
+	recordResponseForTest(t, server, "resp_affinity_abc", "affinity-provider", "uncatalogued-model", adminResponseOwner())
 
 	// A stored response remains addressable after its model disappears from the catalog.
-	chained := makeRequest(t, server, TestRequest{Method: "POST", Path: "/v1/responses", Body: map[string]any{"model": "uncatalogued-model", "previous_response_id": "resp_affinity_abc", "input": "continue"}})
+	chained := makeRequest(t, server, TestRequest{Method: "POST", Path: "/v1/responses", Headers: map[string]string{"X-API-Key": TestAdminKey}, Body: map[string]any{"model": "uncatalogued-model", "previous_response_id": "resp_affinity_abc", "input": "continue"}})
 	require.Equal(t, http.StatusOK, chained.Code, "body=%s", chained.Body)
 	denied := makeRequest(t, server, TestRequest{Method: "POST", Path: "/v1/responses", Headers: map[string]string{"X-API-Key": "invalid-key"}, Body: map[string]any{"model": "uncatalogued-model", "previous_response_id": "resp_affinity_abc", "input": "continue"}})
 	require.Equal(t, http.StatusUnauthorized, denied.Code)
@@ -97,8 +97,9 @@ func TestResponseAffinity_RecordsOnCreate_UsesOnRetrieve(t *testing.T) {
 	// affinity map, resolve the provider, and forward to the affinity
 	// backend — the default backend must see zero traffic.
 	resp := makeRequest(t, server, TestRequest{
-		Method: "GET",
-		Path:   "/v1/responses/resp_affinity_abc",
+		Method:  "GET",
+		Path:    "/v1/responses/resp_affinity_abc",
+		Headers: map[string]string{"X-API-Key": TestAdminKey},
 	})
 	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
 
@@ -114,10 +115,8 @@ func TestResponseAffinity_RecordsOnCreate_UsesOnRetrieve(t *testing.T) {
 	assert.Empty(t, *defaultRecorded, "default backend should not have been touched")
 }
 
-// TestResponseAffinity_Miss_FallsThroughToDefault verifies the graceful
-// degradation path: when the affinity map does not hold the id, the
-// retrieval falls back to the configured default backend.
-func TestResponseAffinity_Miss_FallsThroughToDefault(t *testing.T) {
+// TestResponseAffinity_Miss_RefusesDefault verifies a missing origin cannot select another backend.
+func TestResponseAffinity_Miss_RefusesDefault(t *testing.T) {
 	defaultBackend, defaultRecorded, defaultMu := newBackendRecorder(t,
 		http.StatusOK,
 		[]byte(`{"id":"resp_default_zzz","object":"response"}`),
@@ -159,23 +158,20 @@ func TestResponseAffinity_Miss_FallsThroughToDefault(t *testing.T) {
 	}
 	t.Cleanup(func() { cleanupTestNode(server) })
 
-	// Affinity map is empty. Retrieval should still succeed via the
-	// default backend.
+	// Affinity map is empty, so the request has no proven destination.
 	resp := makeRequest(t, server, TestRequest{
 		Method: "GET",
 		Path:   "/v1/responses/resp_unknown_id",
 	})
-	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	require.Equal(t, http.StatusNotFound, resp.Code, "body=%s", resp.Body)
 
 	defaultMu.Lock()
 	defer defaultMu.Unlock()
-	require.Len(t, *defaultRecorded, 1, "default backend should receive cache-miss retrievals")
-	assert.Equal(t, "/v1/responses/resp_unknown_id", (*defaultRecorded)[0].Path)
+	require.Empty(t, *defaultRecorded, "an unknown owner must never reach the default backend")
 }
 
 // TestResponseAffinity_DeleteFlushesEntry verifies that a DELETE on an
-// affinity-tracked response removes the entry so a subsequent retrieval
-// falls through to the default backend.
+// affinity-tracked response removes the entry so a subsequent retrieval refuses.
 func TestResponseAffinity_DeleteFlushesEntry(t *testing.T) {
 	backend, _, _ := newBackendRecorder(t,
 		http.StatusOK,
@@ -218,12 +214,13 @@ func TestResponseAffinity_DeleteFlushesEntry(t *testing.T) {
 	}
 	t.Cleanup(func() { cleanupTestNode(server) })
 
-	server.inference.affinity.Record("resp_del_abc", "affinity-provider")
+	recordResponseForTest(t, server, "resp_del_abc", "affinity-provider", "m", adminResponseOwner())
 	require.Equal(t, 1, server.inference.affinity.Size())
 
 	resp := makeRequest(t, server, TestRequest{
-		Method: "DELETE",
-		Path:   "/v1/responses/resp_del_abc",
+		Method:  "DELETE",
+		Path:    "/v1/responses/resp_del_abc",
+		Headers: map[string]string{"X-API-Key": TestAdminKey},
 	})
 	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
 

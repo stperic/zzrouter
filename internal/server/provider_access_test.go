@@ -43,18 +43,18 @@ func TestProviderAccessFiltersTargetsAndPolicyChanges(t *testing.T) {
 		require.False(t, s.admitAccessTargets(c, &resolver.Resolved{Provider: provider}))
 		require.Equal(t, 403, w.Code)
 	}
-	svc := NewTeamsService(rig.teams, rig.keys, rig.access)
+	svc := NewTeamsService(rig.store, rig.access)
 	renamed := "Renamed"
-	_, err := svc.UpdateTeam("team", &UpdateTeamRequest{Name: &renamed}, "admin")
+	_, err := svc.UpdateTeam(t.Context(), "team", &UpdateTeamRequest{Name: &renamed}, "admin")
 	require.NoError(t, err)
-	require.Equal(t, "selected", rig.teams.Get("team").ProviderAccess.Mode)
-	_, err = svc.UpdateTeam("team", &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "none"}}, "admin")
+	require.Equal(t, "selected", rig.store.Snapshot().Team("team").ProviderAccess.Mode)
+	_, err = svc.UpdateTeam(t.Context(), "team", &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "none"}}, "admin")
 	require.NoError(t, err)
 	c, w := rig.makeRequest(raw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
 	require.False(t, s.admitAccessTargets(c, &resolver.Resolved{Provider: "vllm"}))
 	require.Equal(t, 403, w.Code, "cached authentication must observe updated team policy")
-	require.True(t, rig.teams.HasGatedTeam())
+	require.True(t, rig.store.Snapshot().HasGatedTeam())
 }
 
 func TestProviderAccessOpaqueAndOllamaManagement(t *testing.T) {
@@ -113,9 +113,7 @@ func TestProviderAccessCatalogAndShowRoundTrip(t *testing.T) {
 
 func TestProviderAccessCatalogSourceAlias(t *testing.T) {
 	rig, raw, s := providerPolicyRig(t)
-	team := *rig.teams.Get("team")
-	team.AllowedModels = []string{"org/model"}
-	require.NoError(t, rig.teams.Update("team", &team))
+	rig.updateTeam(t, func(team *teams.Team) { team.AllowedModels = []string{"org/model"} })
 	service := NewModelService(&mockModelCache{models: []*cache.CachedModel{{Name: "file-stem", SourceID: "org/model", Provider: "vllm", Node: "worker"}}}, nil, nil, nil, nil, nil)
 	h := &OpenAIModelHandlers{appsConfig: noAppsConfig, localNode: func() string { return "test" }, modelService: service, access: s.catalogAllowed, adapter: NewOpenAIAdapter(func() *config.AppsConfig { return nil })}
 	c, w := rig.makeRequest(raw)

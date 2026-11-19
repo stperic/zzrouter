@@ -75,9 +75,133 @@ async function audit(page, name) {
   assert.deepEqual(violations, [], name + ': accessibility violations');
 }
 
+test('owner setup and account sign-in are focused, accessible and use temporary codes', { timeout: 120000 }, async t => {
+  const f = await consolePage(t, 'setup'), { page } = f;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(f.base);
+  await page.getByRole('heading', { name: 'Set up your router', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Username', { exact: true }).count(), 0);
+  await audit(page, 'owner-setup-code-phone');
+  await page.getByLabel('Temporary code', { exact: true }).fill('synthetic-setup-code');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('heading', { name: 'Create your owner account', exact: true }).waitFor();
+  await page.getByLabel('Name', { exact: true }).fill('Alex Owner');
+  await page.getByLabel('Username', { exact: true }).fill('alex');
+  await page.getByLabel('Password', { exact: true }).fill('correct long passphrase');
+  assert.equal(await page.getByLabel('Password', { exact: true }).getAttribute('autocomplete'), 'new-password');
+  await audit(page, 'owner-account-phone');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await page.getByRole('heading', { name: 'Get your first model working', exact: true }).waitFor();
+  assert.match(await page.locator('.onboarding-steps li').filter({ hasText: 'Connect a provider' }).innerText(), /Available/);
+  assert.match(await page.locator('.onboarding-steps li').filter({ hasText: 'Prepare a model' }).innerText(), /Available/);
+  assert.doesNotMatch(await page.locator('.onboarding-steps li').filter({ hasText: 'Test in Chat' }).innerText(), /Done/);
+  const writes = (await f.requests()).filter(call => call.method === 'POST');
+  assert.equal(writes.find(call => call.path === '/access/setup').payload.token, 'bound-synthetic-setup-code');
+  assert.doesNotMatch(page.url(), /synthetic|passphrase/);
+  assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => /token|password|key|grant/.test(key))), false);
+  await f.nav('My account');
+  await page.getByRole('button', { name: 'Sign out other sessions', exact: true }).waitFor();
+  await audit(page, 'owner-my-account-phone');
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByLabel('Username', { exact: true }).fill('alex');
+  await page.getByLabel('Password', { exact: true }).fill('correct long passphrase');
+  assert.equal(await page.getByLabel('Password', { exact: true }).getAttribute('autocomplete'), 'current-password');
+  await audit(page, 'account-sign-in-phone');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+  assert.equal((await f.requests()).filter(call => call.path === '/session/password').length, 1);
+});
+
+test('People details, editing and invitations share one panel and do not retain link secrets', { timeout: 120000 }, async t => {
+  const f = await consolePage(t, 'person'), { page } = f;
+  await f.open('#people', 1280, 800);
+  await page.getByRole('button', { name: 'Morgan Developer', exact: true }).click();
+  assert.doesNotMatch(await page.getByRole('dialog').innerText(), /\bnull\b/, 'non-owner details have no empty badge text');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  assert.equal(await page.getByRole('dialog').count(), 1);
+  await page.getByLabel('Name', { exact: true }).fill('Morgan Updated');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('heading', { name: 'Morgan Updated', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close person details', exact: true }).click();
+  await page.getByRole('button', { name: '+ Invite person', exact: true }).click();
+  await page.getByText('Inherited team access', { exact: true }).waitFor();
+  await audit(page, 'invite-person-desktop');
+  await page.getByRole('button', { name: 'Create invitation', exact: true }).click();
+  const link = await page.getByLabel('Invitation link', { exact: true }).inputValue();
+  assert.match(link, /#invite\?token=/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await audit(page, 'invite-link-phone');
+  await page.goto(link);
+  await page.getByRole('heading', { name: 'You’re invited', exact: true }).waitFor();
+  assert.doesNotMatch(await page.locator('body').innerText(), /\bnull\b/, 'anonymous invitation review has no account placeholder text');
+  assert.doesNotMatch(page.url(), /token=|synthetic/);
+  const before = (await f.requests()).filter(call => call.path === '/access/console-grants/exchange').length;
+  assert.equal(before, 0, 'opening an invitation does not consume it before review');
+  await audit(page, 'invite-review-phone');
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Taylor');
+  await page.getByLabel('Username', { exact: true }).fill('taylor');
+  await page.getByLabel('Password', { exact: true }).fill('another long passphrase');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+  assert.equal((await f.requests()).filter(call => call.path === '/access/invitations/accept').length, 1);
+  assert.equal(await page.evaluate(() => JSON.stringify(localStorage).includes('synthetic-invitation')), false);
+});
+
+test('recovery and password changes use the same account session flow', { timeout: 120000 }, async t => {
+  const f = await consolePage(t, 'person'), { page } = f;
+  await f.open('#people?item=member');
+  await page.getByRole('button', { name: 'Create recovery link', exact: true }).click();
+  const link = await page.getByLabel('Invitation link', { exact: true }).inputValue();
+  await page.goto(link);
+  await page.getByRole('heading', { name: 'Reset your password', exact: true }).waitFor();
+  assert.doesNotMatch(page.url(), /token=/);
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByLabel('New password', { exact: true }).fill('replacement passphrase');
+  await audit(page, 'password-recovery');
+  await page.getByRole('button', { name: 'Save password and sign in', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+  await f.nav('My account');
+  await page.getByText('Change password', { exact: true }).first().click();
+  await page.getByLabel('Current password', { exact: true }).fill('replacement passphrase');
+  await page.getByLabel('New password', { exact: true }).fill('another replacement passphrase');
+  await page.getByRole('button', { name: 'Change password', exact: true }).click();
+  await page.getByText('Password changed. Other sessions have been signed out.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Sign out other sessions', exact: true }).click();
+  await page.getByText('Other sessions and authorizations were revoked.', { exact: true }).waitFor();
+  const paths = (await f.requests()).filter(call => call.method === 'POST').map(call => call.path);
+  for (const path of ['/access/recovery', '/access/password', '/access/sessions/revoke']) assert.equal(paths.filter(value => value === path).length, 1);
+});
+
+test('computer pairing previews the transfer and requires a new review after an edit', { timeout: 90000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  await f.open('#nodes?item=add', 390, 844);
+  await page.getByRole('button', { name: 'I have pairing details', exact: true }).click();
+  const transfer = { type: 'zzrouter-pairing', version: 1, node_name: 'new-worker', code: 'synthetic-pair-code', worker_url: 'https://worker.example:9091', worker_fingerprint: 'sha256:synthetic-public-fingerprint', expires_at: '2030-01-01T00:00:00Z' };
+  const field = page.getByLabel('Pairing details', { exact: true });
+  await field.fill(JSON.stringify(transfer));
+  assert.equal(await page.getByRole('button', { name: 'Approve computer', exact: true }).isDisabled(), true);
+  await page.getByRole('button', { name: 'Review computer', exact: true }).click();
+  await page.getByText(transfer.worker_fingerprint, { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Change pairing details', exact: true }).click();
+  await field.fill(JSON.stringify({ ...transfer, node_name: 'edited-worker' }));
+  assert.equal(await page.getByRole('button', { name: 'Approve computer', exact: true }).isDisabled(), true);
+  await field.fill(JSON.stringify(transfer));
+  await page.getByRole('button', { name: 'Review computer', exact: true }).click();
+  await audit(page, 'pairing-review-phone');
+  await page.getByRole('button', { name: 'Approve computer', exact: true }).click();
+  await page.getByRole('button', { name: 'View node', exact: true }).waitFor();
+  const write = (await f.requests()).find(call => call.path === '/cluster/pairing/accept');
+  assert.deepEqual(write.payload, { transfer });
+  assert.equal(await field.inputValue(), '');
+});
+
 test('color themes preserve work, persist across tabs and cover light and dark surfaces', { timeout: 180000 }, async t => {
   const f = await consolePage(t), { page } = f;
   await f.open('#overview');
+  // Clearing the layout status resizes the canvas. Let its ResizeObserver finish
+  // before measuring the camera, so this asserts the theme change alone.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'claude-web');
   const graph = () => page.evaluate(() => {
     const cy = document.querySelector('.topology-canvas')._cyreg.cy;
@@ -127,9 +251,8 @@ test('color themes preserve work, persist across tabs and cover light and dark s
   assert.equal(await page.locator('html').getAttribute('data-theme'), 'claude-code-dark');
   await page.getByRole('button', { name: 'Sign out', exact: true }).click();
   await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
-  assert.equal(await page.getByLabel('Color theme', { exact: true }).inputValue(), 'claude-code-dark');
-  await page.getByText('Applied for this tab. Browser storage is unavailable.').waitFor();
-  await page.getByLabel('Color theme', { exact: true }).selectOption('claude-web-dark');
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'claude-code-dark');
+  assert.equal(await page.getByLabel('Color theme', { exact: true }).count(), 0, 'appearance stays out of the first sign-in task');
   await audit(page, 'theme-sign-in-dark');
 });
 
@@ -137,11 +260,12 @@ test('all console views and shared editors fit desktop and phone viewports', { t
   const f = await consolePage(t);
   const scenes = [
     ['overview', '#overview'], ['nodes', '#nodes'], ['node-editor', '#nodes?item=node%2Fstudio-gpu', 'Edit'],
-    ['add-node', '#nodes?item=add'], ['providers', '#providers'], ['local-provider', '#providers?item=local%2Follama'],
+    ['add-node', '#nodes?item=add'], ['providers', '#providers'], ['cloud-providers', '#providers?item=cloud'],
+    ['registries', '#providers?item=registries'], ['local-provider', '#providers?item=local%2Follama'],
     ['cloud-editor', '#providers?item=cloud%2Fgroq', 'Edit'], ['routes', '#routes'], ['route-editor', '#routes?item=coding', 'Edit'],
     ['create-route', '#routes?mode=create'], ['clients', '#clients'], ['keys', '#access'], ['key-editor', '#access?item=keys%2Feditor', 'Edit'],
     ['team-editor', '#access?item=teams%2Fengineering', 'Edit'], ['create-team', '#access?item=teams&mode=create'],
-    ['workloads', '#workloads'], ['jobs', '#workloads?mode=jobs'], ['system', '#settings'], ['chat', '#chat'],
+    ['people', '#people'], ['workloads', '#workloads'], ['jobs', '#workloads?mode=jobs'], ['system', '#settings'], ['chat', '#chat'],
   ];
   for (const width of [1280, 390]) for (const [name, hash, action] of scenes) {
     await f.open(hash, width, width === 390 ? 844 : 800);
@@ -149,6 +273,7 @@ test('all console views and shared editors fit desktop and phone viewports', { t
     await audit(f.page, name + '-' + width);
   }
   await f.state('user'); await f.open('#connections', 390, 844); await audit(f.page, 'my-access-user');
+  assert.doesNotMatch(await f.page.locator('#content').innerText(), /\bnull\b/, 'app-key access has no account placeholder text');
   await f.state('login'); await f.page.goto(f.base + '#chat');
   await f.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
   await audit(f.page, 'sign-in');
@@ -253,6 +378,67 @@ test('complete console workspaces and editors fit desktop and phone', { timeout:
   }
 });
 
+test('Discover shows each model once and keeps IDs for details and ambiguous names', async t => {
+  const f = await consolePage(t), { page } = f;
+  const model = { provider: 'anthropic', display_name: 'Claude Fable 5.2', api_id: 'claude-fable-5-2', is_cloud: true, context_length: 1000000, created_at: '2026-11-09T18:30:00Z' };
+  const first = { ...model, display_name: 'Claude preview', api_id: 'claude-preview-first', modified_at: '2026-11-10T00:10:00Z' };
+  const second = { ...first, api_id: 'claude-preview-second', created_at: undefined, modified_at: '' };
+  await page.route('**/search?**', route => {
+    const type = new URL(route.request().url()).searchParams.get('type');
+    const results = type === 'providers' ? [{ name: 'anthropic', display_name: 'Anthropic', is_cloud: true, configured: true }] :
+      [model, first, second, model].map(discovery => ({ discovery }));
+    return route.fulfill({ json: { data: { results } } });
+  });
+  await page.route('**/models/card/anthropic/**', route => route.fulfill({ json: { data: { discovery: model } } }));
+  await f.open('#models?mode=discover');
+  const cards = page.locator('.model-list-results button');
+  await cards.first().waitFor();
+  assert.equal(await cards.count(), 3);
+  const fable = cards.filter({ hasText: model.display_name });
+  assert.equal(await fable.count(), 1);
+  assert.doesNotMatch(await fable.innerText(), /claude-fable-5-2/);
+  assert.equal(await fable.locator('time').getAttribute('datetime'), model.created_at);
+  assert.match(await fable.innerText(), /Published Nov 9, 2026/);
+  assert.equal(await cards.filter({ hasText: first.api_id }).count(), 1);
+  assert.equal(await cards.filter({ hasText: second.api_id }).count(), 1);
+  assert.equal(await cards.filter({ hasText: first.api_id }).locator('time').getAttribute('datetime'), first.modified_at);
+  assert.match(await cards.filter({ hasText: first.api_id }).innerText(), /Updated Nov 10, 2026/);
+  assert.equal(await cards.filter({ hasText: second.api_id }).locator('time').count(), 0);
+  await fable.click();
+  await page.getByRole('dialog').getByText(model.api_id, { exact: true }).waitFor();
+});
+
+test('Discover keeps capabilities, libraries and weight formats on cards and puts other tags in details', async t => {
+  const f = await consolePage(t), { page } = f;
+  const vision = { discovery: { provider: 'huggingface', api_id: 'example/vision-model', tags: [
+    'transformers', 'safetensors', 'gguf', 'model-family', 'image-text-to-text', 'image-to-text', 'conversational', 'license:apache-2.0',
+  ] }, pipeline_tag: 'image-text-to-text', library_name: 'transformers' };
+  const video = { discovery: { provider: 'huggingface', api_id: 'example/video-model',
+    tags: ['diffusers', 'diffusion-single-file', 'image-to-video', 'video-to-video', 'audio-to-video'] }, pipeline_tag: 'text-to-video' };
+  await page.route('**/search?**', route => {
+    const type = new URL(route.request().url()).searchParams.get('type');
+    return route.fulfill({ json: { data: { results: type === 'providers' ? [{ name: 'huggingface' }] : [vision, video] } } });
+  });
+  await page.route('**/models/card/huggingface/**', route => route.fulfill({ json: { data: vision } }));
+  await f.open('#models?mode=discover');
+  const cards = page.locator('.model-list-results button');
+  await cards.first().waitFor();
+  const visionCard = cards.filter({ hasText: vision.discovery.api_id });
+  const videoCard = cards.filter({ hasText: video.discovery.api_id });
+  assert.deepEqual(await visionCard.locator('.model-tags .badge').allTextContents(), ['Vision', 'Transformers', 'Safetensors', 'GGUF']);
+  assert.deepEqual(await videoCard.locator('.model-tags .badge').allTextContents(), ['Video generation', 'Diffusers']);
+  assert.equal(await visionCard.getByText('8 tags', { exact: true }).isVisible(), true);
+  assert.doesNotMatch(await visionCard.innerText(), /model-family|license:|\+\d+ more/);
+  await audit(page, 'discover-primary-tags-desktop');
+  await visionCard.click();
+  const details = page.getByRole('dialog');
+  const allTags = details.locator('details.discovery-all-tags');
+  await allTags.getByText('All tags', { exact: true }).click();
+  assert.deepEqual(await allTags.locator('.badge').allTextContents(), vision.discovery.tags);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await audit(page, 'discover-all-tags-phone');
+});
+
 test('Discover renders provider links and metadata across catalogs', { timeout: 60000 }, async t => {
   const f = await consolePage(t), { page } = f;
   const sources = ['ollama', 'huggingface', 'openai', 'anthropic', 'openrouter', 'azure', 'cloudflare', 'gemini', 'groq', 'ollama-cloud'];
@@ -305,7 +491,7 @@ test('Discover renders provider links and metadata across catalogs', { timeout: 
   const link = name => drawer.getByRole('link', { name, exact: true });
   for (const provider of sources) {
     await source.selectOption(provider);
-    const card = page.locator('.node-grid button').filter({ hasText: provider + ' model' });
+    const card = page.locator('.model-list-results button').filter({ hasText: provider + ' model' });
     await card.waitFor();
     assert.doesNotMatch(await card.innerText(), /\[Jev\]|\(https:/);
     assert.equal(await card.locator('a').count(), 0);
@@ -374,7 +560,7 @@ test('Discover expands OpenRouter excerpts on demand and keeps a provider link i
   await f.open('#models?mode=discover');
   const drawer = page.getByRole('dialog');
   const expand = drawer.getByRole('button', { name: 'Read full description' });
-  await page.locator('.node-grid button').filter({ hasText: 'example/supported' }).click();
+  await page.getByRole('button', { name: 'example/supported', exact: true }).click();
   await expand.waitFor();
   assert.deepEqual(read, []);
   assert.equal(await drawer.getByText(excerpt, { exact: true }).isVisible(), true);
@@ -388,11 +574,241 @@ test('Discover expands OpenRouter excerpts on demand and keeps a provider link i
   await collapse.waitFor();
   assert.deepEqual(read, ['example/supported']);
   await drawer.getByRole('button', { name: 'Close discover model' }).click();
-  await page.locator('.node-grid button').filter({ hasText: 'example/unavailable' }).click();
+  await page.getByRole('button', { name: 'example/unavailable', exact: true }).click();
   await expand.click();
   assert.equal(await drawer.getByRole('link', { name: 'Read on OpenRouter' }).getAttribute('href'), models[1].discovery.url);
   assert.equal(await drawer.getByText(excerpt, { exact: true }).isVisible(), true);
   assert.deepEqual(read, ['example/supported', 'example/unavailable']);
+});
+
+test('Discover sends a cloud model search and sort to the coordinator before pagination', async t => {
+  const f = await consolePage(t), { page } = f;
+  const queries = [];
+  await page.route('**/search?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('type') === 'providers') return route.fulfill({ json: { data: { results: [
+      { name: 'openai', is_cloud: true, configured: true, sort_options: ['name', 'newest'],
+        client_filter: true, client_sorts: ['name', 'newest'] },
+    ] } } });
+    queries.push(Object.fromEntries(query));
+    const id = query.get('q') === 'mini' ? 'model-mini' : 'another-model';
+    return route.fulfill({ json: { data: { results: [{ discovery: { provider: 'openai', api_id: id, is_cloud: true } }] } } });
+  });
+  await f.open('#models?mode=discover');
+  await page.getByRole('button', { name: 'another-model', exact: true }).waitFor();
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill('mini');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.getByRole('button', { name: 'model-mini', exact: true }).waitFor();
+  await page.getByLabel('Sort', { exact: true }).selectOption({ label: 'Name A to Z' });
+  await page.getByRole('button', { name: 'model-mini', exact: true }).waitFor();
+  assert.deepEqual([queries.at(-1).q, queries.at(-1).sort, queries.at(-1).order], ['mini', 'name', 'asc']);
+  assert.doesNotMatch(await page.locator('.discovery-filters').innerText(), /current provider page/);
+});
+
+test('Discover opens provider setup before searching an unconfigured cloud catalog', async t => {
+  const f = await consolePage(t), { page } = f;
+  const searched = [], cards = [];
+  let openRouterReady = false;
+  await page.route('**/models/card/openrouter/**', route => {
+    cards.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ json: { code: 'provider_connection_unavailable' }, status: 503 });
+  });
+  await page.route('**/search?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('type') === 'providers') return route.fulfill({ json: { data: { results: [
+      { name: 'openrouter', display_name: 'OpenRouter', is_cloud: true, configured: true, enabled: openRouterReady, discovery_available: openRouterReady },
+      { name: 'groq', display_name: 'Groq', is_cloud: true, configured: true, enabled: false, discovery_available: true },
+    ] } } });
+    const provider = query.get('provider');
+    searched.push(provider);
+    return route.fulfill({ json: { data: { results: [
+      { discovery: { provider, api_id: 'available-model', is_cloud: true } },
+    ] } } });
+  });
+  await f.open('#models?mode=discover');
+  const row = page.getByRole('button', { name: 'available-model', exact: true });
+  const source = page.getByLabel('Registry or cloud provider');
+  const search = page.getByRole('button', { name: 'Search', exact: true });
+  await row.waitFor();
+  assert.deepEqual(await source.locator('optgroup').evaluateAll(groups => groups.map(group => group.label)), ['Available', 'Setup required']);
+  assert.deepEqual(await source.locator('optgroup[label="Available"] option').allTextContents(), ['Groq']);
+  assert.deepEqual(await source.locator('optgroup[label="Setup required"] option').allTextContents(), ['OpenRouter']);
+  assert.equal(await source.inputValue(), 'groq');
+  await source.selectOption('openrouter');
+  assert.equal(await page.getByText('Add the provider’s credentials, such as an API key, to browse its models.', { exact: true }).isVisible(), true);
+  const configure = page.getByRole('button', { name: 'Configure provider', exact: true });
+  await configure.waitFor();
+  assert.equal(await search.isDisabled(), true);
+  assert.equal(await page.getByLabel('Sort', { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('searchbox', { name: 'Search', exact: true }).isDisabled(), true);
+  assert.equal(await row.count(), 0);
+  await audit(page, 'discover-provider-setup');
+  await source.selectOption('groq');
+  await row.waitFor();
+  assert.equal(await search.isEnabled(), true);
+  await source.selectOption('openrouter');
+  await configure.click();
+  await page.locator('[data-provider="openrouter"][aria-current="true"]').waitFor();
+  assert.deepEqual(searched, ['groq', 'groq']);
+  await f.open('#models?item=openrouter%2Fexample%2Fold-model&mode=discover');
+  await configure.waitFor();
+  assert.equal(await page.getByRole('dialog').count(), 0);
+  assert.equal(await source.inputValue(), 'openrouter');
+  assert.equal(await search.isDisabled(), true);
+  assert.deepEqual(cards, []);
+  assert.deepEqual(searched, ['groq', 'groq']);
+  openRouterReady = true;
+  await page.getByRole('button', { name: 'Refresh providers', exact: true }).click();
+  await row.waitFor();
+  assert.equal(await source.inputValue(), 'openrouter');
+  assert.equal(await search.isEnabled(), true);
+  assert.deepEqual(await source.locator('optgroup[label="Available"] option').allTextContents(), ['OpenRouter', 'Groq']);
+  assert.deepEqual(searched, ['groq', 'groq', 'openrouter']);
+  assert.deepEqual(cards, []);
+});
+
+test('Available and Discover share desktop filters, compact rows, and mobile layout', async t => {
+  const f = await consolePage(t), { page } = f;
+  await f.open('#models', 1280, 800);
+  const rows = page.locator('.model-list-results > button');
+  const toolbar = page.locator('.model-toolbar');
+  const bottomEdges = () => toolbar.locator('select, input, button').evaluateAll(controls => controls.map(control => control.getBoundingClientRect().bottom));
+  const rowPadding = () => rows.first().evaluate(row => getComputedStyle(row).padding);
+  const installed = rows.getByText('qwen3-coder', { exact: true });
+  await installed.waitFor();
+  const availablePadding = await rowPadding();
+  assert.equal(new Set(await bottomEdges()).size, 1, 'Available controls align on one desktop row');
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).selectOption('vllm');
+  assert.equal(await rows.count(), 1);
+  assert.match(await rows.first().locator('.model-row-stats').innerText(), /vllm.*studio-gpu/s);
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill('no such model');
+  await page.getByText('No models match these filters.', { exact: true }).waitFor();
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill('');
+  await installed.waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await audit(page, 'available-model-list-phone');
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.getByRole('button', { name: 'Discover', exact: true }).click();
+  await rows.first().waitFor();
+  assert.equal(new Set(await bottomEdges()).size, 1, 'Discover controls align on one desktop row');
+  assert.equal(await rowPadding(), availablePadding);
+  assert.deepEqual(await toolbar.locator('label > span').allTextContents(), ['Registry or cloud provider', 'Search', 'Sort']);
+  await audit(page, 'discover-model-list-desktop');
+});
+
+test('Ollama Discover searches the catalog, sorts before pagination and reviews eligible downloads', { timeout: 60000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  const model = { provider: 'ollama', api_id: 'qwen3.8', display_name: 'qwen3.8', downloads: 63100, size_bytes: 4800000000, modified_at: '2 days ago',
+    tags: ['tools', 'vision', 'thinking', 'Tools'], description: 'A general-purpose model for coding and image tasks.', variant_count: 13, parameter_sizes: ['27b'] };
+  const older = { ...model, api_id: 'qwen2.5', display_name: 'qwen2.5', modified_at: '2 years ago' };
+  const queries = [];
+  let eligibility = false;
+  await page.route('**/search?**', route => {
+    const query = Object.fromEntries(new URL(route.request().url()).searchParams);
+    if (query.type === 'providers') return route.fulfill({ json: { data: { results: [{
+      name: 'ollama', display_name: 'Ollama', client_filter: true, client_sorts: ['popular', 'newest', 'name'], has_tags: true,
+    }] } } });
+    queries.push(query);
+    const discovery = (query.sort === 'modified') === !query.offset ? model : older;
+    return route.fulfill({ json: { data: { results: [{ discovery }], total: 2, is_total_exact: true, pagination: { offset: Number(query.offset || 0), limit: 1, has_next: !query.offset } } } });
+  });
+  await page.route('**/models/card/ollama/**', route => route.fulfill({ json: { data: { discovery: model } } }));
+  await page.route('**/registries/ollama/tags?**', route => route.fulfill({ json: { data: { tags: [
+    { name: '27b', size: '18GB', context: '256K', input: 'Text, Image' },
+    { name: '27b-mxfp8', size: '19GB', context: '256K', input: 'Text', is_mlx: true },
+    { name: '70b-cloud', size: '-', is_cloud: true },
+  ] } } }));
+  await page.route(/\/zzrouter\/v1\/nodes(?:\?|$)/, route => route.fulfill({ json: { data: [
+    { name: 'studio-gpu', health_status: 'healthy', providers: [{ key: 'ollama', running: true }] },
+    { name: 'office-pc', health_status: 'healthy', providers: [{ key: 'ollama', running: true }] },
+    { name: 'offline', health_status: 'down', providers: [{ key: 'ollama', running: true }] },
+    { name: 'ollama-stopped', health_status: 'healthy', providers: [{ key: 'ollama', running: false }] },
+    { name: 'small-node', health_status: 'healthy', providers: [{ key: 'ollama', running: true }] },
+  ] } }));
+  await page.route('**/nodes/compatible?**', route => {
+    const query = new URL(route.request().url()).searchParams;
+    const mlx = query.get('model') === 'qwen3.8:27b-mxfp8';
+    assert.deepEqual(Object.fromEntries(query), { model: mlx ? 'qwen3.8:27b-mxfp8' : 'qwen3.8:27b', registry: 'ollama', provider: 'ollama', ...(mlx ? { format: 'mlx' } : {}) });
+    return route.fulfill({ json: { data: [], metadata: { assessments: [
+      { node: 'studio-gpu', provider: 'ollama', status: 'unknown', unknown_cause: mlx ? 'provider_not_eligible' : eligibility ? 'budget_not_sized' : 'node_unreachable' },
+      { node: 'office-pc', provider: 'ollama', status: 'unknown', unknown_cause: 'provider_not_eligible' },
+      { node: 'office-pc', provider: 'strata', status: 'fit' },
+      { node: 'offline', provider: 'ollama', status: 'fit' },
+      { node: 'ollama-stopped', provider: 'ollama', status: 'fit' },
+      { node: 'small-node', provider: 'ollama', status: 'no_fit' },
+    ] } } });
+  });
+  await f.open('#models?mode=discover', 1380, 879);
+  const cards = page.locator('.model-list-results button');
+  await cards.first().waitFor();
+  assert.equal(await page.getByText('More filters', { exact: true }).isVisible(), false);
+  assert.doesNotMatch(await page.locator('.discovery-filters').innerText(), /this page|current provider page/);
+  await page.getByRole('searchbox', { name: 'Search', exact: true }).fill('qwen');
+  await page.getByLabel('Sort', { exact: true }).selectOption({ label: 'Recently updated' });
+  await cards.getByText('qwen3.8', { exact: true }).waitFor();
+  assert.deepEqual([queries.at(-1).q, queries.at(-1).sort, queries.at(-1).order], ['qwen', 'modified', 'desc']);
+  assert.equal(await cards.first().getByText('Updated 2 days ago', { exact: true }).count(), 1);
+  assert.doesNotMatch(await cards.first().innerText(), /GiB/);
+  assert.equal(await cards.first().locator('.model-row-description').innerText(), model.description);
+  const stats = cards.first().locator('.model-row-stats');
+  assert.equal(await stats.getByText('63.1K', { exact: true }).isVisible(), true);
+  assert.equal(await stats.getByText('13 tags', { exact: true }).isVisible(), true);
+  assert.equal(await stats.getByTitle('63,100 downloads').count(), 1);
+  assert.equal(await stats.locator('[aria-hidden="true"].discovery-stat-icon').count(), 2);
+  assert.equal(await stats.locator('.badge').innerText(), '27b');
+  const pills = cards.first().locator('.model-tags .badge');
+  assert.deepEqual(await pills.allTextContents(), ['Tools', 'Vision', 'Thinking']);
+  const colors = await pills.evaluateAll(items => items.map(item => getComputedStyle(item).backgroundColor));
+  assert.equal(new Set(colors).size, 3);
+  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await cards.getByText('qwen2.5', { exact: true }).waitFor();
+  assert.deepEqual([queries.at(-1).q, queries.at(-1).sort, queries.at(-1).offset], ['qwen', 'modified', '1']);
+  await page.getByLabel('Sort', { exact: true }).selectOption({ label: 'Name A to Z' });
+  await page.getByRole('button', { name: 'Next', exact: true }).waitFor();
+  assert.deepEqual([queries.at(-1).sort, queries.at(-1).order, queries.at(-1).offset], ['name', 'asc', undefined]);
+  await page.getByLabel('Sort', { exact: true }).selectOption('modified');
+  await page.getByRole('button', { name: /^qwen3\.8/ }).click();
+  const dialog = page.getByRole('dialog');
+  const detailPills = dialog.locator('.detail-body > .model-tags .badge');
+  await detailPills.first().waitFor();
+  assert.deepEqual(await detailPills.allTextContents(), ['Tools', 'Vision', 'Thinking']);
+  await dialog.getByRole('button', { name: 'Download', exact: true }).click();
+  const provider = dialog.getByLabel('Local provider', { exact: true });
+  const review = dialog.getByRole('button', { name: 'Review download', exact: true });
+  const version = dialog.getByLabel('Version tag', { exact: true });
+  await dialog.getByText('Choose a version to see eligible nodes.', { exact: true }).waitFor();
+  assert.equal(await dialog.locator('input[name^="node_"]').count(), 0);
+  await version.selectOption('27b-mxfp8');
+  await dialog.getByText('No running Ollama provider on a healthy node was confirmed eligible for this version.', { exact: true }).waitFor();
+  assert.equal(await dialog.getByText('MLX · Text · 256K context', { exact: true }).count(), 1);
+  assert.equal(await review.isEnabled(), false);
+  await version.selectOption('27b');
+  await dialog.getByRole('button', { name: 'Retry eligibility' }).waitFor();
+  eligibility = true;
+  await dialog.getByRole('button', { name: 'Retry eligibility' }).click();
+  await dialog.getByRole('checkbox', { name: 'studio-gpu', exact: true }).waitFor();
+  assert.equal(await provider.inputValue(), 'ollama');
+  assert.deepEqual(await provider.locator('option').allTextContents(), ['Ollama']);
+  assert.deepEqual(await version.locator('option').allTextContents(), ['Choose a version…', '27b · 18GB · Text, Image', '27b-mxfp8 · MLX · 19GB · Text']);
+  assert.equal(await dialog.locator('input[name^="node_"]').count(), 1);
+  assert.equal(await dialog.getByText('Memory fit has not been measured.', { exact: true }).isVisible(), true);
+  await dialog.getByRole('checkbox', { name: 'studio-gpu', exact: true }).check();
+  await review.click();
+  await dialog.getByRole('button', { name: 'Edit selection', exact: true }).click();
+  assert.equal(await version.inputValue(), '27b');
+  assert.equal(await dialog.getByRole('checkbox', { name: 'studio-gpu', exact: true }).isChecked(), true);
+  assert.equal(await dialog.getByRole('button', { name: 'Start download', exact: true }).isVisible(), false);
+  await review.click();
+  assert.equal(await version.isVisible(), false);
+  await dialog.getByText('18GB', { exact: true }).waitFor();
+  assert.equal(await dialog.getByText('Text, Image', { exact: true }).isVisible(), true);
+  await audit(page, 'ollama-download-review-desktop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await audit(page, 'ollama-download-review-phone');
+  await dialog.getByRole('button', { name: 'Start download', exact: true }).click();
+  await dialog.getByText('model-download', { exact: true }).waitFor();
+  const writes = (await f.requests()).filter(call => call.path === '/deployments' && call.method === 'POST');
+  assert.deepEqual(writes.map(call => call.payload), [{ model: 'qwen3.8', registry: 'ollama', provider: 'ollama', nodes: ['studio-gpu'], file: '27b' }]);
 });
 
 test('model discovery reviews exact targets, downloads, test and Chat handoff', { timeout: 60000 }, async t => {
@@ -419,7 +835,7 @@ test('model discovery reviews exact targets, downloads, test and Chat handoff', 
   await page.getByText('model-download', { exact: true }).waitFor();
   const writes = (await f.requests()).filter(row => row.path === '/deployments' && row.method === 'POST');
   assert.equal(writes.length, 1);
-  assert.deepEqual(writes[0].payload, { model: 'example/small-model', registry: 'huggingface', provider: 'vllm', nodes: ['studio-gpu'], file: 'small-Q4.gguf' });
+  assert.deepEqual(writes[0].payload, { model: 'example/small-model', registry: 'huggingface', provider: 'vllm', nodes: ['studio-gpu'], file: 'small-Q4.gguf', format: 'gguf' });
 });
 
 test('provider plans, parameter scopes and services use the shared side panel', { timeout: 60000 }, async t => {
@@ -509,8 +925,16 @@ test('runtime replay, inference payload and management writes remain deliberate'
 
 test('software rollout preserves refused drafts and never repeats an interrupted update', { timeout: 45000 }, async t => {
   const f = await consolePage(t); const { page } = f;
-  await f.state('update-invalid'); await f.open('#settings?item=updates&mode=create', 390, 844);
+  let releaseStatus;
+  const waiting = new Promise(resolve => { releaseStatus = resolve; });
+  await page.route('**/update/status?nodes=all', async route => { await waiting; await route.continue(); });
+  await f.state('update-invalid'); await f.open('#settings?item=updates', 390, 844);
+  await page.getByRole('button', { name: 'Install version', exact: true }).click();
+  await page.getByText('Reading current update status…', { exact: true }).waitFor();
+  releaseStatus();
   await page.getByLabel('Release version').fill('invalid-release');
+  assert.equal(await page.getByLabel('spare-pc', { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByText('Update status unavailable', { exact: true }).count(), 1);
   await page.getByLabel('studio-gpu', { exact: true }).check();
   await page.getByRole('button', { name: 'Install selected version', exact: true }).click();
   await page.getByText(/Unknown release version/).waitFor();
@@ -566,6 +990,32 @@ test('Chat retains conversation, draft and settings through navigation and histo
   assert.equal(await p.locator('.chat-model-name').innerText(), 'Select a model or route');
 });
 
+test('Chat model picker keeps the transcript and draft when selecting a different model', async t => {
+  const f = await consolePage(t), p = f.page;
+  await f.open('#chat');
+  await f.model('coding');
+  const composer = p.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('First model prompt');
+  await p.getByRole('button', { name: 'Send ↑' }).click();
+  await p.getByRole('button', { name: 'Regenerate' }).waitFor();
+  await composer.fill('First model draft');
+  await f.model('coding');
+  assert.equal(await composer.inputValue(), 'First model draft');
+  assert.equal(await p.locator('.chat-message').count(), 2);
+  await f.model('qwen3-coder@studio-gpu');
+  assert.equal(await p.locator('.chat-model-name').innerText(), 'qwen3-coder@studio-gpu');
+  assert.equal(await composer.inputValue(), 'First model draft');
+  assert.equal(await p.locator('.chat-message').count(), 2);
+  await composer.fill('The second model continues');
+  await p.getByRole('button', { name: 'Send ↑' }).click();
+  await p.waitForFunction(() => document.querySelectorAll('.chat-assistant').length === 2);
+  const calls = (await f.requests()).filter(row => row.path === '/v1/chat/completions');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].payload.model, 'qwen3-coder@studio-gpu');
+  assert.deepEqual(calls[1].payload.messages.map(row => row.role), ['user', 'assistant', 'user']);
+  assert.equal(calls[1].payload.messages.at(-1).content, 'The second model continues');
+});
+
 test('picker and mobile navigation preserve dirty settings and restore focus', { timeout: 45000 }, async t => {
   const f = await consolePage(t), p = f.page;
   await f.open('#chat', 390, 844); await f.model('coding');
@@ -585,6 +1035,9 @@ test('picker and mobile navigation preserve dirty settings and restore focus', {
   await p.keyboard.press('Escape');
   assert.equal(await p.locator('.chat-model-name').innerText(), 'coding', 'Search is uncommitted');
   assert.equal(await p.evaluate(() => document.activeElement.textContent), 'Change');
+  await p.getByRole('button', { name: 'Settings', exact: true }).click();
+  assert.equal(await p.getByRole('textbox', { name: 'System prompt' }).inputValue(), 'Unsaved instruction');
+  await p.getByRole('button', { name: 'Close chat settings', exact: true }).click();
   await p.getByRole('button', { name: 'Change', exact: true }).click();
   await search.fill('my-exact-model');
   await p.getByRole('button', { name: 'Use exact ID: my-exact-model', exact: true }).click();
@@ -687,6 +1140,51 @@ test('workload filtering and read-only retry retain the selected stopped record'
   assert.equal(await p.evaluate(() => document.activeElement.textContent), 'coding');
 });
 
+test('Overview opens a larger map with locked zoom on desktop and phone', async t => {
+  const f = await consolePage(t), { page } = f;
+  const canvas = page.locator('.topology-canvas');
+  const camera = () => canvas.evaluate(map => {
+    const cy = map._cyreg.cy;
+    const width = cy.width(), height = cy.height();
+    const visible = cy.nodes('[kind="compute"]').filter(node => {
+      const box = node.renderedBoundingBox();
+      return box.x1 >= 0 && box.x2 <= width && box.y1 >= 0 && box.y2 <= height;
+    });
+    return { zoom: cy.zoom(), width, height, visible: visible.length, userZooming: cy.userZoomingEnabled() };
+  });
+  for (const [width, height, minHeight] of [[1440, 900, 560], [390, 844, 500]]) {
+    await f.open('#overview', width, height);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const initial = await camera();
+    assert.ok(initial.height >= minHeight, JSON.stringify(initial));
+    assert.ok(initial.zoom >= 0.75);
+    assert.ok(initial.visible >= 1, 'the initial viewport shows a complete compute node');
+    assert.equal(initial.userZooming, false);
+    assert.equal(await page.getByRole('button', { name: /^(Zoom (in|out)|Fit network to view)$/ }).count(), 0);
+    await canvas.scrollIntoViewIfNeeded();
+    await canvas.hover();
+    await page.mouse.wheel(0, -240);
+    assert.equal((await camera()).zoom, initial.zoom);
+    if (width < 650) {
+      await canvas.scrollIntoViewIfNeeded();
+      const area = await canvas.boundingBox();
+      const y = Math.round(Math.min(height - 24, Math.max(24, area.y + area.height / 2)));
+      const x = Math.round(area.x + area.width / 2);
+      const input = await page.context().newCDPSession(page);
+      const pinch = (type, spread) => input.send('Input.dispatchTouchEvent', { type, touchPoints:
+        spread ? [{ x: x - spread, y, id: 1 }, { x: x + spread, y, id: 2 }] : [] });
+      await pinch('touchStart', 30);
+      await pinch('touchMove', 75);
+      await pinch('touchEnd', 0);
+      assert.equal((await camera()).zoom, initial.zoom);
+      await input.detach();
+    }
+    await page.getByRole('button', { name: 'Center map', exact: true }).click();
+    assert.equal((await camera()).zoom, initial.zoom);
+    await audit(page, 'overview-fixed-map-' + width);
+  }
+});
+
 test('large topology, mobile list and constrained Chat remain usable', { timeout: 60000 }, async t => {
   const f = await consolePage(t, 'large'), p = f.page;
   await f.open('#overview');
@@ -701,6 +1199,8 @@ test('large topology, mobile list and constrained Chat remain usable', { timeout
   await p.getByRole('button', { name: 'Refresh', exact: true }).click();
   await p.getByRole('button', { name: 'Map view', exact: true }).waitFor();
   await f.open('#overview', 390, 844);
+  await p.locator('.topology-canvas').waitFor();
+  await p.getByRole('button', { name: 'List view', exact: true }).click();
   assert.equal(await p.getByRole('button', { name: 'Map view', exact: true }).isVisible(), true);
   await f.state('populated');
   for (const [width, height] of [[320, 568], [390, 420], [390, 500], [1280, 500]]) {
@@ -713,6 +1213,248 @@ test('large topology, mobile list and constrained Chat remain usable', { timeout
   await p.getByRole('button', { name: 'Verify session' }).waitFor({ state: 'attached' });
   await audit(p, 'chat-short-unverified');
   assert.equal(await p.getByRole('button', { name: 'Verify session' }).evaluate(node => { const r = node.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === node; }), true);
+});
+
+for (const method of ['password', 'key', 'temporary code', 'existing session']) {
+  test('OAuth continuation returns ' + method + ' to explicit consent', { timeout: 60000 }, async t => {
+    const f = await consolePage(t, method === 'existing session' ? 'person' : 'login'), { page } = f;
+    const target = '/oauth/authorize?client_id=editor&state=synthetic-oauth-state&code_challenge=synthetic-challenge&redirect_uri=http%3A%2F%2Flocalhost%3A7312%2Fcallback';
+    let bootstrapHash;
+    await page.route('**/zzrouter/v1/session', async route => {
+      if (bootstrapHash === undefined) bootstrapHash = await page.evaluate(() => location.hash);
+      await route.continue();
+    });
+    await page.goto(f.base + '#authorize?request=' + encodeURIComponent(target));
+    if (method !== 'existing session') {
+      await page.getByRole('heading', { name: 'Sign in to your router', exact: true }).waitFor();
+      assert.equal(new URL(page.url()).hash, '');
+      assert.equal(new URL(page.url()).search, '');
+      assert.doesNotMatch(await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage }, state: history.state })), /synthetic|authorize|request/);
+      if (method === 'password') {
+        await audit(page, 'oauth-account-sign-in');
+        await page.getByLabel('Username', { exact: true }).fill('alex');
+        await page.getByLabel('Password', { exact: true }).fill('synthetic long passphrase');
+      } else {
+        await page.getByText('Advanced access', { exact: true }).click();
+        await page.getByRole('button', { name: method === 'key' ? 'Use an access key' : 'Use a temporary code', exact: true }).click();
+        await page.getByLabel(method === 'key' ? 'Router API key' : 'Temporary code', { exact: true }).fill(method === 'key' ? 'synthetic-legacy-key' : 'synthetic-session-code');
+      }
+      await page.getByRole('button', { name: method === 'temporary code' ? 'Continue' : 'Sign in', exact: true }).click();
+    }
+    await page.getByRole('heading', { name: 'Review connection', exact: true }).waitFor();
+    assert.equal(page.url(), f.origin + target);
+    assert.equal(bootstrapHash, '', 'the continuation fragment is scrubbed before session bootstrap');
+    const oauth = (await f.requests()).filter(call => call.path === '/oauth/authorize');
+    assert.deepEqual(oauth.map(call => call.method), ['GET'], 'authentication must never submit consent');
+    assert.equal(oauth[0].query.state, 'synthetic-oauth-state');
+    assert.equal(oauth[0].query.redirect_uri, 'http://localhost:7312/callback');
+    assert.equal(await page.getByRole('button', { name: 'Allow connection', exact: true }).isVisible(), true);
+    assert.doesNotMatch(await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage }, state: history.state })), /synthetic|authorize|request/);
+  });
+}
+
+test('OAuth continuation rejects attacker destinations and is not retained across refresh', { timeout: 60000 }, async t => {
+  const f = await consolePage(t, 'person'), { page } = f;
+  const external = [];
+  let navigation = 0;
+  await page.route('https://attacker.example/**', route => { external.push(route.request().url()); return route.abort(); });
+  for (const target of [
+    'https://attacker.example/oauth/authorize?client_id=bad', '//attacker.example/oauth/authorize?client_id=bad',
+    '/oauth/authorize?client_id=bad#hidden', '/oauth/authorize/../connections?client_id=bad',
+  ]) {
+    await page.goto(f.base + '?case=' + ++navigation + '#authorize?request=' + encodeURIComponent(target));
+    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    assert.equal(new URL(page.url()).origin, f.origin);
+    assert.doesNotMatch(page.url(), /client_id|attacker|authorize|request=/);
+  }
+  assert.deepEqual(external, []);
+  assert.equal((await f.requests()).filter(call => call.path === '/oauth/authorize').length, 0);
+  await f.state('login');
+  await page.goto(f.base + '?case=' + ++navigation + '#authorize?request=' + encodeURIComponent('/oauth/authorize?client_id=editor&state=synthetic-state'));
+  await page.getByLabel('Username', { exact: true }).waitFor();
+  await page.reload();
+  await page.getByLabel('Username', { exact: true }).fill('alex');
+  await page.getByLabel('Password', { exact: true }).fill('synthetic long passphrase');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  assert.equal((await f.requests()).filter(call => call.path === '/oauth/authorize').length, 0, 'refresh discards the in-memory continuation');
+});
+
+for (const entry of ['nodes', 'overview']) test(`an empty owner can add a worker from ${entry} and prepare and test its exact model`, { timeout: 120000 }, async t => {
+  const f = await consolePage(t, 'person'), { page } = f;
+  let paired = false, installed = false, downloaded = false, verified = false;
+  let pairedReads = 0;
+  const calls = [], worker = { name: 'new-worker', os: 'Linux', health_status: 'healthy', providers: [] };
+  const model = { name: 'example/small-model', node: worker.name, assigned_app: 'vllm' };
+  await page.route('**/zzrouter/v1/**', async route => {
+    const req = route.request(), url = new URL(req.url()), path = url.pathname.replace('/zzrouter/v1', '');
+    const body = req.postDataJSON() || {};
+    calls.push({ path, method: req.method(), body, node: url.searchParams.get('node') });
+    const send = data => route.fulfill({ json: { data } });
+    if (path === '/access/onboarding') return send({ provider_ready: installed, model_ready: downloaded, response_verified: verified });
+    if (path === '/nodes') return send([{ name: 'demo-coordinator', os: 'macOS', health_status: 'healthy', providers: [] },
+      ...(paired && pairedReads++ > 0 ? [{ ...worker, providers: installed ? [{ key: 'vllm', kind: 'on-demand', state: 'live', run_lifecycle: 'process' }] : [] }] : [])]);
+    if (path === '/nodes/compatible') return route.fulfill({ json: { data: [], metadata: { assessments:
+      installed ? [{ node: worker.name, provider: 'vllm', status: 'unknown' }] : [] } } });
+    if (path === '/providers') return send(installed ? [{ name: 'vllm', node: worker.name, kind: 'python', enabled: true, installed: true, state: 'live' }] : []);
+    if (path === '/models') return send(downloaded && (!url.searchParams.has('node') || url.searchParams.get('node') === worker.name) ? [model] : []);
+    if (path === '/cluster/pairing/accept') { paired = true; return route.fulfill({ json: { node_name: worker.name } }); }
+    if (path === '/providers/vllm' && req.method() === 'GET') return send({ name: 'vllm', node: worker.name, enabled: installed, installed, state: installed ? 'live' : 'dormant' });
+    if (path === '/providers/vllm/install') { installed = true; return send({ accepted: true, node: worker.name, provider: 'vllm' }); }
+    if (path === '/deployments' && req.method() === 'POST' || path === '/deployments/new-worker-download') {
+      downloaded = true;
+      return send({ id: 'new-worker-download', model: model.name, status: 'completed', nodes_total: 1, nodes_complete: 1, nodes: [{ node: worker.name, status: 'completed', progress: 100 }] });
+    }
+    return route.continue();
+  });
+  await page.route('**/v1/models', route => route.fulfill({ json: { data: downloaded ? [{ id: model.name + '@' + worker.name, capabilities: { chat: true }, zzrouter: { node: worker.name, provider: 'vllm' } }] : [] } }));
+  await page.route('**/v1/chat/completions', async route => {
+    calls.push({ path: '/v1/chat/completions', node: route.request().headers()['x-node'], body: route.request().postDataJSON() });
+    verified = true;
+    await route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream', 'X-zzrouter-Node': worker.name, 'X-zzrouter-Provider': 'vllm' }, body: 'data: {"choices":[{"delta":{"content":"Worker is ready."},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n' });
+  });
+  await f.open('#overview');
+  assert.match(await page.getByRole('region', { name: 'Getting started' }).innerText(), /Additional compute nodes are optional/);
+  await page.getByRole('button', { name: 'Skip setup for now', exact: true }).click();
+  await f.nav(entry === 'nodes' ? 'Nodes' : 'Overview');
+  await page.getByRole('button', { name: '+ Add compute node', exact: true }).click();
+  for (const os of ['darwin', 'windows', 'linux']) {
+    await page.getByLabel('Operating system', { exact: true }).selectOption(os);
+    await page.getByLabel('Connect to this router', { exact: true }).waitFor();
+    assert.match(await page.getByLabel('Install as a worker', { exact: true }).inputValue(), /worker/);
+    assert.doesNotMatch(await page.getByRole('dialog').innerText(), /\bnull\b/);
+  }
+  await audit(page, 'add-worker-guide-desktop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await audit(page, 'add-worker-guide-phone');
+  await page.getByRole('button', { name: 'I have pairing details', exact: true }).click();
+  await page.getByLabel('Pairing details', { exact: true }).fill(JSON.stringify({ type: 'zzrouter-pairing', version: 1, node_name: worker.name, code: 'synthetic-only', worker_url: 'https://new-worker.example:9091', worker_fingerprint: 'sha256:synthetic-only', expires_at: '2030-01-01T00:00:00Z' }));
+  await page.getByRole('button', { name: 'Review computer', exact: true }).click();
+  await page.getByRole('button', { name: 'Approve computer', exact: true }).click();
+  await page.getByRole('button', { name: 'Refresh nodes', exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'View node', exact: true }).count(), 0, 'Do not open missing node details while the first observation is pending');
+  await page.getByRole('button', { name: 'Refresh nodes', exact: true }).click();
+  if (entry === 'overview') await page.getByRole('button', { name: 'List view', exact: true }).click();
+  await page.locator('#content button').filter({ hasText: 'new-worker' }).click();
+  await page.getByText('Provider setup needed', { exact: true }).waitFor();
+  assert.doesNotMatch(await page.getByRole('dialog').innerText(), /null/, 'An unprepared node must not render a missing readiness hint');
+  await page.getByRole('button', { name: 'Set up a provider', exact: true }).click();
+  assert.match(page.url(), /node=new-worker/);
+  await page.reload();
+  await page.getByText('Preparing models on new-worker', { exact: true }).waitFor();
+  await page.locator('[data-provider="vllm"]').click();
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), worker.name);
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).isDisabled(), true);
+  await page.goBack();
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  assert.match(page.url(), /node=new-worker/);
+  await page.goForward();
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), worker.name);
+  await page.getByRole('button', { name: 'Manage runtime', exact: true }).click();
+  await page.getByRole('button', { name: 'Install or repair', exact: true }).click();
+  await page.getByRole('button', { name: 'Review install plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Run all steps', exact: true }).click();
+  await page.getByRole('button', { name: 'Inspect provider', exact: true }).click();
+  await page.getByRole('button', { name: 'Choose a model', exact: true }).waitFor();
+  assert.match(await page.locator('[data-provider="vllm"]').innerText(), /1 enabled/, 'The provider card and its inspected runtime must use fresh inventory');
+  await page.getByRole('button', { name: 'Choose a model', exact: true }).click();
+  await page.getByRole('button', { name: /Small model/ }).click();
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[name=download_provider]')?.value === 'vllm');
+  assert.equal(await page.getByLabel('Local provider', { exact: true }).inputValue(), 'vllm');
+  assert.equal(await page.getByLabel(worker.name, { exact: true }).count(), 0);
+  await page.getByLabel('Weights variant', { exact: true }).selectOption('small-Q4.gguf');
+  await page.getByLabel(worker.name, { exact: true }).waitFor();
+  assert.equal(await page.getByLabel(worker.name, { exact: true }).isChecked(), true);
+  assert.equal(await page.getByLabel('demo-coordinator', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Review download', exact: true }).click();
+  await page.getByRole('button', { name: 'Start download', exact: true }).click();
+  await page.getByRole('button', { name: 'Inspect available models', exact: true }).click();
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), worker.name);
+  await page.getByRole('button', { name: model.name, exact: true }).click();
+  await page.getByRole('button', { name: 'Chat', exact: true }).last().click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), worker.name);
+  await page.getByRole('button', { name: 'Close chat settings', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).fill('Say hello');
+  await page.getByRole('button', { name: 'Send ↑', exact: true }).click();
+  await page.getByText('Worker is ready.', { exact: true }).waitFor();
+  assert.equal(calls.find(call => call.path === '/providers/vllm/install').node, worker.name);
+  assert.deepEqual(calls.find(call => call.path === '/deployments' && call.method === 'POST').body.nodes, [worker.name]);
+  assert.equal(calls.find(call => call.path === '/v1/chat/completions').node, worker.name);
+  const setupStatus = page.waitForResponse(response => new URL(response.url()).pathname === '/zzrouter/v1/access/onboarding');
+  await f.nav('Overview');
+  await setupStatus;
+  await page.getByRole('region', { name: 'Getting started', exact: true }).waitFor({ state: 'detached' });
+  assert.equal(await page.getByRole('heading', { name: 'Your router is ready', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '+ Add compute node', exact: true }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: 'Add compute node', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Skip setup for now', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Dismiss', exact: true }).count(), 0);
+  await audit(page, 'optional-worker-ready-phone');
+  paired = false; downloaded = false;
+  await f.open('#models?node=new-worker');
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), worker.name);
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: model.name, exact: true }).count(), 0);
+  await f.open('#models?node=new-worker&provider=vllm&mode=discover');
+  await page.getByRole('button', { name: /Small model/ }).click();
+  await page.getByRole('button', { name: 'Download', exact: true }).click();
+  await page.getByText('new-worker is not in the current inventory. Reconnect it before downloading a model.', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Review download', exact: true }).isDisabled(), true);
+});
+
+test('entering worker Chat clears a different target even without a model selection', { timeout: 30000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  await f.open('#chat?item=qwen3-coder%40studio-gpu&mode=studio-gpu');
+  await page.evaluate(() => { location.hash = '#chat?node=new-worker'; });
+  await page.getByText('Preparing models on new-worker', { exact: true }).waitFor();
+  assert.equal(await page.locator('.chat-model-name').innerText(), 'Select a model or route');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).inputValue(), 'new-worker');
+  assert.equal(await page.getByLabel('Compute node', { exact: true }).isDisabled(), true);
+});
+
+
+test('Chat keeps short replies readable without clipping its header or composer', { timeout: 120000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  await page.route('**/v1/chat/completions', route => route.fulfill({
+    contentType: 'text/event-stream',
+    headers: { 'X-zzrouter-Provider': 'ollama', 'X-zzrouter-Node': 'fixture-worker' },
+    body: 'data: {"choices":[{"delta":{"content":"I am your assistant. How can I help?"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":22,"total_tokens":53},"timings":{"prompt_ms":300,"predicted_ms":3500,"predicted_per_second":6.3}}\n\ndata: [DONE]\n\n',
+  }));
+  for (const [width, height] of [[1440, 900], [1366, 768], [1135, 696], [1280, 500], [390, 844], [320, 568], [390, 420]]) {
+    await f.open('#chat', width, height); await f.model('coding');
+    await page.getByRole('textbox', { name: 'Message', exact: true }).fill("What's your name?");
+    await page.getByRole('button', { name: 'Send ↑', exact: true }).click();
+    const stats = page.locator('.chat-assistant .chat-stats');
+    await stats.waitFor();
+    assert.match(await stats.innerText(), /^31 input tokens · 22 output tokens · Prompt processing 0\.30s · Generation 3\.50s · 6\.3 tok\/s · \d+\.\d{2}s total\*$/);
+    assert.equal(await page.locator('.chat-footer').getByText('* Measured or calculated in the browser', { exact: true }).isVisible(), true);
+    const layout = await page.evaluate(() => {
+      const rect = selector => {
+        const r = document.querySelector(selector).getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height };
+      };
+      const viewport = document.querySelector('.chat-viewport');
+      return { toolbar: rect('.chat-toolbar'), model: rect('.chat-model-name'), viewport: rect('.chat-viewport'),
+        user: rect('.chat-user'), assistant: rect('.chat-assistant'), composer: rect('.chat-composer'),
+        scrollTop: viewport.scrollTop, scrollHeight: viewport.scrollHeight, clientHeight: viewport.clientHeight };
+    });
+    const name = `chat-short-reply-${width}-${height}`;
+    await writeFile(join(artifacts, name + '-layout.json'), JSON.stringify(layout, null, 2));
+    await audit(page, name);
+    assert.ok(layout.toolbar.bottom <= layout.viewport.top + 1, name + ': header must not overlap transcript');
+    assert.ok(layout.viewport.bottom <= layout.composer.top + 1, name + ': composer must not cover transcript');
+    assert.ok(Math.abs(layout.assistant.left - layout.composer.left) <= 1, name + ': reply and composer share a left edge');
+    assert.ok(Math.abs(layout.assistant.left - layout.model.left) <= 1, name + ': reply and model share a left edge');
+    assert.ok(layout.viewport.height >= 100, name + ': transcript remains usable');
+    if (width >= 650 && height >= 650) {
+      assert.ok(layout.user.top >= layout.viewport.top, name + ': short user message must be fully visible');
+      assert.ok(layout.assistant.bottom <= layout.viewport.bottom + 1, name + ': short reply and actions must be fully visible');
+    }
+  }
 });
 
 test('Chat shows serving targets for routes and explains browser timing once', { timeout: 30000 }, async t => {
@@ -765,4 +1507,61 @@ test('Chat shows serving targets for routes and explains browser timing once', {
   await page.getByRole('button', { name: 'Apply settings' }).click();
   await timingNote.waitFor({ state: 'hidden' });
   assert.equal(await stats.count(), 0);
+});
+
+test('Chat confines long replies, code and multiline drafts to their scroll regions', { timeout: 90000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  const content = Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}. A longer response stays inside the conversation.`).join('\n\n') + '\n\n```text\n' + 'wide_code_value_'.repeat(30) + '\n```';
+  await page.route('**/v1/chat/completions', route => route.fulfill({ contentType: 'text/event-stream',
+    body: 'data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n',
+  }));
+  for (const [width, height] of [[1280, 800], [390, 844], [390, 420]]) {
+    await f.open('#chat', width, height); await f.model('coding');
+    const input = page.getByRole('textbox', { name: 'Message', exact: true });
+    await input.fill('Show a longer example');
+    await page.getByRole('button', { name: 'Send ↑', exact: true }).click();
+    await page.locator('.chat-assistant pre').waitFor();
+    await page.locator('.chat-viewport').evaluate(viewport => { viewport.scrollTop = 0; });
+    const latest = page.getByRole('button', { name: 'Latest message ↓', exact: true });
+    await latest.click();
+    await input.fill(Array.from({ length: 18 }, (_, i) => `Draft line ${i + 1}`).join('\n'));
+    const regions = await page.evaluate(() => {
+      const viewport = document.querySelector('.chat-viewport'), input = document.querySelector('.chat-composer textarea');
+      const code = document.querySelector('.chat-markdown pre');
+      return { scrolling: viewport.scrollHeight > viewport.clientHeight, draftScrolling: input.scrollHeight > input.clientHeight,
+        codeScrolling: code.scrollWidth > code.clientWidth, height: viewport.getBoundingClientRect().height };
+    });
+    assert.equal(regions.scrolling, true, 'Long conversations scroll independently');
+    assert.equal(regions.draftScrolling, true, 'Long drafts scroll inside the composer');
+    assert.equal(regions.codeScrolling, true, 'Wide code scrolls inside its block');
+    assert.ok(regions.height >= 40, 'A long draft leaves the transcript visible');
+    assert.match(await input.inputValue(), /Draft line 18/);
+    await audit(page, `chat-long-reply-draft-${width}-${height}`);
+  }
+});
+
+test('client guidance, team impact, access history and recovery fit desktop and phone', { timeout: 60000 }, async t => {
+  const f = await consolePage(t, 'person'), { page } = f;
+  for (const width of [1280, 390]) {
+    const height = width === 390 ? 844 : 800;
+    await f.open('#clients?item=connect', width, height);
+    await page.getByText('This computer only', { exact: true }).waitFor();
+    await page.getByText('Management MCP endpoint', { exact: true }).waitFor();
+    await audit(page, 'connection-guide-' + width);
+    await f.open('#access?item=teams%2Fengineering', width, height);
+    await page.getByRole('dialog').getByText('2 people · 2 app keys · 0 pending invitations', { exact: true }).waitFor();
+    await audit(page, 'team-impact-' + width);
+    await f.open('#settings?item=audit', width, height);
+    await page.getByText('1 event shown.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Load older', exact: true }).click();
+    await page.getByText('2 events shown.', { exact: true }).waitFor();
+    assert.doesNotMatch(await page.locator('#content').innerText(), /(?:^|\n)null(?:\n|$)/);
+    const tabColors = await page.locator('.tabs').evaluate(tabs => [getComputedStyle(tabs.querySelector('[aria-current]')).backgroundColor, getComputedStyle(tabs.querySelector('button:not([aria-current])')).backgroundColor]);
+    assert.notEqual(tabColors[0], tabColors[1], 'The selected tab has a visible state');
+    await audit(page, 'access-history-' + width);
+    await f.open('#settings?item=recovery', width, height);
+    await page.getByText('Installation recovery', { exact: true }).waitFor();
+    assert.match(await page.getByLabel('Create a backup', { exact: true }).inputValue(), /recovery backup --dir/);
+    await audit(page, 'recovery-scope-' + width);
+  }
 });

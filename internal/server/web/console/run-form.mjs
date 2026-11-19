@@ -1,6 +1,7 @@
 import { Lifetime } from './api.mjs';
 import { el, text, button, field, select, message, editorActions, formFeedback } from './dom.mjs';
 import { launchTargets, runAssessment } from './workload-data.mjs';
+import { nodeHealth } from './network-data.mjs';
 import { followStart } from './workload-details.mjs';
 
 export async function startRun(p, nodes, initialNode, initialTarget) {
@@ -8,7 +9,17 @@ export async function startRun(p, nodes, initialNode, initialTarget) {
   const form = el('form', { class: 'entity-editor' });
   const draft = p.trackDraft?.(form), choices = new Lifetime();
   const controls = el('fieldset', { 'data-protected-actions': true });
-  const node = select('run_node', nodes.map(value => [value.name, value.name]), initialNode || nodes[0]?.name);
+  const canStart = host => host.health_status === 'healthy' && host.providers?.some(item =>
+    ['process', 'served'].includes(item.run_lifecycle) && (item.run_lifecycle !== 'served' || item.running !== false));
+  const ready = nodes.filter(canStart);
+  const node = select('run_node', [['', 'Choose a compute node…']], '');
+  node.required = true;
+  for (const host of nodes) {
+    const available = canStart(host);
+    const reason = host.health_status === 'healthy' ? 'No runnable local provider' : nodeHealth(host)[0];
+    node.append(el('option', { value: host.name, disabled: !available }, available ? host.name : `${host.name} (${reason})`));
+  }
+  node.value = (initialNode ? ready.find(host => host.name === initialNode) : ready[0])?.name || '';
   const target = select('run_target', [['', 'Loading targets…']], ''); target.required = true;
   const endpoint = select('run_endpoint', [['chat', 'Chat'], ['embeddings', 'Embeddings'], ['reranking', 'Reranking']], 'chat');
   const feedback = el('div', { 'aria-live': 'polite' });
@@ -32,10 +43,17 @@ export async function startRun(p, nodes, initialNode, initialTarget) {
 
   async function loadTargets() {
     invalidate(); targets = []; target.disabled = true; preview.disabled = true;
-    target.replaceChildren(el('option', { value: '' }, 'Loading targets…'));
     const scope = choices.next();
-    const signal = AbortSignal.any([p.scope.signal, scope.signal]);
     const selectedNode = node.value;
+    if (!ready.some(host => host.name === selectedNode)) {
+      target.replaceChildren(el('option', { value: '' }, 'Choose a compute node first'));
+      if (!ready.length || initialNode) feedback.replaceChildren(message(
+        ready.length ? `${initialNode} has no available local runtime. Choose another node.` :
+          'No healthy node reports a runnable local provider.', 'warning'));
+      return;
+    }
+    target.replaceChildren(el('option', { value: '' }, 'Loading targets…'));
+    const signal = AbortSignal.any([p.scope.signal, scope.signal]);
     try {
       const [models, providers] = await Promise.all([
         p.api.list(`/models?node=${encodeURIComponent(selectedNode)}`, { signal, timeoutMs: 45000 }),
@@ -82,6 +100,5 @@ export async function startRun(p, nodes, initialNode, initialTarget) {
     const owner = p.panel ? p.panel.view('Start result') : p;
     await followStart(owner, submitted, operation, result, error);
   });
-  if (nodes.length) await loadTargets();
-  else feedback.replaceChildren(message('No compute nodes are available. Refresh the node inventory before starting a run.', 'warning'));
+  await loadTargets();
 }

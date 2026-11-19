@@ -689,7 +689,7 @@ func TestListJobsPeers_SkipsUnusablePeers(t *testing.T) {
 	coord, err := mesh.NewCluster(&mesh.Config{}, "http://127.0.0.1:9090", nil, nil, nil)
 	require.NoError(t, err)
 	coord.Stop()
-	s.cluster.coordinator = coord
+	useTestCluster(t, s, coord)
 	for _, ep := range []*mesh.Endpoint{
 		{Name: "up", NodeName: "up", URL: "http://up.invalid:9080", Status: mesh.StatusUp},
 		{Name: "unknown", NodeName: "unknown", URL: "http://unknown.invalid:9080", Status: mesh.StatusUnknown},

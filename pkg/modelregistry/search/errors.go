@@ -7,7 +7,7 @@ import "errors"
 // context (offending value, platform, etc.) for logs without changing
 // identity.
 var (
-	ErrModelDiscoveryUnavailable = errors.New("provider has no model-listing API")
+	ErrModelDiscoveryUnavailable = errors.New("provider has no model-listing API; register a model by its provider ID")
 	ErrModelNotFound             = errors.New("model not found")
 	ErrInvalidProvider           = errors.New("invalid provider")
 	ErrLimitNegative             = errors.New("limit cannot be negative")

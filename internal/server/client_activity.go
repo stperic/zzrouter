@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/internal/server/mcpserver"
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/observability"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -33,6 +34,9 @@ func (a *AuthHandlers) observeClient(c *gin.Context) {
 	source, authentication := "startup", "api-key"
 	if ac.Key.IsVirtual {
 		source = "managed"
+	}
+	if ac.Key.Kind == control.KindPerson {
+		source = "person"
 	}
 	if isOAuthRequest(c.Request.Context()) {
 		authentication = "oauth"
@@ -62,9 +66,12 @@ func (s *Server) registerClientActivity(router *gin.RouterGroup) {
 	router.GET("/clients", s.browserCoordinatorOnly, s.handleClientActivity)
 }
 
-// registerBrowserPairing opts in only enrollment, not decommission or revocation.
+// registerBrowserPairing opts in setup guidance and enrollment, not decommission or revocation.
 func (s *Server) registerBrowserPairing() {
-	s.engine.POST("/zzrouter/v1/cluster/pairing/accept", RequestIDMiddleware(), APIVersionMiddleware(),
-		s.browserCoordinatorOnly, browserResponseHeaders, s.auth.browserAuthMiddleware(RoleAdmin),
+	s.engine.GET("/zzrouter/v1/cluster/pairing/setup",
+		s.browserCoordinatorOnly, browserResponseHeaders, s.auth.browserAdminAuthMiddleware(),
+		s.clusterHandlers.handleWorkerSetup)
+	s.engine.POST("/zzrouter/v1/cluster/pairing/accept",
+		s.browserCoordinatorOnly, browserResponseHeaders, s.auth.browserAdminAuthMiddleware(),
 		s.clusterHandlers.handleClusterPairingAccept)
 }

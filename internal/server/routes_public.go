@@ -25,6 +25,13 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// API discovery: GET /zzrouter/v1 — returns endpoint groups and
 	// enabled features so AI agents can bootstrap without guessing paths.
 	registerAPIDiscoveryRoute(router, s)
+	s.registerOperationRoutes(router)
+	router.GET("/access/audit", s.browserCoordinatorOnly, browserResponseHeaders, s.handleAccessAudit)
+	router.GET("/system/recovery", browserResponseHeaders, s.handleRecoveryInventory)
+	router.GET("/system/state", s.browserCoordinatorOnly, browserResponseHeaders, s.handleStoreState)
+	s.registerStateBackups(router)
+	s.localRoute(http.MethodPost, "/system/state/reset/preview", false, false, s.handleResetPreview)
+	s.localRoute(http.MethodPost, "/system/state/reset", true, false, s.handleReset)
 
 	// Initialize services (inject routing layer). The compat surfaces need
 	// a subset of these and are registered on their own engine on a worker,
@@ -139,24 +146,12 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// Teams and Keys controllers are constructed here (the general public
 	// API depends on them being wired up for the rest of startup), but their
 	// HTTP routes are registered under a separate group — see
-	// RegisterAccessControlAPIRoutes below.
-	if s.teamStore != nil && s.access != nil {
-		s.services.Teams = NewTeamsService(s.teamStore, s.keyStore, s.access)
-		s.controllers.Teams = NewTeamsController(s.services.Teams)
-
-		// Sweep orphan personal teams — any kind=personal team with zero
-		// referencing keys is the result of a crash mid-create-key and
-		// should be garbage-collected before serving traffic. Audit
-		// sink is still audit.Null here (opened later in
-		// startCoordinatorSubsystems); the reaper's audit events are
-		// captured by a follow-up sweep on coordinator start.
-		s.services.Teams.ReconcilePersonalTeams()
-	}
-
-	if s.keyStore != nil && s.access != nil {
-		s.services.Keys = NewKeysService(s.keyStore, s.services.Teams, s.access)
-		s.controllers.Keys = NewKeysController(s.services.Keys)
-	}
+	// RegisterAccessControlAPIRoutes below. Only a node that booted as a
+	// coordinator registers these routes, and it always holds the store.
+	s.services.Teams = NewTeamsService(s.accessStore, s.access)
+	s.controllers.Teams = NewTeamsController(s.services.Teams)
+	s.services.Keys = NewKeysService(s.accessStore, s.access)
+	s.controllers.Keys = NewKeysController(s.services.Keys)
 
 	// Config reload: POST /config/reload re-reads providers/ from disk,
 	// runs every listener, returns the per-listener ReloadReport.
@@ -253,15 +248,13 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// listener in pkg/cluster/node (registerWorkerRoutes), not here —
 	// it is only reachable from a coordinator client cert.
 
-	// E2E harness gate endpoints. Public-admin surface (the internal-API
+	// Route catalog for tooling. Public-admin surface (the internal-API
 	// mount on the public engine is gated by internalRequestOnlyMiddleware
 	// and reserved for in-process dispatch). Coordinator-only — workers
 	// have no keys/teams/groups state, and the route catalog on a worker
 	// would misrepresent compat-gate auth tags.
 	if !s.node.IsWorker() {
 		router.GET("/server/routes", s.handleListRoutes)
-		router.POST("/state/snapshot", s.handleStateSnapshot)
-		router.POST("/state/restore", s.handleStateRestore)
 	}
 }
 

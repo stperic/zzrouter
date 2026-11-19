@@ -103,6 +103,8 @@ the config file directly in your preferred editor.`,
 
 	// Add subcommands
 	cmd.AddCommand(
+		newNodeConfigIdentityCmd(),
+		newNodeConfigCredentialsCmd(),
 		newNodeConfigInitCmd(), // Initialize/reinitialize configuration
 		newNodeConfigResetCmd(),
 		newNodeConfigNodenameCmd(),

@@ -45,7 +45,7 @@ func TestRemoteLogsNeverForwardCallerAuthority(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{NodeName: "worker", URL: worker.URL, ClusterURL: worker.URL, Status: mesh.StatusUp}))
 			s := &Server{}
-			s.cluster.coordinator = cluster
+			useTestCluster(t, s, cluster)
 			handler := &LogsHandlers{routeToClusterNode: s.routeToClusterNode}
 			response := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(response)

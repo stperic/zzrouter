@@ -117,8 +117,9 @@ does not save or activate anything. Saves use the revision read by the client;
 concurrent stale edits receive 409. A changed destination cannot silently reuse
 a hidden secret. Redirects from credential tests are refused.
 
-Managed values live in `credentials.enc`, protected by a separately provisioned
-startup key. Ordinary provider configuration keeps declarations and references,
+Managed values live in `credentials.enc`. The config owner prepares their default
+key under the actual node account at startup; an explicit externally provisioned
+key takes precedence. Ordinary provider configuration keeps declarations and references,
 not resolved credentials. Removal stores a disabled tombstone so an old
 environment/cache token cannot return. Restoring external ownership is explicit.
 Secrets do not enter provider child environments, cluster synchronization, API

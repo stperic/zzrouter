@@ -1,5 +1,5 @@
 import { Lifetime } from './api.mjs';
-import { el, text, button, leaveButton, actions, heading, field, input, select, facts, message, problem, date, money, selectableRow, markSelection } from './dom.mjs';
+import { el, text, button, leaveButton, actions, heading, field, input, select, facts, message, problem, date, money, selectableRow, markSelection, compactTable } from './dom.mjs';
 import { details } from './details.mjs';
 import { eventJSON, readEvents } from './event-stream.mjs';
 
@@ -26,13 +26,22 @@ export async function logs(p, selected) {
   const status = select('log_status', [['', 'All outcomes'], ['success', 'Success'], ['error', 'Error']], '');
   const since = select('log_since', [['', 'Retained history'], ['5m', 'Last 5 minutes'], ['1h', 'Last hour'], ['24h', 'Last day']], '');
   const key = input('log_key'), team = input('log_team');
-  const form = el('form', { class: 'access-form' }, el('div', { class: 'form-grid' }, field('Model', model), field('Outcome', status), field('Time range', since)),
-    el('details', {}, el('summary', {}, 'Key and team filters'), el('div', { class: 'form-grid' }, field('Key ID', key), field('Team ID', team))),
-    el('button', { type: 'submit' }, 'Apply filters'));
-  const pause = button('Pause live', () => { streamReads.end(); pause.disabled = true; feedback.replaceChildren(message('Live updates paused.')); }); pause.disabled = true;
+  const form = el('form', { class: 'access-form' }, el('div', { class: 'workload-filters' }, field('Model', model), field('Outcome', status), field('Time range', since)),
+    el('div', { class: 'filter-actions' }, el('details', {}, el('summary', {}, 'Key and team filters'),
+      el('div', { class: 'form-grid' }, field('Key ID', key), field('Team ID', team))), el('button', { type: 'submit' }, 'Apply filters')));
+  let following = false;
+  const live = button('Follow live', () => {
+    if (!following) return follow();
+    streamReads.end(); setFollowing(false);
+    feedback.replaceChildren(message('Live updates paused.'));
+  });
+  function setFollowing(value) {
+    following = value;
+    live.textContent = following ? 'Pause live' : 'Follow live';
+  }
   const older = button('Load older', () => load(true));
   p.root.append(heading('Logs', 'Inspect inference requests. Open a workload for its runtime output.',
-    leaveButton('Refresh', () => load(), p.api), button('Follow live', follow), pause), workspace);
+    leaveButton('Refresh', () => load(), p.api), live), workspace);
   listing.append(form, feedback, results, older);
   p.scope.signal.addEventListener('abort', () => { reads.end(); streamReads.end(); records = []; }, { once: true });
   async function choose(id) {
@@ -62,7 +71,7 @@ export async function logs(p, selected) {
       });
       reveal.setAttribute('aria-expanded', 'false');
       owner.root.replaceChildren(el('h2', {}, entry.model), facts([
-        ['Request ID', entry.id], ['Time', date(entry.timestamp)], ['Outcome', entry.status], ['Provider', entry.provider], ['Node', entry.node],
+        ['Request ID', entry.id], ['Time', date(entry.timestamp, 'Not reported')], ['Outcome', entry.status], ['Provider', entry.provider], ['Node', entry.node],
         ['API', entry.request_type], ['Routing', entry.routing_decision], ['Input tokens', entry.tokens_in], ['Output tokens', entry.tokens_out],
         ['First token', entry.ttft_ms === undefined ? 'Not reported' : `${entry.ttft_ms} ms`], ['Duration', entry.latency_ms === undefined ? 'Not reported' : `${entry.latency_ms} ms`],
         ['Reported cost', entry.cost === undefined ? 'Not reported' : money(entry.cost)], ['Key ID', entry.key_id], ['Team ID', entry.team_id],
@@ -74,16 +83,16 @@ export async function logs(p, selected) {
     const body = el('tbody');
     for (const row of records) {
       const open = () => p.go('logs', row.id);
-      body.append(selectableRow(row.id, selected, open, el('td', {}, leaveButton(row.model || 'Unknown model', open, p.api, 'link entity-title'), text(date(row.timestamp), 'muted')),
+      body.append(selectableRow(row.id, selected, open, el('td', {}, leaveButton(row.model || 'Unknown model', open, p.api, 'link entity-title'), text(date(row.timestamp, 'Time unknown'), 'muted')),
         el('td', {}, row.provider || 'Unknown', text(row.node || 'Unknown node', 'muted')), el('td', {}, row.status),
         el('td', {}, row.latency_ms === undefined ? 'Not reported' : `${row.latency_ms} ms`)));
     }
-    results.replaceChildren(records.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Request', 'Destination', 'Outcome', 'Duration'].map(label => el('th', {}, label)))), body)) : text('No retained requests match these filters.', 'empty'));
+    results.replaceChildren(records.length ? compactTable(['Request', 'Destination', 'Outcome', 'Duration'], body) : text('No retained requests match these filters.', 'empty'));
     older.hidden = !hasMore; older.disabled = !hasMore || records.length >= 1000;
   }
   async function load(more = false) {
     if (!(p.canLeave?.() ?? p.api.canLeave())) return;
-    streamReads.end(); pause.disabled = true;
+    streamReads.end(); setFollowing(false);
     const scope = reads.next(), signal = AbortSignal.any([p.scope.signal, scope.signal]);
     feedback.replaceChildren(message('Reading requests…')); older.disabled = true;
     const query = new URLSearchParams({ ...filters, limit: '50', offset: String(more ? offset : 0) });
@@ -93,13 +102,13 @@ export async function logs(p, selected) {
       if (!Array.isArray(result.data)) throw new Error('The coordinator returned an invalid request list.');
       records = [...new Map([...(more ? records : []), ...result.data.map(logSummary)].map(entry => [entry.id, entry])).values()].slice(0, 1000);
       offset = (more ? offset : 0) + result.data.length; hasMore = Boolean(result.has_more && result.data.length);
-      render(); feedback.replaceChildren(text(`${records.length} requests shown. Retention is limited; older pages may shift as new requests arrive.`, 'muted'));
+      render(); feedback.replaceChildren(text(`${records.length} ${records.length === 1 ? 'request' : 'requests'} shown.${hasMore ? ' Older pages can shift as new requests arrive.' : ''}`, 'muted'));
     } catch (error) { if (p.current() && scope.current()) feedback.replaceChildren(problem(error)); }
   }
   async function follow() {
     if (!(p.canLeave?.() ?? p.api.canLeave())) return;
     reads.end(); const scope = streamReads.next(), signal = AbortSignal.any([p.scope.signal, scope.signal]);
-    pause.disabled = false; let epoch, sequence = 0, dropped = false;
+    setFollowing(true); let epoch, sequence = 0, dropped = false;
     feedback.replaceChildren(message('Connecting to live requests…'));
     try {
       const pointer = await p.api.data('/inference-logs/stream', { signal });
@@ -129,7 +138,7 @@ export async function logs(p, selected) {
       }, signal);
       if (p.current() && scope.current()) feedback.append(message('Live feed ended. Reconnect explicitly to continue.'));
     } catch (error) { if (p.current() && scope.current()) feedback.replaceChildren(problem(error)); }
-    finally { if (p.current() && scope.current()) pause.disabled = true; }
+    finally { if (p.current() && scope.current()) setFollowing(false); }
   }
   form.addEventListener('submit', event => {
     event.preventDefault(); filters = Object.fromEntries(Object.entries({ model: model.value.trim(), status: status.value, since: since.value, key_id: key.value.trim(), team_id: team.value.trim() }).filter(([, value]) => value)); void load();

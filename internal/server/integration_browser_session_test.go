@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
@@ -38,6 +39,7 @@ func TestIntegrationBrowserRouteCatalogAuthority(t *testing.T) {
 	want := map[string]string{
 		"GET " + apipath.Session: "optional", "POST " + apipath.Session: "optional", "DELETE " + apipath.Session: "optional",
 		"GET " + apipath.Me: "user", "GET " + apipath.MeConnections: "user", "DELETE " + apipath.MeConnections + "/:id": "user",
+		"POST /zzrouter/v1/access/recovery/local": "local",
 	}
 	for _, route := range catalog.Routes {
 		key := route.Method + " " + route.Path
@@ -51,25 +53,26 @@ func TestIntegrationBrowserRouteCatalogAuthority(t *testing.T) {
 	require.Empty(t, want, "all browser/self routes must be catalogued")
 }
 
-func TestIntegrationBrowserAuthoritySurvivesRoleCycleAndClosesOnStop(t *testing.T) {
+func TestIntegrationBrowserAuthorityFollowsLiveRoleAndClosesOnStop(t *testing.T) {
 	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
 	browser := newSessionBrowser(t, endpoint, TestAdminKey)
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "test demotion"))
+	// Each crossing ends the node; until it stops, the gates follow the live role.
+	crossRole(t, s, role.RoleWorker)
 	status, _ := browser.call(t, http.MethodGet, "/zzrouter/v1/session", nil, nil)
 	require.Equal(t, http.StatusMisdirectedRequest, status)
 	status, _ = browser.call(t, http.MethodGet, "/oauth/connections", nil, nil)
 	require.Equal(t, http.StatusNotFound, status)
 	status, _ = browser.call(t, http.MethodGet, "/zzrouter/v1/nodes", nil, nil)
 	require.Equal(t, http.StatusUnauthorized, status, "mounted management routes must not accept browser authority after demotion")
-	require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "test re-promotion"))
+	crossRole(t, s, role.RoleCoordinator)
 	status, body := browser.call(t, http.MethodGet, "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, http.StatusOK, status, string(body))
 
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "stop as worker"))
+	crossRole(t, s, role.RoleWorker)
 	require.NoError(t, s.Stop())
 	_, err := s.access.oauth.Bootstrap(t.Context(), httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, endpoint.URL+"/session", nil))
 	require.ErrorIs(t, err, oauth.ErrClosed)
-	lock, err := atomicfile.Lock(filepath.Join(s.auditConfigDir, "oauth.json.lock"))
+	lock, err := atomicfile.Lock(filepath.Join(s.configDir, "oauth.json.lock"))
 	require.NoError(t, err, "final stop must release the authority's exclusive lock regardless of role")
 	require.NoError(t, lock.Close())
 }
@@ -257,16 +260,17 @@ func TestIntegrationBrowserSessionRechecksLiveKeyPolicy(t *testing.T) {
 	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
 	key := loadTestKey(t, s, "browser-reader", keys.VirtualKey{Name: "Browser reader"})
 	browser := newSessionBrowser(t, endpoint, key)
-	stored := *s.keyStore.Get("browser-reader")
-	stored.Suspended = true
-	require.NoError(t, s.keyStore.Update("browser-reader", &stored))
+	suspend := func(suspended bool) {
+		_, err := s.accessStore.UpdateKey(t.Context(), "browser-reader", func(k *keys.VirtualKey) error { k.Suspended = suspended; return nil }, audit.Event{})
+		require.NoError(t, err)
+	}
+	suspend(true)
 	status, _ := browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 401, status)
-	stored.Suspended = false
-	require.NoError(t, s.keyStore.Update("browser-reader", &stored))
+	suspend(false)
 	status, _ = browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 200, status)
-	_, err := s.keyStore.RotateKey("browser-reader")
+	_, _, err := s.accessStore.RotateKey(t.Context(), "browser-reader", audit.Event{})
 	require.NoError(t, err)
 	status, _ = browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 401, status)

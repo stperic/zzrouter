@@ -73,6 +73,8 @@ type Config struct {
 // InstanceInfo is a read-only snapshot of an instance for API responses.
 // Public APIs return this instead of a mutable *Instance pointer.
 type InstanceInfo struct {
+	TargetRevision    string           `json:"target_revision,omitempty"`
+	Listener          *ListenerInfo    `json:"listener,omitempty"`
 	Activity          *Activity        `json:"activity,omitempty"`
 	Browser           *BrowserInfo     `json:"browser,omitempty"`
 	RecordOnly        bool             `json:"record_only,omitempty"`
@@ -134,6 +136,16 @@ type BrowserInfo struct {
 	URL  string `json:"url,omitempty"`
 }
 
+// ListenerInfo records the node-local listener selected by launch configuration.
+// Reachability from another machine is never implied by a configured bind address.
+type ListenerInfo struct {
+	URL            string `json:"url,omitempty"`
+	Host           string `json:"host,omitempty"`
+	Scope          string `json:"scope"`
+	Authentication string `json:"authentication"`
+	Source         string `json:"source"`
+}
+
 // CacheCapacity holds engine reports only; tokens are per pool, never an inferred aggregate.
 type CacheCapacity struct {
 	KVTokens       int64   `json:"kv_tokens,omitempty"`
@@ -162,6 +174,7 @@ type AdmissionEffects struct {
 // Resolved is what one launch computed from config: the values its
 // process was given, before node-local paths replace asset names.
 type Resolved struct {
+	Listener    *ListenerInfo
 	Browser     *BrowserReceipt
 	Features    map[string]string
 	FeatureHTTP map[string]config.FeatureHTTP
@@ -190,12 +203,18 @@ type BrowserReceipt struct {
 }
 
 func (r Resolved) clone() Resolved {
+	var listener *ListenerInfo
+	if r.Listener != nil {
+		copy := *r.Listener
+		listener = &copy
+	}
 	var browser *BrowserReceipt
 	if r.Browser != nil {
 		copy := *r.Browser
 		browser = &copy
 	}
 	return Resolved{
+		Listener: listener,
 		Browser:  browser,
 		Features: maps.Clone(r.Features), FeatureHTTP: maps.Clone(r.FeatureHTTP),
 		Runtime: r.Runtime, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),

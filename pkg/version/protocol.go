@@ -49,9 +49,10 @@ package version
 // Protocol 22 adds release-curated source components and shared provider browser declarations.
 // Protocol 23 binds forwarded models to the trusted provider hint, rejecting conflicting qualifiers.
 // Protocol 24 adds planner-owned command script exports; absence on older peers means unavailable.
+// Protocol 25 adds strict operation definitions and effective native listener declarations.
 const (
-	ClusterProtocolVersion    = 24
-	MinClusterProtocolVersion = 23
+	ClusterProtocolVersion    = 25
+	MinClusterProtocolVersion = 25
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

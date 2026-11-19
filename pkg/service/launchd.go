@@ -4,6 +4,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
 	"howett.net/plist"
@@ -23,7 +25,10 @@ func NewServiceManager() ServiceManager {
 }
 
 // LaunchdManager handles service management on macOS using launchd
-type LaunchdManager struct{}
+type LaunchdManager struct{ configDir string }
+
+// SetConfigDir binds the LaunchAgent to the selected installation.
+func (m *LaunchdManager) SetConfigDir(dir string) { m.configDir = dir }
 
 // Service identifiers
 const (
@@ -79,7 +84,7 @@ func (m *LaunchdManager) SetupDirectories() error {
 	}
 
 	dirs := []string{
-		filepath.Join(homeDir, macOSAppSupportDir),
+		m.GetConfigDir(),
 		filepath.Join(homeDir, macOSLogsDir),
 	}
 
@@ -94,6 +99,9 @@ func (m *LaunchdManager) SetupDirectories() error {
 
 // InstallService creates and loads the launchd plist
 func (m *LaunchdManager) InstallService() error {
+	if m.IsPrivileged() {
+		return fmt.Errorf("install the macOS LaunchAgent as your own user, without sudo")
+	}
 	// Get executable path
 	exe, err := getExecutablePath()
 	if err != nil {
@@ -105,7 +113,7 @@ func (m *LaunchdManager) InstallService() error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	plistData := launchdDefinition(exe, homeDir)
+	plistData := launchdDefinition(exe, homeDir, m.GetConfigDir())
 
 	// Encode to plist format
 	plistBytes, err := plist.MarshalIndent(plistData, plist.XMLFormat, "\t")
@@ -125,18 +133,10 @@ func (m *LaunchdManager) InstallService() error {
 		return fmt.Errorf("failed to write plist file: %w", err)
 	}
 
-	// Load the service (unload first if it exists; ignore error when not loaded)
-	_ = host.Command("launchctl", "unload", plistPath).Run()
-	cmd := host.Command("launchctl", "load", plistPath)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to load launchd service: %w", err)
-	}
-
 	return nil
 }
 
-func launchdDefinition(exe, homeDir string) LaunchdPlist {
-	configDir := filepath.Join(homeDir, macOSAppSupportDir)
+func launchdDefinition(exe, homeDir, configDir string) LaunchdPlist {
 	logDir := filepath.Join(homeDir, macOSLogsDir)
 
 	// Create the plist structure
@@ -146,6 +146,7 @@ func launchdDefinition(exe, homeDir string) LaunchdPlist {
 			exe,
 			"start",
 			"--no-setup",
+			"--dir", configDir,
 		},
 		RunAtLoad:         true,
 		KeepAlive:         true,
@@ -161,7 +162,7 @@ func launchdDefinition(exe, homeDir string) LaunchdPlist {
 
 // StartService starts the service via launchctl
 func (m *LaunchdManager) StartService() error {
-	cmd := host.Command("launchctl", "start", launchdLabel)
+	cmd := host.Command("launchctl", "load", m.getPlistPath())
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to start service: %w", err)
 	}
@@ -170,7 +171,7 @@ func (m *LaunchdManager) StartService() error {
 
 // StopService stops the service via launchctl
 func (m *LaunchdManager) StopService() error {
-	cmd := host.Command("launchctl", "stop", launchdLabel)
+	cmd := host.Command("launchctl", "unload", m.getPlistPath())
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stop service: %w", err)
 	}
@@ -285,8 +286,10 @@ func (m *LaunchdManager) GetLogPath() string {
 
 // GetConfigDir returns the service configuration directory
 func (m *LaunchdManager) GetConfigDir() string {
-	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, macOSAppSupportDir)
+	if m.configDir != "" {
+		return m.configDir
+	}
+	return config.Paths().GetConfigDir()
 }
 
 // GetDataDir returns the service data directory (same as config on macOS)
@@ -296,36 +299,7 @@ func (m *LaunchdManager) GetDataDir() string {
 
 // GenerateAPIKey generates a secure API key and saves it to the environment file
 func (m *LaunchdManager) GenerateAPIKey() (string, error) {
-	key, err := generateSecureKey()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate API key: %w", err)
-	}
-
-	envPath := filepath.Join(m.GetConfigDir(), "zzrouter.env")
-
-	vars := map[string]string{
-		"ZZROUTER_ADMIN_API_KEY": key,
-	}
-
-	// Preserve existing keys if present
-	if existingVars, err := readEnvFile(envPath); err == nil {
-		if adminKey, ok := existingVars["ZZROUTER_ADMIN_API_KEY"]; ok && adminKey != "" {
-			vars["ZZROUTER_ADMIN_API_KEY"] = adminKey
-			key = adminKey
-		}
-		if clusterKey, ok := existingVars["ZZROUTER_CLUSTER_NETWORK_KEY"]; ok && clusterKey != "" {
-			vars["ZZROUTER_CLUSTER_NETWORK_KEY"] = clusterKey
-		}
-		if userKey, ok := existingVars["ZZROUTER_API_KEY"]; ok && userKey != "" {
-			vars["ZZROUTER_API_KEY"] = userKey
-		}
-	}
-
-	if err := writeEnvFile(envPath, vars); err != nil {
-		return "", fmt.Errorf("failed to write env file: %w", err)
-	}
-
-	return key, nil
+	return config.EnsureInstallationCredentials(context.Background(), m.GetConfigDir(), config.InstallationCredentialOptions{LegacyFile: filepath.Join(m.GetConfigDir(), "zzrouter.env")})
 }
 
 // SwitchToServiceUser is a no-op on macOS (runs as current user)

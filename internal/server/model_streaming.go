@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
@@ -66,7 +66,8 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	if !s.hasRuns(providerType) {
 		if resolved, ok := s.backend.Resolve(providerType); ok {
 			body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
-			target := backend.PassthroughTarget(resolved.Endpoint, req.URL.Path, req.URL.RawQuery)
+			affinity.Observe(req.Context(), affinity.Origin{ProviderKey: providerType, ConnectionRevision: resolved.Revision, Model: wire.ModelFromBody(body)})
+			target := resolved.InferenceTarget(req.URL.Path, req.URL.RawQuery)
 			s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
 			return nil
 		}

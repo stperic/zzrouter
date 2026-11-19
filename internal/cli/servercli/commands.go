@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/service"
 	"github.com/stperic/zzrouter/pkg/update"
@@ -32,7 +33,7 @@ const (
 // NewStartCmd creates the start subcommand.
 func NewStartCmd() *cobra.Command {
 	var configDir string
-	var noSetup bool
+	var noSetup, startAtLogin bool
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -72,12 +73,28 @@ Examples:
   ZZROUTER_CONFIG_DIR=/opt/zzrouter zzrouter-node start  # Use environment variable`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if configDir != "" {
+				absolute, err := filepath.Abs(configDir)
+				if err != nil {
+					return err
+				}
+				if err := os.Setenv("ZZROUTER_CONFIG_DIR", absolute); err != nil {
+					return err
+				}
+				configDir = absolute
+			}
 			// Get the service manager for the current platform
 			svcMgr := service.NewServiceManager()
+			if binder, ok := svcMgr.(interface{ SetConfigDir(string) }); ok && configDir != "" {
+				binder.SetConfigDir(configDir)
+			}
+			if startAtLogin {
+				return runLoginStart(svcMgr)
+			}
 
 			// Handle service setup when running as root/admin (unless --no-setup is set)
 			if svcMgr.IsPrivileged() && !noSetup {
-				return runPrivilegedStart(cmd, svcMgr, configDir)
+				return runPrivilegedStart(svcMgr, configDir)
 			}
 
 			// Running as non-root: either service user or development mode
@@ -88,6 +105,7 @@ Examples:
 	// Add flags specific to serve command
 	cmd.Flags().IntP("port", "P", constants.DefaultZZROUTERPort, "Port to bind the server to")
 	cmd.Flags().BoolP("detach", "d", false, "Run server in background (detached mode)")
+	cmd.Flags().BoolVar(&startAtLogin, "start-at-login", false, "Install and start the macOS user LaunchAgent")
 	cmd.Flags().Bool("debug", false, "Enable debug logging output")
 	cmd.Flags().StringVarP(&configDir, "dir", "C", "", "Config directory (overrides ZZROUTER_CONFIG_DIR)")
 	cmd.Flags().BoolVar(&noSetup, "no-setup", false, "Skip service setup (used internally when running as service)")
@@ -104,12 +122,16 @@ Examples:
 	return cmd
 }
 
-// runPrivilegedStart handles the start command when running with elevated privileges.
-// configDir is accepted for parity with runNormalStart; privileged mode installs
-// the system service and reads config via the service manager rather than a flag.
-func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ string) error {
+// runPrivilegedStart installs a new service or starts the existing saved definition.
+func runPrivilegedStart(svcMgr service.ServiceManager, configDir string) error {
 	// Check if this is first run (service not installed yet)
 	if svcMgr.IsFirstRun() {
+		if configDir == "" {
+			configDir = os.Getenv("ZZROUTER_CONFIG_DIR")
+		}
+		if configDir != "" && filepath.Clean(configDir) != filepath.Clean(svcMgr.GetConfigDir()) {
+			return fmt.Errorf("new system services use %s; use --no-setup to run a standalone node with --dir %s", svcMgr.GetConfigDir(), configDir)
+		}
 		fmt.Println("First run detected...")
 
 		// Create service user (Linux only, no-op on other platforms)
@@ -131,24 +153,31 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 		// Place the binaries where the service will run them from.
 		// Before InstallService, because that reads where they landed to
 		// write ExecStart.
-		fmt.Print("  Placing binaries... ")
-		nodePath, relocated, err := update.EnsureManagedLayout()
-		switch {
-		case errors.Is(err, update.ErrNotRelocatable):
-			// Not fatal: the node runs perfectly from wherever it is.
-			// What it loses is the ability to be updated in place by
-			// the privileged updater, which `update status` reports.
-			fmt.Println("skipped")
-			fmt.Printf("    %v\n", err)
-		case err != nil:
-			fmt.Println("failed")
-			return fmt.Errorf("failed to place binaries: %w", err)
-		case relocated:
-			fmt.Printf("done (%s)\n", nodePath)
-		default:
-			fmt.Println("already in place")
+		if runtime.GOOS == "linux" {
+			fmt.Print("  Placing binaries... ")
+			nodePath, relocated, err := update.EnsureManagedLayout()
+			switch {
+			case errors.Is(err, update.ErrNotRelocatable):
+				// Not fatal: the node runs perfectly from wherever it is.
+				// What it loses is the ability to be updated in place by
+				// the privileged updater, which `update status` reports.
+				fmt.Println("skipped")
+				fmt.Printf("    %v\n", err)
+			case err != nil:
+				fmt.Println("failed")
+				return fmt.Errorf("failed to place binaries: %w", err)
+			case relocated:
+				fmt.Printf("done (%s)\n", nodePath)
+			default:
+				fmt.Println("already in place")
+			}
 		}
 
+		// Reconcile credentials before replacing the service definition; its old
+		// EnvironmentFile determines which legacy key is currently authoritative.
+		if _, err := svcMgr.GenerateAPIKey(); err != nil {
+			return fmt.Errorf("prepare installation credentials: %w", err)
+		}
 		// Install the service
 		fmt.Print("  Installing service... ")
 		if err := svcMgr.InstallService(); err != nil {
@@ -163,16 +192,8 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 		// finding out later, from a symptom that names neither file:
 		// config edits that appear to do nothing, or a pair attempt
 		// refused for a mode the operator never set.
-		printServiceConfigLocation()
-
-		// Generate API key
-		fmt.Print("  Generating API key... ")
-		key, err := svcMgr.GenerateAPIKey()
-		if err != nil {
-			fmt.Println("failed")
-			return fmt.Errorf("failed to generate API key: %w", err)
-		}
-		fmt.Println("done")
+		fmt.Printf("\n  Config directory: %s\n", svcMgr.GetConfigDir())
+		fmt.Println("  Use this directory for console entry and account recovery.")
 
 		fmt.Printf("\nStarting zzrouter-node service...\n\n")
 
@@ -182,9 +203,8 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 		}
 
 		// Display success info
-		fmt.Printf("Server running at http://0.0.0.0:%d\n", constants.DefaultZZROUTERPort)
-		fmt.Printf("Admin key saved to %s/zzrouter.env\n", svcMgr.GetConfigDir())
-		fmt.Printf("\nAPI Key: %s\n", key)
+		fmt.Println("Service started.")
+		fmt.Printf("Installation credentials saved in %s\n", svcMgr.GetConfigDir())
 		fmt.Println("\nTip: Use 'zzrouter-node service status' to check service status")
 		printPlatformSpecificTip()
 
@@ -192,6 +212,7 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 	}
 
 	// Service already installed - check if already running.
+	fmt.Println("Using the saved service definition. Configuration arguments apply only to new service installations.")
 	status, err := svcMgr.GetStatus()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not query service status (continuing): %v\n", err)
@@ -200,7 +221,6 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 		fmt.Printf("Service already running (PID: %d)\n", status.PID)
 		return nil
 	}
-
 	// Start the service
 	fmt.Println("Starting zzrouter-node service...")
 	if err := svcMgr.StartService(); err != nil {
@@ -223,32 +243,28 @@ func runPrivilegedStart(_ *cobra.Command, svcMgr service.ServiceManager, _ strin
 	return nil
 }
 
-// printServiceConfigLocation states where the service will read its
-// config, and how to make that the same file the operator edits.
-//
-// It deliberately reports pkgConfig.Paths(), not ServiceManager's own
-// GetConfigDir(): the latter names a directory the node never loads, so
-// printing it sends operators to edit a file with no effect. When
-// ZZROUTER_CONFIG_DIR is set both accounts resolve one root and there is
-// nothing to warn about; when it is not, the service's directory belongs
-// to an account this process cannot enumerate, so the remedy is named
-// instead of a path that would be a guess.
-func printServiceConfigLocation() {
-	if shared := os.Getenv("ZZROUTER_CONFIG_DIR"); shared != "" {
-		fmt.Printf("\n  Config directory: %s\n", shared)
-		fmt.Println("  ZZROUTER_CONFIG_DIR is set, so the service and your CLI read")
-		fmt.Println("  the same files. Verify with 'zzrouter-node status'.")
-		return
-	}
-	fmt.Println("\n  The service runs as its own account and reads that account's")
-	fmt.Println("  node.yaml, not yours, so edits to your copy will not reach it.")
-	fmt.Println("  To give both one config, set ZZROUTER_CONFIG_DIR machine-wide")
-	fmt.Println("  and restart the service. Check which file is live with")
-	fmt.Println("  'zzrouter-node status'.")
-}
-
 // runNormalStart handles the start command when running as a normal user
 func runNormalStart(cmd *cobra.Command, configDir string, svcMgr service.ServiceManager) error {
+	// Refuse to run as root unless the operator explicitly bypassed the check.
+	if err := security.CheckNotRootWithBypass(); err != nil {
+		return err
+	}
+
+	detach, _ := cmd.Flags().GetBool("detach")
+	if detach {
+		return startDetachedNode(cmd)
+	}
+	lock, err := pkgConfig.LockInstallation(pkgConfig.Paths().GetConfigDir())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	// Before anything writes into the configuration: an activation that did
+	// not finish leaves a half-replaced installation.
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
+
 	// Check if running as the service user
 	if svcMgr.IsServiceUser() {
 		// Running as service user - normal service operation
@@ -258,11 +274,6 @@ func runNormalStart(cmd *cobra.Command, configDir string, svcMgr service.Service
 		fmt.Printf("Running in development mode as '%s'...\n", os.Getenv("USER"))
 		fmt.Println("Tip: For production, run: sudo zzrouter-node start")
 		fmt.Println()
-	}
-
-	// Refuse to run as root unless the operator explicitly bypassed the check.
-	if err := security.CheckNotRootWithBypass(); err != nil {
-		return err
 	}
 
 	// Ensure config files exist before attempting to load
@@ -295,10 +306,6 @@ func runNormalStart(cmd *cobra.Command, configDir string, svcMgr service.Service
 		return err
 	}
 
-	detach, _ := cmd.Flags().GetBool("detach")
-	if detach {
-		return startDetachedNode(cmd)
-	}
 	return runServeStartCmd(hostCfg, cmd, nil)
 }
 

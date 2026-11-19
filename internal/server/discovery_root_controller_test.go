@@ -49,8 +49,9 @@ func TestAPIDiscovery_NoMissingRoutes(t *testing.T) {
 		// The invariant is "every route a client can CALL is advertised",
 		// not "every route that is mounted". A retired route only answers
 		// 410, so advertising it hands a caller a guaranteed dead end —
-		// see TestAPIDiscoveryOmitsRetiredRoutes.
-		if isRetiredRoute(r.Handler) {
+		// see TestAPIDiscoveryOmitsRetiredRoutes. A local route takes only
+		// the host's local proof, so no key-holding client can call it.
+		if isRetiredRoute(r.Handler) || server.authTier(r.Method, r.Path) == authLocal {
 			continue
 		}
 		key := r.Method + " " + uriTemplatePath(r.Path)
@@ -59,9 +60,8 @@ func TestAPIDiscovery_NoMissingRoutes(t *testing.T) {
 	}
 }
 
-// TestAPIDiscovery_HiddenRoutesNotAdvertised ensures the e2e harness
-// gates (server/routes, state/snapshot, state/restore) stay out of the
-// agent-facing discovery doc even though they live on the public engine.
+// TestAPIDiscovery_HiddenRoutesNotAdvertised ensures the route catalog
+// stays out of discovery even though it lives on the public engine.
 func TestAPIDiscovery_HiddenRoutesNotAdvertised(t *testing.T) {
 	server := createTestNodeWithDefaults(t)
 
@@ -78,7 +78,7 @@ func TestAPIDiscovery_HiddenRoutesNotAdvertised(t *testing.T) {
 			for hidden := range apiDiscoveryHidden {
 				for _, m := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} {
 					assert.NotEqualf(t, m+" "+hidden, e,
-						"hidden harness route %s leaked into discovery", e)
+						"hidden route %s leaked into discovery", e)
 				}
 			}
 		}

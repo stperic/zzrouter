@@ -1,102 +1,53 @@
 package server
 
 import (
-	"os"
-	"path/filepath"
-	"sync"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
-type testKeyIdentity struct {
-	once      sync.Once
-	raw, hash string
-	err       error
-}
-
-var testKeyIdentities sync.Map
-
-// prehashedTestIdentity amortizes incidental provisioning, never verification.
-// Different IDs keep distinct credentials even when their stores are private.
-func prehashedTestIdentity(t *testing.T, id string) (string, string) {
-	t.Helper()
-	value, _ := testKeyIdentities.LoadOrStore(id, &testKeyIdentity{})
-	identity := value.(*testKeyIdentity)
-	identity.once.Do(func() {
-		identity.raw, identity.err = keys.GenerateRawKey()
-		if identity.err == nil {
-			identity.hash, identity.err = keys.HashKey(identity.raw)
-		}
-	})
-	require.NoError(t, identity.err)
-	return identity.raw, identity.hash
-}
-
-// loadTestKey replaces the incidental key population with one real hashed key.
-// Load notifies the existing auth/index listeners; requests still authenticate
+// loadTestKey adds one real hashed key to a live server through its store,
+// with its personal team when it names none. Requests still authenticate
 // cold, and subsequent PATCHes still use the real mutation path.
 func loadTestKey(t *testing.T, s *Server, id string, key keys.VirtualKey) string {
 	t.Helper()
-	if key.TeamID == "" {
-		key.TeamID, key.TeamRole = personalTeamIDPrefix+id, string(teams.RoleOwner)
-		_, err := s.services.Teams.CreatePersonalTeam(key.TeamID, key.Name, "admin")
-		require.NoError(t, err)
-	} else {
-		require.NotNil(t, s.teamStore.Get(key.TeamID))
-		if key.TeamRole == "" {
-			key.TeamRole = string(teams.RoleMember)
-		}
+	if key.TeamID != "" && key.TeamRole == "" {
+		key.TeamRole = string(teams.RoleMember)
 	}
 	if key.Role == "" {
-		key.Role = "user"
+		key.Role = keys.RoleUser
 	}
 	key.CreatedBy, key.UpdatedBy = "admin", "admin"
-	rawKey, record := prehashedTestRecord(t, id, key)
-	path := filepath.Join(pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir(), "keys.yaml")
-	loadTestKeyPopulation(t, s.keyStore, path, map[string]*keys.VirtualKey{id: record})
-	return rawKey
+	return seedTestKey(t, s.accessStore, id, key)
 }
 
-// prehashedTestRecord preserves Create's incidental identity/lifecycle setup.
-// Each record is private, while only the generated credential is shared.
-func prehashedTestRecord(t *testing.T, id string, key keys.VirtualKey) (string, *keys.VirtualKey) {
+// seedTestTeam adds an empty shared team for keys to join.
+func seedTestTeam(t *testing.T, store access.Store, id string) {
 	t.Helper()
-	rawKey, hash := prehashedTestIdentity(t, id)
-	key.ID, key.HashedKey, key.KeyEnv = id, hash, ""
-	if key.UUID == "" {
-		key.UUID = uuid.NewString()
-	}
-	key.CreatedAt = utils.NowUTC()
-	key.UpdatedAt = key.CreatedAt
-	return rawKey, &key
-}
-
-// seedFileTestKey adds an incidental key without dropping any existing keys.
-func seedFileTestKey(t *testing.T, store *keys.FileKeyStore, path, id string, key keys.VirtualKey) string {
-	t.Helper()
-	population := store.List()
-	require.NotContains(t, population, id, "duplicate fixture key")
-	rawKey, record := prehashedTestRecord(t, id, key)
-	population[id] = record
-	loadTestKeyPopulation(t, store, path, population)
-	return rawKey
-}
-
-func loadTestKeyPopulation(t *testing.T, store *keys.FileKeyStore, path string, population map[string]*keys.VirtualKey) {
-	t.Helper()
-	data, err := yaml.Marshal(struct {
-		Version string                      `yaml:"version"`
-		Keys    map[string]*keys.VirtualKey `yaml:"keys"`
-	}{Version: "1.0", Keys: population})
+	_, err := store.CreateTeam(t.Context(), id, teams.Team{Name: id, Kind: teams.KindShared}, audit.Event{})
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, data, 0o600))
-	require.NoError(t, store.Load())
-	require.Len(t, store.List(), len(population))
+}
+
+// seedTestKey adds an incidental key; one that names no team gets its personal team.
+func seedTestKey(t *testing.T, store access.Store, id string, key keys.VirtualKey) string {
+	t.Helper()
+	_, raw, err := store.CreateKey(t.Context(), id, key, audit.Event{})
+	require.NoError(t, err)
+	return raw
+}
+
+// newTestAccessStore opens an empty store without people in a private directory.
+func newTestAccessStore(t *testing.T) access.Store {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, seedTestStore(dir))
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }

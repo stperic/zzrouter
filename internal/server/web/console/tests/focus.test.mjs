@@ -56,6 +56,7 @@ async function consoleFixture(t, { own = false, managed = false, expiresAt, iden
       if (method === 'DELETE') { state.authenticated = false; state.csrf = 'proof-logged-out'; }
       return reply({ ...state });
     }
+    if (path.endsWith('/access/setup')) return reply({ initialized: true });
     if (path.endsWith('/me')) return state.authenticated ? reply(identity) : response({ detail: 'No browser identity' }, 401);
     if (path.endsWith('/nodes')) return response({ data: [{ name: 'Fixture', cluster_role: 'coordinator', health_status: 'healthy', os: 'synthetic', version: 'fixture', providers: [] }], total: 1, has_more: false });
     if (path.endsWith('/providers')) return response({ data: catalog.map(entry => ({ name: entry.key, node: 'Fixture', kind: entry.kind, mode: entry.kind, enabled: false, installed: false, managed: false, version: '' })), total: catalog.length, has_more: false });
@@ -149,6 +150,29 @@ async function createForm(fixture) {
   named(fixture.app, 'name').value = 'Created key';
   named(fixture.app, 'team_id').value = 'fixture-team';
 }
+
+for (const changed of [false, true]) test(`a forbidden write ${changed ? 'clears changed authority' : 'preserves the refused editor'}`, async t => {
+  const f = await consoleFixture(t);
+  await createForm(f);
+  const name = named(f.app, 'name');
+  name.value = 'Keep my draft';
+  const operation = f.hold('POST', '/keys');
+  await submit(f.app);
+  if (changed) f.state.csrf = 'replacement-session-proof';
+  operation.resolve(response({ detail: 'Policy refuses this change', code: 'forbidden' }, 403));
+  await drain();
+  assert.equal(f.calls.filter(call => call.options.method === 'POST').length, 1, 'a refused mutation is never replayed');
+  if (changed) {
+    assert.equal(walk(f.app).includes(name), false);
+    assert.match(f.app.textContent, /Browser access changed/);
+  } else {
+    assert.equal(named(f.app, 'name'), name);
+    assert.equal(name.value, 'Keep my draft');
+    assert.match(f.app.textContent, /Policy refuses this change/);
+    assert.equal(button(f.app, 'Create key').disabled, false);
+    assert.doesNotMatch(f.app.textContent, /outcome may be unknown/);
+  }
+});
 async function ownForm(fixture) { await click(fixture.app, 'Keys & teams'); await click(fixture.app, 'My administrator'); await click(fixture.app, 'Edit'); }
 async function provider(fixture, key, edit = true) {
   find(fixture.app, node => node.dataset.provider === key).dispatchEvent(new Event('click'));
@@ -392,6 +416,7 @@ test('cross-tab auth reset retains only a generic interrupted-change notice thro
   operation.resolve(reply({ key: 'synthetic-lost-value' }));
   await drain();
   f.identity({ id: 'new-user', name: 'New user', role: 'user', is_virtual: true, limits: {}, team: null, usage: null });
+  await click(f.app, 'Use an access key');
   named(f.app, 'key').value = 'synthetic-new-login';
   await submit(f.app);
   assert.match(f.app.textContent, /My Access/);
@@ -554,6 +579,7 @@ test('lost own-rotation guidance survives failed recovery and retries until succ
   await click(f.app, 'Refresh session');
   assert.match(f.app.textContent, /Sign in to your router/);
   assert.match(f.app.textContent, /local terminal recovery/);
+  await click(f.app, 'Use an access key');
   named(f.app, 'key').value = 'synthetic-recovered-administrator';
   await submit(f.app);
   assert.equal(button(f.app, 'Sign out').disabled, false);
@@ -627,7 +653,7 @@ for (const kind of ['create', 'rotate another key']) {
     assert.match(f.app.textContent, /Sign in to your router/);
     assert.match(f.app.textContent, /outcome may be unknown/);
     assert.doesNotMatch(f.app.textContent, /another administrator key or local terminal recovery/);
-    assert.equal(f.calls.length, requests + 1, 'only the auth-state refresh may send another request');
+    assert.deepEqual(f.calls.slice(requests).map(call => [call.options.method, call.path]), [['GET', '/zzrouter/v1/session'], ['GET', '/zzrouter/v1/access/setup']], 'only read-only auth and setup refreshes may run');
     probe.resolve(reply({ ...f.state }));
     await drain();
     assert.equal(walk(f.app).some(node => node.value === 'synthetic-unrelated-key'), false);
@@ -643,27 +669,30 @@ test('node links open details and browser Back keeps pending pairing history int
  assert.match(location.hash, /item=node%2FFixture/);
  find(f.app, element => element.getAttribute('aria-label') === 'Close node details').dispatchEvent(new Event('click'));
  await drain();
- await click(f.app, '+ Add node');
+ await click(f.app, '+ Add compute node');
+ await click(f.app, 'I have pairing details');
  const before = location.hash;
+ named(f.app, 'pairing_method').value = 'manual';
+ named(f.app, 'pairing_method').dispatchEvent(new Event('change'));
  named(f.app, 'worker_url').value = 'https://new-node.example:9091';
  named(f.app, 'worker_fingerprint').value = 'synthetic-fingerprint';
  named(f.app, 'pairing_code').value = 'synthetic-code';
  const held = f.hold('POST', '/cluster/pairing/accept');
  await submit(f.app);
  assert.equal(held.sent, true);
- assert.equal(find(f.app, element => element.getAttribute('aria-label') === 'Close add node').disabled, true);
+ assert.equal(find(f.app, element => element.getAttribute('aria-label') === 'Close approve compute node').disabled, true);
  window.history.go(-1);
  await drain();
  await drain();
  assert.equal(location.hash, before);
- assert.match(f.app.textContent, /Add a compute node/);
+ assert.match(f.app.textContent, /Approve this computer/);
  held.resolve(response({ node_name: 'Fixture' }));
  await drain();
  assert.match(f.app.textContent, /Fixture is paired and healthy/);
  window.history.go(-1);
  await drain();
  assert.equal(location.hash, '#nodes', 'the previous history entry was preserved');
- assert.doesNotMatch(f.app.textContent, /Add a compute node/);
+ assert.doesNotMatch(f.app.textContent, /Approve this computer/);
 });
 
 test('overview selection and Back keep the map alive and guard in-flight pairing', async t => {
@@ -675,8 +704,11 @@ test('overview selection and Back keep the map alive and guard in-flight pairing
  assert.match(location.hash, /item=node%2FFixture/);
  assert.ok(f.app.contains(map), 'selecting a node preserves the map instance');
  assert.equal(f.calls.filter(call => call.path === '/nodes').length, reads);
- await click(f.app, '+ Add node');
+ await click(f.app, '+ Add compute node');
+ await click(f.app, 'I have pairing details');
  const before = location.hash;
+ named(f.app, 'pairing_method').value = 'manual';
+ named(f.app, 'pairing_method').dispatchEvent(new Event('change'));
  named(f.app, 'worker_url').value = 'https://new-node.example:9091';
  named(f.app, 'worker_fingerprint').value = 'synthetic-fingerprint';
  named(f.app, 'pairing_code').value = 'synthetic-code';
@@ -685,7 +717,7 @@ test('overview selection and Back keep the map alive and guard in-flight pairing
  window.history.go(-1);
  await drain(); await drain();
  assert.equal(location.hash, before);
- assert.match(f.app.textContent, /Add a compute node/);
+ assert.match(f.app.textContent, /Approve this computer/);
  held.resolve(response({ node_name: 'Fixture' }));
  await drain();
  window.history.go(-1);

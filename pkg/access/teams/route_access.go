@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // RouteAccess restricts requests to exact named routes. Direct mode retains model access.
 // The zero value preserves the unrestricted policy of existing teams.
 type RouteAccess struct {
-	Mode   string   `json:"mode" yaml:"mode"`
-	Routes []string `json:"routes,omitempty" yaml:"routes,omitempty"`
+	Mode   string   `json:"mode"`
+	Routes []string `json:"routes,omitempty"`
 }
 
 // IsZero matches omission in PATCH and preserves allocated-empty client slices.
@@ -81,26 +79,4 @@ func (p RouteAccess) MarshalJSON() ([]byte, error) {
 		p.Mode = "direct"
 	}
 	return json.Marshal(plain(p))
-}
-
-// UnmarshalYAML rejects misspelled or incomplete persisted policies.
-func (p *RouteAccess) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("route_access must be a policy object")
-	}
-	for i := 0; i < len(node.Content); i += 2 {
-		if key := node.Content[i].Value; key != "mode" && key != "routes" {
-			return fmt.Errorf("unknown route_access field %q", key)
-		}
-	}
-	type plain RouteAccess
-	var value plain
-	if err := node.Decode(&value); err != nil {
-		return err
-	}
-	if value.Mode == "" {
-		return fmt.Errorf("route_access.mode is required")
-	}
-	*p = RouteAccess(value)
-	return p.Validate()
 }

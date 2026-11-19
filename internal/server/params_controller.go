@@ -46,6 +46,11 @@ func (ctrl *ParamsController) RegisterReadOnlyRoutes(router *gin.RouterGroup) {
 	router.PATCH("/providers/:name/parameters", ctrl.executor.HandleParametersPatch)
 }
 
+// retiredParametersReplacement is what the retired parameter mutators
+// tell a caller to use instead.
+const retiredParametersReplacement = "PATCH /zzrouter/v1/providers/{name}/parameters " +
+	"with Content-Type: application/merge-patch+json is the single mutator"
+
 // RegisterPublicRoutes registers the v5 parameter routes + legacy shims.
 // The read-only group covers resolved/schema/GET shims AND the PATCH
 // (which self-rejects on workers via HandleParametersPatch). Coord
@@ -55,15 +60,16 @@ func (ctrl *ParamsController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	ctrl.RegisterReadOnlyRoutes(router)
 
 	// Retired mutators — 410 with CodeRetired so agents see the new endpoint.
-	router.PUT("/providers/:name/parameters", ctrl.executor.RetiredHandler)
-	router.DELETE("/providers/:name/parameters/:key", ctrl.executor.RetiredHandler)
-	router.PATCH("/providers/:name/parameters/:key/ignore", ctrl.executor.RetiredHandler)
-	router.PUT("/providers/:name/nodes/parameters", ctrl.executor.RetiredHandler)
-	router.DELETE("/providers/:name/nodes/parameters/:key", ctrl.executor.RetiredHandler)
-	router.PATCH("/providers/:name/nodes/parameters/:key/ignore", ctrl.executor.RetiredHandler)
-	router.PUT("/providers/:name/models/parameters", ctrl.executor.RetiredHandler)
-	router.DELETE("/providers/:name/models/parameters/:key", ctrl.executor.RetiredHandler)
-	router.PATCH("/providers/:name/models/parameters/:key/ignore", ctrl.executor.RetiredHandler)
+	retired := newRetiredHandler(retiredParametersReplacement)
+	router.PUT("/providers/:name/parameters", retired)
+	router.DELETE("/providers/:name/parameters/:key", retired)
+	router.PATCH("/providers/:name/parameters/:key/ignore", retired)
+	router.PUT("/providers/:name/nodes/parameters", retired)
+	router.DELETE("/providers/:name/nodes/parameters/:key", retired)
+	router.PATCH("/providers/:name/nodes/parameters/:key/ignore", retired)
+	router.PUT("/providers/:name/models/parameters", retired)
+	router.DELETE("/providers/:name/models/parameters/:key", retired)
+	router.PATCH("/providers/:name/models/parameters/:key/ignore", retired)
 
 	// Service management (unrelated to params refactor). The routing
 	// variants, not the Internal ones: the public surface honours ?node=,

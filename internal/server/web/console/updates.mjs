@@ -22,7 +22,7 @@ function statusDetails(value = {}) {
 }
 
 export async function updates(p, selected, mode) {
-  let rows = [], rollouts = [], drawer, selectionVersion = 0;
+  let rows = [], rollouts = [], drawer, selectionVersion = 0, currentStatus = false;
   const listing = el('section', { class: 'card entity-list' }), results = el('div'), feedback = el('div', { 'aria-live': 'polite' });
   const workspace = el('div', { class: 'entity-workspace' }, listing);
   const listURL = () => p.go('settings', 'updates');
@@ -57,8 +57,12 @@ export async function updates(p, selected, mode) {
   const live = liveReads(p, async automatic => {
     const result = await p.api.data('/update/status?nodes=all', { signal: p.scope.signal, timeoutMs: 60000 });
     if (!p.current() || automatic && !live.canUpdate()) return false;
-    rows = result.nodes || []; rollouts = result.rollouts || []; render(); feedback.replaceChildren(); return true;
-  }, { eligible: () => !drawer && !listing.contains(document.activeElement), failed: error => feedback.replaceChildren(message('The latest status could not be read. Any displayed observations may be out of date.', 'warning'), problem(error)) });
+    rows = result.nodes || []; rollouts = result.rollouts || []; currentStatus = true;
+    render(); feedback.replaceChildren(); return true;
+  }, { eligible: () => !drawer && !listing.contains(document.activeElement), failed: error => {
+    currentStatus = false;
+    feedback.replaceChildren(message('The latest status could not be read. Any displayed observations may be out of date.', 'warning'), problem(error));
+  } });
   async function choose(name, nextMode) {
     const version = ++selectionVersion;
     drawer?.dispose(!name && nextMode !== 'create'); drawer = undefined; selected = name;
@@ -66,7 +70,14 @@ export async function updates(p, selected, mode) {
     if (!name && nextMode !== 'create') return;
     const owner = details({ ...p, root: workspace }, nextMode === 'create' ? 'Install software version' : 'Node software', listURL);
     drawer = owner;
-    if (nextMode === 'create') { updateForm(owner, rows); return; }
+    if (nextMode === 'create') {
+      if (!currentStatus) {
+        owner.root.append(message('Reading current update status…'));
+        await live.refresh();
+      }
+      if (owner.current() && version === selectionVersion) updateForm(owner, currentStatus ? rows : []);
+      return;
+    }
     await nodeDetails(owner, name, version);
   }
   async function nodeDetails(owner, name, version, notice) {
@@ -103,7 +114,9 @@ export async function updates(p, selected, mode) {
     await watch.refresh();
   }
   p.handleSelection?.((value, mode) => choose(value?.startsWith('updates/') ? decodeURIComponent(value.slice(8)) : undefined, mode), value => value === 'updates' || value?.startsWith('updates/'));
-  await live.refresh(); if (p.current()) await choose(selected, mode);
+  const initialSelection = selectionVersion;
+  await live.refresh();
+  if (p.current() && selectionVersion === initialSelection) await choose(selected, mode);
 }
 
 async function resultView(owner, result, notice, error) {
@@ -117,17 +130,22 @@ function updateForm(owner, rows) {
   const editor = owner.panel.view('Install software version'), form = el('form', { class: 'entity-editor' });
   const controls = el('fieldset', { 'data-protected-actions': true });
   const target = input('version', '', { required: true, placeholder: 'For example, 0.2.3' });
-  const choices = rows.map(row => ({ name: row.node, control: input('target_' + row.node, '', { type: 'checkbox' }) }));
-  const feedback = el('div', { 'aria-live': 'polite' }), validation = formFeedback(form, feedback, key => key === 'version' ? target : key === 'nodes' ? choices[0]?.control : undefined);
+  const choices = rows.map(row => ({
+    name: row.node, control: input('target_' + row.node, '', { type: 'checkbox', disabled: Boolean(row.error || !row.status) }),
+  }));
+  const eligible = choices.filter(item => !item.control.disabled);
+  const feedback = el('div', { 'aria-live': 'polite' }), validation = formFeedback(form, feedback, key => key === 'version' ? target : key === 'nodes' ? eligible[0]?.control : undefined);
   const draft = editor.trackDraft(form);
-  const save = el('button', { type: 'submit', class: 'primary' }, 'Install selected version');
+  const save = el('button', { type: 'submit', class: 'primary', disabled: !eligible.length }, 'Install selected version');
   const submission = formSubmission(editor, controls, save, draft);
   controls.append(el('h2', {}, 'Choose release and targets'), field('Release version', target), el('h3', {}, 'Compute nodes'),
-    ...choices.map(item => field(item.name, item.control)), message('Selected nodes are updated serially. Running workloads may be interrupted. The API checks release compatibility before accepting the rollout.', 'warning'));
+    ...choices.map(item => field(item.name, item.control, item.control.disabled ? 'Update status unavailable' : '')),
+    !eligible.length ? message('No nodes have current update status. Return to Software and refresh status.', 'warning') : null,
+    message('Selected nodes are updated serially. Running workloads may be interrupted. The API checks release compatibility before accepting the rollout.', 'warning'));
   form.append(feedback, controls, editorActions(save, () => owner.go('settings', 'updates'), owner.api, draft)); editor.root.append(form);
   form.addEventListener('submit', async event => {
     event.preventDefault(); if (!form.reportValidity()) return;
-    const nodes = choices.filter(item => item.control.checked).map(item => item.name);
+    const nodes = eligible.filter(item => item.control.checked).map(item => item.name);
     if (!nodes.length) { validation.error(new Error('Select at least one compute node.')); return; }
     await submission.run(
       () => owner.api.data('/update/apply', { method: 'POST', body: { version: target.value.trim(), nodes }, idempotencyKey: crypto.randomUUID(), signal: editor.scope.signal, timeoutMs: 120000 }),

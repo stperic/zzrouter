@@ -15,6 +15,7 @@ function Markdown() {
   return <MarkdownTextPrimitive className="chat-markdown" components={{
     a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
     img: ({ alt }) => <span>{alt ? `[Image: ${alt}]` : '[Image]'}</span>,
+    pre: ({ children }) => <pre tabIndex={0} aria-label="Code block">{children}</pre>,
   }} />;
 }
 
@@ -88,7 +89,7 @@ function Conversation({ status }: { status: string }) {
     <div className="chat-composer-area">
       <ThreadPrimitive.ScrollToBottom className="chat-scroll">Latest message ↓</ThreadPrimitive.ScrollToBottom>
       <ComposerPrimitive.Root className="chat-composer">
-        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={2} disabled={!settings.model || !settings.enabled} /></div>
+        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={1} disabled={!settings.model || !settings.enabled} /></div>
         <div className="chat-composer-footer"><span>Enter to send · Shift+Enter for a new line</span>
           <span data-protected-actions><AuiIf condition={state => !state.thread.isRunning}><ComposerPrimitive.Send className="primary" disabled={!settings.model || !settings.enabled}>Send ↑</ComposerPrimitive.Send></AuiIf></span>
           <AuiIf condition={state => state.thread.isRunning}><ComposerPrimitive.Cancel>Stop ■</ComposerPrimitive.Cancel></AuiIf>

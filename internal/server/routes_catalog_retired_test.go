@@ -1,13 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +60,7 @@ func TestRouteCatalog_FlagsExactlyTheRetiredRoutes(t *testing.T) {
 	assert.Equal(t, want, got,
 		"the catalog's retired set must equal the engine's: a missing flag advertises "+
 			"a dead end as callable, an extra one hides a live route")
+	assert.True(t, got["POST /zzrouter/v1/keys/reload"], "key reload must be flagged retired")
 }
 
 // A flag is a claim. This drives every route the catalog flags and
@@ -65,41 +69,64 @@ func TestRouteCatalog_FlagsExactlyTheRetiredRoutes(t *testing.T) {
 func TestRouteCatalog_RetiredRoutesAnswerGone(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 
-	driven, skipped := 0, 0
+	public, internal := 0, 0
 	for _, r := range s.engine.Routes() {
 		if !isRetiredRoute(r.Handler) {
-			continue
-		}
-		// The internal twins are unreachable to an HTTP caller by
-		// design: internalRequestOnlyMiddleware 404s anything without
-		// the in-process trust marker, so driving them here would test
-		// that middleware, not the tombstone.
-		if strings.HasPrefix(r.Path, adminInternalPrefix+"/") {
-			skipped++
 			continue
 		}
 		// The handler reads no parameters, so any placeholder that
 		// occupies the segment reaches it.
 		path := concreteRetiredPath(r.Path)
-		resp := makeAuthRequest(t, s, r.Method, path, TestAdminKey, nil)
-		require.Equal(t, http.StatusGone, resp.Code,
-			"%s %s is flagged retired but answered %d: body=%s",
-			r.Method, path, resp.Code, string(resp.Body))
+		t.Run(r.Method+" "+path, func(t *testing.T) {
+			req := httptest.NewRequest(r.Method, path, nil)
+			req.Header.Set("X-API-Key", TestAdminKey)
+			req.Header.Set("X-Request-ID", "retired-route-request")
+			if strings.HasPrefix(r.Path, adminInternalPrefix+"/") {
+				// Exercise internal twins through their real dispatch trust marker.
+				req = req.WithContext(context.WithValue(req.Context(), internalRequestKey, true))
+				internal++
+			} else {
+				public++
+			}
+			resp := httptest.NewRecorder()
+			s.engine.ServeHTTP(resp, req)
+			require.Equal(t, http.StatusGone, resp.Code, "body=%s", resp.Body.String())
+			assert.Equal(t, "application/problem+json", resp.Header().Get("Content-Type"))
 
-		var problem struct {
-			Code string `json:"code"`
-		}
-		require.NoError(t, json.Unmarshal(resp.Body, &problem))
-		assert.Equal(t, string(httperr.CodeRetired), problem.Code,
-			"%s %s must carry the documented code, not a bare 410", r.Method, path)
-		driven++
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &problem))
+			assert.Equal(t, string(httperr.CodeRetired), problem.Code)
+			assert.Equal(t, http.StatusGone, problem.Status)
+			assert.Equal(t, "Gone", problem.Title)
+			assert.Equal(t, "https://api.zzrouter.com/problems/gone", problem.Type)
+			assert.Equal(t, path, problem.Instance)
+			assert.Equal(t, "retired-route-request", problem.RequestID)
+			wantDetail := "this route is retired; PATCH /zzrouter/v1/providers/{name}/parameters " +
+				"with Content-Type: application/merge-patch+json is the single mutator"
+			if path == "/zzrouter/v1/keys/reload" {
+				wantDetail = "this route is retired; app keys are managed through the keys API: " +
+					"POST /zzrouter/v1/keys, PATCH /zzrouter/v1/keys/{id}"
+			}
+			assert.Equal(t, wantDetail, problem.Detail)
+		})
 	}
-	if driven == 0 {
-		t.Fatal("drove no retired routes: isRetiredRoute stopped matching, or the " +
-			"internal-prefix skip now swallows the public ones, and this guard " +
-			"would pass vacuously")
+	require.Equal(t, 10, public, "all nine parameter routes and key reload must be retired")
+	require.Equal(t, 9, internal, "all nine internal parameter twins must be retired")
+}
+
+func TestDeletedStateRoutesAnswerNotFound(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	for _, path := range []string{"/zzrouter/v1/state/snapshot", "/zzrouter/v1/state/restore"} {
+		t.Run(path, func(t *testing.T) {
+			resp := makeAuthRequest(t, s, http.MethodPost, path, TestAdminKey, nil)
+			require.Equal(t, http.StatusNotFound, resp.Code, "body=%s", resp.Body)
+			assert.Equal(t, "application/problem+json", resp.Headers.Get("Content-Type"))
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(resp.Body, &problem))
+			assert.Equal(t, http.StatusNotFound, problem.Status)
+			assert.Equal(t, "not_found", problem.Code)
+		})
 	}
-	t.Logf("drove %d retired routes to 410, skipped %d internal twins", driven, skipped)
 }
 
 // concreteRetiredPath fills gin's parameter segments with a placeholder.

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/inferencelog"
@@ -28,12 +29,13 @@ import (
 // attached (see SetJobHandle), every completed inference also mirrors
 // onto the firehose SSE stream.
 type InferenceLogBridge struct {
-	store          *inferencelog.Store
-	nodeName       string
-	capturePrompts bool
-	pricingStore   *pricing.Store
-	access         *AccessControl // nil-safe — set post-init via SetAccessControl
-	latencyTracker *fallback.LatencyTracker
+	store              *inferencelog.Store
+	nodeName           string
+	capturePrompts     bool
+	pricingStore       *pricing.Store
+	access             *AccessControl // nil-safe — set post-init via SetAccessControl
+	latencyTracker     *fallback.LatencyTracker
+	onboardingObserver func(control.Subject)
 
 	// jobHandle, when non-nil, is a long-lived KindInferenceLog handle
 	// that mirrors every log entry onto the shared jobs stream.
@@ -57,6 +59,12 @@ func NewInferenceLogBridge(store *inferencelog.Store, nodeName string, capturePr
 // Called after the gateway is constructed.
 func (b *InferenceLogBridge) SetAccessControl(g *AccessControl) {
 	b.access = g
+}
+
+// SetOnboardingObserver records successful human/app use. Install before serving;
+// the callback must be concurrency-safe and is never called for failed inference.
+func (b *InferenceLogBridge) SetOnboardingObserver(observer func(control.Subject)) {
+	b.onboardingObserver = observer
 }
 
 // SetLatencyTracker sets the latency tracker for feeding the fastest routing strategy.
@@ -156,6 +164,13 @@ func (b *InferenceLogBridge) OnInferenceComplete(data llm.InferenceLogData) {
 		ErrorType:       data.ErrorType,
 		ErrorMessage:    data.ErrorMessage,
 	}
+	subject := control.Subject{Kind: control.IdentityKind(data.SubjectKind), ID: data.SubjectID, TeamID: data.TeamID}
+	if subject.ID == "" && data.KeyID != "" {
+		subject.Kind, subject.ID = control.KindKey, data.KeyID
+	}
+	if subject.Kind == control.KindPerson {
+		entry.PersonID = subject.ID
+	}
 
 	// Parse request body for prompt details if capture is enabled
 	if b.capturePrompts && len(data.RequestBody) > 0 {
@@ -186,8 +201,11 @@ func (b *InferenceLogBridge) OnInferenceComplete(data llm.InferenceLogData) {
 	}
 
 	// Post-response: settle budget reservation and record TPM tokens for virtual keys.
-	if data.KeyID != "" && b.access != nil {
-		b.access.RecordSpendByKey(data.KeyID, data.ReservationID, costMicro, data.TokensIn, data.TokensOut)
+	if subject.ID != "" && b.access != nil {
+		b.access.core.RecordSpend(subject, control.ReservationID(data.ReservationID), costMicro, data.TokensIn, data.TokensOut)
+	}
+	if b.onboardingObserver != nil && data.Status == "success" && subject.ID != "" {
+		b.onboardingObserver(subject)
 	}
 
 	// LiteLLM-mirrored token + spend counters (zz.input.tokens.metric /
@@ -221,11 +239,11 @@ func (b *InferenceLogBridge) extractRequestDetails(entry *inferencelog.LogEntry,
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`
-		Prompt      string   `json:"prompt"`
-		System      string   `json:"system"`
-		Temperature *float64 `json:"temperature"`
-		MaxTokens   *int     `json:"max_tokens"`
-		TopP        *float64 `json:"top_p"`
+		Prompt      json.RawMessage `json:"prompt"`
+		System      string          `json:"system"`
+		Temperature *float64        `json:"temperature"`
+		MaxTokens   *int            `json:"max_tokens"`
+		TopP        *float64        `json:"top_p"`
 		// Ollama-specific fields
 		Options struct {
 			Temperature *float64 `json:"temperature"`
@@ -272,9 +290,10 @@ func (b *InferenceLogBridge) extractRequestDetails(entry *inferencelog.LogEntry,
 	}
 
 	// Ollama generate-style prompt
-	if req.Prompt != "" && len(entry.Messages) == 0 {
+	var prompt string
+	if json.Unmarshal(req.Prompt, &prompt) == nil && prompt != "" && len(entry.Messages) == 0 {
 		entry.Messages = []inferencelog.Message{
-			{Role: "user", Content: req.Prompt},
+			{Role: "user", Content: prompt},
 		}
 	}
 }

@@ -96,6 +96,7 @@ routing OpenAI-compatible API requests to the appropriate provider by model name
 		NewVersionCmd(),
 		NewUpdateCmd(),
 		NewInstallPolicyCmd(),
+		NewRecoveryCmd(),
 	)
 
 	return root

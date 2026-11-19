@@ -41,12 +41,13 @@ type clusterPairRequest struct {
 // the TUI surfaces an actionable message instead of a generic "no
 // active window".
 type clusterPairResponse struct {
-	Status      string    `json:"status"`
-	Code        string    `json:"code,omitempty"`
-	Deadline    time.Time `json:"deadline,omitempty"`
-	WorkerURL   string    `json:"worker_url,omitempty"`
-	Fingerprint string    `json:"fingerprint,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Status      string                       `json:"status"`
+	Transfer    *clusternode.PairingTransfer `json:"transfer,omitempty"`
+	Code        string                       `json:"code,omitempty"`
+	Deadline    time.Time                    `json:"deadline,omitempty"`
+	WorkerURL   string                       `json:"worker_url,omitempty"`
+	Fingerprint string                       `json:"fingerprint,omitempty"`
+	Error       string                       `json:"error,omitempty"`
 	// Mode carries the node's runtime cluster mode ("unclaimed" |
 	// "worker" | "coordinator" | "disabled") so the TUI can detect
 	// successful completion: post-pair, the window closes and mode
@@ -89,7 +90,9 @@ func (h *ClusterHandlers) handleClusterPair(c *gin.Context) {
 	// every tick, and lets an operator re-check their in-flight window
 	// without digging up the URL + fingerprint again.
 	if info, hadWindow := h.listener.PairingWindowInfoSnapshot(); hadWindow && !req.Regenerate {
+		transfer := info.Transfer()
 		c.JSON(http.StatusOK, clusterPairResponse{
+			Transfer:  &transfer,
 			Status:    "existing",
 			Code:      info.Code,
 			Deadline:  info.Deadline,
@@ -132,7 +135,9 @@ func (h *ClusterHandlers) handleClusterPair(c *gin.Context) {
 		respondPairBeginError(c, err)
 		return
 	}
+	transfer := info.Transfer()
 	c.JSON(http.StatusOK, clusterPairResponse{
+		Transfer:  &transfer,
 		Status:    "new",
 		Code:      info.Code,
 		Deadline:  info.Deadline,

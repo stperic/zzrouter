@@ -53,7 +53,8 @@ export function jobProgress(job) {
 }
 
 export function launchTargets(models, providers, node) {
-  const capable = providers.filter(row => row.node === node && row.enabled && ['process', 'served'].includes(row.run_lifecycle));
+  const capable = providers.filter(row => row.node === node && row.enabled && row.installed !== false &&
+    (row.run_lifecycle !== 'served' || row.service?.running !== false) && ['process', 'served'].includes(row.run_lifecycle));
   const targets = capable.filter(row => row.run_scope === 'node').map(row => ({ node, provider: row.key || row.name, label: `${row.name} service` }));
   for (const model of models) {
     if (model.node !== node || model.is_cloud || model.incomplete) continue;

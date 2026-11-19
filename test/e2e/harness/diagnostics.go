@@ -145,14 +145,6 @@ func (d *Diagnostics) RecordJobSSE(jobID string, raw []byte) {
 	d.bundle.JobsSSE[jobID] = raw
 }
 
-// RecordStateTar pins a gzipped state snapshot for populated/upgrade
-// suites that want the pre-failure state preserved.
-func (d *Diagnostics) RecordStateTar(tar []byte) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.bundle.StateTar = tar
-}
-
 // SetExtra merges into the meta.json Extra map.
 func (d *Diagnostics) SetExtra(k string, v any) {
 	d.mu.Lock()
@@ -202,7 +194,6 @@ type Bundle struct {
 	Request  *RequestRecord    // last HTTP request issued before failure
 	Response *Response         // matching response
 	JobsSSE  map[string][]byte // job_id → raw SSE bytes (Jobs.RawSSE)
-	StateTar []byte            // gzipped-tar from State.Snapshot, if available
 
 	// Extra is freeform metadata the test wants pinned in meta.json.
 	Extra map[string]any
@@ -287,11 +278,6 @@ func (d *Diagnostics) Dump(ctx context.Context, b Bundle) (string, error) {
 			if err := os.WriteFile(filepath.Join(dest, "jobs", "manifest.json"), out, 0o644); err != nil {
 				notes = append(notes, "jobs/manifest.json: "+err.Error())
 			}
-		}
-	}
-	if len(b.StateTar) > 0 {
-		if err := os.WriteFile(filepath.Join(dest, "state-snapshot.tar.gz"), b.StateTar, 0o600); err != nil {
-			notes = append(notes, "state-snapshot.tar.gz: "+err.Error())
 		}
 	}
 

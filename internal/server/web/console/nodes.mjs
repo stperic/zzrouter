@@ -1,10 +1,11 @@
-import { el, text, leaveButton, actions, badge, heading, facts, field, input, message, problem, date, clearSecrets, markSelection, editorActions, formFeedback, invalidField } from './dom.mjs';
+import { el, text, button, leaveButton, actions, badge, heading, facts, field, input, select, message, problem, date, clearSecrets, markSelection, editorActions, formFeedback, invalidField, copyField } from './dom.mjs';
 import { readInventory, providerCategory } from './inventory.mjs';
 import { networkNodes, nodeHealth, localProviders, localProviderKey, hardwareLabel, memoryLabel, nodeKey } from './network-data.mjs';
 import { details, readAfterWrite } from './details.mjs';
 import { providerName } from './provider-icons.mjs';
 import { memorySummary, memoryDetails, activityText } from './observations.mjs';
 import { providerDiagnostics } from './diagnostics.mjs';
+import { parsePairingTransfer } from './pairing-transfer.mjs';
 
 export function nodeTile(p, node, destination = 'nodes', coordinator = false) {
   const item = leaveButton('', () => p.go(destination, nodeKey(node.name)), p.api, `network-item ${node.health_status === 'down' ? 'is-down' : ''}`);
@@ -29,8 +30,9 @@ export async function nodes(p, selection) {
     const owner = details({ ...p, root: workspace, reloadNode: async name => {
       const revision = owner.panel.revision;
       await read();
-      if (owner.panel.current() && owner.panel.revision === revision && p.api.canLeave()) { p.selectSection?.(nodeKey(name)); selectNode(nodeKey(name)); }
-    } }, next === 'add' ? 'Add node' : 'Node details', () => p.go('nodes'));
+      const key = name ? nodeKey(name) : undefined;
+      if (owner.panel.current() && owner.panel.revision === revision && p.api.canLeave()) { p.selectSection?.(key); selectNode(key); }
+    } }, next === 'add' ? 'Add compute node' : 'Node details', () => p.go('nodes'));
     drawer = owner;
     if (next === 'add') addNode(owner);
     else if (next.startsWith('node/')) showNode(owner, next.slice(5), inventory);
@@ -53,7 +55,7 @@ export async function nodes(p, selection) {
     catch (error) { if (p.current()) listing.prepend(problem(error)); }
   };
   p.root.append(heading('Nodes', 'Machines running zzRouter. The coordinator can also provide local compute.',
-    leaveButton('Refresh', refresh, p.api), leaveButton('+ Add node', () => p.go('nodes', 'add'), p.api, 'primary')), workspace);
+    leaveButton('Refresh', refresh, p.api), leaveButton('+ Add compute node', () => p.go('nodes', 'add'), p.api, 'primary')), workspace);
   listing.append(message('Reading node inventory…'));
   await read();
   if (p.current()) { p.handleSelection?.(selectNode); selectNode(selection); }
@@ -69,6 +71,12 @@ export function showNode(p, name, inventory) {
   if (node.last_error) p.root.append(message(node.last_error, 'warning'));
   else if (node.health_status !== 'healthy') p.root.append(message('The cluster connection is not currently healthy and no failure cause was reported. Check that the node is running, paired and reachable.', 'warning'));
   p.root.append(activityText(p, node.activity), memoryDetails(node), leaveButton('View workloads', () => p.go('workloads', `node/${encodeURIComponent(node.name)}`, 'runs'), p.api));
+  const readiness = el('div', { 'aria-live': 'polite' }, text('Checking model readiness…', 'muted'));
+  p.root.append(el('section', { class: 'access-section' }, el('h3', {}, 'Run models on this computer'), readiness,
+    text(node.health_status === 'healthy' ? 'Connected. Set up a provider, choose a model, then test it on this computer.' : 'Reconnect this computer before preparing or testing its models.', 'muted'),
+    actions(leaveButton('Set up a provider', () => p.go('providers', 'local', undefined, node.name), p.api, 'primary'),
+      leaveButton('Choose a model', () => p.go('models', undefined, undefined, node.name), p.api))));
+  void readNodeReadiness(p, node, readiness);
   if (node.health_status !== 'healthy') p.root.append(text('Provider and hardware details are the last reported observations.', 'muted'));
   p.root.append(el('h3', {}, 'Local providers'));
   if (inventory[1].status === 'rejected') p.root.append(problem(inventory[1].reason));
@@ -82,6 +90,15 @@ export function showNode(p, name, inventory) {
     p.root.append(row);
   }
   if (!providers.length) p.root.append(text(inventory[1].status === 'fulfilled' ? 'No local providers reported.' : 'Local provider inventory is unavailable.', 'muted'));
+}
+
+async function readNodeReadiness(p, node, root) {
+  try {
+    const state = await p.api.data('/access/onboarding?node=' + encodeURIComponent(node.name), { signal: p.scope.signal });
+    if (!p.current()) return;
+    root.replaceChildren(badge(state.model_ready ? 'Model available to test' : state.provider_ready ? 'Provider ready. Choose a model.' : 'Provider setup needed', state.model_ready ? 'good' : ''),
+      ...(state.model_ready ? [text('Open a model and choose Test model or Chat to verify a response from this computer.', 'muted')] : []));
+  } catch (error) { if (p.current()) root.replaceChildren(message('Model readiness is unavailable. Refresh this node to check again.', 'warning')); }
 }
 
 export function showLocalProvider(p, name, key, inventory) {
@@ -161,31 +178,114 @@ function editNode(p, node, inventory, renderDetails = owner => showNode(owner, n
   p.syncActivity();
 }
 
-export function addNode(p) {
+export async function addNode(p) {
+  const body = el('div'), feedback = el('div', { 'aria-live': 'polite' });
+  const approve = () => approveNode(p.panel ? p.panel.view('Approve compute node') : p);
+  p.root.append(el('h2', {}, 'Add a compute node'), text('Your router works on its own. Connect another computer whenever you need more compute.', 'muted'), body, feedback,
+    actions(leaveButton('I have pairing details', approve, p.api, 'primary')));
+  const read = async () => {
+    body.replaceChildren(message('Preparing installation instructions…')); feedback.replaceChildren();
+    try {
+      const guide = await p.api.data('/cluster/pairing/setup', { signal: p.scope.signal });
+      if (!p.current()) return;
+      const platform = select('worker_os', [['', 'Choose the new computer’s operating system'], ...guide.platforms.map(item => [item.os, item.label])], '');
+      const instructions = el('section');
+      platform.addEventListener('change', () => {
+        const selected = guide.platforms.find(item => item.os === platform.value);
+        instructions.replaceChildren();
+        if (!selected) return;
+        const commands = el('div');
+        const renderInstallation = installation => commands.replaceChildren(
+          text(installation.shell), copyField('Install as a worker', installation.install_command), text(installation.startup, 'muted'),
+          ...(installation.pair_shell ? [text(installation.pair_shell)] : []), copyField('Connect to this router', installation.pair_command),
+          text('Already installed in these folders? Skip installation and run the connection command. Copy the JSON pairing details it prints. Keep the worker running until you approve it.', 'muted'));
+        instructions.append(el('h3', {}, '1. On the new computer'),
+          el('a', { href: guide.download_url, target: '_blank', rel: 'noopener noreferrer' }, 'Download zzRouter'),
+          text(`Choose ${selected.archives}. Verify and extract the release as described on the download page.`, 'muted'));
+        if (selected.installations.length > 1) {
+          const installation = select('worker_installation', selected.installations.map(item => [item.id, item.label]), selected.installations[0].id);
+          installation.addEventListener('change', () => renderInstallation(selected.installations.find(item => item.id === installation.value)));
+          instructions.append(field('Installation', installation, 'For an existing worker, choose how it was installed.'));
+        }
+        renderInstallation(selected.installations[0]);
+        instructions.append(commands,
+          el('details', {}, el('summary', {}, 'Connection details'), facts([['Coordinator', guide.coordinator_url], ['Worker TCP port', guide.worker_port], ['Coordinator fingerprint', guide.ca_fingerprint], ['Router version', guide.version]]),
+            text('Both computers need to reach each other on the cluster connection. Check your LAN or VPN and firewall if pairing fails. Console access can stay local-only.')),
+          el('h3', {}, '2. Back in this console'), text('Choose “I have pairing details” to review and approve the new computer.'));
+      });
+      body.replaceChildren(field('Operating system', platform), instructions);
+    } catch (error) {
+      if (p.current()) body.replaceChildren(problem(error), leaveButton('Retry instructions', read, p.api));
+    }
+  };
+  await read();
+}
+
+export function approveNode(p) {
+  p.root.replaceChildren();
   p.editing = true;
   const form = el('form', { autocomplete: 'off', class: 'entity-editor' });
   const draft = p.trackDraft?.(form);
   const controls = el('fieldset', { 'data-protected-actions': true });
-  const url = input('worker_url', '', { type: 'url', required: true, placeholder: 'https://node-address:9091' });
-  const fingerprint = input('worker_fingerprint', '', { required: true, spellcheck: 'false', maxlength: '128' });
-  const code = input('pairing_code', '', { type: 'password', required: true, maxlength: '128', autocomplete: 'new-password', 'data-sensitive': true });
+  const method = select('pairing_method', [['transfer', 'Paste or upload pairing details'], ['manual', 'Enter address, fingerprint and code']], 'transfer');
+  const transfer = el('textarea', { name: 'pairing_transfer', rows: '5', spellcheck: 'false', 'data-sensitive': true, placeholder: 'Paste the pairing JSON from the new computer' });
+  const upload = input('pairing_file', '', { type: 'file', accept: '.json,application/json', 'data-sensitive': true });
+  const url = input('worker_url', '', { type: 'url', placeholder: 'https://node-address:9091' });
+  const fingerprint = input('worker_fingerprint', '', { spellcheck: 'false', maxlength: '128' });
+  const code = input('pairing_code', '', { type: 'password', maxlength: '128', autocomplete: 'new-password', 'data-sensitive': true });
   const feedback = el('div', { 'aria-live': 'polite' });
-  const validation = formFeedback(form, feedback, key => ({ worker_url: url, worker_fingerprint: fingerprint, code })[key]);
-  let blocked = false;
-  let pairedName;
-  controls.append(el('h2', {}, 'Add a compute node'), text('Start pairing on the new machine using the terminal client. Copy the HTTPS cluster address, public-key fingerprint and pairing code it prints.', 'muted'),
-    field('Node address', url), field('Node fingerprint', fingerprint, 'Compare this with the fingerprint shown on the new machine.'), field('Pairing code', code));
-  const save = el('button', { type: 'submit', class: 'primary' }, 'Pair node');
+  const validation = formFeedback(form, feedback, key => ({ worker_url: url, worker_fingerprint: fingerprint, code, transfer })[key]);
+  const preview = el('section', { class: 'pairing-review', 'aria-label': 'Computer to approve' });
+  let blocked = false, pairedName, reviewed, fileReadVersion = 0;
+  const save = el('button', { type: 'submit', class: 'primary', disabled: true }, 'Approve computer');
+  const review = button('Review computer', () => {
+    try {
+      reviewed = parsePairingTransfer(transfer.value);
+      preview.replaceChildren(el('h3', { tabindex: '-1' }, 'Confirm this computer'), facts([['Name', reviewed.node_name], ['Address', reviewed.worker_url], ['Fingerprint', reviewed.worker_fingerprint], ['Pairing expires', date(reviewed.expires_at)]]), text('Compare the name and fingerprint with the new computer before approving it.', 'muted'), button('Change pairing details', clearReview));
+      entry.hidden = true;
+      save.disabled = false;
+      preview.querySelector?.('h3')?.focus({ preventScroll: true });
+      preview.scrollIntoView({ block: 'nearest' });
+    } catch (error) { reviewed = undefined; save.disabled = true; validation.error(error); }
+  });
+  const entry = el('div', {}, field('Pairing details', transfer), field('Or choose a pairing file', upload), review);
+  const imported = el('div', {}, entry, preview);
+  const manual = el('div', { hidden: true }, field('Node address', url), field('Node fingerprint', fingerprint, 'Compare this with the fingerprint shown on the new computer.'), field('Pairing code', code));
+  const clearReview = () => { fileReadVersion++; reviewed = undefined; entry.hidden = false; preview.replaceChildren(); save.disabled = method.value === 'transfer'; };
+  transfer.addEventListener('input', clearReview);
+  upload.addEventListener('change', async () => {
+    clearReview();
+    const version = fileReadVersion;
+    const file = upload.files?.[0];
+    if (!file) return;
+    if (file.size > 8192) { validation.error(new Error('The pairing file must be 8 KiB or smaller.')); upload.value = ''; return; }
+    try {
+      const value = await file.text();
+      if (!p.current() || method.value !== 'transfer' || version !== fileReadVersion) return;
+      transfer.value = value; draft?.touch(); review.focus();
+    } catch { if (p.current()) validation.error(new Error('The pairing file could not be read.')); }
+  });
+  method.addEventListener('change', () => {
+    clearReview(); clearSecrets(imported); clearSecrets(manual);
+    imported.hidden = method.value !== 'transfer'; manual.hidden = method.value !== 'manual';
+    for (const control of [url, fingerprint, code]) control.required = method.value === 'manual';
+  });
+  controls.append(el('h2', {}, 'Approve this computer'), text('Paste the pairing details from the new computer, then check its name and fingerprint.', 'muted'), field('Pairing method', method), imported, manual);
   form.append(feedback, controls, editorActions(save, p.close, p.api, draft));
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (blocked || controls.disabled || !p.current() || !p.api.canChange() || !form.reportValidity()) return;
-    let address;
-    try { address = new URL(url.value); } catch { validation.error(invalidField('Enter the HTTPS cluster address printed by the node.', url)); return; }
-    if (address.protocol !== 'https:' || address.username || address.password || address.hash || address.search) { validation.error(invalidField('Use an HTTPS cluster address without credentials, query parameters or a fragment.', url)); return; }
-    controls.disabled = true;
-    const body = { worker_url: address.href, worker_fingerprint: fingerprint.value.trim(), code: code.value.trim() };
-    code.value = '';
+    let body;
+    if (method.value === 'transfer') {
+      if (!reviewed) { validation.error(new Error('Review the computer before approving it.')); return; }
+      body = { transfer: reviewed };
+    } else {
+      let address;
+      try { address = new URL(url.value); } catch { validation.error(invalidField('Enter the HTTPS cluster address printed by the node.', url)); return; }
+      if (address.protocol !== 'https:' || address.username || address.password || address.hash || address.search) { validation.error(invalidField('Use an HTTPS cluster address without credentials, query parameters or a fragment.', url)); return; }
+      body = { worker_url: address.href, worker_fingerprint: fingerprint.value.trim(), code: code.value.trim() };
+    }
+    controls.disabled = true; clearSecrets(form); reviewed = undefined;
     feedback.replaceChildren(message('Pairing node and confirming its identity…'));
     try {
       const result = await p.api.request('/zzrouter/v1/cluster/pairing/accept', { method: 'POST', body, signal: p.scope.signal, timeoutMs: 60000 });
@@ -198,16 +298,17 @@ export function addNode(p) {
       const known = await p.api.list('/nodes', { signal: p.scope.signal });
       if (!p.current()) return;
       const node = known.find(node => node.name === result.node_name);
-      feedback.replaceChildren(message(node?.health_status === 'healthy' ? `${result.node_name} is paired and healthy.` : `${result.node_name} is paired. Healthy node observation is still pending.`, node?.health_status === 'healthy' ? '' : 'warning'),
-        leaveButton('View node', () => p.reloadNode ? p.reloadNode(pairedName) : p.go('nodes', nodeKey(pairedName)), p.api, 'primary'));
+      feedback.replaceChildren(message(node?.health_status === 'healthy' ? `${result.node_name} is paired and healthy. Prepare a provider and model to run requests.` : `${result.node_name} is paired. Healthy node observation is still pending.`, node?.health_status === 'healthy' ? '' : 'warning'),
+        node ? leaveButton('View node', () => p.reloadNode ? p.reloadNode(pairedName) : p.go('nodes', nodeKey(pairedName)), p.api, 'primary') : leaveButton('Refresh nodes', () => p.reloadNode ? p.reloadNode() : p.go('nodes'), p.api, 'primary'));
     } catch (error) {
       if (!p.current()) return;
-      blocked = true;
+      blocked ||= Boolean(error.uncertain || error.mutation_applied || pairedName);
       validation.error(error);
-      feedback.append(message(pairedName ? `${pairedName} is paired. Current node observations are unavailable. Refresh Nodes to check health.` : 'Pairing was not confirmed. Enrollment may already have completed. Check the node inventory before trying again.', 'warning'), leaveButton('Inspect nodes', () => p.go('nodes'), p.api));
-    } finally { clearSecrets(form); if (p.current()) { controls.disabled = blocked; save.disabled = blocked; } }
+      if (blocked) feedback.append(message(pairedName ? `${pairedName} is paired. Current node observations are unavailable. Refresh Nodes to check health.` : 'Pairing was not confirmed. Enrollment may already have completed. Check the node inventory before trying again.', 'warning'), leaveButton('Inspect nodes', () => p.go('nodes'), p.api));
+      else { clearReview(); feedback.append(text('Check the connection details or generate fresh pairing details on the worker, then review them here.', 'muted')); }
+    } finally { clearSecrets(form); if (p.current()) { controls.disabled = blocked; save.disabled = blocked || method.value === 'transfer' && !reviewed; } }
   });
   p.root.append(form);
-  p.scope.signal.addEventListener('abort', () => clearSecrets(form), { once: true });
+  p.scope.signal.addEventListener('abort', () => { reviewed = undefined; clearSecrets(form); }, { once: true });
   p.syncActivity();
 }

@@ -1,5 +1,5 @@
 import { Lifetime } from './api.mjs';
-import { el, text, button, leaveButton, heading, card, actions, select, field, input, badge, message, problem, selectableRow, markSelection } from './dom.mjs';
+import { el, text, button, leaveButton, heading, actions, select, field, input, badge, message, problem, selectableRow, markSelection } from './dom.mjs';
 import { details } from './details.mjs';
 import { liveReads } from './live-reads.mjs';
 import { activityText } from './observations.mjs';
@@ -18,8 +18,7 @@ export async function workloads(p, selection, mode = 'runs') {
   const visibility = select('workload_status', [['active', 'Active workloads'], ['stopped', 'Stopped records'], ['all', 'All workloads']], 'active');
   const statusFilter = field('Show', visibility);
   const feedback = el('div', { 'aria-live': 'polite' }), results = el('div'), tabs = el('div', { class: 'tabs', 'aria-label': 'Workload type' });
-  const list = card('Current workloads', el('div', { class: 'workload-filters' }, field('Compute node', node), statusFilter, field('Search', search)), feedback, results);
-  list.classList.add('entity-list');
+  const list = el('section', { class: 'card entity-list' }, el('div', { class: 'workload-filters' }, field('Compute node', node), statusFilter, field('Search', search)), feedback, results);
   const workspace = el('div', { class: 'entity-workspace' }, list);
   const pause = button('Pause updates', () => live.toggle());
   const idle = () => !drawer && !list.contains(document.activeElement) && p.api.canChange();
@@ -71,7 +70,8 @@ export async function workloads(p, selection, mode = 'runs') {
         node.value = filterNode;
         node.disabled = false;
       }
-      const names = node.value ? [node.value] : nodes.map(value => value.name);
+      const missing = Boolean(node.value && !nodes.some(value => value.name === node.value));
+      const names = missing ? [] : node.value ? [node.value] : nodes.map(value => value.name);
       const offline = nodes.filter(value => value.health_status === 'down' && names.includes(value.name)).map(value => value.name);
       const requested = names.filter(name => !offline.includes(name) && (!older || more.get(name)));
       const nextOffsets = new Map(requested.map(name => [name, older ? (offsets.get(name) || 0) + 25 : 0]));
@@ -80,6 +80,7 @@ export async function workloads(p, selection, mode = 'runs') {
       if (automatic && !live.canUpdate()) return true;
       if (!older) for (const name of snapshots.keys()) if (!names.includes(name) || offline.includes(name)) { snapshots.delete(name); more.delete(name); offsets.delete(name); }
       feedback.replaceChildren();
+      if (missing) feedback.append(message('This node is no longer in the current inventory.', 'warning'));
       if (offline.length) feedback.append(text(node.value ? 'This node is offline. Workloads will appear when it reconnects.' : `${offline.length} offline ${offline.length === 1 ? 'node' : 'nodes'} skipped.`, 'muted'));
       for (const page of pages) {
         if (page.error) {

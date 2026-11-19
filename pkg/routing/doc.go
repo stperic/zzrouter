@@ -9,8 +9,6 @@
 //     to peers via [mesh.ClusterClient]
 //   - [ResourceAwareRouter] — picks among local endpoints based on
 //     health, latency, and load
-//   - [Swappable] — hot-swap wrapper used by the server when roles
-//     flip (single → coordinator, coordinator → worker)
 //
 // # Scope
 //
@@ -20,9 +18,7 @@
 //
 // # Lock Ordering
 //
-// Two internal mutexes — one on [ResourceAwareRouter] (endpoint
-// scoring cache) and one on [Swappable] (atomic pointer swap under
-// lock). Independent; no cross-type acquisition.
+// One internal mutex, on [ResourceAwareRouter] (endpoint scoring cache).
 //
 // # Architecture
 //

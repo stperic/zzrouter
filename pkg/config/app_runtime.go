@@ -21,9 +21,11 @@ type AppRuntimeConfig struct {
 	DataSubdirs     []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore      *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe   *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
+	Listener        *ListenerConfig    `yaml:"listener,omitempty" json:"listener,omitempty"`
 	Browser         *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	Endpoint        string             `yaml:"endpoint"`
+	OpenAIPath      string             `yaml:"openai_path,omitempty" json:"openai_path,omitempty"`
 	PortRange       []int              `yaml:"port_range,omitempty"` // Port range for on-demand apps [start, end]
 	BasePort        int                `yaml:"base_port,omitempty"`  // Starting port for dynamic allocation
 	KeepAlive       string             `yaml:"keep_alive,omitempty"` // Duration to keep model loaded (e.g., "5m", "1h", "0" to disable, "-1" for indefinite)
@@ -46,7 +48,7 @@ type AppRuntimeConfig struct {
 	QueueTimeout string `yaml:"queue_timeout,omitempty"`
 
 	// Models listing configuration (for cloud search)
-	ModelsPath        *string `yaml:"models_path,omitempty"`         // Omitted uses /v1/models; empty disables listing.
+	ModelsPath        *string `yaml:"models_path,omitempty"`         // Absent uses the compatible models path; empty disables listing.
 	ModelsResponseKey string  `yaml:"models_response_key,omitempty"` // JSON key containing model list (default: "data")
 	ModelURLFmt       string  `yaml:"model_url,omitempty"`           // URL template for model pages (e.g., "https://ollama.com/library/%s")
 }

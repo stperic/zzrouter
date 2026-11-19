@@ -14,7 +14,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -24,10 +23,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/inferencelog"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
@@ -54,9 +55,7 @@ func reservationIDFromCtx(c *gin.Context) uint64 {
 type accessRig struct {
 	access   *AccessControl
 	enforcer *quota.Enforcer
-	keyPath  string
-	keys     *keys.FileKeyStore
-	teams    *teams.FileTeamStore
+	store    access.Store
 	groups   *stubGroupReader
 }
 
@@ -66,7 +65,7 @@ func (r *accessRig) seedKey(t *testing.T, id, teamID, teamRole string, vk *keys.
 	t.Helper()
 	vk.TeamID = teamID
 	vk.TeamRole = teamRole
-	return seedFileTestKey(t, r.keys, r.keyPath, id, *vk)
+	return seedTestKey(t, r.store, id, *vk)
 }
 
 // seedTeam creates a shared team in the store.
@@ -75,7 +74,15 @@ func (r *accessRig) seedTeam(t *testing.T, id string, team *teams.Team) {
 	if team.Kind == "" {
 		team.Kind = teams.KindShared
 	}
-	require.NoError(t, r.teams.Create(id, team))
+	_, err := r.store.CreateTeam(t.Context(), id, *team, audit.Event{})
+	require.NoError(t, err)
+}
+
+// updateTeam applies a policy change directly through the store.
+func (r *accessRig) updateTeam(t *testing.T, apply func(*teams.Team)) {
+	t.Helper()
+	_, err := r.store.UpdateTeam(t.Context(), "team", func(team *teams.Team) error { apply(team); return nil }, audit.Event{})
+	require.NoError(t, err)
 }
 
 // makeRequest builds a gin.Context + ResponseRecorder for a synthetic HTTP
@@ -128,10 +135,7 @@ func newAccessRig(t *testing.T) *accessRig {
 func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 	t.Helper()
 
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "keys.yaml")
-	keyStore := keys.NewFileKeyStore(keyPath)
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
+	store := newTestAccessStore(t)
 	groups := newStubGroupReader()
 
 	enforcer := quota.NewEnforcer(
@@ -140,15 +144,13 @@ func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 		quota.NewSpendTracker(""),
 	)
 
-	gw := NewAccessControl(StaticKeySet{}, keyStore, teamStore, groups, enforcer, nil, hooks)
+	gw := NewAccessControl(StaticKeySet{}, store, groups, enforcer, nil, hooks)
 	t.Cleanup(func() { gw.Stop(context.Background()) })
 
 	return &accessRig{
 		access:   gw,
 		enforcer: enforcer,
-		keys:     keyStore,
-		keyPath:  keyPath,
-		teams:    teamStore,
+		store:    store,
 		groups:   groups,
 	}
 }
@@ -187,6 +189,30 @@ func TestAccessIntegration_FullAuthAndEnforce_HappyPath(t *testing.T) {
 	if release, ok := val.(func()); ok {
 		release()
 	}
+}
+
+// A rotated or deleted key stops authenticating on the next request, even with
+// a warm cache and no service in the path: the store's commit clears the cache.
+func TestAccessIntegration_RawKeyCacheFollowsRotationAndDeletion(t *testing.T) {
+	t.Parallel()
+	rig := newAccessRig(t)
+	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
+	oldRaw := rig.seedKey(t, "alice", "eng", string(teams.RoleMember), &keys.VirtualKey{Name: "Alice", Role: "user"})
+	authenticates := func(raw string) bool {
+		c, _ := rig.makeRequest(raw)
+		return rig.access.Authenticate(c, RoleUser)
+	}
+	require.True(t, authenticates(oldRaw))
+	require.True(t, authenticates(oldRaw), "the second request is served from the cache")
+
+	_, newRaw, err := rig.store.RotateKey(t.Context(), "alice", audit.Event{})
+	require.NoError(t, err)
+	assert.False(t, authenticates(oldRaw), "the replaced key is refused at once")
+	require.True(t, authenticates(newRaw))
+	require.True(t, authenticates(newRaw))
+
+	require.NoError(t, rig.store.DeleteKey(t.Context(), "alice", audit.Event{}))
+	assert.False(t, authenticates(newRaw), "a deleted key is refused at once")
 }
 
 // ============================================================================

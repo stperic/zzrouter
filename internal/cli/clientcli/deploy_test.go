@@ -1,8 +1,17 @@
 package clientcli
 
 import (
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
+	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,6 +31,7 @@ func TestNewDeployCmd(t *testing.T) {
 	appFlag := flags.Lookup("provider")
 	require.NotNil(t, appFlag, "expected 'app' flag to exist")
 	assert.Equal(t, "a", appFlag.Shorthand)
+	require.NotNil(t, flags.Lookup("registry"))
 
 	modelFlag := flags.Lookup("model")
 	require.NotNil(t, modelFlag, "expected 'model' flag to exist")
@@ -49,6 +59,75 @@ func TestNewDeployCmd(t *testing.T) {
 
 	assert.Contains(t, subcommandNames, "status", "should have 'status' subcommand")
 	assert.Contains(t, subcommandNames, "stop", "should have 'stop' subcommand")
+}
+
+func TestDeployProviderAndRegistryRemainIndependent(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, provider, registry string
+		all                             bool
+	}{
+		{"explicit-both", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "llamacpp", "hf", false},
+		{"automatic-source", "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "llamacpp", "", false},
+		{"registry-only", "openai/gpt-oss:20b", "", "ollama", false},
+		{"notation-preserved", "hf/org/model#Q4_K_M@worker", "llamacpp", "", false},
+		{"all-nodes-assessed", "org/model", "llamacpp", "huggingface", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+			requests := make(chan pkgClient.DeployRequest, 1)
+			var assessments atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case apipath.Health:
+				case apipath.NodesCompatible:
+					assessments.Add(1)
+					require.Equal(t, tc.registry, r.URL.Query().Get("registry"))
+					require.Equal(t, tc.provider, r.URL.Query().Get("provider"))
+					_, _ = w.Write([]byte(`{"data":[{"name":"worker"}]}`))
+				case apipath.Deployments:
+					require.Equal(t, http.MethodPost, r.Method)
+					var sent pkgClient.DeployRequest
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&sent))
+					requests <- sent
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = w.Write([]byte(`{"data":{"id":"deploy-test","model":"selected-model","nodes":[{"node":"worker","status":"completed"}]}}`))
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			host, portText, err := net.SplitHostPort(upstream.Listener.Addr().String())
+			require.NoError(t, err)
+			port, err := strconv.Atoi(portText)
+			require.NoError(t, err)
+			require.NoError(t, config.NewConfigManager("zzrouter").SaveClientConfig(&config.ClientConfig{Node: config.NodeConnection{Address: host, Port: port}}))
+			args := []string{tc.model, "--file", "weights.gguf"}
+			if tc.provider != "" {
+				args = append(args, "--provider", tc.provider)
+			}
+			if tc.registry != "" {
+				args = append(args, "--registry", tc.registry)
+			}
+			if tc.all {
+				args = append(args, "--to-all", "--force")
+			} else {
+				args = append(args, "--node", "worker")
+			}
+			command := NewDeployCmd()
+			command.SetArgs(args)
+			require.NoError(t, command.ExecuteContext(t.Context()))
+			require.Len(t, requests, 1)
+			sent := <-requests
+			require.Equal(t, tc.all, assessments.Load() == 1)
+			require.Equal(t, tc.model, sent.Model)
+			require.Equal(t, tc.provider, sent.Provider)
+			require.Equal(t, tc.registry, sent.Registry)
+			require.Equal(t, "weights.gguf", sent.File)
+			require.Equal(t, []string{"worker"}, sent.Nodes)
+		})
+	}
 }
 
 func TestValidateNotSubcommand(t *testing.T) {

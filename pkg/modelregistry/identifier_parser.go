@@ -24,7 +24,7 @@ type Identifier struct {
 // Zero value is valid — behaves as a best-effort parse with no config lookup.
 type ParseOpts struct {
 	Config   *pkgConfig.AppsConfig // dynamic provider/registry lookup
-	Registry string                // registry hint; cloud → opaque parse
+	Registry string                // explicit registry; cloud IDs remain opaque, local namespaces stay literal
 }
 
 // Parse converts a model identifier string into structured components.
@@ -59,7 +59,7 @@ func Parse(input string, opts ParseOpts) (*Identifier, error) {
 	}
 
 	// Cloud auto-detect: first path component matches a known cloud registry.
-	if opts.Config != nil {
+	if opts.Registry == "" && opts.Config != nil {
 		if slash := strings.Index(input, "/"); slash > 0 {
 			first := input[:slash]
 			if isCloudRegistry(opts.Config, first) {
@@ -103,7 +103,7 @@ func Parse(input string, opts ParseOpts) (*Identifier, error) {
 	}
 
 	if fullIdentifier != "" {
-		if err := parseFullIdentifierWithConfig(id, fullIdentifier, opts.Config); err != nil {
+		if err := parseFullIdentifierWithConfig(id, fullIdentifier, opts.Config, opts.Registry); err != nil {
 			return nil, err
 		}
 	}
@@ -181,7 +181,7 @@ func isCloudRegistry(config *pkgConfig.AppsConfig, name string) bool {
 // parse is always successful and Identifier carries the result.
 //
 //nolint:unparam // error return is the signature contract, not dead code
-func parseFullIdentifierWithConfig(id *Identifier, fullID string, config *pkgConfig.AppsConfig) error {
+func parseFullIdentifierWithConfig(id *Identifier, fullID string, config *pkgConfig.AppsConfig, registry string) error {
 	// Step 1: Extract tag (everything after last colon that's not part of a port)
 	tagSeparatorIdx := -1
 	lastSlashIdx := strings.LastIndex(fullID, "/")
@@ -200,6 +200,15 @@ func parseFullIdentifierWithConfig(id *Identifier, fullID string, config *pkgCon
 	}
 
 	if pathPart == "" {
+		return nil
+	}
+	if registry != "" {
+		id.Repository = constants.NormalizeRegistry(registry)
+		prefix, rest, found := strings.Cut(pathPart, "/")
+		if found && constants.NormalizeRegistry(prefix) == id.Repository {
+			pathPart = rest
+		}
+		id.ModelName = pathPart
 		return nil
 	}
 

@@ -70,7 +70,6 @@ func (s *Server) registerOpenAIRoutes() int {
 
 	openai := s.engine.Group("/v1",
 		httperr.AttachResponder(openaiResponder),
-		RequestIDMiddleware(),
 	)
 	// Only the console's discovery and chat endpoints accept browser authority.
 	chat := openai.Group("", s.auth.optionalAuthMiddleware(true))
@@ -124,7 +123,6 @@ func (s *Server) registerOpenAIRoutes() int {
 	// routes do not share closure state with the core inference block above.
 	openaiStateful := s.engine.Group("/v1",
 		httperr.AttachResponder(openaiResponder),
-		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 	)
 	statefulCount := s.registerOpenAIStatefulRoutes(openaiStateful)
@@ -133,7 +131,6 @@ func (s *Server) registerOpenAIRoutes() int {
 	// endpoint.
 	v1root := s.engine.Group("/v1",
 		httperr.AttachResponder(openaiResponder),
-		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 	)
 	{

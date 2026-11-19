@@ -206,6 +206,16 @@ func respondError(c *gin.Context, err error, unnamed int) {
 	respondSurfaceError(c, failureWire(err, unnamed))
 }
 
+// respondKnownFailure answers err as the failure table names it and reports
+// whether the table named it.
+func respondKnownFailure(c *gin.Context, err error) bool {
+	wire, ok := knownFailure(err)
+	if ok {
+		respondSurfaceError(c, wire)
+	}
+	return ok
+}
+
 // failureWire is err as the failure table names it, or as an unnamed
 // failure with the given status. A memory refusal also names the budget
 // parameter that cannot fit.

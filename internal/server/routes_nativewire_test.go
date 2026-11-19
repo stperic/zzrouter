@@ -35,7 +35,7 @@ import (
 // typically pass httptest.Server URLs here so requests are captured.
 func createNativeWireTestNode(t *testing.T, backends map[string]string) *Server {
 	t.Helper()
-	// NewServerWithOptions opens keys.yaml and teams.yaml under the config
+	// NewServerWithOptions opens the access store under the config
 	// dir; without a test home that is the developer's real one.
 	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 

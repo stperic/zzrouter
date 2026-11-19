@@ -116,9 +116,6 @@ func (c *JobsController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.DELETE("/jobs/:id", c.CancelJob)
 }
 
-// The controller is stateless; safe to re-instantiate on router
-// rebuilds during role transitions (Worker → Coord promote and back).
-
 // RegisterInternalRoutes mounts cluster-internal routes. Mounted on
 // every node that serves /internal/* (coord + worker).
 func (c *JobsController) RegisterInternalRoutes(router *gin.RouterGroup) {

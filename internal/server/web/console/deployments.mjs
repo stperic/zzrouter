@@ -8,7 +8,7 @@ const path = id => `/deployments/${encodeURIComponent(id)}`;
 
 export function deploymentSummary(record) {
   return el('div', {}, el('h2', {}, record.model), actions(badge(record.status), badge(record.registry || 'Registry not reported')),
-    facts([['Deployment', record.id], ['Created', date(record.created_at)], ['Variant', record.file || 'Registry selection'], ['Progress', `${record.nodes_complete ?? 0}/${record.nodes_total ?? record.nodes?.length ?? 0} nodes complete`]]),
+    facts([['Deployment', record.id], ['Created', date(record.created_at, 'Not reported')], ['Variant', record.file || 'Registry selection'], ['Progress', `${record.nodes_complete ?? 0}/${record.nodes_total ?? record.nodes?.length ?? 0} nodes complete`]]),
     record.message ? text(record.message, 'muted') : null);
 }
 
@@ -82,11 +82,11 @@ export async function deployments(p, selected) {
   const render = () => {
     const query = search.value.trim().toLowerCase();
     const rows = records.filter(row => `${row.model} ${row.registry} ${row.status} ${(row.nodes || []).map(node => node.node).join(' ')}`.toLowerCase().includes(query));
-    results.replaceChildren(el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Model', 'Status', 'Nodes', 'Updated'].map(value => el('th', {}, value)))),
+    results.replaceChildren(rows.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Model', 'Status', 'Nodes', 'Updated'].map(value => el('th', { scope: 'col' }, value)))),
       el('tbody', {}, rows.map(row => selectableRow(row.id, selected, () => p.go('workloads', row.id, 'downloads'),
         el('td', {}, leaveButton(row.model, () => p.go('workloads', row.id, 'downloads'), p.api, 'link entity-title'), text(row.registry || '', 'muted')),
-        el('td', {}, row.status), el('td', {}, `${row.nodes_complete || 0}/${row.nodes_total || row.nodes?.length || 0}`), el('td', {}, date(row.updated_at))))))),
-      rows.length ? text(`${rows.length} downloads`, 'muted') : message('No downloads to show. Find a model in Discover to add one.'));
+        el('td', {}, row.status), el('td', {}, `${row.nodes_complete || 0}/${row.nodes_total || row.nodes?.length || 0}`), el('td', {}, date(row.updated_at, 'Not reported'))))))) : null,
+      rows.length ? text(`${rows.length} ${rows.length === 1 ? 'download' : 'downloads'}`, 'muted') : message(query ? 'No downloads match this search.' : 'No downloads yet. Find a model in Discover to add one.'));
   };
   const read = async () => {
     try { const next = await p.api.list('/deployments', { signal: p.scope.signal }); if (p.current()) { records = next; render(); feedback.replaceChildren(); } }

@@ -151,6 +151,20 @@ func (c *InstallCoordinator) ExecuteResolvedAsync(ctx context.Context, provider 
 }
 
 func (c *InstallCoordinator) runResolvedPlan(h jobs.Handle, provider string, plan *install.Plan, options install.PlanOptions, step int, finalize func() error) (resultErr error) { //nolint:gocyclo,cyclop // Step execution, install finalization and failure recovery share the provider lock.
+	var progress *install.InstallProgress
+	// Finalization may publish while installation is still running. Publish the
+	// settled result after rollback and unlock, before the job becomes terminal.
+	defer func() {
+		if progress == nil {
+			return
+		}
+		if resultErr != nil {
+			progress.SetFailed(resultErr.Error())
+		}
+		if !plan.Disposable && c.catalogChanged != nil {
+			c.catalogChanged()
+		}
+	}()
 	// Register before the locks so failed smoke effects publish after rollback and unlock.
 	defer func() {
 		var failed *runStartFailure
@@ -199,7 +213,7 @@ func (c *InstallCoordinator) runResolvedPlan(h jobs.Handle, provider string, pla
 			return install.ErrStalePlan
 		}
 	}
-	progress := c.progress.Start(plan.Provider, plan.Action, len(plan.Steps))
+	progress = c.progress.Start(plan.Provider, plan.Action, len(plan.Steps))
 	progress.SetJobHandle(progressOnlyHandle{inner: h})
 	if step >= 0 {
 		result := plan.ExecuteStep(ctx, step)
@@ -238,7 +252,6 @@ func (c *InstallCoordinator) runResolvedPlan(h jobs.Handle, provider string, pla
 		}
 		if errors.Is(err, errSmokeRollbackBlocked) {
 			h.Meta(jobs.Meta{"smoke_status": "rollback_blocked", "rollback": jobs.Meta{"completed": false, "blocked": true}})
-			progress.SetFailed(err.Error())
 			return err
 		}
 	}
@@ -253,7 +266,6 @@ func (c *InstallCoordinator) runResolvedPlan(h jobs.Handle, provider string, pla
 			rollbackErr = plan.Rollback()
 		}
 		h.Meta(jobs.Meta{"rollback": jobs.Meta{"previous_runtime": hadPrevious, "completed": rollbackErr == nil, "previous_runtime_preserved": hadPrevious && rollbackErr == nil}})
-		progress.SetFailed(err.Error())
 		if rollbackErr != nil {
 			return errors.Join(err, fmt.Errorf("rollback failed: %w", rollbackErr))
 		}

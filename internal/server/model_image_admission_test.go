@@ -66,7 +66,7 @@ func TestImageAdmissionAllSurfaces(t *testing.T) {
 		{"ollama generate", "/api/generate", `{"model":"same-model","prompt":"describe","images":["AAA"]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s.inference.affinity.Record("resp_pinned", "ollama")
+			recordResponseForTest(t, s, "resp_pinned", "ollama", "same-model", adminResponseOwner())
 			for _, stream := range []bool{false, true} {
 				body := tc.body
 				if stream {
@@ -88,7 +88,8 @@ func TestImageAdmissionAllSurfaces(t *testing.T) {
 		w := postAsAdmin(t, s, path, `{"model":"image-group","images":["AAA"],"messages":[{"role":"user","content":"describe"}]}`)
 		require.Equal(t, 400, w.Code, w.Body.String())
 	}
-	w := postAsAdmin(t, s, "/v1/responses", `{"model":"image-group","previous_response_id":"resp_pinned","input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`)
+	recordResponseForTest(t, s, "resp_group", "ollama", "image-group", adminResponseOwner())
+	w := postAsAdmin(t, s, "/v1/responses", `{"model":"image-group","previous_response_id":"resp_group","input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`)
 	require.Equal(t, 400, w.Code, w.Body.String())
 	assert.Zero(t, calls.Load(), "known ineligible requests never reach a backend")
 }
@@ -267,15 +268,6 @@ func TestResponsesTranslatedUnsupportedImageBeforeAndAfterStream(t *testing.T) {
 	assert.Contains(t, raw.Body.String(), `"type":"invalid_request_error"`)
 	assert.NotContains(t, raw.Body.String(), "response.completed")
 	assert.NotImplements(t, (*httperr.InBandStreamer)(nil), newOllamaResponder(), "Ollama keeps pre-stream failures as HTTP errors")
-}
-
-func TestResponseAffinityTargetAmbiguityRemainsUnknown(t *testing.T) {
-	s := featureRoutingServer(t)
-	s.model.Groups = modelgroup.NewGroupStore()
-	require.NoError(t, s.model.Groups.Set("group", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "a", App: "text", Model: "same-model"}, {Name: "b", App: "text", Model: "other-model"}}}))
-	target := s.responseAffinityTarget("group", "text")
-	assert.Equal(t, "group", target.ModelName)
-	assert.True(t, s.narrowToVision(context.Background(), target))
 }
 
 // imageAdmissionCatalogPeer populates replica identities through the cache's

@@ -163,6 +163,7 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model proc
 		}
 		runtimeCopy := *svc.Runtime
 		runtimeCopy.Execution = *feature.Execution
+		runtimeCopy.Listener = feature.Listener
 		runtimeCopy.ExcludeParameters = feature.ExcludeParameters
 		if feature.HealthCheck != nil {
 			runtimeCopy.HealthCheck = *feature.HealthCheck

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +239,32 @@ func TestDiscoveryProviderHTTPConfigurationStates(t *testing.T) {
 	assert.Zero(t, calls.Load(), "provider discovery must not probe catalog endpoints")
 }
 
+func TestDiscoveryProviderEnabledOnlyOnWorker(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			cfg := &config.AppsConfig{}
+			require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{
+				Mode: "external", Protocol: config.ProtocolOllama, Enabled: new(false),
+				Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+				Runtime:      &config.AppRuntimeConfig{Endpoint: "http://127.0.0.1:11434"},
+				Nodes:        map[string]config.NodeSpec{"worker": {Enabled: &enabled}},
+				Search:       &config.AppSearchConfig{SortOptions: []string{"downloads"}},
+			}))
+			client := discoveryHTTPClient(t, NewModelSearchService(func() *config.AppsConfig { return cfg }, nil))
+			providers, err := client.GetSearchProviders(t.Context())
+			require.NoError(t, err)
+			found := false
+			for _, provider := range providers {
+				if provider.Name == "ollama" {
+					found = true
+					require.True(t, provider.Enabled)
+				}
+			}
+			require.Equal(t, enabled, found)
+		})
+	}
+}
+
 func TestDiscoverySearchCachePartitionsCredentialRevision(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -310,7 +337,7 @@ func TestVariantControllerAndClientShareActualEnvelope(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer fixture", r.Header.Get("Authorization"))
 		assert.Equal(t, "true", r.URL.Query().Get("blobs"))
-		_, _ = w.Write([]byte(`{"siblings":[{"rfilename":"model-Q4_K_M-00001-of-00002.gguf","size":10},{"rfilename":"model-Q4_K_M-00002-of-00002.gguf","size":20},{"rfilename":"mmproj.gguf","size":6}]}`))
+		_, _ = w.Write([]byte(`{"gguf":{"architecture":"qwen2"},"siblings":[{"rfilename":"model-Q4_K_M-00001-of-00002.gguf","size":10},{"rfilename":"model-Q4_K_M-00002-of-00002.gguf","size":20},{"rfilename":"mmproj.gguf","size":6}]}`))
 	}))
 	defer upstream.Close()
 	cfg := discoveryConfig(t, upstream.URL, "fixture")
@@ -326,6 +353,7 @@ func TestVariantControllerAndClientShareActualEnvelope(t *testing.T) {
 	variants, err := client.GetHuggingFaceVariants(context.Background(), "org/model", "llamacpp")
 	require.NoError(t, err)
 	require.Len(t, variants.Variants, 1)
+	assert.Equal(t, "qwen2", variants.Architecture)
 	assert.Equal(t, 2, variants.Variants[0].Shards)
 	assert.Equal(t, int64(30), variants.Variants[0].SizeBytes)
 	require.Len(t, variants.Features, 1)
@@ -338,6 +366,18 @@ func TestOllamaTagsRouteIsAuthenticatedAndValidatesIdentifier(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, unauth.Code)
 	invalid := makeAuthRequest(t, server, http.MethodGet, apipath.RegistriesOllamaTags+"?id=../other", TestAdminKey, nil)
 	assert.Equal(t, http.StatusBadRequest, invalid.Code)
+}
+
+func TestDiscoveryOllamaCapabilitiesDoNotReplaceVersionCount(t *testing.T) {
+	service := &ModelSearchService{}
+	got := service.discoveryResult("ollama", map[string]any{
+		"name": "ripple-preview", "tags": float64(5), "capabilities": []any{"tools", "thinking"}, "parameter_sizes": []any{"65b"},
+		"modified_at": "1 week ago", "updated_at": "2026-11-09T23:18:00Z",
+	})
+	assert.Equal(t, []string{"tools", "thinking"}, got.Discovery.Tags)
+	assert.Equal(t, 5, got.Discovery.VariantCount)
+	assert.Equal(t, []string{"65b"}, got.Discovery.ParameterSizes)
+	assert.Equal(t, "2026-11-09T23:18:00Z", got.Discovery.ModifiedAt)
 }
 
 func TestDiscoveryUnknownStorageDoesNotUseParameterCount(t *testing.T) {

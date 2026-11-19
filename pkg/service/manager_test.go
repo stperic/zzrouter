@@ -5,20 +5,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestWriteEnvFile(t *testing.T) {
+func TestInstallationCredentialsRestrictPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 
-	vars := map[string]string{
-		"KEY_A": "value_a",
-		"KEY_B": "value_b",
-	}
-
-	err := writeEnvFile(path, vars)
+	require.NoError(t, os.WriteFile(path, []byte("KEY_A=value_a\nKEY_B=value_b\n"), 0600))
+	_, err := config.EnsureInstallationCredentials(t.Context(), dir, config.InstallationCredentialOptions{})
 	require.NoError(t, err)
 
 	content, err := os.ReadFile(path)

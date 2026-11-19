@@ -85,6 +85,7 @@ Quick Start:
 	)
 	addGroup(root, groupUtility,
 		NewConsoleCmd(),
+		NewAccessCmd(),
 		NewQuickstartCmd(),
 		NewTUICmd(),
 		NewLogsCmd(),

@@ -14,7 +14,7 @@ func (s *Server) registerMCPServer(router *gin.RouterGroup) {
 
 func (s *Server) registerInferenceMCPServer() {
 	handler := mcpserver.NewInference(mcpserver.Config{ResourcePath: inferenceMCPPath, Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed})
-	router := s.engine.Group("/inference", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.AuthMiddleware(RoleUser))
+	router := s.engine.Group("/inference", s.auth.AuthMiddleware(RoleUser))
 	s.mountMCP(router, "/mcp", handler)
 }
 

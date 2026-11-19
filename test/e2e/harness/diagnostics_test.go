@@ -68,8 +68,7 @@ func TestDiagnosticsDumpFull(t *testing.T) {
 		JobsSSE: map[string][]byte{
 			"job-abc": []byte("event: done\ndata: {}\n\n"),
 		},
-		StateTar: []byte{0x1f, 0x8b, 0x00, 0x00},
-		Extra:    map[string]any{"profile": "local"},
+		Extra: map[string]any{"profile": "local"},
 	})
 	if err != nil {
 		t.Fatalf("Dump: %v", err)
@@ -87,7 +86,6 @@ func TestDiagnosticsDumpFull(t *testing.T) {
 	mustExist(t, filepath.Join(dest, "request.curl"))
 	mustExist(t, filepath.Join(dest, "response.json"))
 	mustExist(t, filepath.Join(dest, "meta.json"))
-	mustExist(t, filepath.Join(dest, "state-snapshot.tar.gz"))
 	mustExist(t, filepath.Join(dest, "jobs", "job-abc.sse"))
 
 	// Curl line is single-line + contains the body verbatim.
@@ -253,4 +251,25 @@ type errFetcher struct{}
 func (errFetcher) Name() string { return "err" }
 func (errFetcher) FetchLogs(context.Context, *harness.Node, time.Time, time.Duration) ([]byte, error) {
 	return nil, errors.New("boom")
+}
+
+// mustProvisionInproc boots a single-coord cluster on the inproc
+// backend. Test helper rather than a fixture so each subtest's
+// lifecycle is explicit.
+func mustProvisionInproc(t *testing.T, ctx context.Context) *harness.Cluster {
+	t.Helper()
+	cfg := &harness.Config{
+		Backend: harness.BackendInproc,
+		Cluster: harness.ClusterTopology{
+			Coordinator: harness.NodeSpec{Name: "coord", Role: harness.RoleCoordinator},
+		},
+	}
+	cluster, err := harness.New(cfg)
+	if err != nil {
+		t.Fatalf("harness.New: %v", err)
+	}
+	if err := cluster.Provision(ctx); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	return cluster
 }

@@ -1,10 +1,13 @@
-// Package keys provides virtual API key management for the gateway API.
+// Package keys defines virtual API keys and hashing without storage.
 // Virtual keys extend the static 3-key model with named, scoped keys that
 // belong to a team (the team governs model access and shared quotas).
 package keys
 
 import (
 	"errors"
+	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -16,7 +19,18 @@ var (
 	ErrKeyNotFound = errors.New("key not found")
 	// ErrKeyExists is returned when creating a key with an ID that already exists.
 	ErrKeyExists = errors.New("key already exists")
+	// ErrInvalid marks a key record that breaks a state invariant.
+	ErrInvalid = errors.New("invalid key record")
 )
+
+// The roles a key can hold; control.UserRole names the same values.
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
+// ValidRole reports whether role is one a key can hold.
+func ValidRole(role string) bool { return role == RoleAdmin || role == RoleUser }
 
 // VirtualKey represents a named API key with access controls and metadata.
 //
@@ -26,38 +40,37 @@ var (
 // its sole owner.
 type VirtualKey struct {
 	// Identity
-	UUID        string `yaml:"uuid,omitempty"`
-	ID          string `yaml:"-"` // from YAML map key
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"` // free-form annotation, e.g. "agent: research-bot"
+	UUID        string
+	ID          string
+	Name        string
+	Description string // free-form annotation, e.g. "agent: research-bot"
 
 	// Credentials
-	HashedKey string `yaml:"hashed_key,omitempty"`
-	KeyEnv    string `yaml:"key_env,omitempty"` // env var for raw key (dev convenience)
+	HashedKey string
 
 	// Team binding — immutable after creation.
-	TeamID   string `yaml:"team_id"`
-	TeamRole string `yaml:"team_role"` // "owner" | "member"
+	TeamID   string
+	TeamRole string // "owner" | "member"
 
 	// Access control
-	Role        string     `yaml:"role,omitempty"` // "user" or "admin"
-	Suspended   bool       `yaml:"suspended,omitempty"`
-	SuspendedAt *time.Time `yaml:"suspended_at,omitempty"`
-	SuspendedBy string     `yaml:"suspended_by,omitempty"`
+	Role        string // RoleAdmin or RoleUser
+	Suspended   bool
+	SuspendedAt *time.Time
+	SuspendedBy string
 
 	// Quotas (inline embed — provides RPMLimit, TPMLimit, MaxParallelRequests, SpendLimit, ResetPeriod, DefaultMaxTokens)
-	quota.QuotaConfig `yaml:",inline"`
+	quota.QuotaConfig
 
 	// Lifecycle
-	ExpiresAt  *time.Time `yaml:"expires_at,omitempty"`
-	CreatedAt  time.Time  `yaml:"created_at,omitempty"`
-	UpdatedAt  time.Time  `yaml:"updated_at,omitempty"`
-	LastSeenAt time.Time  `yaml:"last_seen_at,omitempty"` // hot in-memory, persisted on save cycle
-	CreatedBy  string     `yaml:"created_by,omitempty"`
-	UpdatedBy  string     `yaml:"updated_by,omitempty"`
+	ExpiresAt  *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastSeenAt time.Time // nothing sets or persists it yet
+	CreatedBy  string
+	UpdatedBy  string
 
 	// Metadata
-	Metadata map[string]string `yaml:"metadata,omitempty"`
+	Metadata map[string]string
 }
 
 // IsExpired returns true if the key has passed its expiration time.
@@ -68,26 +81,46 @@ func (k *VirtualKey) IsExpired() bool {
 	return utils.Now().After(*k.ExpiresAt)
 }
 
-// KeyStore provides CRUD operations for virtual keys.
-// Read methods return independent snapshots; changes require Update. Create and
-// Update may fill server-owned fields on their input but retain a separate copy.
-type KeyStore interface {
-	Get(id string) *VirtualKey
-	List() map[string]*VirtualKey
-	ListByTeam(teamID string) map[string]*VirtualKey
-	ValidateRawKey(rawKey string) (string, *VirtualKey)
-	Create(id string, key *VirtualKey) (rawKey string, err error)
-	Update(id string, key *VirtualKey) error
-	Delete(id string) error
-	RotateKey(id string) (rawKey string, err error)
-	Reload() error
-	Save() error
+// Validate holds the invariants every stored key keeps. An ID holds no ':',
+// which names callers that are not app keys ("static:admin", "person:<id>").
+func (k *VirtualKey) Validate() error {
+	switch {
+	case strings.Contains(k.ID, ":"):
+		return fmt.Errorf("%w: id %q must not contain ':'", ErrInvalid, k.ID)
+	case k.Name == "":
+		return fmt.Errorf("%w: missing name", ErrInvalid)
+	case k.HashedKey == "":
+		return fmt.Errorf("%w: missing hashed_key", ErrInvalid)
+	case k.TeamID == "":
+		return fmt.Errorf("%w: missing team_id", ErrInvalid)
+	case k.TeamRole == "":
+		return fmt.Errorf("%w: missing team_role", ErrInvalid)
+	case !ValidRole(k.Role):
+		return fmt.Errorf("%w: invalid role %q (expected %q or %q)", ErrInvalid, k.Role, RoleAdmin, RoleUser)
+	case !utils.InRFC3339Range(k.ExpiresAt, k.SuspendedAt, &k.CreatedAt, &k.UpdatedAt, &k.LastSeenAt):
+		return fmt.Errorf("%w: a time is outside the years 0001 to 9999", ErrInvalid)
+	case !k.ValidSpendLimit():
+		return fmt.Errorf("%w: spend_limit must be a finite number", ErrInvalid)
+	case !utils.ValidUTF8(k.Metadata): // stored as JSON
+		return fmt.Errorf("%w: metadata must be valid UTF-8", ErrInvalid)
+	}
+	return nil
+}
 
-	// OnChange registers a listener that fires after any successful
-	// mutation (Create / Update / Delete / RotateKey / Reload). No
-	// arguments — the listener re-queries the store as needed. The
-	// auth cache subscribes here so revoked or rotated keys become
-	// un-authenticatable immediately, rather than lingering until
-	// their TTL window expires.
-	OnChange(fn func())
+// Clone copies reference fields too, so a holder cannot edit another's record.
+func (k *VirtualKey) Clone() *VirtualKey {
+	if k == nil {
+		return nil
+	}
+	c := *k
+	c.Metadata = maps.Clone(k.Metadata)
+	if k.ExpiresAt != nil {
+		expires := *k.ExpiresAt
+		c.ExpiresAt = &expires
+	}
+	if k.SuspendedAt != nil {
+		suspended := *k.SuspendedAt
+		c.SuspendedAt = &suspended
+	}
+	return &c
 }

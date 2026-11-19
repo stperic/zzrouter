@@ -6,12 +6,13 @@ import "fmt"
 // only model search metadata (today: huggingface). It carries an endpoint
 // and optional catalog authentication; it has no runtime lifecycle.
 type SearchRegistry struct {
-	Connection  *ConnectionConfig `yaml:"connection,omitempty" json:"connection,omitempty"`
-	Name        string            `yaml:"-" json:"name"`
-	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
-	Enabled     *bool             `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	Search      *AppSearchConfig  `yaml:"search,omitempty" json:"search,omitempty"`
-	Runtime     RegistryRuntime   `yaml:"runtime" json:"runtime"`
+	Operations  map[string]OperationDefinition `yaml:"operations,omitempty" json:"operations,omitempty"`
+	Connection  *ConnectionConfig              `yaml:"connection,omitempty" json:"connection,omitempty"`
+	Name        string                         `yaml:"-" json:"name"`
+	Description string                         `yaml:"description,omitempty" json:"description,omitempty"`
+	Enabled     *bool                          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Search      *AppSearchConfig               `yaml:"search,omitempty" json:"search,omitempty"`
+	Runtime     RegistryRuntime                `yaml:"runtime" json:"runtime"`
 }
 
 // RegistryRuntime is the smallest of the four: just where to reach the
@@ -33,6 +34,9 @@ func (p *SearchRegistry) IsAutoDiscovery() bool { return p.Enabled == nil }
 
 // Validate enforces the only thing a registry needs: a reachable endpoint.
 func (p *SearchRegistry) Validate() error {
+	if len(p.Operations) != 0 {
+		return fmt.Errorf("provider %q: run operations require an on-demand owner", p.Name)
+	}
 	if err := p.Connection.Validate(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}

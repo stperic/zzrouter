@@ -72,7 +72,7 @@ func TestConnectionCommittedWithoutStatusMatchesSchema(t *testing.T) {
 }
 
 func TestBrowserIdentityAbsentOptionalObjectsMatchSchema(t *testing.T) {
-	data, err := json.Marshal(browserIdentity{ID: "admin", Name: "Admin", Role: RoleAdmin})
+	data, err := json.Marshal(browserIdentity{Kind: "key", ID: "admin", Name: "Admin", Role: RoleAdmin})
 	require.NoError(t, err)
 	var value map[string]any
 	require.NoError(t, json.Unmarshal(data, &value))

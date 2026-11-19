@@ -12,29 +12,30 @@ import (
 const apiDiscoveryPrefix = "/zzrouter/v1"
 
 // apiDiscoveryHidden — routes kept out of the agent-facing discovery
-// doc: the raw route catalog (tooling, not a workflow) and the e2e
-// harness state gates. Other /server/* routes list normally.
+// doc: the raw route catalog (tooling, not a workflow).
 var apiDiscoveryHidden = map[string]struct{}{
-	apiDiscoveryPrefix + "/server/routes":  {},
-	apiDiscoveryPrefix + "/state/snapshot": {},
-	apiDiscoveryPrefix + "/state/restore":  {},
+	apiDiscoveryPrefix + "/server/routes": {},
 }
 
 type apiDiscoveryResponse struct {
-	Runs                string              `json:"runs"`
-	MCP                 string              `json:"mcp,omitempty"`
-	InferenceMCP        string              `json:"inference_mcp,omitempty"`
-	APIVersion          string              `json:"api_version"`
-	Authentication      apiAuthentication   `json:"authentication"`
-	Inference           apiInference        `json:"inference"`
-	EndpointGroups      map[string][]string `json:"endpoint_groups"`
-	StreamingGETs       []string            `json:"streaming_gets"`
-	EnabledFeatures     []string            `json:"enabled_features"`
-	Docs                map[string]string   `json:"docs"`
-	ProviderDiagnostics string              `json:"provider_diagnostics,omitempty"`
-	ProviderModels      string              `json:"provider_models"`
-	UpdateControl       string              `json:"update_control"`
-	ChatTemplates       string              `json:"chat_templates"`
+	Operations           string              `json:"operations,omitempty"`
+	Connections          string              `json:"connections,omitempty"`
+	InferenceOperations  string              `json:"inference_operations,omitempty"`
+	InferenceConnections string              `json:"inference_connections,omitempty"`
+	Runs                 string              `json:"runs"`
+	MCP                  string              `json:"mcp,omitempty"`
+	InferenceMCP         string              `json:"inference_mcp,omitempty"`
+	APIVersion           string              `json:"api_version"`
+	Authentication       apiAuthentication   `json:"authentication"`
+	Inference            apiInference        `json:"inference"`
+	EndpointGroups       map[string][]string `json:"endpoint_groups"`
+	StreamingGETs        []string            `json:"streaming_gets"`
+	EnabledFeatures      []string            `json:"enabled_features"`
+	Docs                 map[string]string   `json:"docs"`
+	ProviderDiagnostics  string              `json:"provider_diagnostics,omitempty"`
+	ProviderModels       string              `json:"provider_models"`
+	UpdateControl        string              `json:"update_control"`
+	ChatTemplates        string              `json:"chat_templates"`
 }
 
 // chatTemplatesGuide is how a caller fixes a model whose own chat template
@@ -149,11 +150,15 @@ func registerAPIDiscoveryRoute(router *gin.RouterGroup, s *Server) {
 func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
 	mcpEndpoint := ""
 	inferenceMCPEndpoint := ""
+	operations, connections, inferenceOperations, inferenceConnections := "", "", "", ""
 	if s.config == nil || !s.config.Cluster.IsWorker() {
 		mcpEndpoint = "POST /zzrouter/v1/mcp"
 		inferenceMCPEndpoint = "POST /inference/mcp"
+		operations, connections = "GET /zzrouter/v1/operations", "GET /zzrouter/v1/connections"
+		inferenceOperations, inferenceConnections = "GET /inference/v1/operations", "GET /inference/v1/connections"
 	}
 	return apiDiscoveryResponse{
+		Operations: operations, Connections: connections, InferenceOperations: inferenceOperations, InferenceConnections: inferenceConnections,
 		MCP:                 mcpEndpoint,
 		InferenceMCP:        inferenceMCPEndpoint,
 		APIVersion:          "v1",
@@ -228,7 +233,7 @@ func collectAPIDiscoveryGroups(s *Server) map[string][]string {
 		if _, hidden := apiDiscoveryHidden[r.Path]; hidden {
 			continue
 		}
-		if isRetiredRoute(r.Handler) {
+		if isRetiredRoute(r.Handler) || s.authTier(r.Method, r.Path) == authLocal {
 			continue
 		}
 		group := apiDiscoveryGroupFor(r.Path)
@@ -268,26 +273,6 @@ func uriTemplatePath(path string) string {
 	return strings.Join(segments, "/")
 }
 
-// retiredHandlerSuffix identifies the handler every retired route is
-// mounted on. Matching the handler rather than listing paths means a
-// route retired later drops out of discovery on its own — a hand-kept
-// list is exactly the thing that goes stale here.
-const retiredHandlerSuffix = ".(*ParamsExecutor).RetiredHandler-fm"
-
-// isRetiredRoute reports whether a route only answers 410 Gone. It is
-// the one matcher for that question — discovery, the route catalog and
-// the client method guard all ask it here, so a second spelling cannot
-// drift away from this one.
-//
-// Discovery is what an agent enumerates to decide what it can call, so
-// listing a route that always refuses hands it a guaranteed dead end.
-// /zzrouter/v1/server/routes still reports them, flagged `retired`:
-// that one is a literal dump of what is mounted, and the flag is what
-// keeps the dump from reading as a menu.
-func isRetiredRoute(handler string) bool {
-	return strings.HasSuffix(handler, retiredHandlerSuffix)
-}
-
 // Hyphens collapse to underscores so group keys keep the underscored
 // shape that pre-rewrite consumers (e.g. provider_status, model_groups,
 // inference_logs) parse against.
@@ -308,9 +293,7 @@ func collectEnabledFeatures(s *Server) []string {
 	if s.model.Groups != nil {
 		features = append(features, "model_groups")
 	}
-	if s.keyStore != nil && s.access != nil {
-		features = append(features, "virtual_keys")
-	}
+	features = append(features, "virtual_keys") // only coordinators, which hold the store, serve discovery
 	if s.inference.logStore != nil {
 		features = append(features, "inference_logs")
 	}

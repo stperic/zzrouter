@@ -116,10 +116,8 @@ func (s *Server) resolveClusterEndpoint(selector string) *mesh.Endpoint {
 	if selector == "" || s.cluster.coordinator == nil {
 		return nil
 	}
-	if s.cluster.routerSwap != nil {
-		if router, ok := s.cluster.routerSwap.Current().(*routing.ClusterAwareRouter); ok && router.IsLocalNode(selector) {
-			selector = s.node.Name()
-		}
+	if router, ok := s.cluster.router.(*routing.ClusterAwareRouter); ok && router.IsLocalNode(selector) {
+		selector = s.node.Name()
 	}
 	matches := s.cluster.coordinator.GetState().GetEndpoints().GetEndpointsForRequest(&mesh.Request{TargetNode: selector})
 	if len(matches) == 1 {

@@ -108,8 +108,8 @@ func TestDeployments_ModelSuffixExtraction(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
-	// Model should be the clean name, without the '#file' or '@node' suffix.
-	assert.Equal(t, "suffix-test", resp.Data.Model, "model should be stripped of '#file' and '@node' suffixes")
+	// The '@node' suffix is stripped; on the default Ollama registry '#file' selects the tag.
+	assert.Equal(t, "suffix-test:Q4_K_M", resp.Data.Model, "model should carry the selected Ollama tag, without '#file' or '@node' suffixes")
 	assert.Equal(t, "Q4_K_M", resp.Data.File, "file should be extracted from '#file' suffix")
 	require.Len(t, resp.Data.Nodes, 1, "node should be extracted from '@node' suffix")
 	assert.Equal(t, "test-host", resp.Data.Nodes[0].Node)
@@ -118,7 +118,7 @@ func TestDeployments_ModelSuffixExtraction(t *testing.T) {
 	// internal call body would be built from the stripped model too.
 	tracked := srv.TestDeploymentsService(server).GetTracker().GetDeployment(resp.Data.ID)
 	require.NotNil(t, tracked)
-	assert.Equal(t, "suffix-test", tracked.Model)
+	assert.Equal(t, "suffix-test:Q4_K_M", tracked.Model)
 	assert.Equal(t, "Q4_K_M", tracked.File)
 }
 

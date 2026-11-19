@@ -6,30 +6,26 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
-	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
-	"github.com/stperic/zzrouter/pkg/observability/routing"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// responseIDCapturingWriter tees a prefix of the outgoing body into an
-// internal buffer so the handler can extract the top-level `id` field
-// after dispatch. Streaming responses and large bodies are bailed out
-// of as soon as they exceed the cap so the buffer cannot grow
-// unboundedly.
+// responseIDCapturingWriter extracts identifiers without retaining response payloads.
+// JSON is scanned incrementally; SSE retains only a bounded event prefix.
 type responseIDCapturingWriter struct {
 	gin.ResponseWriter
 	buf         bytes.Buffer
 	captureCap  int
 	dropCapture bool
+	id          string
+	onID        func(string)
+	jsonID      responseJSONIDScanner
 }
 
 const defaultResponseBodyCaptureCap = 64 * 1024
@@ -42,54 +38,43 @@ func newResponseIDCapturingWriter(w gin.ResponseWriter) *responseIDCapturingWrit
 }
 
 func (w *responseIDCapturingWriter) Write(p []byte) (int, error) {
-	if !w.dropCapture && w.buf.Len() < w.captureCap {
-		remaining := w.captureCap - w.buf.Len()
-		if len(p) <= remaining {
-			w.buf.Write(p)
-		} else {
-			w.buf.Write(p[:remaining])
-			w.dropCapture = true
+	ct := w.Header().Get("Content-Type")
+	if w.id == "" {
+		switch {
+		case strings.HasPrefix(ct, "text/event-stream"):
+			if !w.dropCapture {
+				remaining := w.captureCap - w.buf.Len()
+				if len(p) > remaining {
+					w.buf.Write(p[:remaining])
+					w.dropCapture = true
+				} else {
+					w.buf.Write(p)
+				}
+			}
+			w.id = extractResponseIDFromSSE(w.buf.Bytes())
+		case ct == "" || strings.HasPrefix(ct, "application/json"):
+			w.id = w.jsonID.write(p, w.captureCap)
 		}
 	}
-	return w.ResponseWriter.Write(p)
+	n, err := w.ResponseWriter.Write(p)
+	if w.onID != nil {
+		if id := w.ExtractedID(); id != "" {
+			w.onID(id)
+			w.onID = nil
+		}
+	}
+	return n, err
 }
 
-// ExtractedID returns the `id` field of the response.
-//
-// Two payload shapes are supported:
-//
-//   - Non-streaming create: Content-Type is application/json and the
-//     body is a single Response object with a top-level `id`.
-//   - Streaming create: Content-Type is text/event-stream and the
-//     first SSE event is `response.created`, whose JSON payload
-//     carries the new id under `response.id`.
-//
-// Returns "" when the status is non-2xx, the buffer overflowed
-// before an id appeared, or neither shape matches.
+func (w *responseIDCapturingWriter) WriteString(p string) (int, error) { return w.Write([]byte(p)) }
+
+// ExtractedID returns the observed identifier only for a successful response.
 func (w *responseIDCapturingWriter) ExtractedID() string {
 	status := w.ResponseWriter.Status()
 	if status != 0 && (status < 200 || status >= 300) {
 		return ""
 	}
-	if w.dropCapture {
-		return ""
-	}
-
-	ct := w.Header().Get("Content-Type")
-	switch {
-	case strings.HasPrefix(ct, "text/event-stream"):
-		return extractResponseIDFromSSE(w.buf.Bytes())
-	case ct == "" || strings.HasPrefix(ct, "application/json"):
-		var peek struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(w.buf.Bytes(), &peek); err != nil {
-			return ""
-		}
-		return peek.ID
-	default:
-		return ""
-	}
+	return w.id
 }
 
 // extractResponseIDFromSSE scans an SSE buffer for the first
@@ -164,16 +149,12 @@ func (s *Server) providerWireMode(provider, native, compat string) wireEndpointM
 	return wireModeForEndpoints(svc.Capabilities.EffectiveWireEndpoints(), native, compat)
 }
 
-// handleResponses handles POST /v1/responses. When the client carries
-// a previous_response_id and zzrouter remembers the provider that
-// produced it, the chained turn is force-routed there so the backend's
-// stored state chain stays intact. Otherwise model-routing picks the
-// backend, and the response id is captured post-dispatch and recorded
-// in the affinity map for future retrieval calls.
+// handleResponses admits one turn and records the target the dispatcher actually used.
 func (s *Server) handleResponses(c *gin.Context) {
 	var req struct {
 		Model              string `json:"model"`
 		PreviousResponseID string `json:"previous_response_id"`
+		Store              *bool  `json:"store"`
 	}
 	body, ok := readOpenAIBody(c, &req)
 	if !ok {
@@ -184,71 +165,73 @@ func (s *Server) handleResponses(c *gin.Context) {
 		OpenAIInvalidRequest(c, "Model field is required for routing", &param)
 		return
 	}
-
+	owner := responseOwner(c)
+	carryResponseOwner(c, owner)
+	var previous affinity.Origin
 	recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
-	var affinityBackend *backend.Resolved
 	resolved, release, ok := s.enforceAndAttribute(c, req.Model, recorder, func() (*resolver.Resolved, bool) {
-		if req.PreviousResponseID != "" && s.inference.affinity != nil {
-			if providerKey, hit := s.inference.affinity.Lookup(req.PreviousResponseID); hit {
-				targetModel := s.responseAffinityTarget(req.Model, providerKey)
-				for _, name := range []string{req.Model, targetModel.ModelName} {
-					if err := s.validateModel(c.Request.Context(), name); err != nil {
-						writeModelAdmissionError(c.Writer, c.Request, err)
-						return nil, false
-					}
-				}
-				if !s.admitAccessTargets(c, targetModel) {
-					return nil, false
-				}
-				mode := s.targetWireMode(c.Request.Context(), targetModel, "responses", "responses_compat")
-				if resolved, ok := s.backend.Resolve(providerKey); ok && (mode == wireModeNative || mode == wireModeUnknown) {
-					if !s.admitImages(c, req.Model, body, targetModel) {
-						return nil, false
-					}
-					s.quoteTargets(c, targetModel)
-					affinityBackend = resolved
-					return targetModel, true
-				}
+		if req.PreviousResponseID == "" {
+			return s.prepareTarget(c, req.Model, body, "responses", "responses_compat")
+		}
+		var hit bool
+		previous, hit = s.inference.affinity.Lookup(req.PreviousResponseID, owner)
+		if !hit {
+			responseNotFound(c)
+			return nil, false
+		}
+		if previous.ClientModel != req.Model {
+			responseOriginError(c, "response_model_mismatch", "Continue the response with the model that created it")
+			return nil, false
+		}
+		target := responseOriginTarget(previous)
+		for _, name := range []string{req.Model, target.ModelName} {
+			if err := s.validateModel(c.Request.Context(), name); err != nil {
+				writeModelAdmissionError(c.Writer, c.Request, err)
+				return nil, false
 			}
 		}
-		return s.prepareTarget(c, req.Model, body, "responses", "responses_compat")
+		if !s.admitAccessTargets(c, target) || !s.admitImages(c, req.Model, body, target) {
+			return nil, false
+		}
+		if !s.responseOriginAvailable(c, previous) {
+			return nil, false
+		}
+		s.quoteTargets(c, target)
+		return target, true
 	})
 	defer release()
 	if !ok {
 		return
 	}
-	if affinityBackend != nil {
-		body = s.resolvedRequestBody(c, resolved, req.Model, body)
-		stashInferenceContext(c, s.modelIdentity(req.Model), body)
-		target := backend.PassthroughTarget(affinityBackend.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
-		capturer := newResponseIDCapturingWriter(c.Writer)
-		c.Writer = capturer
-		routing.RecordDecision(c.Request.Context(), s.routingStrategy(), routing.OutcomeLocal,
-			string(genai.ProviderName(resolved.Provider)), string(genai.OperationName(c.FullPath())))
-		s.proxy.ForwardToBackend(c.Writer, c.Request, resolved.Provider, target, affinityBackend.Upstream, body)
-		if id := capturer.ExtractedID(); id != "" {
-			s.inference.affinity.Record(id, resolved.Provider)
-		}
-		return
-	}
-
-	mode := s.targetWireMode(c.Request.Context(), resolved, "responses", "responses_compat")
-	if mode == wireModeCompat {
+	if req.PreviousResponseID == "" && s.targetWireMode(c.Request.Context(), resolved, "responses", "responses_compat") == wireModeCompat {
 		s.handleResponsesViaTranslation(c, resolved, req.Model, body)
 		return
 	}
-
+	stored := req.Store == nil || *req.Store || req.PreviousResponseID != ""
+	if stored && owner.ID == "" {
+		responseOriginUnauthorized(c)
+		return
+	}
+	var origin affinity.Origin
+	c.Request = c.Request.WithContext(affinity.WithObserver(c.Request.Context(), func(selected affinity.Origin) {
+		selected.ClientModel, selected.Route = req.Model, resolved.GroupName
+		origin = selected
+	}))
 	stashInferenceContext(c, req.Model, body)
 	capturer := newResponseIDCapturingWriter(c.Writer)
+	if stored {
+		capturer.onID = func(id string) { s.inference.affinity.Record(id, owner, origin) }
+	}
 	c.Writer = capturer
-	s.dispatchTo(c, resolved, req.Model, body, "chat")
-
-	if s.inference.affinity != nil {
-		if id := capturer.ExtractedID(); id != "" {
-			if providerKey, _ := c.Request.Context().Value(CtxKeyProvider).(string); providerKey != "" {
-				s.inference.affinity.Record(id, providerKey)
-			}
-		}
+	if req.PreviousResponseID != "" {
+		origin = previous
+		body = s.resolvedRequestBody(c, resolved, req.Model, body)
+		s.forwardResponseOrigin(c, previous, body)
+	} else {
+		s.dispatchTo(c, resolved, req.Model, body, "chat")
+	}
+	if stored {
+		s.inference.affinity.Record(capturer.ExtractedID(), owner, origin)
 	}
 }
 
@@ -275,11 +258,6 @@ func (s *Server) handleResponsesViaTranslation(c *gin.Context, resolved *resolve
 		s.dispatchTo(c, resolved, model, chatBody, "chat")
 		sw.Close()
 		c.Writer = originalWriter
-		if s.inference.affinity != nil && sw.Status() >= 200 && sw.Status() < 300 {
-			if providerKey, _ := c.Request.Context().Value(CtxKeyProvider).(string); providerKey != "" {
-				s.inference.affinity.Record(sw.respID, providerKey)
-			}
-		}
 		return
 	}
 
@@ -288,86 +266,30 @@ func (s *Server) handleResponsesViaTranslation(c *gin.Context, resolved *resolve
 	s.dispatchTo(c, resolved, model, chatBody, "chat")
 	bw.Finalize()
 	c.Writer = originalWriter
-
-	if s.inference.affinity != nil && bw.respID != "" && bw.status >= 200 && bw.status < 300 {
-		if providerKey, _ := c.Request.Context().Value(CtxKeyProvider).(string); providerKey != "" {
-			s.inference.affinity.Record(bw.respID, providerKey)
-		}
-	}
 }
 
-// routeToResponsesBackend handles GET/DELETE /v1/responses/{id},
-// POST /v1/responses/{id}/cancel, and GET /v1/responses/{id}/input_items.
-// Affinity hits forward to the backend that created the response; on a
-// miss the request falls through to the configured default backend
-// (the pre-affinity behaviour).
+// routeToResponsesBackend requires caller-scoped ownership for every resource operation.
 func (s *Server) routeToResponsesBackend(c *gin.Context) {
-	responseID := c.Param("response_id")
-	if responseID == "" {
-		s.routeToDefaultOpenAIBackend(c)
-		return
-	}
-
-	providerKey, hit := "", false
-	if s.inference.affinity != nil {
-		providerKey, hit = s.inference.affinity.Lookup(responseID)
-	}
+	owner := responseOwner(c)
+	carryResponseOwner(c, owner)
+	origin, hit := s.inference.affinity.Lookup(c.Param("response_id"), owner)
 	if !hit {
-		// No affinity record. Without a stateful default backend the
-		// response demonstrably does not exist on this server — return
-		// 404 instead of routing through the default-backend path
-		// which would emit a misleading 503 "no_default_backend_configured".
-		// /v1/responses POST forces store=false, so retrievable state
-		// is never created locally; an unknown id is genuinely missing.
-		if s.config.OpenAICompat.DefaultBackend == "" {
-			param := "response_id"
-			code := "response_not_found"
-			c.JSON(http.StatusNotFound, utils.NewOpenAIError(
-				"invalid_request_error",
-				fmt.Sprintf("Response with id '%s' not found", responseID),
-				&param,
-				&code,
-			))
-			return
-		}
-		s.routeToDefaultOpenAIBackend(c)
+		responseNotFound(c)
 		return
 	}
-
-	resolved, ok := s.backend.Resolve(providerKey)
+	if !s.access.Authorize(c, origin.ClientModel) || !s.admitAccessTargets(c, responseOriginTarget(origin)) {
+		return
+	}
+	if !s.responseOriginAvailable(c, origin) {
+		return
+	}
+	body, ok := s.readPassthroughBody(c)
 	if !ok {
-		// Recorded provider is no longer registered — fall back to
-		// default rather than failing hard, so operators can rewire
-		// without breaking in-flight clients. Asymmetric with the
-		// no-affinity branch above (which 404s when DefaultBackend is
-		// empty): stale affinity is a soft signal that the response
-		// once existed, so falling through preserves operator agency
-		// during a provider rewire. A no-affinity miss with no default
-		// backend means the id was never recorded at all and we can
-		// be definitive.
-		s.routeToDefaultOpenAIBackend(c)
 		return
 	}
-
-	if !s.admitOpaqueForward(c, "provider passthrough", providerKey, resolved.Cloud) {
-		return
-	}
-	body, bodyOK := s.readPassthroughBody(c)
-	if !bodyOK {
-		return
-	}
-	target := backend.PassthroughTarget(resolved.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
-	s.proxy.ForwardToBackend(c.Writer, c.Request, providerKey, target, resolved.Upstream, body)
-
-	// Optimistic flush on DELETE. ForwardToBackend has already written
-	// to the client, so we cannot branch on the upstream status code
-	// without wrapping the writer. Flushing regardless means that on
-	// an upstream 4xx/5xx the next retrieval misses the affinity map
-	// and is routed to the default backend — acceptable because the
-	// caller will see the upstream's own 404 whether we flushed or
-	// not, and keeping a stale entry would hide real backend state
-	// from future callers.
-	if c.Request.Method == http.MethodDelete {
-		s.inference.affinity.Delete(responseID)
+	stashInferenceContext(c, origin.Model, body)
+	s.forwardResponseOrigin(c, origin, body)
+	if c.Request.Method == http.MethodDelete && c.Writer.Status() >= 200 && c.Writer.Status() < 300 {
+		s.inference.affinity.Delete(c.Param("response_id"), owner)
 	}
 }

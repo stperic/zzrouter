@@ -1,9 +1,8 @@
 package server
 
 import (
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/observability/spend"
 )
 
@@ -22,13 +21,12 @@ import (
 //     Delete/Settle, multiplying the surface area where the gauges
 //     can drift from reality.
 type budgetSnapshotter struct {
-	keys   keys.KeyStore
-	teams  teams.TeamStore
-	access *AccessControl
+	snapshot func() *access.Snapshot
+	access   *AccessControl
 }
 
-func newBudgetSnapshotter(ks keys.KeyStore, ts teams.TeamStore, ac *AccessControl) *budgetSnapshotter {
-	return &budgetSnapshotter{keys: ks, teams: ts, access: ac}
+func newBudgetSnapshotter(snapshot func() *access.Snapshot, ac *AccessControl) *budgetSnapshotter {
+	return &budgetSnapshotter{snapshot: snapshot, access: ac}
 }
 
 // SnapshotKeyBudgets returns one row per virtual key with a
@@ -44,21 +42,18 @@ func newBudgetSnapshotter(ks keys.KeyStore, ts teams.TeamStore, ac *AccessContro
 // would otherwise contend with concurrent settle traffic on every
 // scrape.
 func (s *budgetSnapshotter) SnapshotKeyBudgets() []spend.KeyBudget {
-	if s == nil || s.keys == nil {
-		return nil
-	}
-	all := s.keys.List()
-	if len(all) == 0 {
-		return nil
-	}
+	snap := s.snapshot()
 	// Single mutex acquisition on the spend tracker; keyed by
 	// SpendScope.String() = "key:<id>:". Empty Model segment matches
 	// the unscoped per-key entry RecordSpendByKey writes.
-	spendStates := s.access.GetAllSpendStates()
-	out := make([]spend.KeyBudget, 0, len(all))
-	for _, vk := range all {
-		if vk == nil || vk.SpendLimit <= 0 {
+	var spendStates map[string]*quota.SpendState
+	var out []spend.KeyBudget
+	for _, vk := range snap.Keys() {
+		if vk.SpendLimit <= 0 {
 			continue
+		}
+		if spendStates == nil {
+			spendStates = s.access.GetAllSpendStates()
 		}
 		var (
 			currentSpendUSD float64
@@ -74,10 +69,8 @@ func (s *budgetSnapshotter) SnapshotKeyBudgets() []spend.KeyBudget {
 		if state := spendStates[(quota.SpendScope{Kind: quota.ScopeKey, EntityID: vk.ID}).String()]; state != nil {
 			currentSpendUSD = quota.MicroToUSD(state.SpendMicro + state.ReservedMicro)
 		}
-		if vk.TeamID != "" && s.teams != nil {
-			if team := s.teams.Get(vk.TeamID); team != nil {
-				teamAlias = team.Name
-			}
+		if team := snap.Team(vk.TeamID); team != nil {
+			teamAlias = team.Name
 		}
 		// hashed_api_key is intentionally empty on budget gauges:
 		// the runtime metrics derive it from KeyFingerprint(rawKey) at

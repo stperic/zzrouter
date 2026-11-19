@@ -160,7 +160,16 @@ func parseNodePort(endpoint string, defaultPort int) (string, int) {
 // ctx), then stops subsystems. We always call it, even on the self-exit
 // path, so a server that exits on its own (e.g. listener error) still
 // flushes spend and tears down subsystems instead of leaking goroutines.
-func runServe(hostCfg *pkgConfig.NodeConfig, guard *updateGuard) error {
+// The final error is logged here once: a detached node discards stderr.
+// An update restart is a deliberate exit, so it logs at Info.
+func runServe(hostCfg *pkgConfig.NodeConfig, guard *updateGuard) (err error) {
+	defer func() {
+		if errors.Is(err, errRestartForUpdate) {
+			slog.Info("zzRouter server exited for its service manager to restart it", "reason", update.RestartReason())
+		} else if err != nil {
+			slog.Error("zzRouter server exited", "error", err)
+		}
+	}()
 	utils.LogInfof("Starting zzRouter server v%s...", version.Current.String())
 
 	srv, err := server.NewServerWithOptions(hostCfg)

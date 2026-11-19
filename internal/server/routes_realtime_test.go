@@ -174,16 +174,8 @@ func TestRealtime_UpgradeBinaryFrameRoundTrip(t *testing.T) {
 	assert.Equal(t, payload, got[len("echo:"):], "binary payload must round-trip intact")
 }
 
-// TestRealtime_SessionHelperEndpointsReachRouter verifies the HTTP
-// helper endpoints (/v1/realtime/sessions, /v1/realtime/transcription_sessions,
-// /v1/realtime/client_secrets) resolve via the shared model-field
-// routing path. They exercise routeByModelField, which requires a
-// registered provider for the requested model — we do not have model
-// resolution stood up in this test, so we look for the model_not_found
-// error shape emitted by the resolver as proof the handler was reached
-// (a 404 from gin's NoRoute catch-all would use a different envelope
-// and would not carry the model_not_found code).
-func TestRealtime_SessionHelperEndpointsReachRouter(t *testing.T) {
+// Every helper requires the same configured backend as the WebSocket route.
+func TestRealtime_SessionHelpersRequireConfiguredBackend(t *testing.T) {
 	server := createTestNodeWithDefaults(t)
 
 	for _, path := range []string{
@@ -205,11 +197,9 @@ func TestRealtime_SessionHelperEndpointsReachRouter(t *testing.T) {
 		}
 		require.NoError(t, json.Unmarshal(resp.Body, &env),
 			"%s: unexpected non-JSON response: %s", path, resp.Body)
-		// The route was registered (so the request reached the
-		// model-routing path) iff we see the resolver's error
-		// code rather than gin's catch-all NoRoute shape.
-		assert.Equal(t, "model_not_found", env.Error.Code,
-			"%s: expected model_not_found from the resolver, got: %s", path, resp.Body)
+		assert.Equal(t, http.StatusServiceUnavailable, resp.Code)
+		assert.Equal(t, "feature_disabled", env.Error.Code,
+			"%s: expected configured-backend refusal, got: %s", path, resp.Body)
 	}
 }
 

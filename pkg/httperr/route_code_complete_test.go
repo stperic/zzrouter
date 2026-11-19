@@ -35,5 +35,13 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeProviderSyncPending":           "provider_sync_pending",
 		"CodePinIsClusterWide":              "pin_is_cluster_wide",
 		"CodeProviderConnectionUnavailable": "provider_connection_unavailable",
+		"CodeModelDiscoveryUnavailable":     "model_discovery_unavailable",
+		"CodeAccessStoreFailed":             "access_store_failed",
+		"CodeAccessStoreBusy":               "access_store_busy",
+		"CodeStateBackupNotFound":           "state_backup_not_found",
+		"CodeStateBackupCapacityExceeded":   "state_backup_capacity_exceeded",
+		"CodeStateImageCheckFailed":         "state_image_check_failed",
+		"CodeStateRevisionChanged":          "state_revision_changed",
+		"CodeStateBackupUnprotected":        "state_backup_unprotected",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }

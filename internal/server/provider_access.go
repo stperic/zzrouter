@@ -66,17 +66,42 @@ func (s *Server) catalogAllowed(c *gin.Context, model, provider string, route ..
 	if len(route) > 0 {
 		requested = route[0]
 	}
-	if ac != nil && ac.Key != nil && ac.Key.IsVirtual && !s.access.core.Authorize(ac, requested).Allowed {
+	if ac != nil && ac.Key != nil && ac.Key.TeamBound() && !s.access.core.Authorize(ac, requested).Allowed {
 		return false
 	}
 	return s.access.core.DestinationAllowed(ac, model, provider)
 }
 
-func ollamaAccessError(c *gin.Context) error {
-	if ac := GetAccessContext(c); !control.RoutesRestricted(ac) && control.ProviderAllowed(ac, constants.AppOllama) {
+func ollamaProviderAccessError(c *gin.Context) error {
+	if control.ProviderAllowed(GetAccessContext(c), constants.AppOllama) {
 		return nil
 	}
 	return newProblemError(http.StatusForbidden, "Forbidden", "The team's provider policy does not allow this destination")
+}
+
+func ollamaAccessError(c *gin.Context) error {
+	if err := ollamaProviderAccessError(c); err != nil {
+		return err
+	}
+	if control.RoutesRestricted(GetAccessContext(c)) {
+		return newProblemError(http.StatusForbidden, "Forbidden", "Use an assigned route without a node or provider pin")
+	}
+	return nil
+}
+
+// ollamaMutationAccessError preserves provider policy and the canonical admin role rule.
+func ollamaMutationAccessError(c *gin.Context) error {
+	if err := ollamaAccessError(c); err != nil {
+		return err
+	}
+	ac := GetAccessContext(c)
+	if ac == nil || ac.Key == nil {
+		return newProblemError(http.StatusUnauthorized, "Unauthorized", "Ollama mutations require an administrator credential")
+	}
+	if !control.RoleAllowed(ac.Key.Role, control.RoleAdmin) {
+		return newProblemError(http.StatusForbidden, "Forbidden", "Ollama mutations require admin access")
+	}
+	return nil
 }
 
 func providerSelector(c *gin.Context) func(string) bool {

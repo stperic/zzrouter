@@ -78,7 +78,13 @@ export async function pricing(p, selected = '', mode = '') {
   const listing = el('div', { class: 'entity-list pricing-list' }, message('Loading pricing…'));
   const workspace = el('div', { class: 'entity-workspace' }, listing);
   p.root.append(workspace);
-  let [status, records] = await Promise.all([p.api.data('/pricing/status', { signal: p.scope.signal }), readOverrides(p)]);
+  let status, records;
+  try {
+    [status, records] = await Promise.all([p.api.data('/pricing/status', { signal: p.scope.signal }), readOverrides(p)]);
+  } catch (error) {
+    if (p.current()) listing.replaceChildren(card('Pricing', problem(error), leaveButton('Retry pricing', () => p.reload(), p.api)));
+    return;
+  }
   if (!p.current()) return;
   let tab = mode === 'catalog' ? 'catalog' : 'overrides';
   let drawer;

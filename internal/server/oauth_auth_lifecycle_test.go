@@ -19,7 +19,7 @@ import (
 func TestNativeAuthenticationDoesNotWaitForOAuthTransaction(t *testing.T) {
 	for _, key := range []string{TestAdminKey, "mcpa_" + TestAdminKey} {
 		t.Run(key[:8], func(t *testing.T) {
-			core := control.NewCore(control.StaticKeySet{Admin: key}, nil, nil, nil, nil, nil)
+			core := control.NewCore(control.StaticKeySet{Admin: key}, nil, nil, nil, nil)
 			entered, release := make(chan struct{}), make(chan struct{})
 			authority, err := oauth.New(oauth.Options[control.CredentialReference]{
 				Issuer: "http://127.0.0.1:19090", StatePath: filepath.Join(t.TempDir(), "oauth.json"),

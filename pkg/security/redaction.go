@@ -28,6 +28,8 @@ var SensitivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(X-Admin-API-Key\s*[:=]\s*)([^\s,}"']{8,})`),     // Admin key header
 	regexp.MustCompile(`(?i)(X-User-API-Key\s*[:=]\s*)([^\s,}"']{8,})`),      // User key header
 	regexp.MustCompile(`(?i)(X-Cluster-API-Key\s*[:=]\s*)([^\s,}"']{8,})`),   // Cluster key header
+	// Local proof header (localproof.Header)
+	regexp.MustCompile(`(?i)(X-Zzrouter-Local-Proof\s*[:=]\s*)([^\s,}"']{8,})`),
 }
 
 // RedactedPlaceholder is the string used to replace sensitive data

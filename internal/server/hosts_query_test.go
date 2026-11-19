@@ -27,10 +27,12 @@ func (r *pathRecordingRouter) Route(_ context.Context, req *routing.Request) (*r
 func TestListCompatibleNodesSendsTheModelAsGiven(t *testing.T) {
 	router := &pathRecordingRouter{}
 	svc := NewNodesService(nil, router, nil)
-	_, _ = svc.ListCompatibleNodes(context.Background(), &ListCompatibleNodesRequest{Model: "qwen+agent", Provider: "llama cpp"})
+	_, _ = svc.ListCompatibleNodes(context.Background(), &ListCompatibleNodesRequest{Model: "qwen+agent:9b-mxfp8", Provider: "llama cpp", Format: "mlx", Architecture: "qwen2"})
 
 	u, err := url.Parse(router.path)
 	require.NoError(t, err)
-	assert.Equal(t, "qwen+agent", u.Query().Get("model"))
+	assert.Equal(t, "qwen+agent:9b-mxfp8", u.Query().Get("model"))
 	assert.Equal(t, "llama cpp", u.Query().Get("provider"))
+	assert.Equal(t, "mlx", u.Query().Get("format"))
+	assert.Equal(t, "qwen2", u.Query().Get("architecture"))
 }

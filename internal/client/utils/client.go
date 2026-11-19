@@ -229,14 +229,14 @@ func (c *Client) doWith(
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return readResponse(resp, target, operation)
+	return ReadResponse(resp, target, operation)
 }
 
-// readResponse checks a response's status and reads its body into target:
+// ReadResponse checks a response's status and reads its body into target:
 // raw bytes for a *[]byte, JSON otherwise, nothing for nil. Non-2xx bodies
 // are parsed with parseErrorResponse to produce RFC 9457 / OpenAI-aware
 // error text. The caller owns and closes the body.
-func readResponse(resp *http.Response, target any, operation string) error {
+func ReadResponse(resp *http.Response, target any, operation string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(resp.Body)
 		return &APIError{

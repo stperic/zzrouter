@@ -81,6 +81,23 @@ func (s *ProviderConnectionService) Test(ctx context.Context, name string, value
 	return probeConnection(ctx, s.client, target), nil
 }
 
+// TestStored checks the coordinator's bound endpoint and credential snapshot,
+// including configured providers that have not been enabled yet.
+func (s *ProviderConnectionService) TestStored(ctx context.Context, name string) (*ConnectionTestResult, error) {
+	status, err := s.Status(name)
+	if err != nil {
+		return nil, err
+	}
+	if !status.Configured {
+		return nil, httperr.Error{Status: 400, Code: "provider_connection_not_configured", Message: "configure the coordinator connection before testing it"}
+	}
+	target, ok := s.resolver.Target(name)
+	if !ok || !target.Configured {
+		return nil, connectionResolutionError(backend.ErrConnectionUnavailable)
+	}
+	return probeConnection(ctx, s.client, target), nil
+}
+
 // connectionResolutionError preserves availability refusals if configuration
 // changes between the status preflight and validation of a complete candidate.
 func connectionResolutionError(err error) error {
@@ -95,6 +112,9 @@ func connectionResolutionError(err error) error {
 }
 
 func probeConnection(ctx context.Context, client *http.Client, target *backend.Resolved) *ConnectionTestResult {
+	if target.TestPath == "" {
+		return &ConnectionTestResult{Status: "unknown", Code: "probe_unavailable"}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	req, err := target.NewRequest(ctx, http.MethodGet, target.TestPath, nil)

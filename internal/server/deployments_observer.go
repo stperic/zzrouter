@@ -13,8 +13,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
-// Start enables observer registration after construction or promotion. A new
-// group keeps a concurrent bounded Stop's wait separate from new observers.
+// Start enables observer registration; both subsystem groups call it, and the
+// second call is a no-op. A new group keeps a concurrent bounded Stop's wait
+// separate from new observers.
 func (s *DeploymentsService) Start() {
 	s.observerMu.Lock()
 	defer s.observerMu.Unlock()

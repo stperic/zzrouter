@@ -17,17 +17,56 @@ are supported.
 
 | Endpoint | Credential | Tools |
 |---|---|---|
-| `POST /zzrouter/v1/mcp` | Admin key | Cluster, provider, model, run, job and API management |
-| `POST /inference/mcp` | User key | `zzrouter_inference_models`, `zzrouter_chat`, `zzrouter_embeddings` |
+| `POST /zzrouter/v1/mcp` | Administrator identity via OAuth, or admin API key | Cluster, provider, model, run, job and API management |
+| `POST /inference/mcp` | User identity via OAuth, or user API key | Model discovery, rich JSON chat/embeddings, visible provider operations and connections |
 
 The user tools call `/v1/models`, `/v1/chat/completions` and `/v1/embeddings`.
 The inference API owns model access, quotas, attribution and routing. The user
-endpoint accepts static and virtual user keys; an admin key cannot connect to it.
+endpoint accepts User-role account OAuth and static/virtual user keys; an
+Administrator identity cannot connect to it.
 Tool calls are non-streaming and responses have the same 1 MiB cap as admin MCP.
 Successful user tools return the REST JSON in both text and structured content,
 so clients that read either MCP result form receive the model list or inference result.
-Use the `/v1` API directly for streaming, images, tool calls and other request
-shapes that these three tools do not expose.
+Chat accepts rich message objects, including content parts and tool calls/results.
+Keep `model`, `messages`, `max_tokens`, `temperature` and `idempotency_key` at the
+top level. Put additional supported inference fields in `options`, for example
+`tools`, `tool_choice`, `response_format` or provider-specific JSON options.
+Options cannot replace those fixed fields. Embeddings accept a text string,
+arrays of texts or native token arrays as `input`, with additional fields such
+as `dimensions` and `encoding_format` in `options`. REST owns validation and
+accounting; MCP does not silently remove nested fields.
+
+Use the `/v1` API directly for streaming and other transport-specific features.
+MCP refuses streaming options instead of turning a streaming request into a
+different non-streaming request. The administrator `zz_chat` tool remains a
+bounded smoke test.
+
+## Provider operations and native connections
+
+The fixed administrator family is `zz_operations`, `zz_operation`,
+`zz_operation_execute` and `zz_connections`. The user family uses
+`zzrouter_operations`, `zzrouter_operation`, `zzrouter_operation_execute` and
+`zzrouter_connections`. They dispatch to the same REST handlers under their
+respective audience prefix. New operation definitions do not add tools.
+
+List summaries first, then describe one `operation_id` for its full schemas.
+Execute accepts that ID plus the REST `version`, `definition_revision`, exact
+`target`, `preconditions` and `input`. Nested input is validated against the
+current definition in REST. Generic execute is conservatively annotated as an
+operation with possible effects; a descriptor does not make the tool read-only.
+The first adapter is administrator-only, exact-run, bounded JSON diagnostics.
+The initial user operation catalog is therefore empty. See the
+[provider extensibility specification](provider-extensibility.md) for examples
+and refusal behavior.
+
+Connection discovery is available to both audiences with existing provider,
+model and route visibility. It publishes native and routed URLs for direct use,
+comparison or diagnostics. It does not start engines or change listeners, return
+credentials, add a new access grant or promise reachability from the client's
+machine. A native loopback address belongs to the named node. Native requests
+use the provider's authentication and bypass Router accounting and policy.
+
+## Node health
 
 `zz_nodes` list/detail and `zz_overview` render the same effective node health
 as REST. Three consecutive transport failures open the node breaker (`down`);
@@ -43,11 +82,12 @@ See [node routing errors](agent_error_codes.md#node-reachability).
 ## Connect with browser login
 
 The coordinator also serves a [browser console](web-console.md) at
-`<issuer>/console/`. Administrators can issue named keys and configure provider
-credentials there; user keys see My Access. MCP connections displays the exact
-issuer-derived URLs and lets each identity revoke its own grants. An
-administrator key needs a separate user key for inference MCP. Signing out of
-the console does not revoke existing MCP grants.
+`<issuer>/console/`. Administrators can invite people, define teams, issue named
+app keys and configure provider connections there. People use **My account →
+Your authorizations** to review and revoke their own grants; user API-key sessions
+use **My Access**. Both show issuer-derived connection URLs. An administrator
+identity needs a separate user identity for inference MCP. Signing out of the
+console does not revoke existing MCP grants.
 
 MCP and browser login are enabled by default on coordinators. For a local node
 using the standard port, open `http://localhost:9090/oauth/connections`. No OAuth
@@ -71,9 +111,11 @@ claude mcp login zzrouter
 For user inference, use `/inference/mcp` and a distinct client entry name.
 For other OAuth-capable Streamable HTTP clients, use the endpoint URL and that
 client's login flow.
-The browser asks for the corresponding existing zzRouter key and explicit
-client consent. It remembers the browser identity for up to 12 hours. Each
-MCP client stores and refreshes its own tokens; the key never enters its config.
+The browser offers account sign-in and asks for explicit client consent. Existing
+keys remain available through advanced sign-in. First-time owners use
+`zzrouter console`; other people accept an invitation. The browser remembers the
+identity for up to 12 hours. Each MCP client stores and refreshes its own tokens;
+the account password or original key never enters its configuration.
 Check the callback address shown on consent; client names are supplied by the
 application and are not verified identities.
 Use `/oauth/connections` to review or revoke connections. Sign out there before
@@ -82,8 +124,9 @@ switching between an admin identity and an inference identity.
 The authority supports S256 PKCE, path-specific protected resource discovery,
 issuer identification, Client ID Metadata Documents and public dynamic client
 registration. Access tokens last 15 minutes; connections last at most 30 days.
-Revoking or rotating the underlying key invalidates its connections. OAuth
-tokens are MCP-specific; use API keys for REST, CI and unattended automation.
+Suspending an account or revoking its sessions invalidates its authority.
+Revoking or rotating an underlying app key invalidates that key’s connections.
+OAuth tokens are MCP-specific; use API keys for REST, CI and unattended automation.
 
 Remove previously configured key headers when switching a client to OAuth.
 The existing management header precedence is preserved, so a stale explicit
@@ -166,7 +209,7 @@ the reserved example `https://router.example.com` with your public origin.
 5. **Connect each audience separately.** Use the add/login commands above with
    `https://router.example.com/zzrouter/v1/mcp` for management. Add a distinct
    client entry for `https://router.example.com/inference/mcp` and sign in with a
-   user key. The command forms are documented by
+   user account or user key through advanced sign-in. The command forms are documented by
    [Codex](https://learn.chatgpt.com/docs/developer-commands?surface=cli) and
    [Claude Code](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
    Remove old explicit Router key headers before OAuth login. Check the consent
@@ -175,8 +218,9 @@ the reserved example `https://router.example.com` with your public origin.
 
 6. **Verify continued access and disconnection.** Check that the client refreshes
    its token and can still call that resource. Open `/console/` at the public
-   origin. Administrators use **MCP connections**; user keys use **My Access**.
-   Revoke the connection owned by the signed-in key and verify that access and
+   origin. People use **My account → Your authorizations**; user API-key sessions
+   use **My Access**.
+   Revoke the connection owned by the signed-in identity and verify that access and
    refresh fail. Signing out only ends the browser session.
    Sign out before switching between management and inference identities. See
    [console access and recovery](web-console.md#manage-access) and the

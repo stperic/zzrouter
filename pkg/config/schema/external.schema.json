@@ -7,10 +7,31 @@
   "required": ["protocol", "runtime"],
   "additionalProperties": false,
   "$defs": {
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "host_parameter": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,127}$"
+        },
+        "host_environment": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]{0,127}$"
+        },
+        "default_host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        }
+      }
+    },
     "feature": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "listener": {"$ref": "#/$defs/listener"},
         "requires_parameters": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
         "http": {"type": "object", "additionalProperties": false, "required": ["path", "field"], "properties": {"path": {"type": "string"}, "field": {"type": "string"}}},
         "default": {
@@ -179,6 +200,10 @@
     },
 "failurePattern": {"type":"object","additionalProperties":false,"required":["pattern","class"],"properties":{"pattern":{"type":"string","minLength":1},"isRegex":{"type":"boolean"},"class":{"type":"string"}}}},
 "properties": {
+    "operations": {
+      "type": "object",
+      "maxProperties": 0
+    },
     "schema": {
       "type": "object",
       "additionalProperties": {

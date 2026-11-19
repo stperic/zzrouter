@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,7 +20,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // OllamaService defines the interface for Ollama business operations.
@@ -27,7 +27,7 @@ type OllamaService interface {
 	RouteInference(c *gin.Context, endpointType string) error
 	Deploy(c *gin.Context, name string, insecure bool, stream *bool) error
 	ManagementCommand(c *gin.Context, endpoint string, modelLookup bool) error
-	CheckBlob(ctx context.Context, digest string) (int, error)
+	CheckBlob(c *gin.Context, digest string) error
 	CreateBlob(c *gin.Context, digest string) error
 	Daemon() (*backend.Resolved, error)
 }
@@ -37,10 +37,8 @@ type OllamaServiceImpl struct {
 	ollamaDaemon          func() (*backend.Resolved, error)
 	resolveModel          func(context.Context, resolver.Reference) (*resolver.Resolved, error)
 	proxyToRemoteNode     func(*gin.Context, string, string, []byte)
-	getNodename           func() string
 	isLocalNode           func(string) bool
 	httpStreamingClient   *http.Client
-	getClusterNodeURL     func(string) (string, error)
 	getClusterNodeMTLSURL func(string) (string, error)
 	getMTLSClient         func() *http.Client
 	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error)
@@ -63,10 +61,8 @@ func NewOllamaService(
 	ollamaDaemon func() (*backend.Resolved, error),
 	resolveModel func(context.Context, resolver.Reference) (*resolver.Resolved, error),
 	proxyToRemoteNode func(*gin.Context, string, string, []byte),
-	getNodename func() string,
 	isLocalNode func(string) bool,
 	httpStreamingClient *http.Client,
-	getClusterNodeURL func(string) (string, error),
 	getClusterNodeMTLSURL func(string) (string, error),
 	getMTLSClient func() *http.Client,
 	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error),
@@ -79,10 +75,8 @@ func NewOllamaService(
 		ollamaDaemon:          ollamaDaemon,
 		resolveModel:          resolveModel,
 		proxyToRemoteNode:     proxyToRemoteNode,
-		getNodename:           getNodename,
 		isLocalNode:           isLocalNode,
 		httpStreamingClient:   httpStreamingClient,
-		getClusterNodeURL:     getClusterNodeURL,
 		getClusterNodeMTLSURL: getClusterNodeMTLSURL,
 		getMTLSClient:         getMTLSClient,
 		proxyToOllamaProvider: proxyToOllamaProvider,
@@ -133,145 +127,113 @@ func (s *OllamaServiceImpl) RouteInference(c *gin.Context, endpointType string) 
 // (HuggingFace, etc.) return 400 pointing at /zzrouter/v1/deployments —
 // /api/* is scoped to Ollama-managed downloads.
 func (s *OllamaServiceImpl) Deploy(c *gin.Context, name string, insecure bool, stream *bool) error {
-	if err := ollamaAccessError(c); err != nil {
+	if err := ollamaMutationAccessError(c); err != nil {
 		return err
 	}
-	id, err := parseModelIdentifier(name)
+	cleanModel, targetNode, err := s.mutationTarget(c, name)
 	if err != nil {
-		return newProblemError(http.StatusBadRequest, "Bad Request", "invalid model identifier: "+err.Error())
+		return err
 	}
-
-	targetNode := id.Node
-	targetRepo := id.Repository
-	cleanModel := id.GetFullModelName()
-	if targetRepo == "" {
-		targetRepo = constants.RepoOllama
-	}
-	if targetNode == "" {
-		targetNode = s.getNodename()
-	}
-
-	slog.Info("Ollama deploy request parsed", "name", name, "node", targetNode, "registry", targetRepo, "model", cleanModel)
-
-	if !s.isLocalNode(targetNode) {
-		return s.pullClusterRoute(c, targetNode, cleanModel, insecure, stream)
-	}
-	if strings.ToLower(targetRepo) != constants.RepoOllama {
-		return newProblemError(http.StatusBadRequest,
-			"Bad Request",
-			fmt.Sprintf("registry %q is not supported via the Ollama API; use /zzrouter/v1/deployments for non-Ollama downloads", targetRepo))
-	}
-	return s.pullLocalProxy(c, cleanModel, insecure, stream)
+	return s.pullProxy(c, targetNode, cleanModel, insecure, stream)
 }
 
-// pullLocalProxy proxies deploy request to local Ollama provider
-func (s *OllamaServiceImpl) pullLocalProxy(c *gin.Context, modelName string, insecure bool, stream *bool) error {
-	daemon, err := s.Daemon()
+// mutationTarget binds import operations without requiring a model to exist.
+func (s *OllamaServiceImpl) mutationTarget(c *gin.Context, model string) (string, string, error) {
+	if c.Request.URL.Query().Has("node") {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "the Ollama API does not support ?node; use X-Node or model@node")
+	}
+	id, err := parseModelIdentifier(model)
 	if err != nil {
-		return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "invalid model identifier: "+err.Error())
 	}
-
-	slog.Info("Proxying Ollama deploy request", "model_name", modelName, "ollama_url", daemon.Endpoint)
-
-	cleanReq := OllamaPullRequest{
-		Model:    modelName,
-		Insecure: insecure,
-		Stream:   stream,
+	cleanModel := id.GetFullModelName()
+	if model != "" && (cleanModel == "" || strings.Contains(cleanModel, "@") || strings.Contains(model, "@") && id.Node == "") {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "invalid Ollama model or node selector")
 	}
+	if id.ProviderKey != "" && !strings.EqualFold(id.ProviderKey, constants.AppOllama) {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "the Ollama API cannot target a different provider")
+	}
+	if id.File != "" || strings.Contains(model, "#") {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "the Ollama API does not support file selectors")
+	}
+	if id.Repository != "" && !strings.EqualFold(id.Repository, constants.RepoOllama) {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("registry %q is not supported via the Ollama API; use /zzrouter/v1/deployments for non-Ollama downloads", id.Repository))
+	}
+	node := strings.TrimSpace(c.GetHeader("X-Node"))
+	local := func(n string) bool { return n != "" && s.isLocalNode != nil && s.isLocalNode(n) }
+	if node != "" && id.Node != "" && !strings.EqualFold(node, id.Node) && !(local(node) && local(id.Node)) {
+		return "", "", newProblemError(http.StatusBadRequest, "Bad Request", "X-Node conflicts with the model node selector")
+	}
+	if node == "" {
+		node = id.Node
+	}
+	if local(node) {
+		node = ""
+	}
+	return cleanModel, node, nil
+}
 
-	cleanBody, err := json.Marshal(cleanReq)
+// pullProxy uses the same streaming owner as create and blob uploads.
+func (s *OllamaServiceImpl) pullProxy(c *gin.Context, node, model string, insecure bool, stream *bool) error {
+	body, err := json.Marshal(OllamaPullRequest{Model: model, Insecure: insecure, Stream: stream})
 	if err != nil {
 		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to marshal request")
 	}
+	return s.forwardOllama(c, node, "/api/pull", bytes.NewReader(body), int64(len(body)), s.publishCatalog)
+}
 
-	proxyReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
-		strings.TrimRight(daemon.Endpoint, "/")+"/api/pull", bytes.NewReader(cleanBody))
+// forwardOllama streams requests to the selected daemon, using mTLS for workers.
+func (s *OllamaServiceImpl) forwardOllama(c *gin.Context, node, path string, body io.Reader, length int64, publish func() error) error {
+	client := s.httpStreamingClient
+	var target *backend.Resolved
+	if node == "" {
+		var err error
+		target, err = s.Daemon()
+		if err != nil {
+			return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())
+		}
+	} else {
+		if !s.hasRouter {
+			return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "router not configured")
+		}
+		endpoint, err := s.getClusterNodeMTLSURL(node)
+		if err != nil || endpoint == "" {
+			return newProblemError(http.StatusBadGateway, "Bad Gateway", fmt.Sprintf("cluster node %q has no reachable cluster endpoint", node))
+		}
+		client = s.getMTLSClient()
+		if client == nil {
+			return newProblemError(http.StatusBadGateway, "Bad Gateway", "coord mTLS dispatch unavailable")
+		}
+		target = &backend.Resolved{Endpoint: endpoint, Upstream: backend.Cluster()}
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, strings.TrimRight(target.Endpoint, "/")+path, body)
 	if err != nil {
 		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
 	}
-
-	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, daemon.Upstream)
-	proxyReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpStreamingClient.Do(proxyReq)
+	req.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, target.Upstream)
+	// The selected worker owns this request. Do not send a coordinator alias
+	// that would select a different node when the worker handles the same API.
+	req.Header.Del("X-Node")
+	if path == "/api/pull" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.ContentLength = length
+	resp, err := client.Do(req)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return newProblemError(http.StatusRequestEntityTooLarge, "Request Entity Too Large",
+				fmt.Sprintf("request body exceeds the %d-byte limit", tooLarge.Limit))
+		}
 		return newProblemError(http.StatusBadGateway, "Bad Gateway", "upstream Ollama request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	return writeOllamaMutation(c, resp, s.publishCatalog)
-}
-
-// pullClusterRoute routes deploy request to remote cluster host
-func (s *OllamaServiceImpl) pullClusterRoute(c *gin.Context, targetNode, modelName string, insecure bool, stream *bool) error {
-	if !s.hasRouter {
-		return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "router not configured")
-	}
-
-	startTime := utils.Now()
-	utils.LogDebugf("⏱️  [PERF] Starting cluster deploy routing for host='%s', model='%s'", targetNode, modelName)
-
-	// Get cluster host URL
-	clusterNodeURL, err := s.getClusterNodeMTLSURL(targetNode)
-	if err != nil {
-		return newProblemError(http.StatusBadGateway, "Bad Gateway", fmt.Sprintf("failed to resolve cluster host %q: %s", targetNode, err.Error()))
-	}
-	utils.LogDebugf("⏱️  [PERF] Node resolution took: %v", time.Since(startTime))
-
-	forwardReq := OllamaPullRequest{
-		Model:    modelName,
-		Insecure: insecure,
-		Stream:   stream,
-	}
-
-	bodyBytes, err := json.Marshal(forwardReq)
-	if err != nil {
-		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to marshal request")
-	}
-
-	targetURL := fmt.Sprintf("%s/api/pull", clusterNodeURL)
-	proxyReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", targetURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
-	}
-
-	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, backend.Cluster())
-	proxyReq.Header.Set("Content-Type", "application/json")
-	// Auth: mTLS at the transport layer. Worker compat surface is on the
-	// cluster port; transport-level OU=coordinator client cert IS the gate.
-
-	utils.LogDebugf("⏱️  [PERF] Connecting to cluster host (mTLS): %s", targetURL)
-	connectStart := utils.Now()
-
-	mtlsClient := s.getMTLSClient()
-	if mtlsClient == nil {
-		return newProblemError(http.StatusBadGateway, "Bad Gateway", "coord mTLS dispatch unavailable")
-	}
-	resp, err := mtlsClient.Do(proxyReq)
-	connTime := time.Since(connectStart)
-
-	if err != nil {
-		if connTime > 1*time.Second {
-			utils.LogDebugf("⚠️  [PERF] SLOW CONNECTION: %v (expected <100ms)", connTime)
-		}
-		return newProblemError(http.StatusBadGateway, "Bad Gateway", fmt.Sprintf("failed to connect to cluster host %q: %s", targetNode, err.Error()))
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if connTime > 100*time.Millisecond {
-		utils.LogDebugf("⚠️  [PERF] Connection took %v (expected <100ms)", connTime)
-	} else {
-		utils.LogDebugf("⏱️  [PERF] Connection established in: %v ✓", connTime)
-	}
-
-	utils.LogDebugf("⏱️  [PERF] Starting response stream (total setup time: %v)", time.Since(startTime))
-
-	return writeOllamaMutation(c, resp, s.publishCatalog)
+	return writeOllamaMutation(c, resp, publish)
 }
 
 // ManagementCommand handles Ollama management commands (create, delete, copy, show, push)
 func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, modelLookup bool) error {
-	if err := ollamaAccessError(c); err != nil {
+	if err := ollamaMutationAccessError(c); err != nil {
 		return err
 	}
 	if endpoint == "/api/delete" {
@@ -285,6 +247,33 @@ func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, m
 	body, err := c.GetRawData()
 	if err != nil {
 		return newProblemError(http.StatusBadRequest, "Bad Request", "failed to read request body")
+	}
+
+	if endpoint == "/api/create" {
+		var req OllamaManagementRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return newProblemError(http.StatusBadRequest, "Bad Request", "invalid JSON: "+err.Error())
+		}
+		name := req.Model
+		if name == "" {
+			name = req.Name
+		}
+		if name == "" {
+			return newProblemError(http.StatusBadRequest, "Bad Request", "model name is required")
+		}
+		model, node, err := s.mutationTarget(c, name)
+		if err != nil {
+			return err
+		}
+		// Keep import options opaque while removing routing from both aliases.
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(body, &raw)
+		raw["model"], _ = json.Marshal(model)
+		if _, ok := raw["name"]; ok {
+			raw["name"] = raw["model"]
+		}
+		body, _ = json.Marshal(raw)
+		return s.forwardOllama(c, node, endpoint, bytes.NewReader(body), int64(len(body)), publish)
 	}
 
 	if modelLookup {
@@ -392,57 +381,23 @@ func (s *OllamaServiceImpl) ollamaModelExists(ctx context.Context, daemon *backe
 	}
 }
 
-// CheckBlob checks if a blob exists
-func (s *OllamaServiceImpl) CheckBlob(ctx context.Context, digest string) (int, error) {
-	daemon, err := s.Daemon()
+// CheckBlob checks for a blob on the selected node and relays its native status.
+func (s *OllamaServiceImpl) CheckBlob(c *gin.Context, digest string) error {
+	_, node, err := s.mutationTarget(c, "")
 	if err != nil {
-		return http.StatusNotFound, err
-	}
-
-	req, err := daemon.NewRequest(ctx, http.MethodHead, "/api/blobs/"+digest, nil)
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
-
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return http.StatusBadGateway, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	return resp.StatusCode, nil
-}
-
-// CreateBlob creates a blob
-func (s *OllamaServiceImpl) CreateBlob(c *gin.Context, digest string) error {
-	if err := ollamaAccessError(c); err != nil {
 		return err
 	}
-	daemon, err := s.Daemon()
-	if err != nil {
-		return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())
+	return s.forwardOllama(c, node, "/api/blobs/"+digest, nil, 0, nil)
+}
+
+// CreateBlob streams a blob to the selected node without buffering it.
+func (s *OllamaServiceImpl) CreateBlob(c *gin.Context, digest string) error {
+	if err := ollamaMutationAccessError(c); err != nil {
+		return err
 	}
-
-	slog.Info("Proxying Ollama blob upload", "digest", digest, "ollama_url", daemon.Endpoint)
-
-	proxyReq, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
-		strings.TrimRight(daemon.Endpoint, "/")+"/api/blobs/"+digest, c.Request.Body)
+	_, node, err := s.mutationTarget(c, "")
 	if err != nil {
-		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
+		return err
 	}
-
-	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, daemon.Upstream)
-	// The blob streams through as it arrives; its length goes with it, or
-	// the reader body would go out chunked.
-	proxyReq.ContentLength = c.Request.ContentLength
-
-	resp, err := s.httpStreamingClient.Do(proxyReq)
-	if err != nil {
-		return newProblemError(http.StatusBadGateway, "Bad Gateway", "upstream Ollama request failed")
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	writeOllamaResponse(c, resp)
-
-	return nil
+	return s.forwardOllama(c, node, "/api/blobs/"+digest, c.Request.Body, c.Request.ContentLength, nil)
 }

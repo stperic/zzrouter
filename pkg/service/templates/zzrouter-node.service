@@ -33,7 +33,7 @@ WorkingDirectory=/var/lib/zzrouter
 # must point at the stable name, never at a version directory, which the
 # next update's prune can remove. InstallService substitutes the real
 # path when a node was installed somewhere else.
-ExecStart=/opt/zzrouter/bin/zzrouter-node start --no-setup
+ExecStart=/opt/zzrouter/bin/zzrouter-node start --no-setup --dir /etc/zzrouter
 ExecReload=/bin/kill -HUP $MAINPID
 
 # Restart policy
@@ -46,7 +46,7 @@ RestartSec=5s
 
 # Environment
 # SECURITY: API keys are loaded from environment file
-EnvironmentFile=-/etc/zzrouter/zzrouter.env
+Environment=ZZROUTER_CONFIG_DIR=/etc/zzrouter
 
 # =============================================================================
 # SECURITY HARDENING

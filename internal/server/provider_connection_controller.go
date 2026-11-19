@@ -37,12 +37,28 @@ func (ctrl *ProviderConnectionController) Test(c *gin.Context) {
 		return
 	}
 	var request struct {
-		Values map[string]string `json:"values"`
+		Stored bool            `json:"stored"`
+		Values json.RawMessage `json:"values"`
 	}
 	if !bindConnection(c, &request) {
 		return
 	}
-	result, err := ctrl.service.Test(c.Request.Context(), c.Param("name"), request.Values)
+	var result *ConnectionTestResult
+	var err error
+	if request.Stored {
+		if len(request.Values) != 0 {
+			BadRequest(c, "stored connection tests cannot include candidate values")
+			return
+		}
+		result, err = ctrl.service.TestStored(c.Request.Context(), c.Param("name"))
+	} else {
+		var values map[string]string
+		if json.Unmarshal(request.Values, &values) != nil || values == nil {
+			BadRequest(c, "send candidate values or stored: true")
+			return
+		}
+		result, err = ctrl.service.Test(c.Request.Context(), c.Param("name"), values)
+	}
 	if err != nil {
 		RespondToError(c, err)
 		return

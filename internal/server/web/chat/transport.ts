@@ -122,6 +122,8 @@ export function createChatAdapter(host: ChatHost): ChatModelAdapter {
         host.onStatus?.('Waiting for the model…');
         const provider = createOpenAICompatible({
           name: 'zzrouter', baseURL: host.baseURL, includeUsage: true, metadataExtractor: timingMetadata,
+          transformRequestBody: ({ max_tokens, ...body }) => max_tokens === undefined
+            ? body : { ...body, max_completion_tokens: max_tokens },
           fetch: async (url, init) => {
             const response = await host.fetcher(url, init);
             stats.route = response.headers.get('X-zzrouter-Route');

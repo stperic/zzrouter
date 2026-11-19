@@ -125,6 +125,7 @@ func TestMCPWireListContract(t *testing.T) {
 		"zz_providers": {readOnly: true}, "zz_provider_install": {}, "zz_params_get": {readOnly: true}, "zz_params_set": {},
 		"zz_model_files": {readOnly: true}, "zz_api_search": {readOnly: true}, "zz_api_get": {readOnly: true}, "zz_api": {destructive: true},
 		"zz_update_status": {readOnly: true}, "zz_update_check": {idempotent: true}, "zz_update_apply": {destructive: true},
+		"zz_operations": {readOnly: true}, "zz_operation": {readOnly: true}, "zz_operation_execute": {destructive: true}, "zz_connections": {readOnly: true},
 	}
 	expectedNames := make([]string, 0, len(expected))
 	for name := range expected {
@@ -284,7 +285,7 @@ func TestIntegrationMCPLegacySmoke(t *testing.T) {
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 26)
+	require.Len(t, tools.Tools, 30)
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError)

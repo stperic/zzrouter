@@ -45,6 +45,35 @@ func TestRegisteredToolValidatesOutputSchema(t *testing.T) {
 	}
 }
 
+func TestRegisteredToolPreservesRawNumbersAndSchemaDefaults(t *testing.T) {
+	type input struct {
+		Value json.RawMessage `json:"value"`
+		Limit int             `json:"limit"`
+	}
+	d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected REST dispatch") })
+	server := newServer(d.cfg)
+	calls := 0
+	registerTool(server, d.cfg, map[string][]string{}, &mcp.Tool{Name: "raw_schema_contract", InputSchema: map[string]any{
+		"type": "object", "required": []string{"value"}, "additionalProperties": false,
+		"properties": map[string]any{"value": map[string]any{}, "limit": map[string]any{"type": "integer", "default": 2}},
+	}}, nil, func(_ dispatcher, _ context.Context, in input) (agentOutput, error) {
+		calls++
+		return agentOutput{fields: map[string]any{"value": in.Value, "limit": in.Limit}, text: string(in.Value)}, nil
+	})
+	client, ctx := connectToolClient(t, d, server)
+	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "raw_schema_contract", Arguments: map[string]any{"value": json.RawMessage(`[9007199254740993,18446744073709551615,1.234567890123456789,2.0,2e0]`)}})
+	require.NoError(t, err)
+	require.False(t, result.IsError, "%+v", result)
+	require.EqualValues(t, 2, result.StructuredContent.(map[string]any)["limit"])
+	require.Equal(t, `[9007199254740993,18446744073709551615,1.234567890123456789,2.0,2e0]`, result.Content[0].(*mcp.TextContent).Text)
+	for _, args := range []map[string]any{{}, {"value": true, "extra": true}, {"value": true, "limit": "bad"}} {
+		result, err = client.CallTool(ctx, &mcp.CallToolParams{Name: "raw_schema_contract", Arguments: args})
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+	}
+	require.Equal(t, 1, calls)
+}
+
 func TestRunToolParameterInputSchemas(t *testing.T) {
 	for _, input := range []json.Marshaler{objectSchema[startInput]{}, objectSchema[previewInput]{}} {
 		raw, err := input.MarshalJSON()

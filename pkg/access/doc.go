@@ -1,17 +1,22 @@
 // Package access is the unified authentication, authorization, and
 // enforcement facade for zzrouter.
 //
-// Subpackage-only. Each subpackage owns one concern:
+// The root defines [Store], the one boundary for access records, and the
+// immutable [Snapshot] it publishes after each commit. Each subpackage owns
+// one concern:
 //
 //   - [control] — the [control.Core] facade that callers use end-to-end
 //     (Authenticate + Enforce). Owns post-response reservation settlement
 //     and the pending-reservation reaper goroutine.
-//   - [keys]    — virtual keys ([keys.Store], Argon2id hashing, UUID +
-//     lifecycle fields).
+//   - [keys]    — virtual keys (Argon2id hashing, UUID + lifecycle fields).
 //   - [quota]   — RPM/TPM limiters, reservation-based budgets, spend
 //     tracking, concurrency limiter ([quota.Enforcer]).
-//   - [teams]   — teams + membership ([teams.Store], merge-semantics
-//     member patches).
+//   - [teams]   — teams and their access policies.
+//
+// people holds the account state and its transitions without storage;
+// sqlstore implements Store over access/access.sqlite, which also holds the
+// audit history; accesstest is the contract every Store passes. Localproof
+// owns the installation proof without importing access storage.
 //
 // # Dependency Direction
 //
@@ -19,10 +24,10 @@
 //	  \      |      /
 //	   \     |     /
 //	    \    |    /
-//	     control
+//	     control  ->  access (root)  <-  sqlstore
 //
-// `control` composes the three data-plane subpackages. None of keys,
-// teams, or quota imports another. No subpackage imports the root.
+// `control` composes the three data-plane subpackages and reads the root's
+// Snapshot. None of keys, teams, or quota imports another or the root.
 //
 // # Lifecycle
 //

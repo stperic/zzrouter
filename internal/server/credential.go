@@ -25,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/common/mcp/oauth"
 
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -69,13 +70,25 @@ func upstreamHeaders(ctx context.Context, src http.Header, up backend.Upstream) 
 // proxy has already dropped the connection headers, so its Rewrite calls
 // this alone.
 func scrubForUpstream(ctx context.Context, h http.Header, up backend.Upstream) {
-	// Browser authority stays on this node even if a native key authenticated
-	// the request or the next hop is another cluster member.
+	// Browser and local-operator authority stay on this node even if a native key
+	// authenticated the request or the next hop is another cluster member.
 	oauth.StripCookies(h, browserSessionCookie, browserCSRFCookie, browserHostSessionCookie, browserHostCSRFCookie)
 	h.Del("X-CSRF-Token")
+	h.Del(localproof.Header)
 	// Reference-authenticated requests cannot forward unrelated proxy credentials.
 	// Explicit native keys retain their forwarding policy even alongside cookies.
 	_, browser := browserBinding(ctx)
+	if browser {
+		// The router has validated browser origin and CSRF locally. The next
+		// hop is server-to-server, including a worker that cannot bind this session.
+		h.Del("Origin")
+		h.Del("Referer")
+		for name := range h {
+			if strings.HasPrefix(strings.ToLower(name), "sec-fetch-") {
+				delete(h, name)
+			}
+		}
+	}
 	if browser || isOAuthRequest(ctx) {
 		for _, name := range nodeAPIKeyHeaders {
 			h.Del(name)

@@ -42,6 +42,8 @@ const (
 
 type outerRequest struct {
 	requestID string
+	host      string
+	scheme    string
 	ctx       context.Context
 	index     atomic.Uint64
 }
@@ -83,7 +85,11 @@ func New(cfg Config) http.Handler {
 func httpHandler(s *mcp.Server) http.Handler {
 	handler := commonmcp.HTTPHandler(s, commonmcp.HTTPOptions{MaxRequestBytes: MaxRequestBytes})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		outer := &outerRequest{requestID: w.Header().Get("X-Request-ID"), ctx: r.Context()}
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		outer := &outerRequest{requestID: w.Header().Get("X-Request-ID"), host: r.Host, scheme: scheme, ctx: r.Context()}
 		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), outerKey, outer)))
 	})
 }

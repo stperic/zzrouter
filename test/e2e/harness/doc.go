@@ -59,7 +59,6 @@
 //   - routes.go        RouteSpec + FetchRoutes
 //   - types.go         shared enums (Backend, Role, ModelRole, CloudMode)
 //   - cassettes.go     go-vcr-style cloud egress recorder
-//   - state.go         server-mediated snapshot/restore client
 //   - diagnostics.go   failure-tarball collector
 //   - deployments.go   deploy + WaitDeploymentReady client
 //   - runs.go          /zzrouter/v1/runs + LaunchRun

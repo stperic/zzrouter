@@ -29,15 +29,10 @@ func (s *Server) buildRouterForMode(isWorker bool, serverPort string) routing.Ro
 }
 
 // handleClusterModeReload flips s.role when mesh.mode in node.yaml
-// changes. Registered as a NodeConfigStore listener alongside
-// reconfigureRouter; ordering is independent because s.cluster.router
-// is wrapped in routing.Swappable (subsystems read it at call time,
-// not at construction).
-//
-// Config reload is the one non-mTLS Set trigger that exercises the
-// role subscriber end-to-end pre-mTLS-PR-3. Pairing/renewal/revocation
-// handlers, when they land, drop their own Set calls into the
-// existing machinery — no new plumbing.
+// changes. Moving between worker and non-worker modes crosses the
+// coordinator boundary, so handleRoleTransition then ends the node and
+// it restarts in the mode node.yaml names; the router, store and routes
+// fixed at boot never change in process.
 //
 // Reload contract (docs/plan_reload_semantics.md):
 //   - no role manager wired → Ignored (partial bootstrap).
@@ -57,36 +52,6 @@ func (s *Server) handleClusterModeReload(cfg *pkgConfig.NodeConfig) pkgConfig.Re
 		slog.Error("role.Set from config reload failed", "target", next, "error", err)
 		return pkgConfig.DispositionRejected
 	}
-	return pkgConfig.DispositionApplied
-}
-
-// reconfigureRouter rebuilds the active router if the cluster mode transitioned
-// between worker and non-worker. Called as a NodeConfigStore listener so the
-// router follows runtime join/leave without restart.
-//
-// Transitions between disabled ↔ coordinator are no-ops because both use
-// ClusterAwareRouter; only the worker boundary changes the router type.
-//
-// Reload contract (docs/plan_reload_semantics.md):
-//   - routerSwap not wired → Ignored (partial bootstrap).
-//   - worker boundary unchanged → Ignored.
-//   - worker boundary crossed → Applied after swap.
-func (s *Server) reconfigureRouter(cfg *pkgConfig.NodeConfig) pkgConfig.ReloadDisposition {
-	if s.cluster.routerSwap == nil {
-		return pkgConfig.DispositionIgnored
-	}
-	// Detect current side of the worker boundary by concrete type. Only two
-	// Router implementations exist; a third would need to update this check.
-	wantWorker := cfg.Cluster.IsWorker()
-	_, isWorker := s.cluster.routerSwap.Current().(*routing.LocalOnlyRouter)
-	if isWorker == wantWorker {
-		return pkgConfig.DispositionIgnored
-	}
-
-	serverPort := fmt.Sprintf("%d", cfg.Node.Port)
-	next := s.buildRouterForMode(wantWorker, serverPort)
-	s.cluster.routerSwap.Swap(next)
-	slog.Info("Router reconfigured", "mode", cfg.Cluster.Mode, "worker", wantWorker)
 	return pkgConfig.DispositionApplied
 }
 
