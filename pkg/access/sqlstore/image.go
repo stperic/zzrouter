@@ -78,7 +78,7 @@ func sameObjects(ctx context.Context, db *sqlitedb.DB) error {
 	}
 	got, err := db.Objects(ctx)
 	if err == nil && !slices.Equal(got, want) {
-		err = refuse(IntegrityFailed, errors.New("the schema objects differ from this release's"))
+		err = &Refusal{Reason: IntegrityFailed, detail: "its schema objects differ from this release's"}
 	}
 	return err
 }

@@ -62,14 +62,24 @@ var nextActions = map[Reason]string{
 // the error chain for logs.
 type Refusal struct {
 	Reason Reason
+	detail string // a fixed phrase of the store's naming a cause it tells apart
 	cause  error
 }
 
 func refuse(reason Reason, cause error) *Refusal { return &Refusal{Reason: reason, cause: cause} }
 
-// Error names the reason and the next action.
+// Error names the reason, with Summary's phrase, and the next action.
 func (r *Refusal) Error() string {
-	return "access store cannot open: " + string(r.Reason) + ". " + r.NextAction()
+	return "access store cannot open: " + r.Summary() + ". " + r.NextAction()
+}
+
+// Summary is the reason, followed by the store's own phrase for the cause when
+// it tells one apart, such as schema objects another tool changed.
+func (r *Refusal) Summary() string {
+	if r.detail == "" {
+		return string(r.Reason)
+	}
+	return string(r.Reason) + " (" + r.detail + ")"
 }
 
 // Unwrap returns the cause, for logs.

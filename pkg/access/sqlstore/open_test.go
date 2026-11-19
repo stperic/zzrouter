@@ -236,9 +236,17 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	require.Error(t, err, "a check that cannot run")
 	var refusal *Refusal
 	require.False(t, errors.As(err, &refusal), "a check that cannot run is not a failed check: %v", err)
-	_, err = load(t.Context(), db.SQL(), 1)
+
+	// A temporary view on the connection shadows a table the loader reads, so
+	// every check passes and the load's query fails without a broken record.
+	db, err = sqlitedb.Open(t.Context(), dbPath(dir), schema)
+	require.NoError(t, err)
+	_, err = db.SQL().ExecContext(t.Context(), "CREATE TEMP VIEW keys AS SELECT 1 AS unrelated")
+	require.NoError(t, err)
+	_, err = check(t.Context(), db, false)
 	require.Error(t, err, "a load that cannot read")
-	require.NotErrorIs(t, err, errBroken, "a load that cannot read is not a broken record")
+	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
+	require.NoError(t, db.Close())
 }
 
 // TestOpenRefusesSchemaObjectsThisReleaseDoesNotCreate: a live database
@@ -261,6 +269,8 @@ func TestOpenRefusesSchemaObjectsThisReleaseDoesNotCreate(t *testing.T) {
 			_, err := rawDB(t, dir).ExecContext(t.Context(), alteration)
 			require.NoError(t, err)
 			requireRefusal(t, dir, IntegrityFailed)
+			_, err = Open(t.Context(), dir, Options{})
+			assert.Contains(t, err.Error(), "integrity_failed (its schema objects differ from this release's)", "an altered file is told apart from a damaged one")
 		})
 	}
 }
@@ -326,6 +336,8 @@ func TestOpenRefusesRecordsThatBreakTheRulesBetweenThem(t *testing.T) {
 			_, err = rawDB(t, dir).ExecContext(t.Context(), damage)
 			require.NoError(t, err)
 			requireRefusal(t, dir, IntegrityFailed)
+			_, err = Open(t.Context(), dir, Options{})
+			assert.NotContains(t, err.Error(), "schema objects", "damage is not called an altered schema")
 		})
 	}
 }

@@ -3,7 +3,9 @@ package servercli
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -47,6 +49,18 @@ func TestRunServeLogsFinalErrorOnce(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("ZZROUTER_CONFIG_DIR"), "access-store.json"), []byte(`{"version":1,"store_id":"lost"}`), 0o600))
 			return runServe(cfg, nil)
 		}, slog.LevelError, "failed to create server", sqlstore.Missing},
+		{"store schema another tool changed", func(t *testing.T) error {
+			cfg := runServeNode(t, freePort(t))
+			dir := os.Getenv("ZZROUTER_CONFIG_DIR")
+			store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+			require.NoError(t, err)
+			require.NoError(t, store.Close())
+			db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "access", "access.sqlite")))
+			require.NoError(t, err)
+			_, err = db.ExecContext(t.Context(), "ANALYZE")
+			require.NoError(t, errors.Join(err, db.Close()))
+			return runServe(cfg, nil)
+		}, slog.LevelError, "integrity_failed (its schema objects differ from this release's)", sqlstore.IntegrityFailed},
 		{"unreadable store", func(t *testing.T) error {
 			cfg := runServeNode(t, freePort(t))
 			dir := filepath.Join(os.Getenv("ZZROUTER_CONFIG_DIR"), "access")
