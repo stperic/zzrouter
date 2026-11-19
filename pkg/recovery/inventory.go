@@ -1,6 +1,7 @@
 // Package recovery owns offline recovery bundles. It never stops services,
 // follows links or changes a running installation; only Activate changes a
-// stopped one, and only its access store.
+// stopped one: its access store and, for a handoff, the configuration files a
+// handoff carries and the credential key.
 package recovery
 
 import (

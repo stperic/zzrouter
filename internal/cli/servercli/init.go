@@ -18,6 +18,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"gopkg.in/yaml.v3"
 )
 
@@ -142,6 +143,10 @@ func checkAndStopRunningNode() (bool, error) {
 }
 
 func runNodeInit(force bool) error {
+	// Templates written into a half-replaced provider tree would mix with it.
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
 	// Check if zzrouter server is running and stop it if needed
 	serverWasStopped, err := checkAndStopRunningNode()
 	if err != nil {

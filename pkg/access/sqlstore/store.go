@@ -243,13 +243,15 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 	}
 	path := databasePath(dir)
 	staged := path + ".staged"
-	if err := removeLeftovers(staged); err != nil {
+	if err := sqlitedb.RemoveFile(staged); err != nil {
 		return "", err
 	}
 	if none, err := noStore(dir); !none {
 		return path, err
 	}
-	if err := removeLeftovers(sqlitedb.Journal(path)); err != nil {
+	// SQLite drops a journal beside an empty file, but would replay one
+	// beside a published database.
+	if err := sqlitedb.RemoveFile(sqlitedb.Journal(path)); err != nil {
 		return "", err
 	}
 	storeID := uuid.NewString()
@@ -297,17 +299,6 @@ func fileRefusal(err error) error {
 		return refuse(Unreadable, err)
 	}
 	return err
-}
-
-// removeLeftovers removes files an earlier attempt left. SQLite drops a journal
-// beside an empty file, but would replay one beside a published database.
-func removeLeftovers(paths ...string) error {
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
 }
 
 func initialize(ctx context.Context, tx *sql.Tx, storeID string) error {

@@ -119,7 +119,7 @@ func TestRecoveryCommandsNameTheProfileAndStore(t *testing.T) {
 
 // TestRecoveryCommandsHandoffProfile: backup, check and restore of a handoff
 // name its source, list what it carries and what moves separately, and
-// restore says activation arrives later; a worker writes no handoff, and the
+// restore names the activation command; a worker writes no handoff, and the
 // offline backup writes no database bundle.
 func TestRecoveryCommandsHandoffProfile(t *testing.T) {
 	dir, meta := recoveryInstallation(t)
@@ -130,17 +130,20 @@ func TestRecoveryCommandsHandoffProfile(t *testing.T) {
 	require.Contains(t, out, "profile handoff, from recovery-cli (")
 	require.Contains(t, out, "Access store "+meta.StoreID)
 	require.NotContains(t, out, "Run recovery inventory")
-	for _, command := range [][]string{{"check", archive}, {"restore", archive, "--to", filepath.Join(t.TempDir(), "staged")}} {
-		printed, err := runRecovery(t, dir, command...)
-		require.NoError(t, err)
-		out += printed
-	}
-	for _, want := range []string{"It carries:\n  config/providers/.managed-ownership.json\n", "  config/providers/settings.yaml\n", "  store/image.sqlite\n", "Move or recreate by hand on the destination:\n  - The destination's own node.yaml", "Prepared the staged access database as generation ", "activating it on a new coordinator arrives in a later release"} {
+	printed, err := runRecovery(t, dir, "check", archive)
+	require.NoError(t, err)
+	out += printed
+	require.NotContains(t, out, dir, "no installation path is printed")
+	staging := filepath.Join(t.TempDir(), "staged")
+	printed, err = runRecovery(t, dir, "restore", archive, "--to", staging)
+	require.NoError(t, err)
+	out += printed
+	for _, want := range []string{"It carries:\n  config/providers/.managed-ownership.json\n", "  config/providers/settings.yaml\n", "  store/image.sqlite\n", "Move or recreate by hand on the destination:\n  - The destination's own node.yaml", "Prepared the staged access database as generation ",
+		"publish it with zzrouter-node recovery activate " + staging + " --dir " + dir + " --source-stopped, after a --dry-run."} {
 		require.Contains(t, out, want)
 	}
 	require.NotContains(t, out, "config/node.yaml", "no node configuration travels")
 	require.NotContains(t, out, "—")
-	require.NotContains(t, out, dir, "no installation path is printed")
 
 	database := filepath.Join(t.TempDir(), "database.tar.gz")
 	_, err = runRecovery(t, dir, "backup", "--profile", "database", "--output", database)

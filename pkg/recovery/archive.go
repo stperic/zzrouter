@@ -552,6 +552,12 @@ func sameFile(root *os.Root, a, b string) bool {
 	return err == nil && os.SameFile(first, second)
 }
 
+// unsafeSource is a link, or a file that is not regular, on a recovery path
+// that must hold plain directories and files.
+type unsafeSource struct{ rule, path string }
+
+func (e unsafeSource) Error() string { return "recovery source must " + e.rule + ": " + e.path }
+
 func rejectLinks(root *os.Root, relative string) error {
 	current := "."
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
@@ -561,7 +567,7 @@ func rejectLinks(root *os.Root, relative string) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("recovery source must not contain links: %s", current)
+			return unsafeSource{"not contain links", current}
 		}
 	}
 	return nil
@@ -585,7 +591,7 @@ func openRootRegular(root *os.Root, relative string) (*os.File, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("recovery source must be a regular file: %s", relative)
+		return nil, unsafeSource{"be a regular file", relative}
 	}
 	f, err := root.Open(relative)
 	if err != nil {
