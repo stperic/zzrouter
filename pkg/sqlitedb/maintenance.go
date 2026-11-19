@@ -171,13 +171,40 @@ func createFile(path string, fill func() error) (err error) {
 	return fill()
 }
 
-// MakeDir creates the directory at path, with its parents, owner-only, and
-// syncs its parent, so the new entry survives a power loss.
-func MakeDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return err
+// MakeDir creates the directory at path with any missing parents, level by
+// level: each level it creates is restricted to its owner and its parent
+// synced, then reported to the WithStep observer as "made <name>", so the
+// whole chain is owner-only and survives a power loss before it returns. An
+// existing directory is restricted.
+func MakeDir(ctx context.Context, path string) error {
+	var missing []string
+	for level := filepath.Clean(path); filepath.Dir(level) != level; level = filepath.Dir(level) {
+		info, err := os.Stat(level)
+		if err == nil && !info.IsDir() {
+			return fmt.Errorf("make %s: %s is not a directory", path, level)
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			if err != nil {
+				return err
+			}
+			break
+		}
+		missing = append(missing, level)
 	}
-	return errors.Join(security.RestrictDirectoryPermissions(path), SyncDir(filepath.Dir(path)))
+	if len(missing) == 0 {
+		return security.RestrictDirectoryPermissions(path)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		level := missing[i]
+		if err := os.Mkdir(level, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		if err := errors.Join(security.RestrictDirectoryPermissions(level), SyncDir(filepath.Dir(level))); err != nil {
+			return err
+		}
+		Step(ctx, "made "+filepath.Base(level))
+	}
+	return nil
 }
 
 // RemoveDirIfEmpty removes the directory at path when it holds nothing and

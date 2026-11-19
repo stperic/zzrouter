@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -421,6 +422,15 @@ func killAt(t *testing.T, dir, staging string, stop int, rollback bool) string {
 	return ""
 }
 
+// stepNumber is the position, from 1, of step in an activation of copies of
+// dir and staging.
+func stepNumber(t *testing.T, dir, staging, step string) int {
+	t.Helper()
+	i := slices.Index(stepsOf(t, dir, copyTree(t, staging), false), step)
+	require.GreaterOrEqual(t, i, 0, step)
+	return i + 1
+}
+
 // stepsOf runs an activation, or a rollback, of copies of dir and staging and
 // returns its durable steps.
 func stepsOf(t *testing.T, dir, staging string, rollback bool) []string {
@@ -447,8 +457,8 @@ func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 	before := storeFiles(t, dir)
 	steps := stepsOf(t, dir, copyTree(t, staging), false)
 	r := rollbackDir + "/" + manifest.Staged.Generation
-	require.Equal(t, []string{"activation marker", "owned " + activationFile, "rollback record", "owned " + rollbackDir + ", " + r + ", " + r + "/" + rollbackFile,
-		"staged", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker",
+	require.Equal(t, []string{"activation marker", "owned " + activationFile, "made " + rollbackDir, "made " + manifest.Staged.Generation, "rollback record",
+		"owned " + rollbackDir + ", " + r + ", " + r + "/" + rollbackFile, "staged", "made store", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker",
 		"owned access, access/access.sqlite, access-store.json, " + r + "/store, " + r + "/store/kept.json, " + r + "/store/access.sqlite, " + r + "/store/access-store.json",
 		"activation marker removed"}, steps)
 	for k, step := range steps {
@@ -729,7 +739,7 @@ func TestActivationRefusesAGenerationActivatedBefore(t *testing.T) {
 // TestActivationSurvivesAKillAtEveryStep).
 func TestRollbackRefusesWithoutItsDirectory(t *testing.T) {
 	dir, staging, manifest := activationFixture(t)
-	require.Equal(t, "renamed", killAt(t, dir, staging, 9, false))
+	require.Equal(t, "renamed", killAt(t, dir, staging, stepNumber(t, dir, staging, "renamed"), false))
 	rollbacks, err := Rollbacks(dir)
 	require.NoError(t, err)
 	require.Equal(t, []Rollback{{ID: manifest.Staged.Generation, Pending: true}}, comparable(rollbacks))
@@ -743,14 +753,23 @@ func TestRollbackRefusesWithoutItsDirectory(t *testing.T) {
 }
 
 // TestActivationRefusesOverlappingDirectories: a staging directory inside the
-// installation, or one holding it, is refused with nothing written.
+// installation, or one holding it, is refused with nothing written, also when
+// reached through a link.
 func TestActivationRefusesOverlappingDirectories(t *testing.T) {
 	t.Parallel()
 	dir, staging, _ := activationFixture(t)
 	inside := filepath.Join(dir, "staged")
 	require.NoError(t, os.Rename(staging, inside))
+	candidates := []string{inside, dir, filepath.Dir(dir)}
+	if runtime.GOOS != "windows" {
+		// A link outside the installation to a directory inside it, used as
+		// the staging directory or as its parent.
+		link := filepath.Join(t.TempDir(), "link")
+		require.NoError(t, os.Symlink(inside, link))
+		candidates = append(candidates, link, filepath.Join(link, "new"))
+	}
 	installation := tree(t, dir)
-	for _, candidate := range []string{inside, dir, filepath.Dir(dir)} {
+	for _, candidate := range candidates {
 		_, err := Activate(t.Context(), dir, candidate, ActivateOptions{})
 		require.Contains(t, requireRefusal(t, err, StagingInvalid).Detail, "overlap", candidate)
 		require.Equal(t, installation, tree(t, dir))
@@ -778,7 +797,7 @@ func TestActivationNamesAbsolutePaths(t *testing.T) {
 // does not run in parallel.
 func TestActivationResumeWithoutItsRollbackDirectory(t *testing.T) {
 	dir, staging, manifest := activationFixture(t)
-	require.Equal(t, "renamed", killAt(t, dir, staging, 9, false))
+	require.Equal(t, "renamed", killAt(t, dir, staging, stepNumber(t, dir, staging, "renamed"), false))
 	rollback := filepath.Join(dir, rollbackDir, manifest.Staged.Generation)
 	require.NoError(t, os.RemoveAll(rollback))
 	_, err := Activate(t.Context(), dir, staging, ActivateOptions{Rollback: true})

@@ -127,7 +127,7 @@ type Replacement struct {
 func Replace(ctx context.Context, dir, src, want, keep string, foreign bool) (Replacement, error) {
 	live := databasePath(dir)
 	staged := live + ".staged"
-	if err := sqlitedb.MakeDir(filepath.Dir(live)); err != nil {
+	if err := sqlitedb.MakeDir(ctx, filepath.Dir(live)); err != nil {
 		return Replacement{}, err
 	}
 	if err := removeLeftovers(staged); err != nil {
@@ -173,7 +173,7 @@ func Replace(ctx context.Context, dir, src, want, keep string, foreign bool) (Re
 // already the published image, it records instead that what it replaced is
 // lost, and reports that.
 func save(ctx context.Context, dir, keep string, published bool) (bool, error) {
-	if err := sqlitedb.MakeDir(keep); err != nil {
+	if err := sqlitedb.MakeDir(ctx, keep); err != nil {
 		return false, err
 	}
 	rec, err := readKept(keep)

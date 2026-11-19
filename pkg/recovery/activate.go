@@ -165,7 +165,7 @@ func replaceStore(ctx context.Context, dir, staging, sum string, record activati
 		return false, err
 	}
 	rollback := filepath.Join(dir, rollbackDir, record.Generation)
-	if err := sqlitedb.MakeDir(rollback); err != nil {
+	if err := sqlitedb.MakeDir(ctx, rollback); err != nil {
 		return false, err
 	}
 	if err := writeRecord(ctx, filepath.Join(rollback, rollbackFile), record, "rollback record"); err != nil {

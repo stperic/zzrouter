@@ -192,7 +192,8 @@ func crashAt(t *testing.T, dir, staging, step string, o recovery.ActivateOptions
 }
 
 // TestRecoveryActivateTellsWhatItKept: a staging directory inside the
-// installation is refused at restore time with nothing written; a rollback
+// installation, also through a link, is refused at restore time with nothing
+// written; a rollback
 // whose staging directory is gone does not claim to keep it; and an activation
 // finished after its pending rollback directory was deleted says the previous
 // store was not kept.
@@ -206,6 +207,16 @@ func TestRecoveryActivateTellsWhatItKept(t *testing.T) {
 	require.Equal(t, recovery.StagingInvalid, refusal.Reason)
 	require.Equal(t, installation, treeOf(t, dir), "nothing written")
 	require.NoDirExists(t, filepath.Join(dir, "staged"))
+	if runtime.GOOS != "windows" {
+		// A link outside the installation to a directory inside it, as the
+		// staging directory's parent.
+		link := filepath.Join(t.TempDir(), "link")
+		require.NoError(t, os.Symlink(filepath.Join(dir, "providers"), link))
+		_, err = runRecovery(t, dir, "restore", archive, "--to", filepath.Join(link, "staged"))
+		require.ErrorAs(t, err, &refusal)
+		require.Equal(t, recovery.StagingInvalid, refusal.Reason)
+		require.Equal(t, installation, treeOf(t, dir), "nothing written through the link")
+	}
 
 	staging := filepath.Join(t.TempDir(), "staged")
 	_, err = runRecovery(t, dir, "restore", archive, "--to", staging)

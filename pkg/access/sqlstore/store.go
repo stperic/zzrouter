@@ -238,7 +238,7 @@ func teamCheck(records map[string]*teams.Team) people.TeamCheck {
 // ensureFile restricts the access directory and returns the database path,
 // publishing an empty database on first start.
 func ensureFile(ctx context.Context, dir string) (string, error) {
-	if err := sqlitedb.MakeDir(filepath.Join(dir, "access")); err != nil {
+	if err := sqlitedb.MakeDir(ctx, filepath.Join(dir, "access")); err != nil {
 		return "", err
 	}
 	path := databasePath(dir)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -312,4 +313,32 @@ func TestGiveOwnerReportsWhatItGave(t *testing.T) {
 	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "absent")))
 	require.Equal(t, []string{"owned sub, sub/file"}, steps, "a call that gave nothing reports nothing")
 	require.ErrorIs(t, sqlitedb.GiveOwner(ctx, filepath.Join(dir, "absent"), filepath.Join(dir, "sub")), os.ErrNotExist, "the owner is the installation directory's")
+}
+
+// TestMakeDirSyncsEveryLevelItCreates: each missing level is created, made
+// owner-only and its parent synced, top down, before the next; an existing
+// directory reports nothing, and a file on the way is refused. The step comes
+// right after the level's parent was synced: this pins the order of the calls,
+// not what reaches the disk, which no test without a power cut can see.
+func TestMakeDirSyncsEveryLevelItCreates(t *testing.T) {
+	root := t.TempDir()
+	var steps []string
+	ctx := sqlitedb.WithStep(t.Context(), func(step string) { steps = append(steps, step) })
+	leaf := filepath.Join(root, "a", "b", "c")
+	require.NoError(t, sqlitedb.MakeDir(ctx, leaf))
+	require.Equal(t, []string{"made a", "made b", "made c"}, steps)
+	for _, level := range []string{filepath.Join(root, "a"), filepath.Join(root, "a", "b"), leaf} {
+		if runtime.GOOS != "windows" {
+			info, err := os.Stat(level)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o700), info.Mode().Perm(), level)
+		}
+	}
+	steps = nil
+	require.NoError(t, sqlitedb.MakeDir(ctx, leaf))
+	require.Empty(t, steps, "nothing created, nothing reported")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "file"), nil, 0o600))
+	require.Error(t, sqlitedb.MakeDir(ctx, filepath.Join(root, "file", "x")))
+	require.ErrorContains(t, sqlitedb.MakeDir(ctx, filepath.Join(root, "file")), "is not a directory")
+	require.Empty(t, steps)
 }
