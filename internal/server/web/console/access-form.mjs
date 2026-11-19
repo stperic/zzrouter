@@ -22,10 +22,10 @@ export function editableValues(record, type) {
 export const limitSummary = record => facts(LIMITS.map(([key, label]) => [label, Number(record[key]) > 0 ? Number(record[key]).toLocaleString() : key === 'default_max_tokens' ? 'Automatic estimate' : 'No limit']));
 
 export function accessForm(p, type, record, options, reload) {
-  const { teams, catalog = [], models = [], groups = [] } = options;
-  const readOwner = options.readOwner || p;
+  const { catalog = [], route } = options;
   const isKey = type === 'keys';
   const personal = !isKey && record?.kind === 'personal';
+  const routeOnly = route && record;
   const own = record && p.identity.is_virtual && (isKey ? record.id === p.identity.id : record.id === p.identity.team_id);
   const panel = el('section', { class: 'access-editor' }, el('h2', {}, record ? record.name : isKey ? 'Create a named key' : 'Create a shared team'));
   const feedback = el('div', { 'aria-live': 'polite' });
@@ -37,87 +37,19 @@ export function accessForm(p, type, record, options, reload) {
   const form = el('form', { class: 'entity-editor' });
   const draft = p.trackDraft?.(form);
   const group = el('fieldset', { 'data-protected-actions': true });
-  const submit = el('button', { type: 'submit', class: 'primary', 'data-protected-actions': true }, record ? 'Save changes' : isKey ? 'Create key' : 'Create team');
+  const submit = el('button', { type: 'submit', class: 'primary', 'data-protected-actions': true }, routeOnly ? 'Save route access' : record ? 'Save changes' : isKey ? 'Create key' : 'Create team');
   const setDisabled = disabled => { group.disabled = disabled; submit.disabled = disabled; };
   const fields = new Map();
   const validation = formFeedback(form, feedback, key => fields.get(key) || fields.get(String(key).split(/[.[]/, 1)[0]));
-  const add = (key, label, element, hint) => { fields.set(key, element); return field(label, element, hint); };
-  const name = input('name', before.name, { required: true, placeholder: isKey ? 'e.g. Code editor' : 'e.g. Engineering' });
-  const id = input('id', record?.id || '', { required: true, readOnly: !!record });
-  let customID = !!record;
-  id.addEventListener('input', () => { customID = true; });
-  name.addEventListener('input', () => { if (!customID) id.value = name.value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (name.value.trim() && !id.value) identity.setAttribute('open', ''); });
-  group.append(add('name', 'Name', name, isKey ? 'Shown to clients and in the network overview.' : 'A shared policy and budget for its member keys.'));
-  const identity = el('details', { class: 'access-section' }, el('summary', {}, 'Identifier & description'), add('id', 'ID', id, 'Generated from the name. Enter an ID if the name uses no Latin letters or digits. Stable after creation.'));
-  id.addEventListener('invalid', () => identity.setAttribute('open', ''));
-  const inherited = el('div', { class: 'inherited-policy' });
-  const providers = isKey ? null : providerFields(before, catalog, options.catalogUnavailable);
-  const teamRole = add('team_role', 'Team role', select('team_role', [['member', 'Member'], ['owner', 'Owner']], 'member'));
-  const showInherited = () => {
-    const value = record?.team_id || fields.get('team_id')?.value;
-    const team = teams.find(team => team.id === value);
-    teamRole.hidden = !value;
-    inherited.replaceChildren();
-    if (team) {
-      inherited.append(el('h3', {}, `${team.name} policy`), policySummary(team, catalog), budgetUsage(readOwner, 'teams', team, { compact: true }), el('details', {}, el('summary', {}, 'Usage limits'), limitSummary(team)), text('Managed in Teams. Policy changes apply to every key in this team.', 'muted'));
-      if (team.kind === 'personal') inherited.append(message('This key uses a personal team. Create a replacement key assigned to a shared team to configure provider access and limits.'));
-    }
-    else inherited.append(text(value ? 'Team policy unavailable. Reload before creating a key.' : 'Choose a team to preview its access and shared budget.', 'muted'));
-  };
-  if (isKey) {
-    identity.append(add('description', 'Description', input('description', before.description)));
-    if (!record) {
-      const choice = select('team_id', [['', 'Choose a team…'], ...teams.filter(team => team.kind === 'shared' && !team.suspended).map(team => [team.id, team.name])], '');
-      choice.required = true;
-      choice.addEventListener('change', showInherited);
-      group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Team & access'), add('team_id', 'Team', choice, 'Provider access, budgets and usage limits are managed by the team.'), button('+ Create shared team', () => options.createTeam(), 'link'), inherited));
-    } else group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Inherited team access'), inherited, facts([['Team role', record.team_role || 'Member']]), text('Team membership is fixed. Create a replacement key to change its team.', 'muted')));
-    showInherited();
-  }
-  const routes = isKey ? null : routeFields(before, groups, options.modelsUnavailable);
-  const modelAccess = isKey ? null : modelFields(before, models, groups, options.modelsUnavailable);
-  const budget = isKey ? null : budgetFields(before);
-  if (!isKey) {
-    fields.set('route_access', routes.control); fields.set('provider_access', providers.control); fields.set('allowed_models', modelAccess.control);
-    for (const [key, control] of Object.entries(budget.fields)) fields.set(key, control);
-    group.append(el('section', { class: 'access-group' }, el('h3', {}, 'Access'),
-      text(`Shared by ${options.memberCount || 0} existing member keys. Route, provider and model permissions all apply.`, 'muted'), routes.root, providers.root,
-      el('details', { class: 'access-section', open: before.allowed_models.length > 0 }, el('summary', {}, 'Restrict specific models'), modelAccess.root)), budget.root);
-  }
-  if (isKey) group.append(el('section', { class: 'access-section' }, add('expires_at', 'Expiry (optional)', input('expires_at', '', { type: 'datetime-local' }), record?.expires_at ? `Current: ${date(record.expires_at)}. Leave blank to keep it. Existing expiry cannot be cleared.` : 'Leave blank for no expiry.')));
-  const advanced = el('details', { class: 'access-section' }, el('summary', {}, isKey ? 'Advanced permissions' : 'Advanced usage limits'));
-  if (isKey) {
-    advanced.append(add('role', 'Key role', select('role', [['user', 'User: inference and models'], ['admin', 'Administrator: management']], before.role)), text('An administrator can change access policies. Use User for clients.', 'muted'));
-    if (!record) advanced.append(teamRole);
-  } else {
-    const limits = el('div', { class: 'form-grid access-limits' });
-    for (const [key, label] of LIMITS) limits.append(add(key, label, input(key, before[key], { type: 'number', min: '0', step: '1', required: true })));
-    advanced.append(text('Zero means no limit. Output-token reservation estimates budget usage; it does not cap model output.', 'muted'), limits);
-  }
-  group.append(identity, advanced);
-  if (isKey && record && (record.spend_limit > 0 || LIMITS.some(([key]) => record[key] > 0))) {
-    group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Additional key limits'), text('These existing settings still apply alongside the team policy. They are read-only here. New console keys use team limits.', 'muted'), budgetUsage(readOwner, 'keys', record), limitSummary(record)));
-  }
+  let controls;
+  if (routeOnly) {
+    const routes = routeFields(record, options.groups, false, route);
+    fields.set('route_access', routes.control);
+    group.append(routes.root);
+    controls = { read: () => ({ route_access: routes.read() }), focus: () => routes.control.focus() };
+  } else controls = accessFields(p, type, record, options, before, group, fields);
+  const { read, ...formActions } = controls;
   let blocked = false;
-  const read = () => {
-    const result = { name: fields.get('name').value.trim() };
-    if (isKey) {
-      result.description = fields.get('description').value;
-      result.role = fields.get('role').value;
-      const expiry = fields.get('expires_at').value;
-      result.expires_at = expiry ? new Date(expiry).toISOString() : before.expires_at;
-      if (!record) {
-        const team = fields.get('team_id').value;
-        if (!teams.some(item => item.id === team && item.kind === 'shared' && !item.suspended)) throw invalidField('Choose a shared team, or create one for this key.', fields.get('team_id'));
-        result.team_id = team; result.team_role = fields.get('team_role').value;
-      }
-    } else {
-      Object.assign(result, { route_access: routes.read(), provider_access: providers.read(), allowed_models: modelAccess.read(), ...budget.read() });
-      for (const [key] of LIMITS) result[key] = Number(fields.get(key).value);
-    }
-    if (!record) { result.id = fields.get('id').value.trim(); if (!result.expires_at) delete result.expires_at; }
-    return result;
-  };
   const endpoint = record ? `/${type}/${encodeURIComponent(record.id)}` : `/${type}`;
   const mutate = async (method, body, suffix = '', refreshIdentity = false) => {
     if (!p.current() || blocked || group.disabled || !p.api.canChange()) return;
@@ -183,7 +115,7 @@ export function accessForm(p, type, record, options, reload) {
     const refreshIdentity = own && (isKey ? patch.role !== undefined || patch.expires_at !== undefined : patch.route_access !== undefined || patch.provider_access !== undefined || patch.allowed_models !== undefined);
     await mutate(record ? 'PATCH' : 'POST', patch, '', refreshIdentity);
   };
-  if (record) {
+  if (record && !routeOnly) {
     group.append(el('section', { class: 'access-section danger-zone' }, el('h3', {}, 'Lifecycle'), text(isKey ? 'Rotating or revoking a key affects every client using it.' : `Changes affect ${options.memberCount || 0} member keys. A team must be empty before deletion.`, 'muted'), actions(
       button(record.suspended ? 'Resume' : 'Suspend', async () => {
         if (!confirm(`${record.suspended ? 'Resume' : 'Suspend'} ${record.name}?${own ? ' This affects your current browser access.' : ''}`)) return;
@@ -203,8 +135,91 @@ export function accessForm(p, type, record, options, reload) {
   form.append(feedback, group, footer);
   form.addEventListener('submit', event => { void save(event); });
   panel.append(form);
+  return { root: panel, draft, ...formActions };
+}
+
+function accessFields(p, type, record, options, before, group, fields) {
+  const { teams, catalog = [], models = [], groups = [] } = options;
+  const readOwner = options.readOwner || p;
+  const isKey = type === 'keys';
+  const add = (key, label, element, hint) => { fields.set(key, element); return field(label, element, hint); };
+  const name = input('name', before.name, { required: true, placeholder: isKey ? 'e.g. Code editor' : 'e.g. Engineering' });
+  const id = input('id', record?.id || '', { required: true, readOnly: !!record });
+  let customID = !!record;
+  id.addEventListener('input', () => { customID = true; });
+  name.addEventListener('input', () => { if (!customID) id.value = name.value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); if (name.value.trim() && !id.value) identity.setAttribute('open', ''); });
+  group.append(add('name', 'Name', name, isKey ? 'Shown to clients and in the network overview.' : 'A shared policy and budget for its member keys.'));
+  const identity = el('details', { class: 'access-section' }, el('summary', {}, 'Identifier & description'), add('id', 'ID', id, 'Generated from the name. Enter an ID if the name uses no Latin letters or digits. Stable after creation.'));
+  id.addEventListener('invalid', () => identity.setAttribute('open', ''));
+  const inherited = el('div', { class: 'inherited-policy' });
+  const providers = isKey ? null : providerFields(before, catalog, options.catalogUnavailable);
+  const teamRole = add('team_role', 'Team role', select('team_role', [['member', 'Member'], ['owner', 'Owner']], 'member'));
+  const showInherited = () => {
+    const value = record?.team_id || fields.get('team_id')?.value;
+    const team = teams.find(team => team.id === value);
+    teamRole.hidden = !value;
+    inherited.replaceChildren();
+    if (team) {
+      inherited.append(el('h3', {}, `${team.name} policy`), policySummary(team, catalog), budgetUsage(readOwner, 'teams', team, { compact: true }), el('details', {}, el('summary', {}, 'Usage limits'), limitSummary(team)), text('Managed in Teams. Policy changes apply to every key in this team.', 'muted'));
+      if (team.kind === 'personal') inherited.append(message('This key uses a personal team. Create a replacement key assigned to a shared team to configure provider access and limits.'));
+    }
+    else inherited.append(text(value ? 'Team policy unavailable. Reload before creating a key.' : 'Choose a team to preview its access and shared budget.', 'muted'));
+  };
+  if (isKey) {
+    identity.append(add('description', 'Description', input('description', before.description)));
+    if (!record) {
+      const choice = select('team_id', [['', 'Choose a team…'], ...teams.filter(team => team.kind === 'shared' && !team.suspended).map(team => [team.id, team.name])], '');
+      choice.required = true;
+      choice.addEventListener('change', showInherited);
+      group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Team & access'), add('team_id', 'Team', choice, 'Provider access, budgets and usage limits are managed by the team.'), button('+ Create shared team', () => options.createTeam(), 'link'), inherited));
+    } else group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Inherited team access'), inherited, facts([['Team role', record.team_role || 'Member']]), text('Team membership is fixed. Create a replacement key to change its team.', 'muted')));
+    showInherited();
+  }
+  const routes = isKey ? null : routeFields(record, groups, options.modelsUnavailable, options.route);
+  const modelAccess = isKey ? null : modelFields(before, models, groups, options.modelsUnavailable);
+  const budget = isKey ? null : budgetFields(before);
+  if (!isKey) {
+    fields.set('route_access', routes.control); fields.set('provider_access', providers.control); fields.set('allowed_models', modelAccess.control);
+    for (const [key, control] of Object.entries(budget.fields)) fields.set(key, control);
+    group.append(el('section', { class: 'access-group' }, el('h3', {}, 'Access'),
+      text(`Shared by ${options.memberCount || 0} existing member keys. Route, provider and model permissions all apply.`, 'muted'), routes.root, providers.root,
+      el('details', { class: 'access-section', open: before.allowed_models.length > 0 }, el('summary', {}, 'Restrict specific models'), modelAccess.root)), budget.root);
+  }
+  if (isKey) group.append(el('section', { class: 'access-section' }, add('expires_at', 'Expiry (optional)', input('expires_at', '', { type: 'datetime-local' }), record?.expires_at ? `Current: ${date(record.expires_at)}. Leave blank to keep it. Existing expiry cannot be cleared.` : 'Leave blank for no expiry.')));
+  const advanced = el('details', { class: 'access-section' }, el('summary', {}, isKey ? 'Advanced permissions' : 'Advanced usage limits'));
+  if (isKey) {
+    advanced.append(add('role', 'Key role', select('role', [['user', 'User: inference and models'], ['admin', 'Administrator: management']], before.role)), text('An administrator can change access policies. Use User for clients.', 'muted'));
+    if (!record) advanced.append(teamRole);
+  } else {
+    const limits = el('div', { class: 'form-grid access-limits' });
+    for (const [key, label] of LIMITS) limits.append(add(key, label, input(key, before[key], { type: 'number', min: '0', step: '1', required: true })));
+    advanced.append(text('Zero means no limit. Output-token reservation estimates budget usage; it does not cap model output.', 'muted'), limits);
+  }
+  group.append(identity, advanced);
+  if (isKey && record && (record.spend_limit > 0 || LIMITS.some(([key]) => record[key] > 0))) {
+    group.append(el('section', { class: 'access-section' }, el('h3', {}, 'Additional key limits'), text('These existing settings still apply alongside the team policy. They are read-only here. New console keys use team limits.', 'muted'), budgetUsage(readOwner, 'keys', record), limitSummary(record)));
+  }
+  const read = () => {
+    const result = { name: fields.get('name').value.trim() };
+    if (isKey) {
+      result.description = fields.get('description').value;
+      result.role = fields.get('role').value;
+      const expiry = fields.get('expires_at').value;
+      result.expires_at = expiry ? new Date(expiry).toISOString() : before.expires_at;
+      if (!record) {
+        const team = fields.get('team_id').value;
+        if (!teams.some(item => item.id === team && item.kind === 'shared' && !item.suspended)) throw invalidField('Choose a shared team, or create one for this key.', fields.get('team_id'));
+        result.team_id = team; result.team_role = fields.get('team_role').value;
+      }
+    } else {
+      Object.assign(result, { route_access: routes.read(), provider_access: providers.read(), allowed_models: modelAccess.read(), ...budget.read() });
+      for (const [key] of LIMITS) result[key] = Number(fields.get(key).value);
+    }
+    if (!record) { result.id = fields.get('id').value.trim(); if (!result.expires_at) delete result.expires_at; }
+    return result;
+  };
   return {
-    root: panel, draft, focus: () => name.focus(), focusTeam: () => fields.get('team_id')?.focus(),
+    read, focus: () => name.focus(), focusTeam: () => fields.get('team_id')?.focus(),
     selectTeam: team => { teams.push(team); fields.get('team_id').append(el('option', { value: team.id }, team.name)); fields.get('team_id').value = team.id; showInherited(); },
     refreshTeams: fresh => {
       teams.splice(0, teams.length, ...fresh);
