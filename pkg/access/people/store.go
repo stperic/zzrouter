@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -134,18 +135,19 @@ type Store struct {
 
 // New builds the transitions over the owner's Mutate and View.
 func New(options Options) (*Store, error) {
-	if options.Mutate == nil || options.View == nil || options.ValidateExternalIssuer == nil || options.ValidateTeam == nil {
-		return nil, fmt.Errorf("people requires state access and authority validators")
+	if options.Mutate == nil || options.View == nil || options.ValidateExternalIssuer == nil {
+		return nil, fmt.Errorf("people requires state access and an issuer validator")
 	}
 	return &Store{options: options, passwords: make(chan struct{}, 2), attempts: make(map[string]loginAttempt)}, nil
 }
 
-// view reads the owner's current state; none reads as empty.
-func (s *Store) view() *State {
-	if state := s.options.View(); state != nil {
-		return state
+// view reads the owner's current state and its team check; none reads as empty.
+func (s *Store) view() (*State, TeamCheck) {
+	state, teams := s.options.View()
+	if state == nil {
+		state = &State{}
 	}
-	return &State{}
+	return state, teams
 }
 
 // Initialized reports the permanent owner-claim marker.
@@ -172,14 +174,23 @@ func (s *State) Owner() *Person {
 	return s.Person(s.ownerID)
 }
 
-// People returns public accounts ordered by username.
-func (s *State) People() []Person {
-	items := []Person{}
-	if s != nil {
+// All yields every public account, in no particular order.
+func (s *State) All() iter.Seq[Person] {
+	return func(yield func(Person) bool) {
+		if s == nil {
+			return
+		}
 		for _, record := range s.people {
-			items = append(items, record.Person)
+			if !yield(record.Person) {
+				return
+			}
 		}
 	}
+}
+
+// People returns public accounts ordered by username.
+func (s *State) People() []Person {
+	items := slices.AppendSeq([]Person{}, s.All())
 	slices.SortFunc(items, func(a, b Person) int { return strings.Compare(a.Username, b.Username) })
 	return items
 }
@@ -221,12 +232,6 @@ func (s *State) TeamImpact(id string) TeamDependencies {
 		}
 	}
 	return result
-}
-
-// OwnerTeam reports whether suspension or deletion would lock out the owner.
-func (s *State) OwnerTeam(id string) bool {
-	owner := s.Owner()
-	return owner != nil && owner.TeamID == id
 }
 
 // Progress returns the persisted onboarding state.
@@ -308,7 +313,7 @@ func publicGrant(record GrantRecord) Grant {
 
 // UpdateProgress saves navigation choices without accepting success evidence.
 func (s *Store) UpdateProgress(ctx context.Context, update ProgressUpdate) error {
-	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		if update.Step != nil {
 			switch *update.Step {
 			case "", "owner", "provider", "model", "test", "app", "complete":
@@ -328,7 +333,7 @@ func (s *Store) UpdateProgress(ctx context.Context, update ProgressUpdate) error
 
 // MarkResponse records successful routed inference by the initial owner.
 func (s *Store) MarkResponse(ctx context.Context, personID string) error {
-	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		if !state.initialized || state.ownerID != personID {
 			return audit.Event{}, ErrNotFound
 		}
@@ -341,7 +346,7 @@ func (s *Store) MarkResponse(ctx context.Context, personID string) error {
 
 // MarkAppConnected records a successful inference request from an application key.
 func (s *Store) MarkAppConnected(ctx context.Context) error {
-	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		state.progress.AppConnected = true
 		state.progress.UpdatedAt = utils.NowUTC()
 		return audit.Event{}, nil

@@ -10,12 +10,18 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/common/mcp/oauth"
+	"github.com/stperic/zzrouter/pkg/access"
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/access/people"
+	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -245,4 +251,70 @@ func TestIntegrationPeopleSetupRequiresInstallationAuthority(t *testing.T) {
 	identity := peopleCall[browserIdentity](t, visitor, "GET", "/me", nil)
 	require.Equal(t, RoleUser, identity.Role)
 	require.False(t, s.accessStore.Snapshot().Initialized())
+}
+
+// armedState blocks the first snapshot read after it is armed until released.
+type armedState struct {
+	access.Store
+	armed            atomic.Bool
+	entered, release chan struct{}
+}
+
+func (a *armedState) Snapshot() *access.Snapshot {
+	if a.armed.CompareAndSwap(true, false) {
+		close(a.entered)
+		<-a.release
+	}
+	return a.Store.Snapshot()
+}
+
+// The OAuth authority and a store transaction never nest. The authority signs
+// a person in, its own locked session commit and Resolve included, while
+// another commit holds the store's writer gate; and the store validates a
+// grant's issuer inside its commit while the authority holds its own lock.
+func TestOAuthAuthorityAndStoreTransactionsNeverNest(t *testing.T) {
+	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
+	// Resolve reads the access core, so a core over this state can stop the authority inside its lock.
+	state := &armedState{Store: s.accessStore, entered: make(chan struct{}), release: make(chan struct{})}
+	s.access.core = control.NewCore(buildStaticKeySet(s.config), state, nil, nil, nil)
+	_, person := createBrowserOwner(t, s, endpoint)
+	browser := anonymousPeopleBrowser(t, endpoint)
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	open := func() { releaseOnce.Do(func() { close(release) }) }
+	held := make(chan error, 1)
+	go func() {
+		_, err := s.accessStore.UpdateTeam(context.Background(), person.TeamID, func(*teams.Team) error {
+			close(entered)
+			<-release
+			return nil
+		}, audit.Event{})
+		held <- err
+	}()
+	<-entered
+	watchdog := time.AfterFunc(10*time.Second, open)
+	status, body := browser.call(t, http.MethodPost, "/zzrouter/v1/session/password", map[string]string{"username": "owner", "password": personPassword}, nil)
+	require.True(t, watchdog.Stop(), "the sign-in waited for the open store transaction")
+	require.Equal(t, http.StatusOK, status, string(body))
+	open()
+	require.NoError(t, <-held)
+
+	ref, err := s.access.core.Reference(TestAdminKey)
+	require.NoError(t, err)
+	issuer, err := peopleIssuer(ref)
+	require.NoError(t, err)
+	owner, err := s.access.core.PersonReference(s.accessStore.Snapshot().Owner())
+	require.NoError(t, err)
+	var stateOnce sync.Once
+	resume := func() { stateOnce.Do(func() { close(state.release) }) }
+	defer resume()
+	state.armed.Store(true)
+	// Resolving a person reads the snapshot, so Connections stops inside the authority's lock.
+	go func() { _, _ = s.access.oauth.Connections(context.Background(), owner) }()
+	<-state.entered
+	watchdog = time.AfterFunc(10*time.Second, resume)
+	_, err = s.accessStore.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSession, Issuer: issuer, TTL: time.Minute})
+	require.True(t, watchdog.Stop(), "the commit waited for the authority's lock")
+	require.NoError(t, err)
 }

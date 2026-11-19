@@ -456,7 +456,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			}
 			// A refusal ends construction: the node exits with its reason and next action.
 			store, err := sqlstore.Open(context.Background(), configDir, sqlstore.Options{
-				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam, Fatal: s.fail,
+				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, Fatal: s.fail,
 			})
 			if err != nil {
 				return nil, err

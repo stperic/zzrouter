@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/audit"
 )
@@ -13,6 +14,11 @@ import (
 const maxAuditPage = 100
 
 var auditPage = auditTable.selectAll + " WHERE seq < ? ORDER BY seq DESC LIMIT ?"
+
+// auditAppend numbers a row one past the last, so seq counts rows without
+// gaps in the order commits list them; the commit sequence counts commits.
+var auditAppend = "INSERT INTO audit_events (" + auditTable.columns + ") SELECT coalesce(max(seq), 0) + 1" +
+	strings.Repeat(", ?", len(auditCols(&auditRow{}))-1) + " FROM audit_events"
 
 // pageCursor is the position after a page. The generation names the stored
 // content, so a cursor fails instead of skipping events once that is replaced.

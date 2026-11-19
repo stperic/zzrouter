@@ -153,7 +153,7 @@ func writeTeamsError(c *gin.Context, err error) {
 		Conflict(c, err.Error())
 	case errors.Is(err, teams.ErrTeamHasMembers):
 		Conflict(c, err.Error())
-	case errors.Is(err, ErrPersonalTeamImmutable):
+	case errors.Is(err, teams.ErrPersonalTeamImmutable):
 		Conflict(c, err.Error())
 	case errors.Is(err, people.ErrOwnerProtected):
 		Forbidden(c, "The owner's team cannot be suspended")

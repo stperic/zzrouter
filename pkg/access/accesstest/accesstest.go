@@ -4,10 +4,12 @@ package accesstest
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +26,7 @@ import (
 )
 
 // Harness is one empty store under test. Its store has people, opened with
-// ValidateExternalIssuer and ValidateTeam below.
+// ValidateExternalIssuer below.
 type Harness struct {
 	Store          access.Store
 	Reopen         func() access.Store // closes Store and opens its persisted state again
@@ -56,6 +58,12 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"CanceledContextChangesNothing", testCanceledContext},
 		{"ClosedStoreRefusesWrites", testClosedStore},
 		{"ConcurrentCreatesOfOneKey", testConcurrentCreates},
+		{"KeyWithItsPersonalTeam", testKeyWithPersonalTeam},
+		{"RecordRulesHoldAcrossRecords", testRecordRules},
+		{"TeamDeletionAndUpdateRefusals", testTeamRefusals},
+		{"Membership", testMembership},
+		{"KeyCreationRacesTeamDeletion", testKeyCreationRacesTeamDeletion},
+		{"AuditRowsOfOneCommitPageInOrder", testAuditRowsOfOneCommit},
 		{"ReopenRoundTrip", testReopenRoundTrip},
 		{"PeopleOwnerSetup", testPeopleOwnerSetup},
 		{"PeopleInvitation", testPeopleInvitation},
@@ -69,6 +77,10 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"PeopleAndKeyWritersLoseNothing", testPeopleAndKeyWriters},
 		{"PeopleCommitNotifies", testPeopleCommitNotifies},
 		{"PeopleSnapshotsDoNotChange", testPeopleSnapshotIsolation},
+		{"SetupIssuesIntoOneWorkspace", testIssueSetup},
+		{"ConcurrentSetupIssuanceMakesOneWorkspace", testConcurrentIssueSetup},
+		{"InvitationRacesTeamDeletion", testInvitationRacesTeamDeletion},
+		{"PeopleJoinOnlyActiveSharedTeams", testPeopleAdmission},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -142,9 +154,10 @@ func newKey(teamID string) keys.VirtualKey {
 
 func sharedTeam() teams.Team { return teams.Team{Name: "Engineering", Kind: teams.KindShared} }
 
+// createKey creates a key with its personal team.
 func createKey(t *testing.T, s access.Store, id string) string {
 	t.Helper()
-	_, raw, err := s.CreateKey(t.Context(), id, newKey("team"), audit.Event{})
+	_, raw, err := s.CreateKey(t.Context(), id, newKey(""), audit.Event{})
 	require.NoError(t, err)
 	return raw
 }
@@ -166,6 +179,8 @@ func keyIDs(snap *access.Snapshot, teamID string) []string {
 
 func testKeyLifecycle(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "team", sharedTeam())
+	createTeam(t, s, "other", sharedTeam())
 	created, raw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
 	require.NoError(t, err)
 	assert.Contains(t, raw, keys.KeyPrefix)
@@ -183,7 +198,8 @@ func testKeyLifecycle(t *testing.T, h Harness) {
 	id, matched = s.Snapshot().ValidateRawKey("zzr_wrong")
 	assert.Empty(t, id)
 	assert.Nil(t, matched)
-	createKey(t, s, "writer")
+	_, _, err = s.CreateKey(t.Context(), "writer", newKey("team"), audit.Event{})
+	require.NoError(t, err)
 	_, _, err = s.CreateKey(t.Context(), "other-team", newKey("other"), audit.Event{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"reader", "writer"}, keyIDs(s.Snapshot(), "team"))
@@ -207,6 +223,7 @@ func testKeyLifecycle(t *testing.T, h Harness) {
 
 func testKeyStoreOwnedFields(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "team", sharedTeam())
 	input := newKey("team")
 	input.UUID, input.CreatedBy = "caller-uuid", "creator"
 	created, _, err := s.CreateKey(t.Context(), "reader", input, audit.Event{})
@@ -242,7 +259,7 @@ func testKeyStoreOwnedFields(t *testing.T, h Harness) {
 
 func testKeyRotation(t *testing.T, h Harness) {
 	s := h.Store
-	created, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
+	created, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey(""), audit.Event{})
 	require.NoError(t, err)
 	before := s.Snapshot()
 	rotated, newRaw, err := s.RotateKey(t.Context(), "reader", audit.Event{})
@@ -303,19 +320,27 @@ func testInvalidRecords(t *testing.T, h Harness) {
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
 	rec := observe(t, h)
-	key := func(apply func(*keys.VirtualKey)) keys.VirtualKey { k := newKey("team"); apply(&k); return k }
+	key := func(apply func(*keys.VirtualKey)) keys.VirtualKey { k := newKey("eng"); apply(&k); return k }
 	team := func(apply func(*teams.Team)) teams.Team { team := sharedTeam(); apply(&team); return team }
 	for name, run := range map[string]func() error{
 		"create key without name": func() error {
 			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.Name = "" }), audit.Event{})
 			return err
 		},
-		"create key without team": func() error {
-			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.TeamID = "" }), audit.Event{})
-			return err
-		},
 		"create key without team role": func() error {
 			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.TeamRole = "" }), audit.Event{})
+			return err
+		},
+		"create key with an unknown team role": func() error {
+			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.TeamRole = "viewer" }), audit.Event{})
+			return err
+		},
+		"create key without role": func() error {
+			_, _, err := s.CreateKey(t.Context(), "bad", key(func(k *keys.VirtualKey) { k.Role = "" }), audit.Event{})
+			return err
+		},
+		"update key to an unknown role": func() error {
+			_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error { k.Role = "root"; return nil }, audit.Event{})
 			return err
 		},
 		"update key to no name": func() error {
@@ -355,6 +380,18 @@ func testInvalidRecords(t *testing.T, h Harness) {
 		},
 		"create team of unknown kind": func() error {
 			_, err := s.CreateTeam(t.Context(), "bad", team(func(team *teams.Team) { team.Kind = "bogus" }), audit.Event{})
+			return err
+		},
+		"create shared team with the personal prefix": func() error {
+			_, err := s.CreateTeam(t.Context(), teams.PersonalID("squatter"), sharedTeam(), audit.Event{})
+			return err
+		},
+		"create personal team without the personal prefix": func() error {
+			_, err := s.CreateTeam(t.Context(), "bad", team(func(team *teams.Team) { team.Kind = teams.KindPersonal }), audit.Event{})
+			return err
+		},
+		"create personal team without its key": func() error {
+			_, err := s.CreateTeam(t.Context(), teams.PersonalID("nobody"), team(func(team *teams.Team) { team.Kind = teams.KindPersonal }), audit.Event{})
 			return err
 		},
 		"create team with invalid routes": func() error {
@@ -412,7 +449,7 @@ func testInvalidRecords(t *testing.T, h Harness) {
 func testTimeBounds(t *testing.T, h Harness) {
 	bounds := map[string]time.Time{"last": time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC), "first": time.Date(1, 2, 3, 4, 5, 6, 0, time.UTC)}
 	for id, at := range bounds {
-		key := newKey("team")
+		key := newKey("")
 		key.ExpiresAt = &at
 		_, _, err := h.Store.CreateKey(t.Context(), id, key, audit.Event{})
 		require.NoError(t, err, id)
@@ -532,6 +569,7 @@ func testHasGatedTeamDuringBlockedUpdate(t *testing.T, h Harness) {
 
 func testKeySnapshotIsolation(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "team", sharedTeam())
 	expires, suspended := utils.NowUTC().Add(time.Hour), utils.NowUTC()
 	inputExpires, inputSuspended := expires, suspended
 	input := newKey("team")
@@ -622,59 +660,66 @@ func testTeamSnapshotIsolation(t *testing.T, h Harness) {
 func testCommitNotifications(t *testing.T, h Harness) {
 	s := h.Store
 	rec, second := observe(t, h), observe(t, h)
-	_, raw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
+	version := s.Snapshot().KeysVersion()
+	keysVersion := func(changed bool, what string) {
+		t.Helper()
+		if changed {
+			assert.NotEqual(t, version, s.Snapshot().KeysVersion(), "%s changes the keys version", what)
+		} else {
+			assert.Equal(t, version, s.Snapshot().KeysVersion(), "%s keeps the keys version, and with it warmed key caches", what)
+		}
+		version = s.Snapshot().KeysVersion()
+	}
+	createTeam(t, s, "eng", sharedTeam())
+	keysVersion(false, "a team create")
+	_, raw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
-	c := rec.lastCommit()
-	assert.True(t, c.KeysChanged)
+	keysVersion(true, "a key create")
 	assert.NotNil(t, s.Snapshot().Key("reader"))
-	_, err = s.UpdateKey(t.Context(), "reader", func(*keys.VirtualKey) error { return nil }, audit.Event{})
+	_, err = s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error { k.RPMLimit = 1; return nil }, audit.Event{})
 	require.NoError(t, err)
-	c = rec.lastCommit()
-	assert.True(t, c.KeysChanged)
+	keysVersion(true, "a key update")
 	_, _, err = s.RotateKey(t.Context(), "reader", audit.Event{})
 	require.NoError(t, err)
-	c = rec.lastCommit()
-	assert.True(t, c.KeysChanged)
+	keysVersion(true, "a key rotation")
 	id, _ := s.Snapshot().ValidateRawKey(raw)
 	assert.Empty(t, id)
-	createTeam(t, s, "eng", sharedTeam())
-	c = rec.lastCommit()
-	assert.False(t, c.KeysChanged, "a team write leaves key caches alone")
-	_, err = s.UpdateTeam(t.Context(), "eng", func(*teams.Team) error { return nil }, audit.Event{})
+	_, err = s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error { team.RPMLimit = 1; return nil }, audit.Event{})
 	require.NoError(t, err)
-	c = rec.lastCommit()
-	assert.False(t, c.KeysChanged)
+	keysVersion(false, "a team update")
+	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
+	keysVersion(false, "an audit record")
+	_, err = s.UpdateKey(t.Context(), "reader", func(*keys.VirtualKey) error { return nil }, audit.Event{})
+	require.NoError(t, err)
+	keysVersion(true, "a key update that only stamps UpdatedAt")
 	require.NoError(t, s.DeleteKey(t.Context(), "reader", audit.Event{}))
-	c = rec.lastCommit()
-	assert.True(t, c.KeysChanged)
+	keysVersion(true, "a key delete")
+	c := rec.lastCommit()
 	assert.Equal(t, []string{"reader"}, c.RemovedKeys)
-	assert.Empty(t, c.RemovedTeams)
+	assert.Empty(t, c.RemovedTeams, "a shared team stays")
 	require.NoError(t, s.DeleteTeam(t.Context(), "eng", audit.Event{}))
+	keysVersion(false, "a team delete")
 	c = rec.lastCommit()
-	assert.False(t, c.KeysChanged)
 	assert.Equal(t, []string{"eng"}, c.RemovedTeams)
 	assert.Empty(t, c.RemovedKeys)
 
 	require.ErrorIs(t, s.DeleteTeam(t.Context(), "eng", audit.Event{}), teams.ErrTeamNotFound)
 	_, commits := rec.counts()
-	assert.Equal(t, 7, commits, "one notification per committed operation, none for a refusal")
+	assert.Equal(t, 8, commits, "one notification per committed change, none for a refusal or an audit record")
 	_, otherCommits := second.counts()
 	assert.Equal(t, commits, otherCommits, "every subscriber is notified")
 }
 
 func testSubscriberReentry(t *testing.T, h Harness) {
 	s := h.Store
-	var once sync.Once
+	var first atomic.Bool
 	reentered := make(chan error, 1)
-	s.OnCommit(func(c access.Commit) {
-		if !c.KeysChanged {
-			return
-		}
-		once.Do(func() {
+	s.OnCommit(func(access.Commit) {
+		if first.CompareAndSwap(false, true) {
 			_ = s.Snapshot().Key("reader")
 			_, err := s.CreateTeam(context.Background(), "from-subscriber", sharedTeam(), audit.Event{})
 			reentered <- err
-		})
+		}
 	})
 	createKey(t, s, "reader")
 	require.NoError(t, <-reentered)
@@ -684,6 +729,11 @@ func testSubscriberReentry(t *testing.T, h Harness) {
 func testAuditEvents(t *testing.T, h Harness) {
 	s := h.Store
 	rec := observe(t, h)
+	// The store adds the team facts it decides to a key's event.
+	stamped := map[audit.Action]map[string]any{
+		audit.ActionKeyCreated: {"team_id": "eng", "team_role": string(teams.RoleMember), "created_personal": false},
+		audit.ActionKeyDeleted: {"team_id": "eng"},
+	}
 	steps := []struct {
 		ev  audit.Event
 		run func(audit.Event) error
@@ -706,12 +756,16 @@ func testAuditEvents(t *testing.T, h Harness) {
 		{event(audit.ActionTeamDeleted, "eng"), func(ev audit.Event) error { return s.DeleteTeam(t.Context(), "eng", ev) }},
 	}
 	for _, step := range steps {
+		sent := maps.Clone(step.ev.Metadata)
 		require.NoError(t, step.run(step.ev))
 		ev := rec.lastEvent()
 		assert.Equal(t, step.ev.Action, ev.Action)
 		assert.Equal(t, step.ev.Actor, ev.Actor)
 		assert.Equal(t, step.ev.Subject, ev.Subject)
-		assert.Equal(t, step.ev.Metadata, ev.Metadata)
+		want := maps.Clone(sent)
+		maps.Copy(want, stamped[step.ev.Action])
+		assert.Equal(t, want, ev.Metadata)
+		assert.Equal(t, sent, step.ev.Metadata, "the caller's metadata is not rewritten")
 	}
 	createTeam(t, s, "silent", sharedTeam())
 	events, commits := rec.counts()
@@ -729,13 +783,23 @@ func testAuditEvents(t *testing.T, h Harness) {
 
 func testPersistFailure(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "eng", sharedTeam())
 	_, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
-	createTeam(t, s, "eng", sharedTeam())
+	createKey(t, s, "solo")
 	rec := observe(t, h)
 	for name, run := range map[string]func() error{
 		"create key": func() error {
 			_, _, err := s.CreateKey(t.Context(), "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
+			return err
+		},
+		"create key with its personal team": func() error {
+			_, _, err := s.CreateKey(t.Context(), "writer", newKey(""), event(audit.ActionKeyCreated, "writer"))
+			return err
+		},
+		"delete key with its personal team": func() error { return s.DeleteKey(t.Context(), "solo", event(audit.ActionKeyDeleted, "solo")) },
+		"issue the owner setup grant with its workspace": func() error {
+			_, err := s.IssueSetup(t.Context(), people.Issuer{Reference: installation})
 			return err
 		},
 		"update key": func() error {
@@ -768,8 +832,12 @@ func testPersistFailure(t *testing.T, h Harness) {
 		id, _ := snap.ValidateRawKey(oldRaw)
 		assert.Equal(t, "reader", id, "a failed rotation keeps the old key")
 		assert.Nil(t, snap.Key("writer"))
+		assert.Nil(t, snap.Team(teams.PersonalID("writer")), "a failed key create leaves no personal team")
+		assert.NotNil(t, snap.Key("solo"))
+		assert.NotNil(t, snap.Team(teams.PersonalID("solo")), "a failed key delete keeps its personal team")
 		assert.False(t, snap.Team("eng").Suspended)
 		assert.Nil(t, snap.Team("ops"))
+		assert.Len(t, maps.Collect(snap.Teams()), 2, "a failed setup issue leaves no workspace")
 	}
 	unchanged(s.Snapshot())
 	unchanged(h.Reopen().Snapshot())
@@ -807,9 +875,9 @@ func testCanceledContext(t *testing.T, h Harness) {
 
 func testClosedStore(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "eng", sharedTeam())
 	_, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
-	createTeam(t, s, "eng", sharedTeam())
 	owner := claimOwner(t, s)
 	rec := observe(t, h)
 	last := s.Snapshot()
@@ -832,6 +900,10 @@ func testClosedStore(t *testing.T, h Harness) {
 			return err
 		},
 		"delete team": func() error { return s.DeleteTeam(t.Context(), "eng", audit.Event{}) },
+		"issue setup": func() error {
+			_, err := s.IssueSetup(t.Context(), people.Issuer{Reference: installation})
+			return err
+		},
 	} {
 		require.ErrorIs(t, run(), access.ErrClosed, name)
 	}
@@ -854,34 +926,25 @@ func testClosedStore(t *testing.T, h Harness) {
 	assert.Nil(t, snap.Team("ops"))
 }
 
+// testConcurrentCreates gives one key ID one winner, with a shared team or
+// with its personal team.
 func testConcurrentCreates(t *testing.T, h Harness) {
 	s := h.Store
+	createTeam(t, s, "team", sharedTeam())
 	rec := observe(t, h)
-	const callers = 4
-	start := make(chan struct{})
-	results := make(chan error, callers)
-	var wg sync.WaitGroup
-	for range callers {
-		wg.Go(func() {
-			<-start
-			_, _, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
-			results <- err
-		})
+	for id, teamID := range map[string]string{"shared": "team", "solo": ""} {
+		race(t, 4, func(int) error {
+			_, _, err := s.CreateKey(context.Background(), id, newKey(teamID), event(audit.ActionKeyCreated, id))
+			return err
+		}, keys.ErrKeyExists)
 	}
-	close(start)
-	wg.Wait()
-	close(results)
-	winners := 0
-	for err := range results {
-		if err == nil {
-			winners++
-			continue
-		}
-		require.ErrorIs(t, err, keys.ErrKeyExists)
-	}
-	assert.Equal(t, 1, winners)
-	_, commits := rec.counts()
-	assert.Equal(t, 1, commits)
+	events, commits := rec.counts()
+	assert.Equal(t, 2, commits)
+	assert.Equal(t, 3, events, "the personal team's event and both keys'")
+	snap := s.Snapshot()
+	assert.Equal(t, []string{"shared"}, keyIDs(snap, "team"))
+	assert.Equal(t, []string{"solo"}, keyIDs(snap, teams.PersonalID("solo")))
+	assert.Len(t, maps.Collect(snap.Teams()), 2, "one personal team")
 }
 
 // fullKey and fullTeam set every field a caller may set, so a field a store
@@ -965,9 +1028,9 @@ func requireCovered[T any](t *testing.T, records []T, except ...string) {
 
 func testReopenRoundTrip(t *testing.T, h Harness) {
 	s := h.Store
-	key, raw, err := s.CreateKey(t.Context(), "reader", fullKey("eng"), audit.Event{})
-	require.NoError(t, err)
 	team, err := s.CreateTeam(t.Context(), "eng", fullTeam(), audit.Event{})
+	require.NoError(t, err)
+	key, raw, err := s.CreateKey(t.Context(), "reader", fullKey("eng"), audit.Event{})
 	require.NoError(t, err)
 	requireAllSet(t, key, "LastSeenAt")
 	requireAllSet(t, team)

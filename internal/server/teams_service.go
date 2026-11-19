@@ -8,43 +8,21 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// personalTeamIDPrefix is reserved for auto-created personal teams. Shared
-// teams created via the public API cannot squat on this prefix, since doing
-// so would collide with a future key's auto-generated personal team ID.
-const personalTeamIDPrefix = "personal-"
-
-// ErrPersonalTeamImmutable is returned when a caller tries to mutate a
-// personal team in a way the design forbids (adding keys, converting to
-// shared, PATCHing limits after the fact, etc).
-var ErrPersonalTeamImmutable = errors.New("personal team is immutable")
-
-// TeamsService provides business logic for team management.
-//
-// mu serializes all mutation paths so the read-validate-write cycle is
-// atomic against concurrent admin requests and against KeysService driving
-// personal-team auto-create. KeysService holds its own lock AND acquires
-// this service's lock via the helper methods below — lock order is always
-// KeysService.mu → TeamsService.mu → the access store's writer gate, which
-// is innermost. Don't reverse.
+// TeamsService provides business logic for team management. The store keeps
+// the rules that span records: personal teams, the owner's team, dependents.
 type TeamsService struct {
-	mu     sync.Mutex
 	store  access.Store
 	access *AccessControl
 }
@@ -93,17 +71,9 @@ type UpdateTeamRequest struct {
 	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
-// TeamMembership reports dependencies and allowed lifecycle actions.
-type TeamMembership struct {
-	people.TeamDependencies
-	AppKeys    int  `json:"app_keys"`
-	CanDelete  bool `json:"can_delete"`
-	CanSuspend bool `json:"can_suspend"`
-}
-
 // TeamResponse is the safe API representation of a team and its membership impact.
 type TeamResponse struct {
-	Membership          TeamMembership       `json:"membership"`
+	Membership          access.Membership    `json:"membership"`
 	ID                  string               `json:"id"`
 	UUID                string               `json:"uuid"`
 	Name                string               `json:"name"`
@@ -168,16 +138,12 @@ func (s *TeamsService) CreateTeam(ctx context.Context, req *CreateTeamRequest, c
 	if err := validateResetPeriod(req.ResetPeriod); err != nil {
 		return nil, err
 	}
-	if strings.HasPrefix(req.ID, personalTeamIDPrefix) {
-		return nil, invalidInputf("team id %q: prefix %q is reserved for personal teams",
-			req.ID, personalTeamIDPrefix)
+	if teams.IsPersonalID(req.ID) {
+		return nil, invalidInputf("team id %q: the prefix %q is reserved for personal teams", req.ID, teams.PersonalPrefix)
 	}
 	if reservedTeamIDs[req.ID] {
 		return nil, invalidInputf("%s", reservedNameMessage("team id", req.ID, "/zzrouter/v1/teams/", reservedTeamIDs))
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	team := teams.Team{
 		Name:           req.Name,
@@ -217,8 +183,6 @@ func (s *TeamsService) CreateTeam(ctx context.Context, req *CreateTeamRequest, c
 
 // GetTeam returns a team by ID.
 func (s *TeamsService) GetTeam(id string) (*TeamResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	snap := s.store.Snapshot()
 	team := snap.Team(id)
 	if team == nil {
@@ -229,8 +193,6 @@ func (s *TeamsService) GetTeam(id string) (*TeamResponse, error) {
 
 // ListTeams returns all teams.
 func (s *TeamsService) ListTeams() []*TeamResponse {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	snap := s.store.Snapshot()
 	result := []*TeamResponse{}
 	for _, team := range snap.Teams() {
@@ -239,30 +201,14 @@ func (s *TeamsService) ListTeams() []*TeamResponse {
 	return result
 }
 
-// UpdateTeam applies a partial update to a team. Personal teams reject
-// updates outright — their config is fixed at creation.
+// UpdateTeam applies a partial update to a team. The store refuses personal
+// teams, whose config is fixed at creation, and suspending the owner's team.
 func (s *TeamsService) UpdateTeam(ctx context.Context, id string, req *UpdateTeamRequest, updatedBy string) (*TeamResponse, error) {
 	if req.ResetPeriod != nil {
 		if err := validateResetPeriod(*req.ResetPeriod); err != nil {
 			return nil, err
 		}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := s.store.Snapshot()
-	if req.Suspended != nil && *req.Suspended && snap.OwnerTeam(id) {
-		return nil, fmt.Errorf("the owner's team cannot be suspended: %w", people.ErrOwnerProtected)
-	}
-
-	existing := snap.Team(id)
-	if existing == nil {
-		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
-	}
-	if existing.Kind == teams.KindPersonal {
-		return nil, fmt.Errorf("team %q: %w", id, ErrPersonalTeamImmutable)
-	}
-
 	if err := s.validateRoutes(req.RouteAccess); err != nil {
 		return nil, err
 	}
@@ -328,39 +274,15 @@ func (s *TeamsService) UpdateTeam(ctx context.Context, id string, req *UpdateTea
 	return s.response(s.store.Snapshot(), updated), nil
 }
 
-// DeleteTeam removes a shared team. The team must have zero member keys —
-// callers must delete or re-home member keys first. Personal teams cannot
-// be deleted via this path; they cascade-delete with their key instead.
+// DeleteTeam removes a shared team. The store refuses one that keys, people
+// or pending enrollments still use, and every personal team, which goes with
+// its key instead.
 func (s *TeamsService) DeleteTeam(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snap := s.store.Snapshot()
-	existing := snap.Team(id)
-	if existing == nil {
-		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
-	}
-	if existing.Kind == teams.KindPersonal {
-		return fmt.Errorf("team %q: %w", id, ErrPersonalTeamImmutable)
-	}
-
-	if impact := membership(snap, existing); !impact.CanDelete {
-		return fmt.Errorf("team %q has %d app keys, %d people and %d pending enrollments; remove or reassign them first: %w",
-			id, impact.AppKeys, impact.People, impact.Invitations+impact.EnrollmentGrants, teams.ErrTeamHasMembers)
-	}
-
-	err := s.store.DeleteTeam(ctx, id, audit.Event{
+	return s.store.DeleteTeam(ctx, id, audit.Event{
 		Action:  audit.ActionTeamDeleted,
 		Actor:   resolveActor(actor),
 		Subject: id,
 	})
-	if err != nil {
-		return err
-	}
-
-	if s.access != nil {
-		s.access.OnTeamDeleted(id)
-	}
-	return nil
 }
 
 // GetTeamUsage returns live usage/spend for a team.
@@ -414,139 +336,17 @@ func (s *TeamsService) GetTeamKeys(id string) (*TeamKeysResponse, error) {
 }
 
 // ============================================================================
-// Personal-team lifecycle (KeysService-facing — not on the HTTP surface)
-// ============================================================================
-
-// CreatePersonalTeam creates a kind=personal team with the given ID and
-// sensible defaults. Called by KeysService when a key is created without a
-// caller-supplied team_id. Returns the created TeamResponse.
-func (s *TeamsService) CreatePersonalTeam(ctx context.Context, id, keyName, createdBy string) (*TeamResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	team := teams.Team{
-		Name:      "Personal: " + keyName,
-		Kind:      teams.KindPersonal,
-		CreatedBy: createdBy,
-		UpdatedBy: createdBy,
-	}
-	created, err := s.store.CreateTeam(ctx, id, team, audit.Event{
-		Action:  audit.ActionTeamCreated,
-		Actor:   resolveActor(createdBy),
-		Subject: id,
-		Metadata: map[string]any{
-			"kind":     string(teams.KindPersonal),
-			"key_name": keyName,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return s.response(s.store.Snapshot(), created), nil
-}
-
-// DeletePersonalTeam removes a personal team without the shared-team
-// safeguards (no member check, no ErrPersonalTeamImmutable gate). Called by
-// KeysService as part of key deletion cascade. Returns ErrTeamNotFound if
-// the ID doesn't exist or references a non-personal team. actor is the
-// cascading caller's identity (e.g. the admin deleting the owning key);
-// passing "" attributes the op to the static admin sentinel.
-func (s *TeamsService) DeletePersonalTeam(ctx context.Context, id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing := s.store.Snapshot().Team(id)
-	if existing == nil || existing.Kind != teams.KindPersonal {
-		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
-	}
-
-	err := s.store.DeleteTeam(ctx, id, audit.Event{
-		Action:  audit.ActionTeamDeleted,
-		Actor:   resolveActor(actor),
-		Subject: id,
-		Metadata: map[string]any{
-			"kind":    string(teams.KindPersonal),
-			"cascade": true,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if s.access != nil {
-		s.access.OnTeamDeleted(id)
-	}
-	return nil
-}
-
-// ReconcilePersonalTeams sweeps orphan personal teams — any Kind=personal
-// team with zero referencing keys gets deleted. Called by Server.Start after
-// both stores are loaded so a crash mid-create-key doesn't leak an empty
-// personal team into future sessions.
-//
-// Returns the number of teams reaped for logging.
-func (s *TeamsService) ReconcilePersonalTeams() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	snap := s.store.Snapshot()
-	reaped := 0
-	for id, team := range snap.Teams() {
-		if team.Kind != teams.KindPersonal || hasKeys(snap, id) {
-			continue
-		}
-		err := s.store.DeleteTeam(context.Background(), id, audit.Event{
-			Action:  audit.ActionTeamDeleted,
-			Actor:   audit.ActorSystemReconciler,
-			Subject: id,
-			Metadata: map[string]any{
-				"kind":    string(teams.KindPersonal),
-				"orphan":  true,
-				"cascade": false,
-			},
-		})
-		if err != nil {
-			slog.Warn("reconcile: failed to delete orphan personal team", "team", id, "error", err)
-			continue
-		}
-		if s.access != nil {
-			s.access.OnTeamDeleted(id)
-		}
-		reaped++
-	}
-	if reaped > 0 {
-		slog.Info("reconcile: reaped orphan personal teams", "count", reaped)
-	}
-	return reaped
-}
-
-// ============================================================================
 // Conversion helpers
 // ============================================================================
 
-// Caller holds the team mutation gate so policy and membership agree.
+// response joins team with the membership snap projects; after a write, snap
+// is read after its commit and may already hold a later one.
 func (s *TeamsService) response(snap *access.Snapshot, team *teams.Team) *TeamResponse {
 	response := toTeamResponse(team)
 	if response != nil {
-		response.Membership = membership(snap, team)
+		response.Membership = snap.Membership(team.ID)
 	}
 	return response
-}
-
-func hasKeys(snap *access.Snapshot, teamID string) bool {
-	for range snap.KeysByTeam(teamID) {
-		return true
-	}
-	return false
-}
-
-func membership(snap *access.Snapshot, team *teams.Team) TeamMembership {
-	result := TeamMembership{TeamDependencies: snap.TeamImpact(team.ID)}
-	for range snap.KeysByTeam(team.ID) {
-		result.AppKeys++
-	}
-	result.CanDelete = team.Kind == teams.KindShared && result.AppKeys == 0 && !result.HasMembers()
-	result.CanSuspend = team.Kind == teams.KindShared && !result.OwnerProtected
-	return result
 }
 
 func toTeamResponse(t *teams.Team) *TeamResponse {

@@ -1,14 +1,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/access/accesstest"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -68,31 +70,41 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	}
 }
 
+// A key joining a shared team and that team's deletion are one after the
+// other, never both, in either order: both wait at the store's writer gate.
 func TestSharedKeyEnrollmentAndTeamDeletionSerialize(t *testing.T) {
-	for range 12 {
-		svc, store, access := newTeamsTestHarness(t)
-		_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "shared", Name: "Shared"}, "operator")
+	svc, store, access := newTeamsTestHarness(t)
+	keyService := NewKeysService(store, access)
+	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "gate", Name: "Gate"}, "operator")
+	require.NoError(t, err)
+	joined := map[bool]int{}
+	for round := 0; joined[true] == 0 || joined[false] == 0; round++ {
+		require.Less(t, round, 12, "both orders occur")
+		teamID, keyID := fmt.Sprint("shared-", round), fmt.Sprint("app-", round)
+		_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: teamID, Name: "Shared"}, "operator")
 		require.NoError(t, err)
-		keyService := NewKeysService(store, svc, access)
-		start := make(chan struct{})
 		var createErr, deleteErr error
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			<-start
-			_, createErr = keyService.CreateKey(t.Context(), "app", &CreateKeyRequest{Name: "App", TeamID: "shared"}, "operator")
-		})
-		wg.Go(func() { <-start; deleteErr = svc.DeleteTeam(t.Context(), "shared", "operator") })
-		close(start)
-		wg.Wait()
+		create := func() {
+			_, createErr = keyService.CreateKey(context.Background(), keyID, &CreateKeyRequest{Name: "App", TeamID: teamID}, "operator")
+		}
+		remove := func() { deleteErr = svc.DeleteTeam(context.Background(), teamID, "operator") }
+		if round%2 == 0 {
+			accesstest.QueuedRace(t, store, "gate", create, remove)
+		} else {
+			accesstest.QueuedRace(t, store, "gate", remove, create)
+		}
 		if createErr == nil {
 			require.ErrorIs(t, deleteErr, teams.ErrTeamHasMembers)
-			team, err := svc.GetTeam("shared")
+			team, err := svc.GetTeam(teamID)
 			require.NoError(t, err)
 			require.Equal(t, 1, team.Membership.AppKeys)
 			require.False(t, team.Membership.CanDelete)
 		} else {
+			require.ErrorIs(t, createErr, teams.ErrTeamNotFound)
+			require.True(t, isInvalidInput(createErr), "joining a deleted team is the caller's error: %v", createErr)
 			require.NoError(t, deleteErr)
-			require.Nil(t, store.Snapshot().Key("app"))
+			require.Nil(t, store.Snapshot().Key(keyID))
 		}
+		joined[createErr == nil]++
 	}
 }

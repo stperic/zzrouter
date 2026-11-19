@@ -16,7 +16,7 @@ func validIssuer(issuer Issuer) bool {
 	return issuer.Reference != "" && len(issuer.Reference) <= 4096 && (issuer.PersonID == "") == (issuer.Revision == "")
 }
 
-func (s *Store) validateIssuer(ctx context.Context, state *State, issuer Issuer, purpose Purpose) error {
+func (s *Store) validateIssuer(ctx context.Context, state *State, teams TeamCheck, issuer Issuer, purpose Purpose) error {
 	if !validIssuer(issuer) {
 		return ErrInvalidGrant
 	}
@@ -33,21 +33,21 @@ func (s *Store) validateIssuer(ctx context.Context, state *State, issuer Issuer,
 	if purpose != PurposeSession && p.Role != "admin" {
 		return ErrInvalidGrant
 	}
-	if err := s.options.ValidateTeam(ctx, p.TeamID); err != nil {
+	if err := teams(p.TeamID); err != nil {
 		return ErrInvalidGrant
 	}
 	return nil
 }
 
-func (s *Store) validateGrant(ctx context.Context, state *State, grant GrantRecord) error {
+func (s *Store) validateGrant(ctx context.Context, state *State, teams TeamCheck, grant GrantRecord) error {
 	if !active(grant.Grant) {
 		return ErrInvalidGrant
 	}
-	if err := s.validateIssuer(ctx, state, grant.Issuer, grant.Purpose); err != nil {
+	if err := s.validateIssuer(ctx, state, teams, grant.Issuer, grant.Purpose); err != nil {
 		return err
 	}
 	if grant.TeamID != "" {
-		if err := s.options.ValidateTeam(ctx, grant.TeamID); err != nil {
+		if err := teams(grant.TeamID); err != nil {
 			return ErrInvalidGrant
 		}
 	}
@@ -65,8 +65,22 @@ func (s *Store) validateGrant(ctx context.Context, state *State, grant GrantReco
 
 // Issue creates a bounded, expiring grant and persists only its token digest.
 func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, error) {
+	var token string
+	committed, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (event audit.Event, err error) {
+		token, event, err = s.IssueOn(ctx, state, teams, request)
+		return event, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return committed.Issued(token), nil
+}
+
+// IssueOn is Issue's change, for an owner that commits it beside changes of
+// its own: it stores the grant in state and returns its token and event.
+func (s *Store) IssueOn(ctx context.Context, state *State, teams TeamCheck, request GrantRequest) (string, audit.Event, error) {
 	if !validPurpose(request.Purpose) || !validIssuer(request.Issuer) {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	if request.TTL == 0 {
 		request.TTL = 10 * time.Minute
@@ -79,49 +93,51 @@ func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, 
 		maxTTL = 7 * 24 * time.Hour
 	}
 	if request.TTL <= 0 || request.TTL > maxTTL {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	if request.Purpose != PurposeSession && request.TeamID == "" {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	if request.Purpose == PurposeSetup && (request.Role != "admin" || request.Issuer.PersonID != "") {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	if request.Purpose == PurposeInvitation && !validRole(request.Role) {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	if request.Purpose == PurposeRecovery && request.PersonID == "" {
-		return nil, ErrInvalidInput
+		return "", audit.Event{}, ErrInvalidInput
 	}
 	raw := randomValue("zzg_")
 	now := utils.NowUTC()
 	grant := GrantRecord{Grant: Grant{ID: randomValue("grant_"), Purpose: request.Purpose, TeamID: request.TeamID, Role: request.Role, PersonID: request.PersonID, CreatedAt: now, ExpiresAt: now.Add(request.TTL)}, Issuer: request.Issuer}
-	event := audit.Event{Action: audit.ActionGrantIssued, Subject: grant.ID, Metadata: map[string]any{"purpose": grant.Purpose, "team_id": grant.TeamID, "role": grant.Role}}
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
-		if err := s.validateGrant(ctx, state, grant); err != nil {
-			return audit.Event{}, err
-		}
-		ownerRecovery := false
-		if request.Purpose == PurposeRecovery {
-			person := state.people[request.PersonID]
-			if person.Owner && request.Issuer.PersonID != "" {
-				return audit.Event{}, ErrOwnerProtected
-			}
-			ownerRecovery = person.Owner
-			// Only the latest recovery operation remains usable for this person.
-			invalidateRecoveryGrants(state, person.ID)
-		}
-		pruneGrants(state, now)
-		if !canIssueGrant(state, request.Issuer, ownerRecovery) {
-			return audit.Event{}, ErrCapacity
-		}
-		state.grants[digest(raw)] = grant
-		return event, nil
-	})
-	if err != nil {
-		return nil, err
+	if err := s.validateGrant(ctx, state, teams, grant); err != nil {
+		return "", audit.Event{}, err
 	}
-	return &IssuedGrant{Grant: publicGrant(committed.grants[digest(raw)]), Token: raw}, nil
+	ownerRecovery := false
+	if request.Purpose == PurposeRecovery {
+		person := state.people[request.PersonID]
+		if person.Owner && request.Issuer.PersonID != "" {
+			return "", audit.Event{}, ErrOwnerProtected
+		}
+		ownerRecovery = person.Owner
+		// Only the latest recovery operation remains usable for this person.
+		invalidateRecoveryGrants(state, person.ID)
+	}
+	pruneGrants(state, now)
+	if !canIssueGrant(state, request.Issuer, ownerRecovery) {
+		return "", audit.Event{}, ErrCapacity
+	}
+	state.grants[digest(raw)] = grant
+	return raw, audit.Event{Action: audit.ActionGrantIssued, Subject: grant.ID, Metadata: map[string]any{"purpose": grant.Purpose, "team_id": grant.TeamID, "role": grant.Role}}, nil
+}
+
+// Issued returns the grant token opens, with the token, or nil.
+func (s *State) Issued(token string) *IssuedGrant {
+	record, ok := s.grants[digest(token)]
+	if !ok {
+		return nil
+	}
+	return &IssuedGrant{Grant: publicGrant(record), Token: token}
 }
 
 // Retain invitation history for the UI. Used/expired handoff and recovery codes
@@ -162,12 +178,12 @@ func (s *Store) Inspect(ctx context.Context, token string) (*Grant, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	state := s.view()
+	state, teams := s.view()
 	g, ok := state.grants[digest(token)]
 	if !ok || len(token) > 256 {
 		return nil, ErrInvalidGrant
 	}
-	if err := s.validateGrant(ctx, state, g); err != nil {
+	if err := s.validateGrant(ctx, state, teams, g); err != nil {
 		return nil, err
 	}
 	result := publicGrant(g)
@@ -180,13 +196,13 @@ func (s *Store) Exchange(ctx context.Context, token, browserProof string) (*Issu
 		return nil, ErrInvalidGrant
 	}
 	raw := randomValue("zzb_")
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (audit.Event, error) {
 		oldHash := digest(token)
 		grant, ok := state.grants[oldHash]
 		if !ok || grant.BrowserHash != "" {
 			return audit.Event{}, ErrInvalidGrant
 		}
-		if err := s.validateGrant(ctx, state, grant); err != nil {
+		if err := s.validateGrant(ctx, state, teams, grant); err != nil {
 			return audit.Event{}, err
 		}
 		grant.BrowserHash = digest(browserProof)
@@ -197,15 +213,15 @@ func (s *Store) Exchange(ctx context.Context, token, browserProof string) (*Issu
 	if err != nil {
 		return nil, err
 	}
-	return &IssuedGrant{Grant: publicGrant(committed.grants[digest(raw)]), Token: raw}, nil
+	return committed.Issued(raw), nil
 }
 
-func (s *Store) redeem(ctx context.Context, state *State, token, proof string, purpose Purpose) (GrantRecord, error) {
+func (s *Store) redeem(ctx context.Context, state *State, teams TeamCheck, token, proof string, purpose Purpose) (GrantRecord, error) {
 	grant, ok := state.grants[digest(token)]
 	if !ok || grant.Purpose != purpose || grant.BrowserHash == "" || len(token) > 256 || proof == "" || len(proof) > 4096 || subtle.ConstantTimeCompare([]byte(grant.BrowserHash), []byte(digest(proof))) != 1 {
 		return GrantRecord{}, ErrInvalidGrant
 	}
-	if err := s.validateGrant(ctx, state, grant); err != nil {
+	if err := s.validateGrant(ctx, state, teams, grant); err != nil {
 		return GrantRecord{}, err
 	}
 	now := utils.NowUTC()
@@ -217,8 +233,8 @@ func (s *Store) redeem(ctx context.Context, state *State, token, proof string, p
 // ConsumeSession transfers exactly the issuer's authority, never an owner's identity.
 func (s *Store) ConsumeSession(ctx context.Context, token, proof string) (Issuer, error) {
 	var issuer Issuer
-	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
-		grant, err := s.redeem(ctx, state, token, proof, PurposeSession)
+	_, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (audit.Event, error) {
+		grant, err := s.redeem(ctx, state, teams, token, proof, PurposeSession)
 		if err != nil {
 			return audit.Event{}, err
 		}
@@ -257,7 +273,7 @@ func (s *Store) enroll(ctx context.Context, token, proof string, input CreatePer
 	}
 	var result Person
 	var event audit.Event
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (audit.Event, error) {
 		if len(state.people) >= maxPeople {
 			return audit.Event{}, ErrCapacity
 		}
@@ -266,7 +282,7 @@ func (s *Store) enroll(ctx context.Context, token, proof string, input CreatePer
 				return audit.Event{}, ErrConflict
 			}
 		}
-		grant, err := s.redeem(ctx, state, token, proof, purpose)
+		grant, err := s.redeem(ctx, state, teams, token, proof, purpose)
 		if err != nil {
 			return audit.Event{}, err
 		}
@@ -302,8 +318,8 @@ func (s *Store) Recover(ctx context.Context, token, proof, password string) (*Pe
 	}
 	var result Person
 	var event audit.Event
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
-		grant, err := s.redeem(ctx, state, token, proof, PurposeRecovery)
+	committed, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (audit.Event, error) {
+		grant, err := s.redeem(ctx, state, teams, token, proof, PurposeRecovery)
 		if err != nil {
 			return audit.Event{}, err
 		}
@@ -364,7 +380,7 @@ func (s *State) Invitations() []Grant {
 // RevokeGrant invalidates a pending grant by its public identifier.
 func (s *Store) RevokeGrant(ctx context.Context, id string) error {
 	var event audit.Event
-	_, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	_, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		for hash, grant := range state.grants {
 			if grant.ID == id {
 				if active(grant.Grant) {
@@ -384,7 +400,7 @@ func (s *Store) RevokeGrant(ctx context.Context, id string) error {
 // Update changes mutable properties and revokes earlier sessions when authority changes.
 func (s *Store) Update(ctx context.Context, id string, update UpdatePerson) (*Person, error) {
 	var event audit.Event
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State, teams TeamCheck) (audit.Event, error) {
 		record, ok := state.people[id]
 		if !ok {
 			return audit.Event{}, ErrNotFound
@@ -410,7 +426,7 @@ func (s *Store) Update(ctx context.Context, id string, update UpdatePerson) (*Pe
 			if *update.TeamID == "" {
 				return audit.Event{}, ErrInvalidInput
 			}
-			if err := s.options.ValidateTeam(ctx, *update.TeamID); err != nil {
+			if err := teams(*update.TeamID); err != nil {
 				return audit.Event{}, err
 			}
 			authorityChanged = authorityChanged || record.TeamID != *update.TeamID

@@ -128,7 +128,8 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 		return nil, err
 	}
 	var candidate PersonRecord
-	for _, record := range s.view().people {
+	before, _ := s.view()
+	for _, record := range before.people {
 		if record.Username == canonical {
 			candidate = record
 			break
@@ -141,11 +142,12 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 	if !valid {
 		return nil, ErrInvalidCredentials
 	}
-	current, ok := s.view().people[candidate.ID]
+	state, teams := s.view()
+	current, ok := state.people[candidate.ID]
 	if !ok || current.Revision != candidate.Revision || current.Suspended {
 		return nil, ErrInvalidCredentials
 	}
-	if err := s.options.ValidateTeam(ctx, current.TeamID); err != nil {
+	if err := teams(current.TeamID); err != nil {
 		return nil, ErrInvalidCredentials
 	}
 	p := current.Person
@@ -154,7 +156,8 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 
 // ChangePassword verifies the existing password and invalidates prior revisions.
 func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPassword, newPassword string) (*Person, error) {
-	p := s.view().Person(id)
+	state, _ := s.view()
+	p := state.Person(id)
 	if p == nil || p.Revision != revision {
 		return nil, ErrInvalidCredentials
 	}
@@ -169,7 +172,7 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 	if err != nil {
 		return nil, err
 	}
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
 			return audit.Event{}, ErrInvalidCredentials
@@ -189,7 +192,7 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 
 // RevokeSessions advances the current revision without changing its password.
 func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Person, error) {
-	committed, err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+	committed, err := s.options.Mutate(ctx, func(state *State, _ TeamCheck) (audit.Event, error) {
 		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
 			return audit.Event{}, ErrInvalidCredentials

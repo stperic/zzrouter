@@ -14,11 +14,13 @@ import (
 var ErrClosed = errors.New("access store is closed")
 
 // Store is the one boundary for access records. Every write is a whole
-// operation: validate, persist, publish a new Snapshot, record ev; or change
-// nothing and return the error. A zero ev records nothing. A record that breaks
-// its Validate rule is refused with keys.ErrInvalid or teams.ErrInvalid. The
-// store assigns ID, UUID and timestamps; after Close every write and AuditPage
-// return ErrClosed, and Snapshot keeps returning the last published state.
+// operation in one transaction: validate, persist, publish a new Snapshot,
+// record ev; or change nothing and return the error. A zero ev records
+// nothing, also for the records the store changes on its behalf. A state that
+// breaks a record's Validate or Snapshot.Validate is refused with the error
+// they return. The store assigns ID, UUID and timestamps; after Close every
+// write and AuditPage return ErrClosed, and Snapshot keeps returning the last
+// published state.
 type Store interface {
 	Snapshot() *Snapshot // lock-free
 	// OnCommit registers fn before serving; fn runs after each commit,
@@ -26,16 +28,28 @@ type Store interface {
 	// notify out of order, so fn treats Store.Snapshot as current.
 	OnCommit(fn func(Commit))
 
+	// CreateKey with an empty TeamID also creates the key's personal team,
+	// teams.PersonalID(id), with the key as its owner, recording team.created
+	// before ev. A key joins only an existing shared team.
 	CreateKey(ctx context.Context, id string, key keys.VirtualKey, ev audit.Event) (*keys.VirtualKey, string, error)
 	// apply runs on a private copy under the gate; the store then restores ID,
 	// UUID, credentials, team binding, CreatedAt, CreatedBy. apply must not call the Store.
 	UpdateKey(ctx context.Context, id string, apply func(*keys.VirtualKey) error, ev audit.Event) (*keys.VirtualKey, error)
 	RotateKey(ctx context.Context, id string, ev audit.Event) (*keys.VirtualKey, string, error)
+	// DeleteKey also deletes the key's personal team, recording its
+	// team.deleted, with cascade metadata, after ev.
 	DeleteKey(ctx context.Context, id string, ev audit.Event) error
 	CreateTeam(ctx context.Context, id string, team teams.Team, ev audit.Event) (*teams.Team, error)
-	// apply follows UpdateKey's rules; the store restores ID, UUID, Kind, CreatedAt, CreatedBy.
+	// apply follows UpdateKey's rules; the store restores ID, UUID, Kind,
+	// CreatedAt, CreatedBy. A personal team is teams.ErrPersonalTeamImmutable.
 	UpdateTeam(ctx context.Context, id string, apply func(*teams.Team) error, ev audit.Event) (*teams.Team, error)
+	// DeleteTeam refuses a personal team with teams.ErrPersonalTeamImmutable
+	// and a team that Snapshot.Membership says cannot go with
+	// teams.ErrTeamHasMembers.
 	DeleteTeam(ctx context.Context, id string, ev audit.Event) error
+	// IssueSetup issues the owner's setup grant into the owner's workspace
+	// team, creating that team in the same transaction when none is usable.
+	IssueSetup(ctx context.Context, issuer people.Issuer) (*people.IssuedGrant, error)
 	// Record appends ev for a change whose state lives outside the store, best effort.
 	Record(ctx context.Context, ev audit.Event)
 	// AuditPage returns up to limit recorded events older than cursor, newest
@@ -76,9 +90,8 @@ type People interface {
 	MarkAppConnected(ctx context.Context) error
 }
 
-// Commit describes one published change. Subscribers read Store.Snapshot:
-// commits can notify out of order.
+// Commit names the keys and teams one published change removed. Subscribers
+// read Store.Snapshot: commits can notify out of order.
 type Commit struct {
-	KeysChanged               bool
 	RemovedKeys, RemovedTeams []string
 }

@@ -42,9 +42,6 @@ func TestActionConstants_WireFormat(t *testing.T) {
 	if ActorStaticAdmin != "static:admin" {
 		t.Errorf("ActorStaticAdmin drift: %q", ActorStaticAdmin)
 	}
-	if ActorSystemReconciler != "system:reconciler" {
-		t.Errorf("ActorSystemReconciler drift: %q", ActorSystemReconciler)
-	}
 }
 
 func TestValidateRefusesMetadataJSONWouldAlter(t *testing.T) {

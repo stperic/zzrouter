@@ -75,11 +75,10 @@ func (r *Refusal) Unwrap() error { return r.cause }
 // NextAction is the operator's next step; it starts with stopping the service.
 func (r *Refusal) NextAction() string { return nextActions[r.Reason] }
 
-// Options configures Open. With People set, both validators are required.
+// Options configures Open. With People set, the issuer validator is required.
 type Options struct {
 	People                 bool // offer people transitions; the snapshot holds stored people either way
 	ValidateExternalIssuer func(context.Context, string) error
-	ValidateTeam           func(*access.Snapshot, string) error
 	// Fatal, if set, is called once, outside the writer gate, with an error
 	// wrapping ErrFailed when the store fails closed.
 	Fatal func(error)
@@ -91,14 +90,14 @@ type meta struct {
 	revision, sequence  uint64
 }
 
-// part names the records a commit may change.
-type part int
+// part is the set of records a commit may change; none records events only.
+type part uint8
 
 const (
-	auditOnly part = iota
-	keyRecords
+	keyRecords part = 1 << iota
 	teamRecords
 	peopleRecords
+	auditOnly part = 0
 )
 
 // records are one state; a commit replaces a map or the people state, never edits it.
@@ -170,27 +169,34 @@ func open(ctx context.Context, dir string, opts Options) (*Store, error) {
 }
 
 func (s *Store) openPeople(opts Options) error {
-	var validateTeam func(context.Context, string) error
-	if opts.ValidateTeam != nil {
-		validateTeam = func(_ context.Context, id string) error { return opts.ValidateTeam(s.Snapshot(), id) }
-	}
 	var err error
 	s.people, err = people.New(people.Options{
-		ValidateExternalIssuer: opts.ValidateExternalIssuer, ValidateTeam: validateTeam,
-		Mutate: func(ctx context.Context, change func(*people.State) (audit.Event, error)) (*people.State, error) {
-			var committed *records // diff leaves the published people state here
-			err := s.mutate(ctx, peopleRecords, func(r *records) (audit.Event, error) {
-				committed = r
-				return change(r.people)
+		ValidateExternalIssuer: opts.ValidateExternalIssuer,
+		Mutate: func(ctx context.Context, change func(*people.State, people.TeamCheck) (audit.Event, error)) (*people.State, error) {
+			var committed *tx // diff leaves the published people state here
+			err := s.mutate(ctx, peopleRecords, func(t *tx) error {
+				committed = t
+				ev, err := change(t.people, teamCheck(t.teams))
+				t.record(ev)
+				return err
 			})
 			if err != nil {
 				return nil, err
 			}
 			return committed.people, nil
 		},
-		View: func() *people.State { return s.Snapshot().PeopleState() },
+		View: func() (*people.State, people.TeamCheck) {
+			published := s.pub.Load()
+			return published.people, teamCheck(published.teams)
+		},
 	})
 	return err
+}
+
+// teamCheck admits people into teams of one state's records: the published
+// ones for reads, the ones being committed inside a transaction.
+func teamCheck(records map[string]*teams.Team) people.TeamCheck {
+	return func(id string) error { return access.AdmitPeople(records[id]) }
 }
 
 // ensureFile restricts the access directory and returns the database path,
@@ -301,7 +307,7 @@ func check(ctx context.Context, db *sqlitedb.DB) (*state, error) {
 	if _, _, err := db.Migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate access store: %w", err)
 	}
-	st, err := load(ctx, db.SQL())
+	st, err := load(ctx, db.SQL(), 1)
 	if errors.Is(err, errBroken) {
 		return nil, refuse(IntegrityFailed, err)
 	}
@@ -335,8 +341,9 @@ func ensureMarker(dir, storeID string) error {
 	return atomicfile.WriteFile(path, data, 0o600)
 }
 
-// load reads and validates every record: the state a reopen publishes.
-func load(ctx context.Context, db querier) (*state, error) {
+// load reads and validates every record: the state a reopen publishes, under
+// a keys version above any the process published before.
+func load(ctx context.Context, db querier, keysVersion uint64) (*state, error) {
 	m, err := loadMeta(ctx, db)
 	if err != nil {
 		return nil, err
@@ -380,7 +387,11 @@ func load(ctx context.Context, db querier) (*state, error) {
 	if r.people, err = people.NewState(p); err != nil {
 		return nil, fmt.Errorf("%w: %w", errBroken, err)
 	}
-	return &state{records: r, snap: access.NewSnapshot(m.generation, r.keys, r.teams, r.people), meta: m}, nil
+	snap := access.NewSnapshot(m.generation, keysVersion, r.keys, r.teams, r.people)
+	if err := snap.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", errBroken, err)
+	}
+	return &state{records: r, snap: snap, meta: m}, nil
 }
 
 func loadMeta(ctx context.Context, db querier) (meta, error) {
@@ -431,7 +442,7 @@ func (s *Store) People() access.People {
 // it advances the sequence, not the revision. A failure is logged.
 func (s *Store) Record(ctx context.Context, ev audit.Event) {
 	ctx = context.WithoutCancel(ctx)
-	if err := s.mutate(ctx, auditOnly, func(*records) (audit.Event, error) { return ev, nil }); err != nil {
+	if err := s.mutate(ctx, auditOnly, func(t *tx) error { t.record(ev); return nil }); err != nil {
 		slog.WarnContext(ctx, "Audit record failed", "action", ev.Action, "subject", ev.Subject, "error", err)
 	}
 }

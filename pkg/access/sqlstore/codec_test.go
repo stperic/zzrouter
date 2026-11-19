@@ -32,6 +32,15 @@ func emptyDB(t *testing.T) *sql.DB {
 	return openStore(t, t.TempDir(), Options{}).db.SQL()
 }
 
+// teamDB is an empty store's database holding team eng, which key and person rows reference.
+func teamDB(t *testing.T) *sql.DB {
+	t.Helper()
+	s := openStore(t, t.TempDir(), Options{})
+	_, err := s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
+	require.NoError(t, err)
+	return s.db.SQL()
+}
+
 // at is an instant with nanoseconds the store truncates to microseconds.
 func at(year int) time.Time { return time.Date(year, 3, 4, 5, 6, 7, 123456789, time.UTC) }
 
@@ -57,17 +66,17 @@ func TestKeyCodecRoundTrip(t *testing.T) {
 	want := full.Clone()
 	want.SuspendedAt, want.ExpiresAt = new(micro(suspended)), new(micro(expires))
 	want.CreatedAt, want.UpdatedAt, want.LastSeenAt = micro(full.CreatedAt), micro(full.UpdatedAt), micro(full.LastSeenAt)
-	assert.Equal(t, want, roundTrip(t, emptyDB(t), keyTable, keyCols, full.Clone()))
+	assert.Equal(t, want, roundTrip(t, teamDB(t), keyTable, keyCols, full.Clone()))
 
 	bare := keys.VirtualKey{ID: "bare", Name: "Bare", HashedKey: "hash", TeamID: "eng", TeamRole: "member"}
-	db := emptyDB(t)
+	db := teamDB(t)
 	assert.Equal(t, &bare, roundTrip(t, db, keyTable, keyCols, bare.Clone()), "nil times and metadata read back as nil, zero times as zero")
 	assert.True(t, nullColumn(t, db, "SELECT metadata FROM keys"))
 	assert.True(t, nullColumn(t, db, "SELECT expires_at FROM keys"))
 
 	empty := bare.Clone()
 	empty.Metadata = map[string]string{}
-	assert.Equal(t, empty, roundTrip(t, emptyDB(t), keyTable, keyCols, empty.Clone()), "empty metadata stays empty, not nil")
+	assert.Equal(t, empty, roundTrip(t, teamDB(t), keyTable, keyCols, empty.Clone()), "empty metadata stays empty, not nil")
 }
 
 func TestTeamCodecRoundTrip(t *testing.T) {
@@ -108,10 +117,10 @@ func TestPeopleCodecRoundTrip(t *testing.T) {
 		}
 		want := person
 		want.CreatedAt, want.UpdatedAt = micro(person.CreatedAt), micro(person.UpdatedAt)
-		assert.Equal(t, &want, roundTrip(t, emptyDB(t), personTable, personCols, &person), name)
+		assert.Equal(t, &want, roundTrip(t, teamDB(t), personTable, personCols, &person), name)
 	}
 
-	db := emptyDB(t)
+	db := teamDB(t)
 	owner := people.PersonRecord{Person: people.Person{ID: "p1", Username: "alice", Name: "Alice", Role: "admin", TeamID: "eng", Revision: "rev"}}
 	_, err := db.ExecContext(t.Context(), personTable.upsert, ptrs(personCols(&owner))...)
 	require.NoError(t, err)
@@ -170,17 +179,19 @@ func TestHostileStringsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
 	for name, value := range hostile {
-		k := keys.VirtualKey{Name: value, TeamID: value, TeamRole: "member", Description: value, Metadata: map[string]string{value: value}}
-		_, _, err := s.CreateKey(t.Context(), value, k, audit.Event{})
+		_, err := s.CreateTeam(t.Context(), value, teams.Team{Name: value, Kind: teams.KindShared, AllowedModels: []string{value}, Metadata: map[string]string{value: value}}, audit.Event{})
 		require.NoError(t, err, name)
-		_, err = s.CreateTeam(t.Context(), value, teams.Team{Name: value, Kind: teams.KindShared, AllowedModels: []string{value}, Metadata: map[string]string{value: value}}, audit.Event{})
+		k := keys.VirtualKey{Name: value, Role: keys.RoleUser, TeamID: value, TeamRole: "member", Description: value, Metadata: map[string]string{value: value}}
+		_, _, err = s.CreateKey(t.Context(), value, k, audit.Event{})
 		require.NoError(t, err, name)
 	}
 	// SQLite keeps TEXT bytes as given; JSON would replace invalid UTF-8.
 	invalid := "bad\xff\xfe"
-	_, _, err := s.CreateKey(t.Context(), invalid, keys.VirtualKey{Name: invalid, TeamID: invalid, TeamRole: "member"}, audit.Event{})
+	_, err := s.CreateTeam(t.Context(), invalid, teams.Team{Name: invalid, Kind: teams.KindShared}, audit.Event{})
 	require.NoError(t, err, "invalid UTF-8 in a TEXT column is stored as is")
-	_, _, err = s.CreateKey(t.Context(), "meta", keys.VirtualKey{Name: "meta", TeamID: "t", TeamRole: "member", Metadata: map[string]string{"k": invalid}}, audit.Event{})
+	_, _, err = s.CreateKey(t.Context(), invalid, keys.VirtualKey{Name: invalid, Role: keys.RoleUser, TeamID: invalid, TeamRole: "member"}, audit.Event{})
+	require.NoError(t, err, "invalid UTF-8 in a TEXT column is stored as is")
+	_, _, err = s.CreateKey(t.Context(), "meta", keys.VirtualKey{Name: "meta", Role: keys.RoleUser, TeamID: invalid, TeamRole: "member", Metadata: map[string]string{"k": invalid}}, audit.Event{})
 	require.ErrorIs(t, err, keys.ErrInvalid, "invalid UTF-8 in JSON metadata is refused")
 	_, err = s.CreateTeam(t.Context(), "models", teams.Team{Kind: teams.KindShared, AllowedModels: []string{invalid}}, audit.Event{})
 	require.ErrorIs(t, err, teams.ErrInvalid, "invalid UTF-8 in a JSON model list is refused")

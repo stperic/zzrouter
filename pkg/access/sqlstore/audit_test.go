@@ -30,7 +30,7 @@ func TestAuditPage(t *testing.T) {
 	for i := range 5 {
 		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: fmt.Sprint("event-", i)})
 	}
-	// A commit without an event leaves a gap in seq that paging must not mind.
+	// A commit without an event writes no row, and seq stays gapless.
 	_, err = s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
 	require.NoError(t, err)
 	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "event-5"})

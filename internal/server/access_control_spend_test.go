@@ -187,9 +187,10 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 
 	// Seed the key store.
 	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
 	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 
-	svc := NewKeysService(store, nil, gw)
+	svc := NewKeysService(store, gw)
 
 	// Empty state — usage endpoint should succeed with zeroes, not 501.
 	usage, err := svc.GetKeyUsage("alice")
@@ -225,8 +226,9 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
 	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	svc := NewKeysService(store, nil, gw)
+	svc := NewKeysService(store, gw)
 
 	chain := []quota.QuotaScope{{
 		Scope:    quota.ScopeKey,
@@ -253,9 +255,10 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
 	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 	seedTestKey(t, store, "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
-	svc := NewKeysService(store, nil, gw)
+	svc := NewKeysService(store, gw)
 
 	// Two key-scope requests + one team-scope request. The report must
 	// include only the key rows.

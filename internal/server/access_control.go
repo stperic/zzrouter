@@ -591,18 +591,6 @@ func (a *AccessControl) RecordSpendByKey(keyID string, reservationID uint64, cos
 	a.core.RecordSpendByKey(keyID, control.ReservationID(reservationID), costMicro, tokensIn, tokensOut)
 }
 
-func (a *AccessControl) OnKeyDeleted(keyID string) {
-	a.core.OnKeyDeleted(keyID)
-}
-
-func (a *AccessControl) OnTeamDeleted(teamID string) {
-	a.core.OnTeamDeleted(teamID)
-}
-
-func (a *AccessControl) InvalidateAuthCache() {
-	a.core.InvalidateAuthCache()
-}
-
 // FlushSpend persists dirty spend state to disk without stopping the
 // enforcer. Called by Server.Stop before HTTP drain as a pre-drain
 // phase so the final flush isn't racing the shutdown deadline.

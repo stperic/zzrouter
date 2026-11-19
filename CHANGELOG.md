@@ -12,6 +12,8 @@
 - Remove env-backed app keys (`key_env`). Browser sessions and delegated OAuth access bound to an app key before this release stop resolving; sign in again.
 - `GET /zzrouter/v1/access/audit` reads the database: `data.skipped` is removed, and a cursor survives restarts.
 - `zzrouter-node recovery backup` settles a journal a crash left beside the access database before copying it, and never copies a journal or an unpublished staged store; restore refuses a bundle carrying one. `recovery check` does not yet validate access records.
+- Creating a key with its personal team, deleting a key with its personal team, and issuing the owner setup grant with its workspace team each commit as one change: a crash or a failed write leaves neither half, so the startup sweep for orphaned personal teams is gone. `PATCH /zzrouter/v1/keys/{id}` with an empty `role` is refused with `400` instead of saving a key without a role.
+- A key or team request that is malformed in itself (an unknown `role` or `team_role`, a `reset_period` outside its values, an `expires_at` that is not RFC 3339, a team ID with the reserved `personal-` prefix, or a malformed route or provider policy) answers `400` before any check of existing records, never `404` or `409`.
 
 - Expand shortened OpenRouter descriptions on demand from the public model page.
 - Render model-card Markdown and safe links across Discover, and show the

@@ -26,7 +26,7 @@ import (
 func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, access.Store, *AccessControl) {
 	t.Helper()
 	teamsSvc, store, accessControl := newTeamsTestHarness(t)
-	return NewKeysService(store, teamsSvc, accessControl), teamsSvc, store, accessControl
+	return NewKeysService(store, accessControl), teamsSvc, store, accessControl
 }
 
 // ============================================================================
@@ -123,7 +123,23 @@ func TestKeysService_CreateKey_DuplicateIDIsConflict(t *testing.T) {
 	team, err := teamsSvc.GetTeam("personal-alice")
 	require.NoError(t, err)
 	assert.Equal(t, "Personal: Alice", team.Name)
-	assert.Equal(t, 0, teamsSvc.ReconcilePersonalTeams())
+	assert.Len(t, teamsSvc.ListTeams(), 1, "no second personal team")
+}
+
+// A key created without a team owns a personal team that nothing else joins.
+func TestKeysService_CreateKey_CreatesPersonalTeam(t *testing.T) {
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
+	resp, err := svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "alice"}, "caller")
+	require.NoError(t, err)
+	team, err := teamsSvc.GetTeam(resp.TeamID)
+	require.NoError(t, err)
+	assert.Equal(t, string(teams.KindPersonal), team.Kind)
+	assert.Equal(t, "Personal: alice", team.Name)
+	assert.Equal(t, "caller", team.CreatedBy)
+	assert.Equal(t, access.Membership{AppKeys: 1}, team.Membership, "neither deletable nor suspendable on its own")
+	_, err = svc.CreateKey(t.Context(), "bob", &CreateKeyRequest{Name: "bob", TeamID: resp.TeamID}, "caller")
+	require.ErrorIs(t, err, teams.ErrPersonalTeamImmutable)
+	assert.True(t, isInvalidInput(err), "joining a personal team is the caller's error: %v", err)
 }
 
 // An invalid expires_at is refused before the personal team is written, so
@@ -152,10 +168,8 @@ func TestKeysService_CreateKey_ConcurrentPersonalTeamCreate(t *testing.T) {
 	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
 	// Hammer: 20 goroutines each trying to create a distinct key with
-	// auto-personal-team. The shared KeysService.mu + TeamsService.mu
-	// discipline must serialize them so every call completes without
-	// data races, every key ends up with its own personal team, and no
-	// orphans linger.
+	// auto-personal-team. Every call completes without data races and
+	// every key ends up with its own personal team, holding only it.
 	const workers = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
@@ -183,9 +197,11 @@ func TestKeysService_CreateKey_ConcurrentPersonalTeamCreate(t *testing.T) {
 		assert.NoError(t, err, "missing personal team for %s", name)
 	}
 
-	// No orphans after the hammer.
-	reaped := teamsSvc.ReconcilePersonalTeams()
-	assert.Equal(t, 0, reaped)
+	teamList := teamsSvc.ListTeams()
+	assert.Len(t, teamList, workers)
+	for _, team := range teamList {
+		assert.Equal(t, 1, team.Membership.AppKeys, "team %s holds exactly its key", team.ID)
+	}
 }
 
 // itoa avoids pulling strconv into the top of this file just for test names.
@@ -242,58 +258,57 @@ func TestKeysService_CreateKey_RejectsBadTeamInputAsCallerError(t *testing.T) {
 }
 
 // ============================================================================
-// Key insert failing after its personal team was written
+// A failed key create writes nothing
 // ============================================================================
 
-// createKeyFault is a real store whose key creation fails: as a failed
-// persist, or, with cancel set, as a client that leaves once its personal
-// team is written.
-type createKeyFault struct {
+// A request cancelled before its commit writes neither the key nor its
+// personal team, on disk included. Atomicity is TestKillMidCommit's.
+func TestKeysService_CreateKey_CancellationWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, seedTestStore(dir))
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	svc := NewKeysService(store, newTestAccessControl(t, store))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = svc.CreateKey(ctx, "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, store.Snapshot().Key("alice"))
+	assert.Nil(t, store.Snapshot().Team("personal-alice"))
+	require.NoError(t, store.Close())
+	reopened, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopened.Close() })
+	assert.Nil(t, reopened.Snapshot().Team("personal-alice"), "no orphan is left on disk")
+}
+
+// racingDelete commits another request's delete and re-creation of the key,
+// in team b, after the service's call and before its own delete.
+type racingDelete struct {
 	access.Store
-	cancel context.CancelFunc
+	t *testing.T
 }
 
-func (f createKeyFault) CreateTeam(ctx context.Context, id string, team teams.Team, ev audit.Event) (*teams.Team, error) {
-	created, err := f.Store.CreateTeam(ctx, id, team, ev)
-	if f.cancel != nil {
-		f.cancel()
-	}
-	return created, err
+func (r racingDelete) DeleteKey(ctx context.Context, id string, ev audit.Event) error {
+	require.NoError(r.t, r.Store.DeleteKey(ctx, id, audit.Event{}))
+	_, _, err := r.Store.CreateKey(ctx, id, keys.VirtualKey{Name: id, Role: keys.RoleUser, TeamID: "b", TeamRole: "member"}, audit.Event{})
+	require.NoError(r.t, err)
+	return r.Store.DeleteKey(ctx, id, ev)
 }
 
-func (f createKeyFault) CreateKey(ctx context.Context, id string, key keys.VirtualKey, ev audit.Event) (*keys.VirtualKey, string, error) {
-	if f.cancel == nil {
-		return nil, "", errors.New("injected persist failure")
-	}
-	return f.Store.CreateKey(ctx, id, key, ev)
-}
-
-func TestKeysService_CreateKey_RollsBackPersonalTeamWhenKeyFails(t *testing.T) {
-	for _, cause := range []string{"persist failure", "client disconnect"} {
-		t.Run(cause, func(t *testing.T) {
-			dir := t.TempDir()
-			store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
-			require.NoError(t, err)
-			fault := createKeyFault{Store: store}
-			ctx := t.Context()
-			if cause == "client disconnect" {
-				ctx, fault.cancel = context.WithCancel(ctx)
-				defer fault.cancel()
-			}
-			teamsSvc := NewTeamsService(fault, newTestAccessControl(t, fault))
-			svc := NewKeysService(fault, teamsSvc, teamsSvc.access)
-
-			_, err = svc.CreateKey(ctx, "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
-			require.Error(t, err)
-			assert.Nil(t, store.Snapshot().Key("alice"))
-			assert.Nil(t, store.Snapshot().Team("personal-alice"), "the personal team is rolled back with the failed key")
-			require.NoError(t, store.Close())
-			reopened, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = reopened.Close() })
-			assert.Nil(t, reopened.Snapshot().Team("personal-alice"), "no orphan is left on disk for the next start to sweep")
-		})
-	}
+// A key's deletion records the team of the key it deleted, even when the ID
+// was deleted and created again elsewhere while the request was on its way.
+func TestKeysService_DeleteKey_RecordsTheTeamOfTheKeyItDeleted(t *testing.T) {
+	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "a")
+	seedTestTeam(t, store, "b")
+	seedTestKey(t, store, "k", keys.VirtualKey{Name: "k", Role: keys.RoleUser, TeamID: "a", TeamRole: "member"})
+	svc := NewKeysService(racingDelete{Store: store, t: t}, newTestAccessControl(t, store))
+	require.NoError(t, svc.DeleteKey(t.Context(), "k", "admin"))
+	events := auditHistory(t, store)
+	deleted := events[len(events)-1]
+	require.Equal(t, audit.ActionKeyDeleted, deleted.Action)
+	assert.Equal(t, map[string]any{"team_id": "b"}, deleted.Metadata)
 }
 
 // ============================================================================
@@ -305,7 +320,7 @@ func TestKeyAndTeamDeletionPurgeSpend(t *testing.T) {
 	enforcer := quota.NewEnforcer(quota.NewRateLimiter(), quota.NewConcurrencyLimiter(), quota.NewSpendTracker(""))
 	accessControl := NewAccessControl(StaticKeySet{}, store, nil, enforcer, nil, ModelHooks{})
 	teamsSvc := NewTeamsService(store, accessControl)
-	svc := NewKeysService(store, teamsSvc, accessControl)
+	svc := NewKeysService(store, accessControl)
 	_, err := teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
 	require.NoError(t, err)
 	_, err = svc.CreateKey(t.Context(), "shared-key", &CreateKeyRequest{Name: "Shared", TeamID: "eng"}, "admin")

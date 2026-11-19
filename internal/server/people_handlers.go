@@ -85,7 +85,7 @@ func readPeopleInput(c *gin.Context, target any) bool {
 }
 
 // loginPerson calls the sole session owner after a domain authentication or
-// enrollment transaction. The callback never holds a team/people lock on return.
+// enrollment transaction; the store's transaction has ended when it returns.
 func (s *Server) loginPerson(c *gin.Context, authenticate func(context.Context) (*people.Person, error)) {
 	var accountErr error
 	info, err := s.access.oauth.LoginWith(auditContext(c), c.Writer, c.Request, func(ctx context.Context) (control.CredentialReference, error) {
@@ -135,20 +135,16 @@ func (s *Server) handleConsoleGrantCreate(c *gin.Context) {
 		writePeopleError(c, err)
 		return
 	}
-	request := people.GrantRequest{Purpose: people.PurposeSession, Issuer: issuer, TTL: 10 * time.Minute}
 	var grant *people.IssuedGrant
-	err = s.mutatePeople(func() error {
-		if !s.accessSnapshot().Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin {
-			teamID, err := s.initialOwnerTeam(c.Request.Context())
-			if err != nil {
-				return err
-			}
-			request.Purpose, request.TeamID, request.Role = people.PurposeSetup, teamID, "admin"
-		}
-		var err error
-		grant, err = s.accessStore.People().Issue(auditContext(c), request)
-		return err
-	})
+	setup := !s.accessSnapshot().Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin
+	if setup {
+		grant, err = s.accessStore.IssueSetup(auditContext(c), issuer)
+		// The transaction decides: an owner claimed since the snapshot read gets a session code.
+		setup = !errors.Is(err, people.ErrInitialized)
+	}
+	if !setup {
+		grant, err = s.accessStore.People().Issue(auditContext(c), people.GrantRequest{Purpose: people.PurposeSession, Issuer: issuer, TTL: 10 * time.Minute})
+	}
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -173,12 +169,7 @@ func (s *Server) handleConsoleGrantExchange(c *gin.Context) {
 	}
 	proof := c.GetHeader("X-CSRF-Token")
 	if grant.Purpose != people.PurposeSession {
-		var bound *people.IssuedGrant
-		err := s.mutatePeople(func() error {
-			var err error
-			bound, err = s.accessStore.People().Exchange(c.Request.Context(), input.Token, proof)
-			return err
-		})
+		bound, err := s.accessStore.People().Exchange(c.Request.Context(), input.Token, proof)
 		if err != nil {
 			writePeopleError(c, err)
 			return
@@ -189,14 +180,11 @@ func (s *Server) handleConsoleGrantExchange(c *gin.Context) {
 	var grantErr error
 	_, err = s.access.oauth.LoginWith(auditContext(c), c.Writer, c.Request, func(ctx context.Context) (control.CredentialReference, error) {
 		var issuer people.Issuer
-		grantErr = s.mutatePeople(func() error {
-			bound, err := s.accessStore.People().Exchange(ctx, input.Token, proof)
-			if err != nil {
-				return err
-			}
-			issuer, err = s.accessStore.People().ConsumeSession(ctx, bound.Token, proof)
-			return err
-		})
+		var bound *people.IssuedGrant
+		bound, grantErr = s.accessStore.People().Exchange(ctx, input.Token, proof)
+		if grantErr == nil {
+			issuer, grantErr = s.accessStore.People().ConsumeSession(ctx, bound.Token, proof)
+		}
 		if grantErr != nil {
 			return control.CredentialReference{}, grantErr
 		}
@@ -228,18 +216,12 @@ func (s *Server) handlePersonEnrollment(c *gin.Context, owner bool) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
+	enroll := s.accessStore.People().AcceptInvitation
+	if owner {
+		enroll = s.accessStore.People().ClaimOwner
+	}
 	s.loginPerson(c, func(ctx context.Context) (*people.Person, error) {
-		var person *people.Person
-		err := s.mutatePeople(func() error {
-			var err error
-			if owner {
-				person, err = s.accessStore.People().ClaimOwner(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
-			} else {
-				person, err = s.accessStore.People().AcceptInvitation(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
-			}
-			return err
-		})
-		return person, err
+		return enroll(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
 	})
 }
 
@@ -271,13 +253,7 @@ func (s *Server) handlePeopleRecovery(c *gin.Context) {
 		return
 	}
 	s.loginPerson(c, func(ctx context.Context) (*people.Person, error) {
-		var person *people.Person
-		err := s.mutatePeople(func() error {
-			var err error
-			person, err = s.accessStore.People().Recover(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.Password)
-			return err
-		})
-		return person, err
+		return s.accessStore.People().Recover(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.Password)
 	})
 }
 
@@ -301,12 +277,7 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 		Conflict(c, "Create the owner account through console setup first")
 		return
 	}
-	var grant *people.IssuedGrant
-	err := s.mutatePeople(func() error {
-		var err error
-		grant, err = s.accessStore.People().Issue(audit.WithIdentity(c.Request.Context(), audit.ActorLocalOperator, c.GetString("request_id")), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.ownerRecovery.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
-		return err
-	})
+	grant, err := s.accessStore.People().Issue(audit.WithIdentity(c.Request.Context(), audit.ActorLocalOperator, c.GetString("request_id")), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.ownerRecovery.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -336,12 +307,7 @@ func (s *Server) handlePersonUpdate(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	var person *people.Person
-	err := s.mutatePeople(func() error {
-		var err error
-		person, err = s.accessStore.People().Update(auditContext(c), c.Param("id"), input)
-		return err
-	})
+	person, err := s.accessStore.People().Update(auditContext(c), c.Param("id"), input)
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -401,12 +367,7 @@ func (s *Server) issueInvitation(c *gin.Context, request people.GrantRequest) {
 		writePeopleError(c, err)
 		return
 	}
-	var grant *people.IssuedGrant
-	err = s.mutatePeople(func() error {
-		var err error
-		grant, err = s.accessStore.People().Issue(auditContext(c), request)
-		return err
-	})
+	grant, err := s.accessStore.People().Issue(auditContext(c), request)
 	if err != nil {
 		writePeopleError(c, err)
 		return

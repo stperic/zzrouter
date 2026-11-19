@@ -16,7 +16,7 @@ import (
 )
 
 // contractOptions opens people the way accesstest expects.
-var contractOptions = Options{People: true, ValidateExternalIssuer: accesstest.ValidateExternalIssuer, ValidateTeam: accesstest.ValidateTeam}
+var contractOptions = Options{People: true, ValidateExternalIssuer: accesstest.ValidateExternalIssuer}
 
 var errInjected = errors.New("injected commit failure")
 

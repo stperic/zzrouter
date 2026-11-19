@@ -247,7 +247,8 @@ func TestProviderBrowserSharedAuthorityLiveTeamPolicy(t *testing.T) {
 	for _, policy := range []string{"suspended", "models"} {
 		t.Run(policy, func(t *testing.T) {
 			s, g, _, endpoint, state := sharedBrowserAuthorityFixture(t, "")
-			key := loadTestKey(t, s, "provider-browser-team-reader", keys.VirtualKey{Name: "Provider team reader"})
+			seedTestTeam(t, s.accessStore, "provider-team")
+			key := loadTestKey(t, s, "provider-browser-team-reader", keys.VirtualKey{Name: "Provider team reader", TeamID: "provider-team"})
 			response, clientID := completeSharedBrowser(t, g, endpoint, key)
 			require.Equal(t, http.StatusSeeOther, response.Code)
 			request := httptest.NewRequest(http.MethodGet, g.origin.String()+"/runs/"+s.GetNodename()+"/run-a/prompt", nil)

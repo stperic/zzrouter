@@ -30,9 +30,8 @@ const (
 
 var installationIssuer = people.Issuer{Reference: "installation"}
 
-func readerKey() keys.VirtualKey {
-	return keys.VirtualKey{Name: "Reader", TeamID: "eng", TeamRole: "member"}
-}
+// readerKey is a key with its personal team.
+func readerKey() keys.VirtualKey { return keys.VirtualKey{Name: "Reader", Role: keys.RoleUser} }
 
 func engineering() teams.Team { return teams.Team{Name: "Engineering", Kind: teams.KindShared} }
 
@@ -164,10 +163,11 @@ func TestAuditRowCommitsWithItsChange(t *testing.T) {
 	assert.Nil(t, reopened.Snapshot().Key("lost"))
 	assert.NotNil(t, reopened.Snapshot().Key("kept"))
 	events := storedEvents(t, dir)
-	require.Len(t, events, 1)
-	assert.Equal(t, "kept", events[0].Subject)
-	assert.Equal(t, "operator", events[0].Actor, "the actor comes from the context")
-	assert.Equal(t, "request-1", events[0].RequestID)
+	require.Equal(t, []string{"personal-kept", "kept"}, subjects(events), "the personal team's row, then the key's, in one commit")
+	for _, ev := range events {
+		assert.Equal(t, "operator", ev.Actor, "the actor comes from the context")
+		assert.Equal(t, "request-1", ev.RequestID)
+	}
 	_, _, _, sequence := reopened.Meta()
 	assert.EqualValues(t, 1, sequence)
 }
@@ -336,7 +336,9 @@ func TestConcurrentWritersAndReaders(t *testing.T) {
 	var writersWG sync.WaitGroup
 	for i := range writers {
 		writersWG.Go(func() {
-			_, _, err := s.CreateKey(context.Background(), fmt.Sprint("key-", i), readerKey(), audit.Event{Action: audit.ActionKeyCreated, Subject: fmt.Sprint(i)})
+			member := readerKey()
+			member.TeamID, member.TeamRole = "eng", string(teams.RoleMember)
+			_, _, err := s.CreateKey(context.Background(), fmt.Sprint("key-", i), member, audit.Event{Action: audit.ActionKeyCreated, Subject: fmt.Sprint(i)})
 			assert.NoError(t, err)
 		})
 		writersWG.Go(func() {

@@ -61,17 +61,12 @@ func TestOpenCreatesTheStoreAndItsMarker(t *testing.T) {
 	assert.Equal(t, storeID, reopenedID, "a reopen keeps the store")
 }
 
-func TestOpenRefusesPeopleWithoutValidators(t *testing.T) {
+func TestOpenRefusesPeopleWithoutAnIssuerValidator(t *testing.T) {
 	t.Parallel()
-	for name, opts := range map[string]Options{
-		"no team validator":   {People: true, ValidateExternalIssuer: contractOptions.ValidateExternalIssuer},
-		"no issuer validator": {People: true, ValidateTeam: contractOptions.ValidateTeam},
-	} {
-		dir := t.TempDir()
-		_, err := Open(t.Context(), dir, opts)
-		require.Error(t, err, name)
-		assert.NoDirExists(t, filepath.Join(dir, "access"), "%s: refused before anything is created", name)
-	}
+	dir := t.TempDir()
+	_, err := Open(t.Context(), dir, Options{People: true})
+	require.Error(t, err)
+	assert.NoDirExists(t, filepath.Join(dir, "access"), "refused before anything is created")
 }
 
 func TestOpenRefusesAMarkedStoreWithoutItsDatabase(t *testing.T) {
@@ -307,5 +302,30 @@ func TestSettle(t *testing.T) {
 		require.ErrorAs(t, Settle(t.Context(), tc.dir), &refusal, name)
 		assert.Equal(t, tc.reason, refusal.Reason, name)
 		requireRefusal(t, tc.dir, tc.reason)
+	}
+}
+
+// TestOpenRefusesRecordsThatBreakTheRulesBetweenThem damages how records
+// relate through a raw connection, past every SQL constraint; each is
+// integrity_failed at open.
+func TestOpenRefusesRecordsThatBreakTheRulesBetweenThem(t *testing.T) {
+	t.Parallel()
+	for name, damage := range map[string]string{
+		"a personal team without its key": "DELETE FROM keys WHERE id = 'solo'",
+		"the owner's team suspended":      "UPDATE teams SET suspended = 1 WHERE id = 'workspace'",
+		"a person in a personal team":     "UPDATE people SET team_id = 'personal-solo'",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			s := openStore(t, dir, contractOptions)
+			claim(t, s)
+			_, _, err := s.CreateKey(t.Context(), "solo", readerKey(), audit.Event{})
+			require.NoError(t, err)
+			require.NoError(t, s.Close())
+			_, err = rawDB(t, dir).ExecContext(t.Context(), damage)
+			require.NoError(t, err)
+			requireRefusal(t, dir, IntegrityFailed)
+		})
 	}
 }

@@ -146,14 +146,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// coordinator registers these routes, and it always holds the store.
 	s.services.Teams = NewTeamsService(s.accessStore, s.access)
 	s.controllers.Teams = NewTeamsController(s.services.Teams)
-
-	// Sweep orphan personal teams — any kind=personal team with zero
-	// referencing keys is the result of a crash mid-create-key and
-	// should be garbage-collected before serving traffic. Each removal
-	// is recorded in the access history.
-	s.services.Teams.ReconcilePersonalTeams()
-
-	s.services.Keys = NewKeysService(s.accessStore, s.services.Teams, s.access)
+	s.services.Keys = NewKeysService(s.accessStore, s.access)
 	s.controllers.Keys = NewKeysController(s.services.Keys)
 
 	// Config reload: POST /config/reload re-reads providers/ from disk,

@@ -30,7 +30,7 @@ func TestCredentialReferenceGeneration(t *testing.T) {
 	under := func(generation string) *access.Snapshot {
 		key := &keys.VirtualKey{ID: "reader", UUID: "reader-uuid", Name: "Reader", Role: "user", HashedKey: hash, TeamID: "team", TeamRole: "member"}
 		team := &teams.Team{ID: "team", Name: "Reference team", Kind: teams.KindShared}
-		return access.NewSnapshot(generation, map[string]*keys.VirtualKey{"reader": key}, map[string]*teams.Team{"team": team}, nil)
+		return access.NewSnapshot(generation, 1, map[string]*keys.VirtualKey{"reader": key}, map[string]*teams.Team{"team": team}, nil)
 	}
 	state := &fixedState{snap: under("before")}
 	core := NewCore(StaticKeySet{}, state, nil, nil, nil)

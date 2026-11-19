@@ -120,22 +120,27 @@ type ProgressUpdate struct {
 	Dismissed *bool   `json:"dismissed,omitempty"`
 }
 
-// Options joins the domain to the credential and team authorities and to the
-// owner of the state. The validators run inside Mutate and must not re-enter
-// people or OAuth; the external-issuer one is never called for a person issuer.
-// Servers must serialize team deletion with enrollment before reading teams.
+// TeamCheck admits a team for people and their grants, judged against the
+// teams stored with the state it accompanies.
+type TeamCheck func(teamID string) error
+
+// Options joins the domain to the credential authority and to the owner of
+// the state and its teams. The issuer validator and every TeamCheck run inside
+// Mutate and must not re-enter people or OAuth; the issuer validator is never
+// called for a person issuer.
 type Options struct {
 	ValidateExternalIssuer func(context.Context, string) error
-	ValidateTeam           func(context.Context, string) error
 	// Mutate runs change exactly once per call, on a private copy of the current
-	// state, under the owner's single writer gate; it then persists and publishes
-	// the result, records the returned event with the caller's ctx, and returns
-	// the state it published, so a transition answers with the stored form. A
-	// closed owner returns access.ErrClosed. A failed change returns its error
-	// unwrapped, a failed persist an error whose chain holds the cause, and
-	// neither publishes or records anything. A change that alters nothing and
-	// returns no event writes nothing and notifies no subscriber.
-	Mutate func(ctx context.Context, change func(*State) (audit.Event, error)) (*State, error)
-	// View returns the state the owner's snapshot publishes, without locking.
-	View func() *State
+	// state with the team check of the records it commits with, under the
+	// owner's single writer gate; it then persists and publishes the result,
+	// records the returned event with the caller's ctx, and returns the state it
+	// published, so a transition answers with the stored form. A closed owner
+	// returns access.ErrClosed. A failed change returns its error unwrapped, a
+	// failed persist an error whose chain holds the cause, and neither publishes
+	// or records anything. A change that alters nothing and returns no event
+	// writes nothing and notifies no subscriber.
+	Mutate func(ctx context.Context, change func(*State, TeamCheck) (audit.Event, error)) (*State, error)
+	// View returns the published state and the team check of the records
+	// published with it, without locking.
+	View func() (*State, TeamCheck)
 }

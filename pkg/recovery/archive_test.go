@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/stperic/common/secrets"
-	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -26,11 +25,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// peopleOptions accepts every issuer and team: the fixture tests archives, not authority.
+// peopleOptions accepts every issuer: the fixture tests archives, not authority.
 var peopleOptions = sqlstore.Options{
 	People:                 true,
 	ValidateExternalIssuer: func(context.Context, string) error { return nil },
-	ValidateTeam:           func(*access.Snapshot, string) error { return nil },
 }
 
 func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {

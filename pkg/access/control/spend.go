@@ -111,28 +111,14 @@ func (c *Core) GetAllSpendStates() map[string]*quota.SpendState {
 	return c.enforcer.GetAllSpendStates()
 }
 
-// OnKeyDeleted purges the key's spend ledger rows and invalidates the
-// authenticator cache. Cascade-delete of a personal team is handled by
-// the server-side keys service, not here.
-func (c *Core) OnKeyDeleted(keyID string) {
-	if c.enforcer != nil {
-		c.enforcer.ForgetEntity(quota.ScopeKey, keyID)
+// forgetRemoved purges the spend rows of the keys and teams a commit removed.
+func (c *Core) forgetRemoved(commit access.Commit) {
+	for _, id := range commit.RemovedKeys {
+		c.enforcer.ForgetEntity(quota.ScopeKey, id)
 	}
-	c.authenticator.InvalidateAll()
-}
-
-// OnTeamDeleted purges a team's spend ledger. Called post-delete so
-// team-scope SpendState rows don't linger.
-func (c *Core) OnTeamDeleted(teamID string) {
-	if c.enforcer != nil {
-		c.enforcer.ForgetEntity(quota.ScopeTeam, teamID)
+	for _, id := range commit.RemovedTeams {
+		c.enforcer.ForgetEntity(quota.ScopeTeam, id)
 	}
-}
-
-// InvalidateAuthCache clears the authenticator cache. Call after key
-// rotation, reload, or bulk mutations.
-func (c *Core) InvalidateAuthCache() {
-	c.authenticator.InvalidateAll()
 }
 
 // FlushSpend persists dirty spend state to disk without stopping the

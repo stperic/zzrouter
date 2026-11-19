@@ -248,6 +248,9 @@ func cleanupTestNode(server *Server) {
 	}
 
 	// Stop subsystems (nil-receiver safe).
+	if server.cluster.coordinator != nil {
+		server.cluster.coordinator.Stop() // its health monitor probes peers until stopped
+	}
 	_ = server.providers.appMgr.Stop(context.Background())
 	server.providers.cooldowns.Stop()
 	server.access.Stop(context.Background())

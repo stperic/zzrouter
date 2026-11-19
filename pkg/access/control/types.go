@@ -11,6 +11,7 @@ package control
 import (
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -33,9 +34,9 @@ const (
 
 const (
 	// RoleUser — read-only inference (OpenAI/Ollama compat surfaces).
-	RoleUser UserRole = "user"
+	RoleUser UserRole = keys.RoleUser
 	// RoleAdmin — full management (teams, keys, spend, providers).
-	RoleAdmin UserRole = "admin"
+	RoleAdmin UserRole = keys.RoleAdmin
 )
 
 // RoleAllowed reports whether a key's role satisfies the required role.

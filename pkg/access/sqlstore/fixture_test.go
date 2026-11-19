@@ -79,18 +79,20 @@ func buildFixture(t *testing.T, path string) {
 	s := openStore(t, dir, contractOptions)
 	owner := claim(t, s)
 	expires, suspended := time.Date(2030, 1, 2, 3, 4, 5, 678901000, time.UTC), time.Date(2029, 6, 7, 8, 9, 10, 0, time.UTC)
-	quotas := quota.QuotaConfig{RPMLimit: 1, TPMLimit: 2, MaxParallelRequests: 3, SpendLimit: 4.5, ResetPeriod: "daily", DefaultMaxTokens: 6}
-	_, _, err := s.CreateKey(t.Context(), "reader", keys.VirtualKey{
-		Name: "Reader", Description: "fixture key", TeamID: "eng", TeamRole: "member", Role: "user", Suspended: true, SuspendedAt: &suspended,
-		SuspendedBy: "suspender", QuotaConfig: quotas, ExpiresAt: &expires, CreatedBy: "creator", UpdatedBy: "updater", Metadata: map[string]string{"env": "fixture"},
-	}, audit.Event{Action: audit.ActionKeyCreated, Subject: "reader"})
-	require.NoError(t, err)
-	quotas.RPMLimit, quotas.ResetPeriod = 7, "weekly"
-	_, err = s.CreateTeam(t.Context(), "eng", teams.Team{
+	quotas := quota.QuotaConfig{RPMLimit: 7, TPMLimit: 2, MaxParallelRequests: 3, SpendLimit: 4.5, ResetPeriod: "weekly", DefaultMaxTokens: 6}
+	_, err := s.CreateTeam(t.Context(), "eng", teams.Team{
 		Name: "Engineering", Kind: teams.KindShared, AllowedModels: []string{"qwen"}, RouteAccess: teams.RouteAccess{Mode: "none"},
 		ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}, SuspendedBy: "team suspender", QuotaConfig: quotas,
 		CreatedBy: "team creator", UpdatedBy: "team updater", Metadata: map[string]string{"dept": "fixture"},
 	}, audit.Event{})
+	require.NoError(t, err)
+	quotas.RPMLimit, quotas.ResetPeriod = 1, "daily"
+	_, _, err = s.CreateKey(t.Context(), "reader", keys.VirtualKey{
+		Name: "Reader", Description: "fixture key", TeamID: "eng", TeamRole: "member", Role: "user", Suspended: true, SuspendedAt: &suspended,
+		SuspendedBy: "suspender", QuotaConfig: quotas, ExpiresAt: &expires, CreatedBy: "creator", UpdatedBy: "updater", Metadata: map[string]string{"env": "fixture"},
+	}, audit.Event{Action: audit.ActionKeyCreated, Subject: "reader"})
+	require.NoError(t, err)
+	_, _, err = s.CreateKey(t.Context(), "solo", keys.VirtualKey{Name: "Solo", Role: "admin", CreatedBy: "solo creator"}, audit.Event{Action: audit.ActionKeyCreated, Subject: "solo"})
 	require.NoError(t, err)
 	invitation := bound(t, s, people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: "eng", Role: "user"})
 	member, err := s.People().AcceptInvitation(t.Context(), invitation.Token, testProof, people.CreatePerson{Username: "member", Name: "Member", Password: testPassword})

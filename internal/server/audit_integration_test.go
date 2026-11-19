@@ -22,7 +22,7 @@ func newAuditTestServices(t *testing.T) (*KeysService, *TeamsService, access.Sto
 	store := newTestAccessStore(t)
 	accessControl := newTestAccessControl(t, store)
 	teamsSvc := NewTeamsService(store, accessControl)
-	return NewKeysService(store, teamsSvc, accessControl), teamsSvc, store
+	return NewKeysService(store, accessControl), teamsSvc, store
 }
 
 // auditHistory reads every event store recorded, oldest first, page by page.

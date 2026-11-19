@@ -29,29 +29,34 @@ func testOptions() Options {
 			}
 			return ErrInvalidCredentials
 		},
-		ValidateTeam: func(_ context.Context, id string) error {
-			if id == "workspace" || id == "engineering" {
-				return nil
-			}
-			return ErrNotFound
-		},
 	}
 }
 
+// testTeams admits the two teams the tests use.
+func testTeams(id string) error {
+	if id == "workspace" || id == "engineering" {
+		return nil
+	}
+	return ErrNotFound
+}
+
 // memoryOwner stands in for the access store: one gate, the published state,
-// the events it recorded and an optional persist failure.
+// its team check, the events it recorded and an optional persist failure.
 type memoryOwner struct {
 	gate    sync.Mutex
 	current atomic.Pointer[State]
+	teams   TeamCheck
 	events  []audit.Event
 	failure error
 }
 
-func (o *memoryOwner) mutate(ctx context.Context, change func(*State) (audit.Event, error)) (*State, error) {
+func (o *memoryOwner) view() (*State, TeamCheck) { return o.current.Load(), o.teams }
+
+func (o *memoryOwner) mutate(ctx context.Context, change func(*State, TeamCheck) (audit.Event, error)) (*State, error) {
 	o.gate.Lock()
 	defer o.gate.Unlock()
 	next := o.current.Load().Clone()
-	event, err := change(next)
+	event, err := change(next, o.teams)
 	if err != nil {
 		return nil, err
 	}
@@ -92,10 +97,10 @@ func (p *testPeople) state() *State { return p.owner.current.Load() }
 
 func newTestPeople(t *testing.T, state *State) *testPeople {
 	t.Helper()
-	owner := &memoryOwner{}
+	owner := &memoryOwner{teams: testTeams}
 	owner.current.Store(state)
 	options := testOptions()
-	options.Mutate, options.View = owner.mutate, owner.current.Load
+	options.Mutate, options.View = owner.mutate, owner.view
 	s, err := New(options)
 	require.NoError(t, err)
 	return &testPeople{Store: s, owner: owner}
@@ -156,7 +161,7 @@ func TestOwnerClaimConcurrentAndDurable(t *testing.T) {
 	require.True(t, s.state().Initialized())
 	require.Len(t, s.state().People(), 1)
 	before := s.state().Owner()
-	require.True(t, s.state().OwnerTeam(before.TeamID))
+	require.True(t, s.state().TeamImpact(before.TeamID).OwnerProtected)
 	require.True(t, s.state().TeamImpact(before.TeamID).HasMembers())
 	stored := fmt.Sprintf("%+v", s.state().Records())
 	assert.NotContains(t, stored, testPassword, "the stored form holds a password hash only")
@@ -385,7 +390,7 @@ func TestGrantExternalIssuerAndTeamRevalidated(t *testing.T) {
 	_, err := s.Inspect(t.Context(), grant.Token)
 	require.ErrorIs(t, err, ErrInvalidGrant)
 	s.options.ValidateExternalIssuer = validate
-	s.options.ValidateTeam = func(context.Context, string) error { return ErrNotFound }
+	s.owner.teams = func(string) error { return ErrNotFound }
 	_, err = s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
 	require.ErrorIs(t, err, ErrInvalidGrant)
 	assert.False(t, s.state().Initialized())

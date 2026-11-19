@@ -11,13 +11,14 @@ import (
 // Snapshot is one published state of keys, teams and people; a nil *Snapshot
 // reads as empty. Yielded records are copies.
 type Snapshot struct {
-	generation string
-	keys       map[string]*keys.VirtualKey
-	teams      map[string]*teams.Team
-	keysByTeam map[string][]string
-	gated      bool
-	failed     bool
-	people     *people.State
+	generation  string
+	keysVersion uint64
+	keys        map[string]*keys.VirtualKey
+	teams       map[string]*teams.Team
+	keysByTeam  map[string][]string
+	gated       bool
+	failed      bool
+	people      *people.State
 }
 
 // FailedSnapshot is what a store publishes once it cannot vouch for its state:
@@ -29,9 +30,10 @@ func FailedSnapshot() *Snapshot {
 
 // NewSnapshot owns k and t: the caller never changes them or their records
 // again. A nil p means no people. generation names the stored content the
-// records belong to and changes only when that content is replaced.
-func NewSnapshot(generation string, k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
-	s := &Snapshot{generation: generation, keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
+// records belong to and changes only when that content is replaced;
+// keysVersion is above zero and changes whenever a key record does.
+func NewSnapshot(generation string, keysVersion uint64, k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
+	s := &Snapshot{generation: generation, keysVersion: keysVersion, keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
 	for id, key := range k {
 		s.keysByTeam[key.TeamID] = append(s.keysByTeam[key.TeamID], id)
 	}
@@ -75,6 +77,16 @@ func (s *Snapshot) KeysByTeam(teamID string) iter.Seq2[string, *keys.VirtualKey]
 			}
 		}
 	}
+}
+
+// KeysVersion changes exactly when a key record does, so a principal cached
+// against it is current while it lasts. It is 0 for no store and for a failed
+// one, which hold no key.
+func (s *Snapshot) KeysVersion() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.keysVersion
 }
 
 // Generation names the stored content this state belongs to; empty for none.
@@ -157,5 +169,10 @@ func (s *Snapshot) TeamImpact(teamID string) people.TeamDependencies {
 	return s.PeopleState().TeamImpact(teamID)
 }
 
-// OwnerTeam reports whether teamID is the owner's team.
-func (s *Snapshot) OwnerTeam(teamID string) bool { return s.PeopleState().OwnerTeam(teamID) }
+// Membership projects what depends on teamID; none for a team it lacks.
+func (s *Snapshot) Membership(teamID string) Membership {
+	if s == nil || s.teams[teamID] == nil {
+		return Membership{}
+	}
+	return membership(s.teams[teamID], len(s.keysByTeam[teamID]), s.people)
+}

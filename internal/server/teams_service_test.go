@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -117,16 +118,21 @@ func TestTeamsService_UpdateTeam_PatchFields(t *testing.T) {
 	assert.Equal(t, "caller2", resp.UpdatedBy)
 }
 
-func TestTeamsService_UpdateTeam_RejectsPersonal(t *testing.T) {
-	svc, _, _ := newTeamsTestHarness(t)
+// createPersonalKey creates key id with its personal team and returns that team's ID.
+func createPersonalKey(t *testing.T, store access.Store, id string) string {
+	t.Helper()
+	seedTestKey(t, store, id, keys.VirtualKey{Name: id, Role: keys.RoleUser})
+	return store.Snapshot().Key(id).TeamID
+}
 
-	_, err := svc.CreatePersonalTeam(t.Context(), "personal-alice", "alice", "caller")
-	require.NoError(t, err)
+func TestTeamsService_UpdateTeam_RejectsPersonal(t *testing.T) {
+	svc, store, _ := newTeamsTestHarness(t)
+	personal := createPersonalKey(t, store, "alice")
 
 	newName := "hacked"
-	_, err = svc.UpdateTeam(t.Context(), "personal-alice", &UpdateTeamRequest{Name: &newName}, "caller")
+	_, err := svc.UpdateTeam(t.Context(), personal, &UpdateTeamRequest{Name: &newName}, "caller")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrPersonalTeamImmutable))
+	assert.True(t, errors.Is(err, teams.ErrPersonalTeamImmutable))
 }
 
 // ============================================================================
@@ -157,14 +163,12 @@ func TestTeamsService_DeleteTeam_WithMembersRejected(t *testing.T) {
 }
 
 func TestTeamsService_DeleteTeam_RejectsPersonal(t *testing.T) {
-	svc, _, _ := newTeamsTestHarness(t)
+	svc, store, _ := newTeamsTestHarness(t)
+	personal := createPersonalKey(t, store, "alice")
 
-	_, err := svc.CreatePersonalTeam(t.Context(), "personal-alice", "alice", "caller")
-	require.NoError(t, err)
-
-	err = svc.DeleteTeam(t.Context(), "personal-alice", "test")
+	err := svc.DeleteTeam(t.Context(), personal, "test")
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrPersonalTeamImmutable))
+	assert.True(t, errors.Is(err, teams.ErrPersonalTeamImmutable))
 }
 
 func TestTeamsService_DeleteTeam_NotFound(t *testing.T) {
@@ -185,6 +189,8 @@ func TestTeamsService_GetTeamKeys_FiltersByTeamID(t *testing.T) {
 	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
 
+	_, err = svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "other-team", Name: "Other"}, "caller")
+	require.NoError(t, err)
 	seedKeyBound(t, store, "alice", "eng", string(teams.RoleOwner))
 	seedKeyBound(t, store, "bob", "eng", string(teams.RoleMember))
 	seedKeyBound(t, store, "carol", "other-team", string(teams.RoleMember))
@@ -200,76 +206,6 @@ func TestTeamsService_GetTeamKeys_FiltersByTeamID(t *testing.T) {
 	}
 	assert.Equal(t, "owner", roles["alice"])
 	assert.Equal(t, "member", roles["bob"])
-}
-
-// ============================================================================
-// Personal-team lifecycle
-// ============================================================================
-
-func TestTeamsService_CreatePersonalTeam(t *testing.T) {
-	svc, _, _ := newTeamsTestHarness(t)
-
-	resp, err := svc.CreatePersonalTeam(t.Context(), "personal-alice", "alice", "caller")
-	require.NoError(t, err)
-	assert.Equal(t, string(teams.KindPersonal), resp.Kind)
-	assert.Equal(t, "Personal: alice", resp.Name)
-}
-
-func TestTeamsService_DeletePersonalTeam(t *testing.T) {
-	svc, _, _ := newTeamsTestHarness(t)
-
-	_, err := svc.CreatePersonalTeam(t.Context(), "personal-alice", "alice", "caller")
-	require.NoError(t, err)
-
-	require.NoError(t, svc.DeletePersonalTeam(t.Context(), "personal-alice", "test"))
-	_, err = svc.GetTeam("personal-alice")
-	require.Error(t, err)
-}
-
-func TestTeamsService_DeletePersonalTeam_RejectsShared(t *testing.T) {
-	svc, _, _ := newTeamsTestHarness(t)
-
-	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
-	require.NoError(t, err)
-
-	// DeletePersonalTeam returns not-found for shared teams (soft-no-op for
-	// the KeysService cascade path).
-	err = svc.DeletePersonalTeam(t.Context(), "eng", "test")
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, teams.ErrTeamNotFound))
-}
-
-// ============================================================================
-// Reconciliation sweep
-// ============================================================================
-
-func TestTeamsService_ReconcilePersonalTeams_ReapsOrphans(t *testing.T) {
-	svc, store, _ := newTeamsTestHarness(t)
-
-	// Orphan personal team — no referencing key.
-	_, err := svc.CreatePersonalTeam(t.Context(), "personal-orphan", "orphan", "caller")
-	require.NoError(t, err)
-
-	// Personal team with its key — should be kept.
-	_, err = svc.CreatePersonalTeam(t.Context(), "personal-alice", "alice", "caller")
-	require.NoError(t, err)
-	seedKeyBound(t, store, "alice", "personal-alice", string(teams.RoleOwner))
-
-	// Shared team with no keys — should be kept (shared teams don't get reaped).
-	_, err = svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
-	require.NoError(t, err)
-
-	reaped := svc.ReconcilePersonalTeams()
-	assert.Equal(t, 1, reaped)
-
-	_, err = svc.GetTeam("personal-orphan")
-	assert.Error(t, err, "orphan personal team should be reaped")
-
-	_, err = svc.GetTeam("personal-alice")
-	assert.NoError(t, err, "personal team with its key should survive")
-
-	_, err = svc.GetTeam("eng")
-	assert.NoError(t, err, "shared team should never be reaped")
 }
 
 // ============================================================================
@@ -346,7 +282,6 @@ func TestUpdateTeam_KeepsWarmedAuthCache(t *testing.T) {
 	svc := NewTeamsService(store, accessControl)
 	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
 	require.NoError(t, err)
-	withoutKey := store.Snapshot()
 	raw := seedTestKey(t, store, "ci", keys.VirtualKey{Name: "CI", Role: "user", TeamID: "eng", TeamRole: "member"})
 	authenticates := func() bool {
 		w := httptest.NewRecorder()
@@ -356,13 +291,18 @@ func TestUpdateTeam_KeepsWarmedAuthCache(t *testing.T) {
 		return accessControl.Authenticate(c, RoleUser)
 	}
 	require.True(t, authenticates())
-	// Only the cached principal still accepts the key once readers see a state without it.
-	store.pinned.Store(withoutKey)
 
 	renamed := "Platform"
 	_, err = svc.UpdateTeam(t.Context(), "eng", &UpdateTeamRequest{Name: &renamed}, "admin")
 	require.NoError(t, err)
+	// Only a cached principal still accepts the key once readers see a state without it.
+	withoutKey := func(keysVersion uint64) *access.Snapshot {
+		snap := store.Store.Snapshot()
+		return access.NewSnapshot(snap.Generation(), keysVersion, map[string]*keys.VirtualKey{}, maps.Collect(snap.Teams()), nil)
+	}
+	version := store.Store.Snapshot().KeysVersion()
+	store.pinned.Store(withoutKey(version))
 	assert.True(t, authenticates(), "the team update kept the warmed entry")
-	accessControl.InvalidateAuthCache()
-	assert.False(t, authenticates(), "the probe detects a dropped entry")
+	store.pinned.Store(withoutKey(version + 1))
+	assert.False(t, authenticates(), "the probe detects an entry that no longer counts")
 }

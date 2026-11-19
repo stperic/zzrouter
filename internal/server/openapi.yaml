@@ -4088,6 +4088,15 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Key' }
+        '400':
+          description: >
+            The body is malformed (an unknown `role` or `reset_period`, or an
+            `expires_at` that is not RFC 3339), whether or not the key exists,
+            or the change would leave a key the node cannot load, such as an
+            empty name. `code` is `bad_request`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Key not found

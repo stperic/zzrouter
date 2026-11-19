@@ -33,14 +33,6 @@ func ValidateExternalIssuer(_ context.Context, reference string) error {
 	return nil
 }
 
-// ValidateTeam admits people into any team of the store's own snapshot.
-func ValidateTeam(snap *access.Snapshot, id string) error {
-	if snap.Team(id) == nil {
-		return people.ErrInvalidGrant
-	}
-	return nil
-}
-
 // boundGrant issues an installation grant and binds it to the contract's browser proof.
 func boundGrant(t *testing.T, s access.Store, purpose people.Purpose, teamID, role string) *people.IssuedGrant {
 	t.Helper()
@@ -127,7 +119,7 @@ func testPeopleOwnerSetup(t *testing.T, h Harness) {
 	assert.True(t, snap.Initialized())
 	assert.Equal(t, owner, snap.Owner())
 	assert.Equal(t, owner, snap.Person(owner.ID))
-	assert.True(t, snap.OwnerTeam("workspace"))
+	assert.True(t, snap.Membership("workspace").OwnerProtected)
 	assert.Equal(t, "workspace", owner.TeamID)
 	assert.True(t, owner.Owner)
 	assert.Equal(t, audit.ActionPersonCreated, rec.lastEvent().Action)
@@ -426,12 +418,13 @@ func testPeopleCommitNotifies(t *testing.T, h Harness) {
 	s := h.Store
 	createTeam(t, s, "workspace", sharedTeam())
 	rec := observe(t, h)
+	version := s.Snapshot().KeysVersion()
 	_, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: installation}})
 	require.NoError(t, err)
 	_, commits := rec.counts()
 	require.Equal(t, 1, commits, "a people commit notifies subscribers")
 	c := rec.lastCommit()
-	assert.False(t, c.KeysChanged, "a people commit leaves key caches alone")
+	assert.Equal(t, version, s.Snapshot().KeysVersion(), "a people commit leaves key caches alone")
 	assert.Empty(t, c.RemovedKeys)
 	assert.Empty(t, c.RemovedTeams)
 
@@ -467,4 +460,139 @@ func testPeopleSnapshotIsolation(t *testing.T, h Harness) {
 	require.NoError(t, err)
 	assert.Len(t, middle.People(), 1)
 	assert.Len(t, s.Snapshot().People(), 2)
+}
+
+// testIssueSetup issues setup grants into one owner workspace, created with
+// the first grant in one commit, and none once the owner is claimed.
+func testIssueSetup(t *testing.T, h Harness) {
+	s := h.Store
+	rec := observe(t, h)
+	ctx := audit.WithIdentity(t.Context(), "static:admin", "setup-1")
+	first, err := s.IssueSetup(ctx, people.Issuer{Reference: installation})
+	require.NoError(t, err)
+	assert.Equal(t, people.PurposeSetup, first.Purpose)
+	assert.Equal(t, "admin", first.Role)
+	workspace := s.Snapshot().Team(first.TeamID)
+	require.NotNil(t, workspace)
+	assert.Equal(t, teams.KindShared, workspace.Kind)
+	assert.Equal(t, "Personal workspace", workspace.Name)
+	assert.Equal(t, "installation", workspace.CreatedBy)
+	assert.Equal(t, map[string]string{"owner_workspace": "true"}, workspace.Metadata)
+	inspected, err := s.People().Inspect(t.Context(), first.Token)
+	require.NoError(t, err)
+	assert.Equal(t, inspected, &first.Grant, "the grant returned is the grant stored")
+	events, commits := rec.counts()
+	assert.Equal(t, 1, commits, "the workspace and its grant commit together")
+	assert.Equal(t, 1, events)
+	issued := rec.lastEvent()
+	assert.Equal(t, audit.ActionGrantIssued, issued.Action)
+	assert.Equal(t, "static:admin", issued.Actor)
+	assert.Equal(t, "setup-1", issued.RequestID)
+
+	second, err := s.IssueSetup(t.Context(), people.Issuer{Reference: installation})
+	require.NoError(t, err)
+	assert.Equal(t, first.TeamID, second.TeamID, "a second setup grant targets the same workspace")
+	assert.Equal(t, workspace, s.Snapshot().Team(first.TeamID))
+	bound, err := s.People().Exchange(t.Context(), second.Token, proof)
+	require.NoError(t, err)
+	owner, err := s.People().ClaimOwner(t.Context(), bound.Token, proof, people.CreatePerson{Username: "owner", Name: "Owner", Password: password})
+	require.NoError(t, err)
+	assert.Equal(t, first.TeamID, owner.TeamID)
+
+	_, commits = rec.counts()
+	_, err = s.IssueSetup(t.Context(), people.Issuer{Reference: installation})
+	require.ErrorIs(t, err, people.ErrInitialized)
+	_, after := rec.counts()
+	assert.Equal(t, commits, after, "a refused setup grant creates no workspace")
+	_, err = s.People().Inspect(t.Context(), first.Token)
+	require.ErrorIs(t, err, people.ErrInitialized, "an earlier setup grant closes with setup")
+	assert.Len(t, maps.Collect(h.Reopen().Snapshot().Teams()), 1)
+}
+
+func testConcurrentIssueSetup(t *testing.T, h Harness) {
+	s := h.Store
+	const callers = 8
+	grants := make([]*people.IssuedGrant, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range callers {
+		wg.Go(func() {
+			<-start
+			var err error
+			grants[i], err = s.IssueSetup(context.Background(), people.Issuer{Reference: installation})
+			assert.NoError(t, err)
+		})
+	}
+	close(start)
+	wg.Wait()
+	teamIDs := maps.Collect(s.Snapshot().Teams())
+	require.Len(t, teamIDs, 1, "one workspace team")
+	for _, grant := range grants {
+		require.NotNil(t, grant)
+		assert.Contains(t, teamIDs, grant.TeamID)
+	}
+}
+
+// testInvitationRacesTeamDeletion: an invitation either sees its team gone or
+// keeps it from being deleted.
+func testInvitationRacesTeamDeletion(t *testing.T, h Harness) {
+	s := h.Store
+	for i := range 8 {
+		teamID := fmt.Sprint("invited-", i)
+		createTeam(t, s, teamID, sharedTeam())
+		start := make(chan struct{})
+		var issueErr, deleteErr error
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			<-start
+			_, issueErr = s.People().Issue(context.Background(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: teamID, Role: "user", Issuer: people.Issuer{Reference: installation}})
+		})
+		wg.Go(func() { <-start; deleteErr = s.DeleteTeam(context.Background(), teamID, audit.Event{}) })
+		close(start)
+		wg.Wait()
+		snap := s.Snapshot()
+		if issueErr == nil {
+			require.ErrorIs(t, deleteErr, teams.ErrTeamHasMembers)
+			assert.Equal(t, 1, snap.TeamImpact(teamID).Invitations)
+		} else {
+			require.ErrorIs(t, issueErr, people.ErrInvalidGrant)
+			require.NoError(t, deleteErr)
+			assert.Nil(t, snap.Team(teamID))
+			assert.Zero(t, snap.TeamImpact(teamID).Invitations, "no invitation outlives its team")
+		}
+	}
+}
+
+// testPeopleAdmission admits people and their grants only into an existing,
+// active shared team: at issue, at enrollment and when a person moves.
+func testPeopleAdmission(t *testing.T, h Harness) {
+	s := h.Store
+	createKey(t, s, "solo")
+	createTeam(t, s, "paused", sharedTeam())
+	_, err := s.UpdateTeam(t.Context(), "paused", suspend, audit.Event{})
+	require.NoError(t, err)
+	refused := map[string]string{"a personal team": teams.PersonalID("solo"), "a suspended team": "paused", "a missing team": "missing"}
+	for name, teamID := range refused {
+		_, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: teamID, Role: "admin", Issuer: people.Issuer{Reference: installation}})
+		require.ErrorIs(t, err, people.ErrInvalidGrant, "a setup grant into %s", name)
+	}
+	claimOwner(t, s)
+	member := invite(t, s, "alice")
+	for name, teamID := range refused {
+		_, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: teamID, Role: "user", Issuer: people.Issuer{Reference: installation}})
+		require.ErrorIs(t, err, people.ErrInvalidGrant, "an invitation into %s", name)
+		_, err = s.People().Update(t.Context(), member.ID, people.UpdatePerson{TeamID: &teamID})
+		require.ErrorIs(t, err, people.ErrInvalidGrant, "a move into %s", name)
+	}
+	pending := boundGrant(t, s, people.PurposeInvitation, member.TeamID, "user")
+	_, err = s.UpdateTeam(t.Context(), member.TeamID, suspend, audit.Event{})
+	require.NoError(t, err)
+	_, err = s.People().AcceptInvitation(t.Context(), pending.Token, proof, people.CreatePerson{Username: "carol", Name: "Carol", Password: password})
+	require.ErrorIs(t, err, people.ErrInvalidGrant, "an invitation whose team was suspended since is refused at enrollment")
+	snap := s.Snapshot()
+	assert.Len(t, snap.People(), 2)
+	assert.Equal(t, member.TeamID, snap.Person(member.ID).TeamID, "a suspended team keeps its members")
+	for _, teamID := range refused {
+		assert.Zero(t, snap.TeamImpact(teamID), "nothing joined %s", teamID)
+	}
 }

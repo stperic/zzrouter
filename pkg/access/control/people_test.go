@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access"
@@ -26,12 +27,6 @@ func identityFixture(t *testing.T, limits quota.QuotaConfig) (*Core, access.Stor
 	store := openTestStore(t, sqlstore.Options{
 		People:                 true,
 		ValidateExternalIssuer: func(context.Context, string) error { return nil },
-		ValidateTeam: func(snap *access.Snapshot, id string) error {
-			if team := snap.Team(id); team == nil || team.Suspended {
-				return people.ErrInvalidGrant
-			}
-			return nil
-		},
 	})
 	core := newTestCoreFor(t, StaticKeySet{Admin: "test-installation-admin-with-sufficient-length"}, store)
 	for id, team := range map[string]teams.Team{"owners": {Name: "Owners", Kind: "shared"}, "engineering": {Name: "Engineering", Kind: "shared", QuotaConfig: limits}} {
@@ -212,9 +207,14 @@ func TestPeopleReferencesFailClosedForChangedAuthorityAndTeams(t *testing.T) {
 		_, err := core.AuthenticateReference(ref)
 		require.ErrorIs(t, err, ErrKeySuspended)
 	}
-	require.NoError(t, store.DeleteTeam(t.Context(), "engineering", audit.Event{}))
+	require.ErrorIs(t, store.DeleteTeam(t.Context(), "engineering", audit.Event{}), teams.ErrTeamHasMembers)
+	// The store refuses a team removed under its members; references fail closed against one anyway.
+	snap := store.Snapshot()
+	remaining := maps.Collect(snap.Teams())
+	delete(remaining, "engineering")
+	gone := &fixedState{snap: access.NewSnapshot(snap.Generation(), snap.KeysVersion(), maps.Collect(snap.Keys()), remaining, snap.PeopleState())}
 	for _, ref := range []CredentialReference{personRef, keyRef} {
-		_, err := core.AuthenticateReference(ref)
+		_, err := NewCore(StaticKeySet{}, gone, nil, nil, nil).AuthenticateReference(ref)
 		require.ErrorIs(t, err, ErrInvalidKey)
 	}
 	for _, principal := range []*KeyPrincipal{{ID: "missing", Kind: KindPerson, TeamID: "removed"}, {ID: "missing", IsVirtual: true, TeamID: "removed"}} {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -18,6 +19,8 @@ var (
 	ErrTeamNotFound   = errors.New("team not found")
 	ErrTeamExists     = errors.New("team already exists")
 	ErrTeamHasMembers = errors.New("team has member keys")
+	// ErrPersonalTeamImmutable refuses a change to a personal team or a second key in one.
+	ErrPersonalTeamImmutable = errors.New("personal team is immutable")
 	// ErrInvalid marks a team record that breaks a state invariant.
 	ErrInvalid = errors.New("invalid team record")
 )
@@ -32,12 +35,15 @@ const (
 	RoleMember MemberRole = "member"
 )
 
+// Valid reports whether r is one of the roles above.
+func (r MemberRole) Valid() bool { return r == RoleOwner || r == RoleMember }
+
 // TeamKind distinguishes auto-created personal teams (one key, immutable,
 // cascade-deleted with their key) from shared teams (explicitly created,
 // multi-member, manually managed).
 //
 // Kind is set at team creation and never mutates. A personal team can never
-// gain a second member or be converted to shared — the service layer enforces
+// gain a second member or be converted to shared — the access store enforces
 // this so the cascade-delete rule stays trivially correct.
 type TeamKind string
 
@@ -45,6 +51,15 @@ const (
 	KindPersonal TeamKind = "personal"
 	KindShared   TeamKind = "shared"
 )
+
+// PersonalPrefix starts the ID of every personal team, and of no other team.
+const PersonalPrefix = "personal-"
+
+// PersonalID names the personal team of the key keyID.
+func PersonalID(keyID string) string { return PersonalPrefix + keyID }
+
+// IsPersonalID reports whether id is reserved for a personal team.
+func IsPersonalID(id string) bool { return strings.HasPrefix(id, PersonalPrefix) }
 
 // Team represents a collection of virtual keys with shared quotas and model access.
 type Team struct {
@@ -77,6 +92,9 @@ func (t *Team) Validate() error {
 		}
 		return fmt.Errorf("%w: invalid kind %q (expected %q or %q)", ErrInvalid, t.Kind, KindPersonal, KindShared)
 	}
+	if IsPersonalID(t.ID) != (t.Kind == KindPersonal) {
+		return fmt.Errorf("%w: the prefix %q is reserved for personal teams", ErrInvalid, PersonalPrefix)
+	}
 	if err := t.RouteAccess.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -92,6 +110,14 @@ func (t *Team) Validate() error {
 	// Policies and metadata are stored as JSON.
 	if !utils.ValidUTF8([]any{t.AllowedModels, t.RouteAccess.Routes, t.ProviderAccess.Providers, t.Metadata}) {
 		return fmt.Errorf("%w: models, routes, providers and metadata must be valid UTF-8", ErrInvalid)
+	}
+	return nil
+}
+
+// CheckMutable refuses changing a personal team, which lives and dies with its key.
+func (t *Team) CheckMutable() error {
+	if t.Kind == KindPersonal {
+		return fmt.Errorf("team %q: %w", t.ID, ErrPersonalTeamImmutable)
 	}
 	return nil
 }

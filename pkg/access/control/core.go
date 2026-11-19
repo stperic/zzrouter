@@ -128,6 +128,8 @@ func NewCore(
 	}
 	if state == nil {
 		slog.Info("control.Core constructed without an access store; virtual keys and teams disabled")
+	} else if enforcer != nil {
+		state.OnCommit(c.forgetRemoved)
 	}
 	return c
 }

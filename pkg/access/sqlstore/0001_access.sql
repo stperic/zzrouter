@@ -1,7 +1,8 @@
 -- The access store's first schema. A released migration is never edited: SUMS fails the build.
 -- Times are INTEGER unix microseconds in UTC; NULL is a nil time pointer.
 -- JSON columns hold values no SQL reads. Constraints repeat only what the records' Validate
--- rules already require, so a violation is a bug.
+-- rules and Snapshot.Validate already require, so a violation is a bug. Foreign keys are
+-- checked at COMMIT, so one transaction can add a team and the key that references it.
 
 -- store_id, generation, revision and sequence; this layout never changes.
 CREATE TABLE meta (
@@ -39,7 +40,7 @@ CREATE TABLE keys (
   name TEXT NOT NULL CHECK (name <> ''),
   description TEXT NOT NULL,
   hashed_key TEXT NOT NULL CHECK (hashed_key <> ''),
-  team_id TEXT NOT NULL CHECK (team_id <> ''),
+  team_id TEXT NOT NULL CHECK (team_id <> '') REFERENCES teams(id) DEFERRABLE INITIALLY DEFERRED,
   team_role TEXT NOT NULL CHECK (team_role <> ''),
   role TEXT NOT NULL,
   suspended INTEGER NOT NULL CHECK (suspended IN (0, 1)),
@@ -65,7 +66,7 @@ CREATE TABLE people (
   username TEXT NOT NULL UNIQUE CHECK (username = lower(username)),
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
-  team_id TEXT NOT NULL CHECK (team_id <> ''),
+  team_id TEXT NOT NULL CHECK (team_id <> '') REFERENCES teams(id) DEFERRABLE INITIALLY DEFERRED,
   owner INTEGER NOT NULL CHECK (owner IN (0, 1)),
   suspended INTEGER NOT NULL CHECK (suspended IN (0, 1)),
   revision TEXT NOT NULL CHECK (revision <> ''),

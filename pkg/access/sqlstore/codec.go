@@ -42,7 +42,7 @@ func ptrs(cols []col) []any {
 
 // table holds the statements for one table; its first column is the primary key.
 type table struct {
-	insert, upsert, selectAll, remove string
+	columns, insert, upsert, selectAll, remove string
 }
 
 func newTable(name string, cols []col) table {
@@ -57,6 +57,7 @@ func newTable(name string, cols []col) table {
 	list := strings.Join(names, ", ")
 	insert := "INSERT INTO " + name + " (" + list + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ") + ")"
 	return table{
+		columns:   list,
 		insert:    insert,
 		upsert:    insert + " ON CONFLICT (" + names[0] + ") DO UPDATE SET " + strings.Join(updates, ", "),
 		selectAll: "SELECT " + list + " FROM " + name,
@@ -225,7 +226,7 @@ func installationCols(r *people.Records) []col {
 	}
 }
 
-// auditRow is an event with the sequence of the commit that wrote it.
+// auditRow is an event with its place in the history.
 type auditRow struct {
 	seq int64
 	audit.Event

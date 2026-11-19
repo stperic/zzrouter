@@ -13,13 +13,10 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/access/people"
-	"github.com/stperic/zzrouter/pkg/access/teams"
-	"github.com/stperic/zzrouter/pkg/audit"
 )
 
 // validateExternalIssuer runs inside a people commit, under the access store's writer gate, so it never reads a person.
@@ -33,15 +30,6 @@ func (s *Server) validateExternalIssuer(_ context.Context, value string) error {
 	}
 	_, err := s.access.core.AuthenticateReference(ref)
 	return err
-}
-
-// validatePeopleTeam admits people and grants only into an active shared team.
-func validatePeopleTeam(snap *access.Snapshot, id string) error {
-	team := snap.Team(id)
-	if team == nil || team.Kind != teams.KindShared || team.Suspended {
-		return people.ErrInvalidGrant
-	}
-	return nil
 }
 
 func (s *Server) initPeople(ctx context.Context, issuer string) error {
@@ -117,29 +105,6 @@ func localRecoveryHost(ctx context.Context, bind string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("owner recovery requires the configured bind address to resolve to this host")
-}
-
-// mutatePeople serializes membership and grants with team deletion. OAuth is
-// called only after this returns, preserving the documented lock order.
-func (s *Server) mutatePeople(change func() error) error {
-	if s.services.Teams == nil || s.accessStore.People() == nil {
-		return access.ErrClosed
-	}
-	s.services.Teams.mu.Lock()
-	defer s.services.Teams.mu.Unlock()
-	return change()
-}
-
-func (s *Server) initialOwnerTeam(ctx context.Context) (string, error) {
-	// Caller holds TeamsService.mu. A published team is already durable.
-	for id, team := range s.accessSnapshot().Teams() {
-		if team.Kind == teams.KindShared && !team.Suspended && team.Metadata["owner_workspace"] == "true" {
-			return id, nil
-		}
-	}
-	id := "workspace-" + uuid.NewString()
-	_, err := s.accessStore.CreateTeam(ctx, id, teams.Team{Name: "Personal workspace", Kind: teams.KindShared, CreatedBy: "installation", Metadata: map[string]string{"owner_workspace": "true"}}, audit.Event{})
-	return id, err
 }
 
 func peopleIssuer(ref control.CredentialReference) (people.Issuer, error) {

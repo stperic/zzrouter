@@ -77,12 +77,6 @@ type Event struct {
 // mutation came from the operator-held master key.
 const ActorStaticAdmin = "static:admin"
 
-// ActorSystemReconciler is the sentinel Actor for automatic background
-// sweeps (orphan personal-team reaper, future cascade cleanups). A
-// compliance reviewer must be able to distinguish these from operator-
-// driven deletes on the static admin key.
-const ActorSystemReconciler = "system:reconciler"
-
 // Validate enforces the event-shape contract. Recording an invalid
 // event would pollute the audit log with records a compliance review
 // cannot trust.

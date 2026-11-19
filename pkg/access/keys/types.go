@@ -22,6 +22,15 @@ var (
 	ErrInvalid = errors.New("invalid key record")
 )
 
+// The roles a key can hold; control.UserRole names the same values.
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
+// ValidRole reports whether role is one a key can hold.
+func ValidRole(role string) bool { return role == RoleAdmin || role == RoleUser }
+
 // VirtualKey represents a named API key with access controls and metadata.
 //
 // TeamID and TeamRole are required and immutable after creation. Every key
@@ -43,7 +52,7 @@ type VirtualKey struct {
 	TeamRole string // "owner" | "member"
 
 	// Access control
-	Role        string // "user" or "admin"
+	Role        string // RoleAdmin or RoleUser
 	Suspended   bool
 	SuspendedAt *time.Time
 	SuspendedBy string
@@ -82,6 +91,8 @@ func (k *VirtualKey) Validate() error {
 		return fmt.Errorf("%w: missing team_id", ErrInvalid)
 	case k.TeamRole == "":
 		return fmt.Errorf("%w: missing team_role", ErrInvalid)
+	case !ValidRole(k.Role):
+		return fmt.Errorf("%w: invalid role %q (expected %q or %q)", ErrInvalid, k.Role, RoleAdmin, RoleUser)
 	case !utils.InRFC3339Range(k.ExpiresAt, k.SuspendedAt, &k.CreatedAt, &k.UpdatedAt, &k.LastSeenAt):
 		return fmt.Errorf("%w: a time is outside the years 0001 to 9999", ErrInvalid)
 	case !k.ValidSpendLimit():

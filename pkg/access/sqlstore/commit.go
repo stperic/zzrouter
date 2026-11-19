@@ -33,6 +33,7 @@ var (
 type writes struct {
 	stmts                     []stmt
 	revises                   bool // keys, teams, people or invitations changed
+	keysChanged               bool
 	removedKeys, removedTeams []string
 }
 
@@ -43,9 +44,43 @@ type stmt struct {
 
 func (w *writes) exec(query string, args ...any) { w.stmts = append(w.stmts, stmt{query, args}) }
 
+// tx is one commit being built: the records it changes and the events it
+// records, in order.
+type tx struct {
+	records
+	events []audit.Event
+}
+
+// record adds ev to the commit; a zero event records nothing.
+func (t *tx) record(ev audit.Event) {
+	if ev.Action != "" {
+		t.events = append(t.events, ev)
+	}
+}
+
+// stamped is ev with the facts the store decided added to a copy of its metadata.
+func stamped(ev audit.Event, facts map[string]any) audit.Event {
+	metadata := maps.Clone(ev.Metadata)
+	if metadata == nil {
+		metadata = make(map[string]any, len(facts))
+	}
+	maps.Copy(metadata, facts)
+	ev.Metadata = metadata
+	return ev
+}
+
+// alongside is the event for a record the store changes on ev's behalf: ev's
+// actor and request, and nothing when ev records nothing.
+func alongside(ev audit.Event, action audit.Action, subject string, metadata map[string]any) audit.Event {
+	if ev.Action == "" {
+		return audit.Event{}
+	}
+	return audit.Event{Action: action, Actor: ev.Actor, Subject: subject, RequestID: ev.RequestID, Metadata: metadata}
+}
+
 // mutate runs apply on a copy of p's records and commits the change with its
-// event. Subscribers, or Options.Fatal after a failure, run outside the gate.
-func (s *Store) mutate(ctx context.Context, p part, apply func(*records) (audit.Event, error)) error {
+// events. Subscribers, or Options.Fatal after a failure, run outside the gate.
+func (s *Store) mutate(ctx context.Context, p part, apply func(*tx) error) error {
 	after, err := s.commit(ctx, p, apply)
 	if after != nil {
 		after()
@@ -53,27 +88,27 @@ func (s *Store) mutate(ctx context.Context, p part, apply func(*records) (audit.
 	return err
 }
 
-func (s *Store) commit(ctx context.Context, p part, apply func(*records) (audit.Event, error)) (func(), error) {
+func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func(), error) {
 	s.gate.Lock()
 	defer s.gate.Unlock()
 	if s.refusal != nil {
 		return nil, s.refusal
 	}
 	prev := s.pub.Load()
-	next := prev.records
-	switch p {
-	case keyRecords:
-		next.keys = maps.Clone(next.keys)
-	case teamRecords:
-		next.teams = maps.Clone(next.teams)
-	case peopleRecords:
-		next.people = next.people.Clone()
+	t := &tx{records: prev.records}
+	if p&keyRecords != 0 {
+		t.keys = maps.Clone(t.keys)
 	}
-	ev, err := apply(&next)
-	if err != nil {
+	if p&teamRecords != 0 {
+		t.teams = maps.Clone(t.teams)
+	}
+	if p&peopleRecords != 0 {
+		t.people = t.people.Clone()
+	}
+	if err := apply(t); err != nil {
 		return nil, err
 	}
-	w, err := diff(&prev.records, &next, p)
+	w, err := diff(&prev.records, &t.records, p)
 	if err != nil {
 		return nil, err
 	}
@@ -81,34 +116,42 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*records) (audit.
 		return nil, err
 	}
 	changed := len(w.stmts) > 0
-	if !changed && ev.Action == "" {
+	if !changed && len(t.events) == 0 {
 		return nil, nil
+	}
+	snap := prev.snap
+	if changed {
+		keysVersion := snap.KeysVersion()
+		if w.keysChanged {
+			keysVersion++
+		}
+		snap = access.NewSnapshot(prev.meta.generation, keysVersion, t.keys, t.teams, t.people)
+		if err := snap.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	m := prev.meta
 	m.sequence++
 	if w.revises {
 		m.revision++
 	}
-	if ev.Action != "" {
-		row := auditRow{seq: int64(m.sequence), Event: audit.Attribute(ctx, ev)}
+	for _, ev := range t.events {
+		row := auditRow{Event: audit.Attribute(ctx, ev)}
 		if row.Time.IsZero() {
 			row.Time = utils.NowUTC()
 		}
 		if err := row.Validate(); err != nil {
 			return nil, err
 		}
-		args, err := encode(auditCols(&row))
+		args, err := encode(auditCols(&row)[1:])
 		if err != nil {
 			return nil, err
 		}
-		w.exec(auditTable.insert, args...)
+		w.exec(auditAppend, args...)
 	}
 	w.exec(updateMeta, strconv.FormatUint(m.revision, 10), "revision")
 	w.exec(updateMeta, strconv.FormatUint(m.sequence, 10), "sequence")
-	published := &state{records: next, snap: prev.snap, meta: m}
-	if changed {
-		published.snap = access.NewSnapshot(m.generation, next.keys, next.teams, next.people)
-	}
+	published := &state{records: t.records, snap: snap, meta: m}
 	if uncertain, err := s.write(ctx, w); err != nil {
 		if !uncertain {
 			return nil, err
@@ -124,7 +167,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*records) (audit.
 	if !changed {
 		return nil, nil
 	}
-	c, subs := access.Commit{KeysChanged: p == keyRecords, RemovedKeys: w.removedKeys, RemovedTeams: w.removedTeams}, s.subs
+	c, subs := access.Commit{RemovedKeys: w.removedKeys, RemovedTeams: w.removedTeams}, s.subs
 	return func() {
 		for _, fn := range subs {
 			fn(c)
@@ -161,7 +204,7 @@ func (s *Store) write(ctx context.Context, w *writes) (uncertain bool, err error
 // be read back, the store fails closed: it publishes a snapshot that admits no
 // one and refuses every later write with ErrFailed.
 func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*state, error) {
-	stored, err := s.readBack(context.WithoutCancel(ctx))
+	stored, err := s.readBack(context.WithoutCancel(ctx), s.pub.Load().snap.KeysVersion()+1)
 	if err != nil {
 		s.refusal = fmt.Errorf("%w: %w", ErrFailed, errors.Join(commitErr, err))
 		s.pub.Store(&state{snap: access.FailedSnapshot(), meta: s.pub.Load().meta})
@@ -178,80 +221,94 @@ func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*
 
 // readBack loads in a read transaction: if the driver left the failed
 // transaction open, BEGIN fails instead of reading that transaction's writes.
-func (s *Store) readBack(ctx context.Context) (*state, error) {
+func (s *Store) readBack(ctx context.Context, keysVersion uint64) (*state, error) {
 	tx, err := s.db.SQL().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	return load(ctx, tx)
+	return load(ctx, tx, keysVersion)
 }
 
-// diff validates what p's change made of prev and writes it in stored form.
+// diff validates what the change to p's parts made of prev and writes it in
+// stored form. Foreign keys are checked at COMMIT, so the order is free.
 func diff(prev, next *records, p part) (*writes, error) {
 	w := &writes{}
-	var err error
-	switch p {
-	case keyRecords:
-		w.removedKeys, err = changedRecords(w, keyTable, "key", prev.keys, next.keys, (*keys.VirtualKey).Validate, keyCols)
-	case teamRecords:
-		w.removedTeams, err = changedRecords(w, teamTable, "team", prev.teams, next.teams, (*teams.Team).Validate, teamCols)
-	case peopleRecords:
-		err = diffPeople(w, prev, next)
+	if p&keyRecords != 0 {
+		written, removed, err := changedRecords(w, keyTable, "key", prev.keys, next.keys, (*keys.VirtualKey).Validate, keyCols)
+		if err != nil {
+			return nil, err
+		}
+		w.keysChanged, w.removedKeys = len(written)+len(removed) > 0, removed
+		w.revises = w.keysChanged
 	}
-	return w, err
+	if p&teamRecords != 0 {
+		written, removed, err := changedRecords(w, teamTable, "team", prev.teams, next.teams, (*teams.Team).Validate, teamCols)
+		if err != nil {
+			return nil, err
+		}
+		w.removedTeams = removed
+		w.revises = w.revises || len(written)+len(removed) > 0
+	}
+	if p&peopleRecords != 0 {
+		revises, err := diffPeople(w, prev, next)
+		if err != nil {
+			return nil, err
+		}
+		w.revises = w.revises || revises
+	}
+	return w, nil
 }
 
 // changedRecords writes each changed key or team that passes its rule, leaving
 // the record in the stored form it is published in, and deletes those next lacks.
-func changedRecords[R any](w *writes, t table, kind string, prev, next map[string]*R, check func(*R) error, cols func(*R) []col) ([]string, error) {
-	written, removed, err := rows(w, t, prev, next, same, func(id string, r *R) ([]any, error) {
+func changedRecords[R any](w *writes, t table, kind string, prev, next map[string]*R, check func(*R) error, cols func(*R) []col) (written, removed []string, err error) {
+	return rows(w, t, prev, next, same, func(id string, r *R) ([]any, error) {
 		if err := check(r); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", kind, id, err)
 		}
 		return encode(cols(r))
 	})
-	w.revises = len(written)+len(removed) > 0
-	return removed, err
 }
 
-// diffPeople publishes a validated copy of exactly what it writes.
-func diffPeople(w *writes, prev, next *records) error {
+// diffPeople publishes a validated copy of exactly what it writes and reports
+// whether the change advances the revision.
+func diffPeople(w *writes, prev, next *records) (bool, error) {
 	before, after := prev.people.Records(), next.people.Records()
 	if err := storedPeople(&after); err != nil {
-		return err
+		return false, err
 	}
 	written, removed, err := rows(w, personTable, before.People, after.People, same, func(_ string, p people.PersonRecord) ([]any, error) {
 		return encode(personCols(&p))
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	grants, _, err := rows(w, grantTable, before.Grants, after.Grants, sameGrant, func(hash string, g people.GrantRecord) ([]any, error) {
 		return encode(grantCols(&grantRow{hash, g}))
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if before.OwnerID != after.OwnerID || before.Progress != after.Progress {
 		args, err := encode(installationCols(&after))
 		if err != nil {
-			return err
+			return false, err
 		}
 		w.exec(installationTable.upsert, args...)
 	}
 	// Pruned grants, console-entry codes and progress leave the revision alone.
-	w.revises = len(written)+len(removed) > 0
+	revises := len(written)+len(removed) > 0
 	for _, hash := range grants {
 		purpose := after.Grants[hash].Purpose
-		w.revises = w.revises || purpose == people.PurposeInvitation || purpose == people.PurposeRecovery
+		revises = revises || purpose == people.PurposeInvitation || purpose == people.PurposeRecovery
 	}
 	state, err := people.NewState(after)
 	if err != nil {
-		return fmt.Errorf("people state: %w", err)
+		return false, fmt.Errorf("people state: %w", err)
 	}
 	next.people = state
-	return nil
+	return revises, nil
 }
 
 // storedPeople puts every person, grant and the progress in stored form.
