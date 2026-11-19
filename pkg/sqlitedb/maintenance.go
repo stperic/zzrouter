@@ -180,9 +180,29 @@ func MakeDir(path string) error {
 	return errors.Join(security.RestrictDirectoryPermissions(path), SyncDir(filepath.Dir(path)))
 }
 
-// GiveOwner gives each of paths that exists the owner of the installation
-// directory dir (security.GiveOwner), and reports them, relative to dir, to
-// the WithStep observer as one step.
+// RemoveDirIfEmpty removes the directory at path when it holds nothing and
+// syncs its parent, or syncs it when it holds something, so the removals made
+// in it survive a power loss; an absent directory is left as it is.
+func RemoveDirIfEmpty(path string) error {
+	entries, err := os.ReadDir(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case len(entries) > 0:
+		return SyncDir(path)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return SyncDir(filepath.Dir(path))
+}
+
+// GiveOwner is the wrapper through which a multi-file operation hands what it
+// wrote to the installation's owner: it gives each of paths that exists the
+// owner of the installation directory dir (security.GiveOwner), and reports
+// them, relative to dir, to the WithStep observer as one step.
 func GiveOwner(ctx context.Context, dir string, paths ...string) error {
 	var given []string
 	for _, path := range paths {
@@ -198,7 +218,9 @@ func GiveOwner(ctx context.Context, dir string, paths ...string) error {
 		}
 		given = append(given, filepath.ToSlash(rel))
 	}
-	Step(ctx, "owned "+strings.Join(given, ", "))
+	if len(given) > 0 {
+		Step(ctx, "owned "+strings.Join(given, ", "))
+	}
 	return nil
 }
 

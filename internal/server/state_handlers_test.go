@@ -194,5 +194,5 @@ func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
 	state, raw := readStoreState(t, s)
 	assert.Equal(t, "setup_required", state.Status, "the store's state is answered")
 	assert.Equal(t, []any{}, raw["retained_copies"])
-	assert.Contains(t, raw["retained_copies_error"], "could not be listed")
+	assert.Contains(t, raw["retained_copies_error"], "could not be listed; the node's log names the cause")
 }

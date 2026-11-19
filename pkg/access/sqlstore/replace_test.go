@@ -272,6 +272,26 @@ func TestReplaceGivesTheInstallationsOwner(t *testing.T) {
 	require.NoError(t, Revert(ctx, i.dir, keep, i.meta.Generation))
 	require.Equal(t, []string{
 		"owned access, access/access.sqlite, access-store.json, rollback/g/store, rollback/g/store/kept.json, rollback/g/store/access.sqlite, rollback/g/store/access-store.json",
-		"owned access/access.sqlite, access-store.json",
+		"owned access/access.sqlite, access-store.json, access",
 	}, steps)
+}
+
+// TestReplaceRecordsALostKeep: a replacement that finds nothing recorded in
+// keep while the database already is the published image records that what it
+// replaced is lost, keeps no copy of the new database, and Revert then refuses.
+func TestReplaceRecordsALostKeep(t *testing.T) {
+	t.Parallel()
+	i := installStore(t)
+	keep := keepIn(t)
+	_, err := Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(keep))
+	rep, err := Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
+	require.NoError(t, err)
+	require.True(t, rep.Lost)
+	require.NoFileExists(t, filepath.Join(keep, fileName), "the new database is not kept as the previous one")
+	require.JSONEq(t, `{"database":false,"journal":false,"marker":false,"lost":true}`, string(readFile(t, filepath.Join(keep, keptName))))
+	published := storeFiles(t, i.dir)
+	require.ErrorIs(t, Revert(t.Context(), i.dir, keep, i.meta.Generation), ErrKeptLost)
+	require.Equal(t, published, storeFiles(t, i.dir))
 }

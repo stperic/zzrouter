@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
+	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -91,7 +93,7 @@ func TestRecoveryActivateCommand(t *testing.T) {
 
 	out, err = runRecovery(t, dir, "activate", staging, "--dry-run")
 	require.NoError(t, err)
-	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+meta.StoreID+".\nIt would replace this installation's access store, keeping its database and store marker in "+rollback+".\nA dry run publishes nothing, replaces nothing and creates no rollback directory")
+	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+meta.StoreID+".\nIt would replace this installation's access store, keeping its database and store marker in "+rollback+".\nA dry run publishes nothing, replaces nothing and creates no rollback directory; reading the database may have let SQLite finish recovering a journal")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -171,4 +173,80 @@ func TestRecoveryActivateOnAFreshInstallation(t *testing.T) {
 	require.Contains(t, out, "of access store "+meta.StoreID+" (")
 	require.Contains(t, out, "This installation had no access store, so nothing was replaced; "+filepath.Join(fresh, "rollback")+string(filepath.Separator))
 	require.NotContains(t, out, "credential hashes")
+}
+
+// crashAt runs an activation, or its rollback, that ends at step as a crash
+// would: no later step runs. In-process, so nothing is forked.
+func crashAt(t *testing.T, dir, staging, step string, o recovery.ActivateOptions) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = recovery.Activate(sqlitedb.WithStep(t.Context(), func(reached string) {
+			if reached == step {
+				runtime.Goexit()
+			}
+		}), dir, staging, o)
+	}()
+	<-done
+}
+
+// TestRecoveryActivateTellsWhatItKept: a staging directory inside the
+// installation is refused at restore time with nothing written; a rollback
+// whose staging directory is gone does not claim to keep it; and an activation
+// finished after its pending rollback directory was deleted says the previous
+// store was not kept.
+func TestRecoveryActivateTellsWhatItKept(t *testing.T) {
+	dir, _ := recoveryInstallation(t)
+	archive := databaseArchive(t, dir)
+	installation := treeOf(t, dir)
+	_, err := runRecovery(t, dir, "restore", archive, "--to", filepath.Join(dir, "staged"))
+	var refusal *recovery.Refusal
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, recovery.StagingInvalid, refusal.Reason)
+	require.Equal(t, installation, treeOf(t, dir), "nothing written")
+	require.NoDirExists(t, filepath.Join(dir, "staged"))
+
+	staging := filepath.Join(t.TempDir(), "staged")
+	_, err = runRecovery(t, dir, "restore", archive, "--to", staging)
+	require.NoError(t, err)
+	crashAt(t, dir, staging, "rollback record", recovery.ActivateOptions{})
+	moved := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Rename(staging, moved))
+	out, err := runRecovery(t, dir, "activate", staging, "--rollback")
+	require.NoError(t, err)
+	require.Contains(t, out, "are as they were before.")
+	require.NotContains(t, out, "The staging directory is kept.")
+
+	require.NoError(t, os.Rename(moved, staging))
+	crashAt(t, dir, staging, "renamed", recovery.ActivateOptions{})
+	var manifest recovery.Manifest
+	data, err := os.ReadFile(filepath.Join(staging, "manifest.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, "rollback", manifest.Staged.Generation)))
+	out, err = runRecovery(t, dir, "activate", staging)
+	require.NoError(t, err)
+	require.Contains(t, out, "The previous database and store marker were not kept: the rollback directory was deleted while the activation was incomplete")
+	require.NotContains(t, out, "are kept in")
+}
+
+// TestUpdateRunRefusesDuringAnIncompleteActivation: the privileged update run
+// refuses with activation_incomplete before it installs anything, and
+// publishes the refusal as its failed run.
+func TestUpdateRunRefusesDuringAnIncompleteActivation(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ZZROUTER_TEST_HOME", dir)
+	t.Setenv("ZZROUTER_CONFIG_DIR", dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"database","staging":"/staged","generation":"g"}`), 0o600))
+	h := update.NewHandoff(t.TempDir(), t.TempDir())
+	err := executeUpdateRequest(t.Context(), h, &update.Request{Action: update.ActionApply, TargetVersion: "9.9.9", RequestedBy: "cli"}, false,
+		func() (*pkgConfig.NodeConfig, error) { return &pkgConfig.NodeConfig{}, nil })
+	var refusal *recovery.Refusal
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, recovery.ActivationIncomplete, refusal.Reason)
+	status, err := h.LastRun()
+	require.NoError(t, err)
+	require.Equal(t, update.StateFailed, status.State)
+	require.Contains(t, status.Error, "activation_incomplete")
 }

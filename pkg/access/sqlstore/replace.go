@@ -28,11 +28,14 @@ var (
 // before it changed any.
 const keptName = "kept.json"
 
-// kept records which of an installation's store files existed.
+// kept records which of an installation's store files existed, or, as Lost,
+// that the database already was the published image when nothing was
+// recorded, so what it replaced is gone.
 type kept struct {
 	Database bool `json:"database"`
 	Journal  bool `json:"journal"` // what SQLite left of a journal: one it could not settle, or a cold one
 	Marker   bool `json:"marker"`
+	Lost     bool `json:"lost,omitempty"`
 }
 
 // storeFile is one file Replace saves and Revert restores: its live path, its
@@ -101,6 +104,14 @@ func installed(ctx context.Context, dir string) (Installed, error) {
 	return inst, nil
 }
 
+// Replacement is what Replace published, and Lost when keep does not hold
+// what it replaced: the database already was the published image when a call
+// found nothing recorded in keep.
+type Replacement struct {
+	Image
+	Lost bool
+}
+
 // Replace publishes the image at src as dir's database and store marker,
 // saving what it replaces in keep; want is the SHA-256 the caller checked src
 // at, and foreign admits another store ID (AdmitStoreID). The caller holds the
@@ -113,101 +124,108 @@ func installed(ctx context.Context, dir string) (Installed, error) {
 // every file it wrote the owner of dir. Each step is durable before the next,
 // and a call after a crash at any point completes the replacement; Revert
 // undoes it.
-func Replace(ctx context.Context, dir, src, want, keep string, foreign bool) (Image, error) {
+func Replace(ctx context.Context, dir, src, want, keep string, foreign bool) (Replacement, error) {
 	live := databasePath(dir)
 	staged := live + ".staged"
 	if err := sqlitedb.MakeDir(filepath.Dir(live)); err != nil {
-		return Image{}, err
+		return Replacement{}, err
 	}
 	if err := removeLeftovers(staged); err != nil {
-		return Image{}, err
+		return Replacement{}, err
 	}
 	sum, err := sqlitedb.CopyFile(ctx, src, staged)
 	if err == nil && sum != want {
 		err = fmt.Errorf("the image is not the one checked: its SHA-256 is %s, not %s", sum, want)
 	}
-	var img Image
+	var rep Replacement
+	var inst Installed
 	if err == nil {
 		sqlitedb.Step(ctx, "staged")
-		img, err = CheckImage(ctx, staged)
+		rep.Image, err = CheckImage(ctx, staged)
 	}
 	if err == nil {
-		_, err = AdmitStoreID(ctx, dir, img.StoreID, foreign)
+		inst, err = AdmitStoreID(ctx, dir, rep.StoreID, foreign)
 	}
 	if err != nil {
-		return Image{}, errors.Join(err, removeLeftovers(staged))
+		return Replacement{}, errors.Join(err, removeLeftovers(staged))
 	}
-	if err := save(ctx, dir, keep); err != nil {
-		return Image{}, err
+	if rep.Lost, err = save(ctx, dir, keep, inst.Generation == rep.Generation); err != nil {
+		return Replacement{}, err
 	}
 	if err := sqlitedb.Rename(staged, live); err != nil {
-		return Image{}, err
+		return Replacement{}, err
 	}
 	sqlitedb.Step(ctx, "renamed")
-	if err := ensureMarker(dir, img.StoreID); err != nil {
-		return Image{}, err
+	if err := ensureMarker(dir, rep.StoreID); err != nil {
+		return Replacement{}, err
 	}
 	sqlitedb.Step(ctx, "store marker")
 	written := []string{filepath.Dir(live), live, filepath.Join(dir, MarkerName), keep, filepath.Join(keep, keptName)}
 	for _, f := range (kept{}).files(dir, keep) {
 		written = append(written, f.saved)
 	}
-	return img, sqlitedb.GiveOwner(ctx, dir, written...)
+	return rep, sqlitedb.GiveOwner(ctx, dir, written...)
 }
 
 // save records in keep which of dir's store files exist, unless it did
 // already, copies into keep each one that existed and keep lacks, and removes
-// the journal beside the database.
-func save(ctx context.Context, dir, keep string) error {
+// the journal beside the database. With nothing recorded and the database
+// already the published image, it records instead that what it replaced is
+// lost, and reports that.
+func save(ctx context.Context, dir, keep string, published bool) (bool, error) {
 	if err := sqlitedb.MakeDir(keep); err != nil {
-		return err
+		return false, err
 	}
 	rec, err := readKept(keep)
 	if errors.Is(err, fs.ErrNotExist) {
-		rec, err = recordKept(ctx, dir, keep)
+		rec, err = recordKept(ctx, dir, keep, published)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, f := range rec.files(dir, keep) {
 		if has, err := exists(f.saved); err != nil || has || !f.existed {
 			if err != nil {
-				return err
+				return false, err
 			}
 			continue
 		}
 		if err := removeLeftovers(f.saved + ".tmp"); err != nil {
-			return err
+			return false, err
 		}
 		if _, err := sqlitedb.CopyFile(ctx, f.path, f.saved+".tmp"); err != nil {
-			return err
+			return false, err
 		}
 		if err := sqlitedb.Rename(f.saved+".tmp", f.saved); err != nil {
-			return err
+			return false, err
 		}
 		sqlitedb.Step(ctx, "kept "+filepath.Base(f.path))
 	}
 	journal := databasePath(dir) + "-journal"
 	if err := removeLeftovers(journal); err != nil {
-		return err
+		return false, err
 	}
-	return sqlitedb.SyncDir(filepath.Dir(journal))
+	return rec.Lost, sqlitedb.SyncDir(filepath.Dir(journal))
 }
 
 // recordKept lets SQLite settle a journal beside a readable database, then
-// records in keep which of dir's store files exist.
-func recordKept(ctx context.Context, dir, keep string) (kept, error) {
+// records in keep which of dir's store files exist, or, when the database
+// already is the published image, that what it replaced is lost.
+func recordKept(ctx context.Context, dir, keep string, published bool) (kept, error) {
 	_, err := sqlitedb.Probe(ctx, databasePath(dir))
 	if err != nil && !errors.Is(err, sqlitedb.ErrUnreadable) && !errors.Is(err, sqlitedb.ErrNotExist) {
 		return kept{}, err
 	}
-	var existed [3]bool
-	for i, f := range (kept{}).files(dir, keep) {
-		if existed[i], err = exists(f.path); err != nil {
-			return kept{}, err
+	rec := kept{Lost: published}
+	if !published {
+		var existed [3]bool
+		for i, f := range (kept{}).files(dir, keep) {
+			if existed[i], err = exists(f.path); err != nil {
+				return kept{}, err
+			}
 		}
+		rec = kept{Database: existed[0], Journal: existed[1], Marker: existed[2]}
 	}
-	rec := kept{Database: existed[0], Journal: existed[1], Marker: existed[2]}
 	data, err := json.Marshal(rec)
 	if err == nil {
 		err = atomicfile.WriteFile(filepath.Join(keep, keptName), data, 0o600)
@@ -220,13 +238,14 @@ func recordKept(ctx context.Context, dir, keep string) (kept, error) {
 }
 
 // Revert restores the store files Replace saved in keep, removes those that
-// did not exist before it and its staged copy, and gives what it restored the
+// did not exist before it and its staged copy, removes the access directory if
+// that left it empty, and gives what it restored and the access directory the
 // owner of dir. generation is the one Replace published: while the database is
 // at it, keep must hold every file Replace recorded, or Revert refuses with
-// ErrKeptLost and changes nothing. Otherwise, before Replace recorded anything
-// nothing of dir's store changed, and Revert removes only the staged copy. The
-// caller holds the installation lock; a call after a crash at any point
-// completes the revert.
+// ErrKeptLost and changes nothing. Before Replace recorded anything, nothing of
+// dir's store changed but its staged copy and the access directory. The caller
+// holds the installation lock; a call after a crash at any point completes the
+// revert.
 func Revert(ctx context.Context, dir, keep, generation string) error {
 	staged := databasePath(dir) + ".staged"
 	rec, recErr := readKept(keep)
@@ -239,7 +258,7 @@ func Revert(ctx context.Context, dir, keep, generation string) error {
 	}
 	files := rec.files(dir, keep)
 	if generation != "" && inst.Generation == generation {
-		lost := recErr != nil
+		lost := recErr != nil || rec.Lost
 		for _, f := range files {
 			has, err := exists(f.saved)
 			if err != nil {
@@ -251,11 +270,11 @@ func Revert(ctx context.Context, dir, keep, generation string) error {
 			return ErrKeptLost
 		}
 	}
-	if recErr != nil {
-		return removeLeftovers(staged)
-	}
 	var restored []string
 	for _, f := range files {
+		if recErr != nil {
+			break // nothing recorded, so nothing replaced
+		}
 		has, err := exists(f.saved)
 		switch {
 		case err != nil:
@@ -274,10 +293,10 @@ func Revert(ctx context.Context, dir, keep, generation string) error {
 	if err := removeLeftovers(staged); err != nil {
 		return err
 	}
-	if err := errors.Join(sqlitedb.SyncDir(filepath.Dir(staged)), sqlitedb.SyncDir(dir)); err != nil {
+	if err := errors.Join(sqlitedb.RemoveDirIfEmpty(filepath.Dir(staged)), sqlitedb.SyncDir(dir)); err != nil {
 		return err
 	}
-	return sqlitedb.GiveOwner(ctx, dir, restored...)
+	return sqlitedb.GiveOwner(ctx, dir, append(restored, filepath.Dir(staged))...)
 }
 
 func readKept(keep string) (kept, error) {

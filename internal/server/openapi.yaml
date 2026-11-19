@@ -13984,7 +13984,7 @@ components:
                   not start. Do not remove that directory; rolling the activation back needs it.
         retained_copies_error:
           type: string
-          description: Present, without a path, when retained copies could not be listed; the store's state still stands. `recovery inventory` on the coordinator names the cause.
+          description: Present, without a path, when retained copies could not be listed; the store's state still stands. The coordinator's log names the cause.
     StateBackup:
       description: >-
         A retained online backup of the access store: a `database` recovery archive. No filesystem path or content.

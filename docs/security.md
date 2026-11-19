@@ -301,10 +301,11 @@ activate` publishes a staged database bundle only into a stopped installation
 whose store marker, or database, names the same store, or into a fresh one, and
 publishes exactly the bytes it checked, so an image swapped after its checks
 (for example for an unprepared copy, under which old sessions would resolve) is
-refused. A generation is activated once: a live store at the staged generation
-refuses it. Run by an administrator, activation gives what it writes the owner
-of the configuration directory. A node, and a backup, refuse while an activation
-is incomplete. Activation removes the
+refused. A staged generation is refused while the live store is at it, or while
+a rollback directory for it still exists. Run by an administrator, activation and
+its rollback give what they write the owner of the configuration directory. A
+node, a backup and a privileged update run refuse while an activation is
+incomplete. Activation removes the
 staging directory, which holds credential hashes, and keeps what it replaced in
 `rollback/<generation>/` in the configuration directory: the previous database
 and store marker, with every password and app-key hash. Nothing removes it, and

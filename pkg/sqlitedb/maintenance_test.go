@@ -309,6 +309,7 @@ func TestGiveOwnerReportsWhatItGave(t *testing.T) {
 	var steps []string
 	ctx := sqlitedb.WithStep(t.Context(), func(step string) { steps = append(steps, step) })
 	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "sub"), filepath.Join(dir, "absent"), filepath.Join(dir, "sub", "file")))
-	require.Equal(t, []string{"owned sub, sub/file"}, steps)
+	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "absent")))
+	require.Equal(t, []string{"owned sub, sub/file"}, steps, "a call that gave nothing reports nothing")
 	require.ErrorIs(t, sqlitedb.GiveOwner(ctx, filepath.Join(dir, "absent"), filepath.Join(dir, "sub")), os.ErrNotExist, "the owner is the installation directory's")
 }

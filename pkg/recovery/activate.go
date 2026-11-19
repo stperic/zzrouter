@@ -65,13 +65,16 @@ type ActivateOptions struct{ Rollback, DryRun bool }
 
 // Activation describes an activation: the staged image it publishes, its
 // rollback directory's ID, which is the image's generation, and absolute path,
-// and the targets whose previous content that directory keeps.
+// the targets whose previous content that directory keeps, and those it
+// replaced without keeping it, because the directory was deleted while the
+// activation was incomplete.
 type Activation struct {
 	Profile     Profile
 	Store       sqlstore.Image
 	RollbackID  string
 	RollbackDir string
 	Replaced    []string
+	Lost        []string
 }
 
 // activation is an activation's record: its marker while it runs, and
@@ -91,7 +94,8 @@ type activation struct {
 // installation, no INCOMPLETE mark, a staging manifest of a staged database
 // bundle, exactly its entries, the image's digest, check and generation as
 // staged, the installation's store identity (sqlstore.AdmitStoreID), and a
-// generation never activated here. A refusal changes nothing. It then writes
+// generation that is neither live nor kept in a rollback directory. A refusal
+// changes nothing. It then writes
 // the activation marker and the rollback directory, replaces the store
 // (sqlstore.Replace) with the bytes it checked, gives what it wrote the
 // installation's owner, and removes the marker and the staging directory. A
@@ -138,8 +142,12 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 	} else if err := writeRecord(ctx, filepath.Join(dir, activationFile), record, "activation marker"); err != nil {
 		return a, err
 	}
-	if err := replaceStore(ctx, dir, staging, sum, record); err != nil {
+	lost, err := replaceStore(ctx, dir, staging, sum, record)
+	if err != nil {
 		return a, incomplete(dir, &record, err)
+	}
+	if lost {
+		a.Replaced, a.Lost = nil, a.Replaced
 	}
 	if err := os.RemoveAll(staging); err != nil {
 		return a, fmt.Errorf("the activation finished, but its staging directory, which holds credential hashes, could not be removed; delete it: %w", err)
@@ -149,30 +157,31 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 
 // replaceStore runs the steps between the activation marker and its removal:
 // the store gets the bytes checked at sum, and everything written gets the
-// installation's owner before the marker goes.
-func replaceStore(ctx context.Context, dir, staging, sum string, record activation) error {
+// installation's owner before the marker goes. It reports whether what the
+// store replaced is lost (sqlstore.Replacement).
+func replaceStore(ctx context.Context, dir, staging, sum string, record activation) (bool, error) {
 	marker := filepath.Join(dir, activationFile)
 	if err := sqlitedb.GiveOwner(ctx, dir, marker); err != nil {
-		return err
+		return false, err
 	}
 	rollback := filepath.Join(dir, rollbackDir, record.Generation)
 	if err := sqlitedb.MakeDir(rollback); err != nil {
-		return err
+		return false, err
 	}
 	if err := writeRecord(ctx, filepath.Join(rollback, rollbackFile), record, "rollback record"); err != nil {
-		return err
+		return false, err
 	}
 	if err := sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback), rollback, filepath.Join(rollback, rollbackFile)); err != nil {
-		return err
+		return false, err
 	}
-	img, err := sqlstore.Replace(ctx, dir, stagedImage(staging), sum, filepath.Join(rollback, "store"), false)
-	if err == nil && img.Generation != record.Generation {
-		err = fmt.Errorf("the published image is generation %s, not the staged %s", img.Generation, record.Generation)
+	rep, err := sqlstore.Replace(ctx, dir, stagedImage(staging), sum, filepath.Join(rollback, "store"), false)
+	if err == nil && rep.Generation != record.Generation {
+		err = fmt.Errorf("the published image is generation %s, not the staged %s", rep.Generation, record.Generation)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	return removeMarker(ctx, dir)
+	return rep.Lost, removeMarker(ctx, dir)
 }
 
 // checkStaging runs Activate's checks, in order and read-only, and returns the
@@ -182,8 +191,8 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 	invalid := func(detail, next string) (Activation, string, error) {
 		return Activation{}, "", &Refusal{StagingInvalid, detail, next}
 	}
-	if within(dir, staging) || within(staging, dir) {
-		return invalid("the staging directory and the installation overlap", "Move the staging directory outside the installation, then run this again.")
+	if err := CheckStagingDir(dir, staging); err != nil {
+		return Activation{}, "", err
 	}
 	if _, err := os.Lstat(filepath.Join(staging, incompleteName)); !errors.Is(err, fs.ErrNotExist) {
 		if err != nil {
@@ -201,6 +210,8 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 		return invalid("no staging manifest: "+err.Error(), restage)
 	case m.Profile == ProfileInstallation:
 		return invalid("it holds an installation bundle, which activate does not publish", "Stop the service, then restore it by hand as docs/recovery.md describes under Restore an installation bundle by hand.")
+	case m.Profile == ProfileHandoff:
+		return invalid("it holds a handoff bundle, whose activation is not in this release", "Keep the staging directory; docs/recovery.md describes what a handoff needs under Coordinator handoff.")
 	case m.Profile != ProfileDatabase || m.Staged == nil || m.Store == nil:
 		return invalid(fmt.Sprintf("it is not a staged database bundle (profile %q)", m.Profile), restage)
 	}
@@ -262,16 +273,36 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 	return a, sum, nil
 }
 
-// within reports whether path is root or inside it, links resolved where they
-// exist.
-func within(root, path string) bool {
-	for _, p := range []*string{&root, &path} {
-		if resolved, err := filepath.EvalSymlinks(*p); err == nil {
-			*p = resolved
-		}
+// CheckStagingDir refuses, as staging_invalid, a staging directory inside, equal
+// to or holding the installation in dir: a later installation backup would pack
+// what it holds, and an activation removes it.
+func CheckStagingDir(dir, staging string) error {
+	if within(dir, staging) || within(staging, dir) {
+		return &Refusal{StagingInvalid, "the staging directory and the installation overlap", "Use a staging directory outside the installation's configuration directory."}
 	}
-	rel, err := filepath.Rel(root, path)
+	return nil
+}
+
+// within reports whether path is root or inside it.
+func within(root, path string) bool {
+	rel, err := filepath.Rel(resolved(root), resolved(path))
 	return err == nil && filepath.IsLocal(rel)
+}
+
+// resolved is path made absolute with its links resolved, or those of its
+// parent when it does not exist yet.
+func resolved(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		return filepath.Join(parent, filepath.Base(abs))
+	}
+	return abs
 }
 
 // rollBack restores what the incomplete activation pending replaced and gives
@@ -296,14 +327,16 @@ func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool)
 	if err == nil {
 		err = os.RemoveAll(rollback)
 	}
-	// Without the parent, a crash came before the directory existed.
+	// The parent, which this activation may have created, goes when empty and
+	// is handed over otherwise, before the marker.
 	if err == nil {
-		if err = sqlitedb.SyncDir(filepath.Dir(rollback)); errors.Is(err, fs.ErrNotExist) {
-			err = nil
-		}
+		err = sqlitedb.RemoveDirIfEmpty(filepath.Dir(rollback))
 	}
 	if err == nil {
 		sqlitedb.Step(ctx, "rollback directory removed")
+		err = sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback))
+	}
+	if err == nil {
 		err = removeMarker(ctx, dir)
 	}
 	if err != nil {

@@ -322,7 +322,8 @@ outside the database, which holds credential hashes, by `kind`, `id`,
 `activation_rollback`, the rollback directory an offline activation keeps until
 the operator removes it (see [recovery](recovery.md)); `pending: true` marks the
 one an activation that did not finish still needs. When the copies cannot be
-listed, `retained_copies_error` says so without a path and the store's state is
+listed, `retained_copies_error` says so without a path (the node's log names the
+cause) and the store's state is
 still answered. `backup_bytes` totals the retained online backups. The read runs
 no database query and never waits for an access write; it names no path and
 carries no secret.

@@ -68,7 +68,7 @@ func (s *Server) handleStoreState(c *gin.Context) {
 	rollbacks, err := recovery.Rollbacks(s.configDir)
 	if err != nil {
 		slog.WarnContext(c.Request.Context(), "Activation rollback directories could not be listed", "error", err)
-		copiesErr = "the activation rollback directories could not be listed; recovery inventory on this host names the cause"
+		copiesErr = "the activation rollback directories could not be listed; the node's log names the cause"
 	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
