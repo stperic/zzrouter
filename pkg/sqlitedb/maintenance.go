@@ -161,7 +161,7 @@ func Rename(from, to string) error {
 	if err := os.Rename(from, to); err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(to))
+	return SyncDir(filepath.Dir(to))
 }
 
 func syncFile(path string) error {
@@ -172,10 +172,12 @@ func syncFile(path string) error {
 	if err = errors.Join(f.Sync(), f.Close()); err != nil {
 		return err
 	}
-	return syncDir(filepath.Dir(path))
+	return SyncDir(filepath.Dir(path))
 }
 
-func syncDir(path string) error {
+// SyncDir syncs the directory at path, so the entries created, renamed or
+// removed in it survive a power loss; Windows cannot sync a directory.
+func SyncDir(path string) error {
 	if runtime.GOOS == "windows" {
 		return nil
 	}
@@ -184,4 +186,20 @@ func syncDir(path string) error {
 		return err
 	}
 	return errors.Join(dir.Sync(), dir.Close())
+}
+
+type stepKey struct{}
+
+// WithStep returns ctx carrying observe, which an operation that must survive
+// a crash calls after each durable step, so a test process can stop there and
+// be killed.
+func WithStep(ctx context.Context, observe func(step string)) context.Context {
+	return context.WithValue(ctx, stepKey{}, observe)
+}
+
+// Step reports a durable step to the observer ctx carries, if any.
+func Step(ctx context.Context, step string) {
+	if observe, ok := ctx.Value(stepKey{}).(func(string)); ok {
+		observe(step)
+	}
 }

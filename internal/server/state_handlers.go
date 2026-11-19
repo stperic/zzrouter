@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -19,7 +20,14 @@ type storeState struct {
 	ObservedAt     time.Time      `json:"observed_at"`
 	Size           storeSize      `json:"size"`
 	Integrity      storeIntegrity `json:"integrity"`
-	RetainedCopies []struct{}     `json:"retained_copies"` // empty until online backups exist
+	RetainedCopies []retainedCopy `json:"retained_copies"`
+}
+
+// retainedCopy is a copy of access records outside the database: an
+// activation's rollback directory, with no path.
+type retainedCopy struct {
+	Kind string `json:"kind"` // activation_rollback
+	recovery.Rollback
 }
 
 type storeSize struct {
@@ -35,7 +43,8 @@ type storeIntegrity struct {
 	Outcome   string    `json:"outcome"` // ok: a failed check stops the node at startup
 }
 
-// handleStoreState reports the access store without a query or the writer gate.
+// handleStoreState reports the access store without a query or the writer
+// gate, and the retained copies of its records.
 func (s *Server) handleStoreState(c *gin.Context) {
 	observed := utils.NowUTC()
 	st, err := s.stateStore.Status()
@@ -43,13 +52,22 @@ func (s *Server) handleStoreState(c *gin.Context) {
 		RespondToError(c, err)
 		return
 	}
+	rollbacks, err := recovery.Rollbacks(s.configDir)
+	if err != nil {
+		RespondToError(c, err)
+		return
+	}
+	copies := make([]retainedCopy, 0, len(rollbacks))
+	for _, rollback := range rollbacks {
+		copies = append(copies, retainedCopy{Kind: "activation_rollback", Rollback: rollback})
+	}
 	status := "setup_required"
 	if st.Initialized {
 		status = "ready"
 	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: status, ObservedAt: observed, RetainedCopies: []struct{}{},
+		Status: status, ObservedAt: observed, RetainedCopies: copies,
 		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})

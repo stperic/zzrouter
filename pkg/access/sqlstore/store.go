@@ -240,11 +240,7 @@ func teamCheck(records map[string]*teams.Team) people.TeamCheck {
 // ensureFile restricts the access directory and returns the database path,
 // publishing an empty database on first start.
 func ensureFile(ctx context.Context, dir string) (string, error) {
-	accessDir := filepath.Join(dir, "access")
-	if err := os.MkdirAll(accessDir, 0o700); err != nil {
-		return "", err
-	}
-	if err := security.RestrictDirectoryPermissions(accessDir); err != nil {
+	if err := makePrivateDir(filepath.Join(dir, "access")); err != nil {
 		return "", err
 	}
 	path := databasePath(dir)
@@ -273,6 +269,14 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 }
 
 func databasePath(dir string) string { return filepath.Join(dir, "access", fileName) }
+
+// makePrivateDir creates the directory at path, with its parents, owner-only.
+func makePrivateDir(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	return security.RestrictDirectoryPermissions(path)
+}
 
 // noStore reports whether dir holds neither a database nor a store marker. A
 // marker without its database is Missing: an empty store there would let the

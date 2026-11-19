@@ -2,8 +2,9 @@
 
 Use **System → Recovery** to review the running coordinator's scope. The local
 `zzrouter-node recovery` commands work on one installation at a time. Back up each
-worker separately. They do not stop services, overwrite installations, restore
-privileged service files or activate recovered state.
+worker separately. They do not stop services, restore privileged service files or
+replace configuration; only `recovery activate` changes an installation, and only
+its access store, from a staged database bundle.
 
 ## Before a backup
 
@@ -179,23 +180,88 @@ successful staging directory contains `manifest.json`, `config/`, any separate
 access store, and `protection/` when a key was supplied. Inspect the manifest's
 original roots before moving anything.
 
-No command activates a staged directory yet; activation is a later change. What
-an operator can do today, by hand, with the node stopped:
-
-- A staged `installation` bundle holds `manifest.json`, `config/`, any `data/`
-  and `providers/`, `store/image.sqlite` when the installation had an access
-  store, and `protection/credentials.key` when a key was supplied. Restore all
-  of it as described below.
-- A staged `database` bundle holds only `manifest.json` and
-  `store/image.sqlite`. Place the image as the access database, exactly as
-  described below, into the installation it came from: the store ID in that
-  installation's `access-store.json` must equal `store.store_id` in the staging
-  `manifest.json`. Nothing else in the installation changes.
+A staged `database` bundle holds only `manifest.json` and `store/image.sqlite`;
+`recovery activate` publishes it. A staged `installation` bundle holds
+`manifest.json`, `config/`, any `data/` and `providers/`, `store/image.sqlite`
+when the installation had an access store, and `protection/credentials.key` when
+a key was supplied; it is restored by hand, as the last part of this section
+describes.
 
 Once the prepared image is in place, browser sessions, delegated OAuth tokens and
 app-key references issued before the restore do not resolve, without any edit of
-the OAuth authority state. People sign in again with their passwords; app keys
-keep working. Static installation keys are not in the database and are unaffected.
+the OAuth authority state. People, the owner included, sign in again with their
+passwords; app keys keep working. Static installation keys are not in the
+database and are unaffected.
+
+### Activate a database bundle
+
+Stop the node and its supervisor's restarts, then activate the staging directory
+into the installation the backup came from:
+
+```sh
+zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation --dry-run
+zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation
+```
+
+Activation holds the installation lock and first runs every check, in order,
+reading only: the lock is free (a running node or another recovery command holds
+it); the staging directory is not marked `INCOMPLETE`; its `manifest.json` is a
+staging manifest of a `database` bundle with its `staged` object (any other
+profile is refused); the directory holds exactly `manifest.json` and
+`store/image.sqlite`; the image's SHA-256 equals `staged.image_sha256`; the image
+passes the checks a coordinator start runs, with SQLite's full integrity check,
+and its generation equals `staged.generation`; and the installation admits its
+store. An installation's store marker, or without one its database, admits only
+its own store ID, so a backup of another installation's store is refused
+(`foreign_store`) wherever a marker or a database exists; only a fresh
+installation, with neither, takes another store. A refusal names its reason
+(`in_use`, `staging_invalid`, `foreign_store`, `already_activated`,
+`activation_incomplete`, or the image's own reason such as `schema_newer`) and
+the next action, and changes nothing anywhere. `--dry-run` runs the same checks, prints what would be
+replaced, and changes nothing either.
+
+Then activation writes the activation marker `recovery-activation.json` beside
+`node.yaml`, records the activation in `rollback/<generation>/rollback.json` in the
+configuration directory, and replaces the access store: it copies the image
+beside the database as `access/access.sqlite.staged` and checks the copy, lets
+SQLite settle a journal a crash left beside the database, copies the database and
+the store marker into `rollback/<generation>/store/` together with any journal
+SQLite could not settle (an unreadable database is kept as it is), removes that
+journal so it cannot be rolled back into the new database, renames the copy over
+the database in one step and writes the store marker. Each step reaches the disk
+before the next. Last, it removes the activation marker and the staging directory,
+which holds credential hashes. It prints what it replaced, the new generation and
+the rollback ID (the generation), and the next step: start the node.
+
+A crash or an interrupt (Ctrl-C) between the activation marker and its removal
+leaves the marker, and the node then refuses to start with
+`activation_incomplete`, naming the staging directory and the two commands that
+end it. Run the same `recovery activate` command again to finish the activation:
+each step it already did is skipped or repeated with the same result. Or add
+`--rollback` to undo it: the database, any journal and the store marker that were
+replaced return byte for byte (what did not exist before is removed), then the
+rollback directory and the activation marker are removed, and the staging
+directory is kept. Both are safe to repeat after another crash. `--rollback` works
+only while the activation marker exists, and refuses with `no_activation`
+otherwise: once an activation finished, nothing undoes it automatically. A crash before the activation marker was written changed
+nothing. One after its removal leaves a finished activation and, possibly, the
+staging directory: a rerun refuses with `already_activated`; delete the directory.
+
+The rollback directory `rollback/<generation>/` in the configuration directory
+(for example `/etc/zzrouter/rollback/<generation>/` on a Linux system
+installation), owner-only, keeps what an activation replaced until you remove it:
+`rollback.json` and, in `store/`, the previous `access.sqlite` and
+`access-store.json`, with `kept.json` recording which of them existed. It holds
+password and app-key hashes, so keep it only until the restored node is
+qualified, then delete the directory. To go back to the previous store after a
+finished activation, stop the node and copy those files back over
+`access/access.sqlite` and `access-store.json` (delete one `kept.json` records as
+absent), with no `access/access.sqlite-journal` left beside the database.
+Rollback directories are never part of a recovery bundle;
+`GET /zzrouter/v1/system/state` lists each as a retained copy of kind
+`activation_rollback`, with its ID, creation time and size.
+
+### Restore an installation bundle by hand
 
 Keep the target node stopped. Install the matching release and service account,
 restore configuration and data to the intended roots, and set their ownership for
@@ -212,22 +278,25 @@ the target configuration's existing `access/` directory aside: it holds the
 database being replaced and can hold its journal, which SQLite would replay over
 the new one. Create `access/` in the target configuration directory, owner-only
 for the service account, and place the staged image there as
-`access/access.sqlite`, owner-only. From an `installation` bundle, the store
-marker `config/access-store.json` goes to `access-store.json` in the target
-configuration directory with the rest of `config/`; it names the store ID the
-prepared image keeps. Never place an image whose digest differs from
-`staged.image_sha256`, an image restore did not prepare, or a `-journal` file
-beside it.
+`access/access.sqlite`, owner-only. The store marker `config/access-store.json`
+goes to `access-store.json` in the target configuration directory with the rest
+of `config/`; it names the store ID the prepared image keeps. Never place an image
+whose digest differs from `staged.image_sha256`, an image restore did not prepare,
+or a `-journal` file beside it.
 
 Staging is intentionally separate from activation: configuration and provider data
 can live on different filesystems, and replacing them is not one atomic operation.
 Do not point a running installation at partially recovered state. Preserve the
 existing installation until recovery has been qualified.
 
-Start the node and verify owner sign-in, a team policy and app key, recorded spend,
-provider connections, worker trust, the `store.restore_prepared` entry in
-**System → Access history** and one real request. Recover the owner through
-the existing local recovery command if necessary. Expired worker certificates can
+### After the restore
+
+At its first start, the node forgets the recorded spend (`spend.json`) of keys and
+teams the restored store does not hold, so an ID created again later starts at
+zero. Start the node and verify owner sign-in, a team policy and app key, recorded
+spend, provider connections, worker trust, the `store.restore_prepared` entry in
+**System → Access history** and one real request. Recover the owner through the
+existing local recovery command if necessary. Expired worker certificates can
 require pairing again. An older valid backup can restore access that was revoked
 later; review people, keys, grants and budget state after recovery. A successful
 archive check is not a successful activation test.

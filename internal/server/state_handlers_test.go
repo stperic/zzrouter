@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -135,4 +137,30 @@ func TestSystemStateExampleMatchesSchema(t *testing.T) {
 	var example map[string]any
 	require.NoError(t, json.Unmarshal(data, &example))
 	require.NoError(t, browserSchema(t, "StoreState").Validate(example))
+}
+
+// TestSystemStateListsActivationRollbacks: each rollback directory an offline
+// activation kept is a retained copy, oldest first, by kind, ID, creation
+// time and size, with no path.
+func TestSystemStateListsActivationRollbacks(t *testing.T) {
+	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	created := map[string]string{"older": "2026-11-18T10:00:00Z", "newer": "2026-11-19T10:00:00Z"}
+	for id, at := range created {
+		store := filepath.Join(s.configDir, "rollback", id, "store")
+		require.NoError(t, os.MkdirAll(store, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "rollback", id, "rollback.json"), []byte(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+at+`"}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(store, "access.sqlite"), make([]byte, 4096), 0o600))
+	}
+	_, raw := readStoreState(t, s)
+	copies, ok := raw["retained_copies"].([]any)
+	require.True(t, ok)
+	require.Len(t, copies, 2)
+	for i, id := range []string{"older", "newer"} {
+		entry := copies[i].(map[string]any)
+		assert.Equal(t, "activation_rollback", entry["kind"])
+		assert.Equal(t, id, entry["id"])
+		assert.Equal(t, created[id], entry["created_at"])
+		size := len(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+created[id]+`"}`) + 4096
+		assert.EqualValues(t, size, entry["size_bytes"])
+	}
 }

@@ -16,10 +16,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/recovery"
 )
 
-// NewRecoveryCmd exposes local offline inventory, backup, checking and staging.
+// NewRecoveryCmd exposes local offline inventory, backup, checking, staging
+// and activation.
 func NewRecoveryCmd() *cobra.Command {
 	var dir string
-	command := &cobra.Command{Use: "recovery", Short: "Inspect, back up and stage an installation recovery"}
+	command := &cobra.Command{Use: "recovery", Short: "Inspect, back up, stage and activate an installation recovery"}
 	command.PersistentFlags().StringVarP(&dir, "dir", "C", config.Paths().GetConfigDir(), "Installation configuration directory")
 	command.AddCommand(&cobra.Command{Use: "inventory", Short: "Show included state and separate recovery dependencies", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		inventory, err := recovery.Read(cmd.Context(), dir)
@@ -83,7 +84,10 @@ func NewRecoveryCmd() *cobra.Command {
 			if staged := manifest.Staged; staged != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Prepared the staged access database as generation %s: once it is activated, sessions, delegated tokens and app-key references issued before this restore do not resolve.\n", staged.Generation)
 			}
-			if operation == "restore" {
+			switch {
+			case operation == "restore" && manifest.Profile == recovery.ProfileDatabase:
+				fmt.Fprintf(cmd.OutOrStdout(), "Staged only. Keep the node stopped and publish it with zzrouter-node recovery activate %s, after a --dry-run. See docs/recovery.md.\n", destination)
+			case operation == "restore":
 				fmt.Fprintln(cmd.OutOrStdout(), "Staged only. Keep the node stopped, review manifest.json and restore paths, ownership and separate dependencies before activation. See docs/recovery.md.")
 			}
 			return nil
@@ -94,6 +98,18 @@ func NewRecoveryCmd() *cobra.Command {
 		}
 		command.AddCommand(child)
 	}
+	var activation recovery.ActivateOptions
+	activate := &cobra.Command{Use: "activate STAGING", Short: "Publish a staged database bundle as this stopped installation's access store", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := recovery.Activate(cmd.Context(), dir, args[0], activation)
+		if err != nil {
+			return err
+		}
+		describeActivation(cmd.OutOrStdout(), a, activation)
+		return nil
+	}}
+	activate.Flags().BoolVar(&activation.DryRun, "dry-run", false, "Run every check and report what would change, changing nothing")
+	activate.Flags().BoolVar(&activation.Rollback, "rollback", false, "Undo an activation that did not finish")
+	command.AddCommand(activate)
 	for _, child := range command.Commands() {
 		child.RunE = interruptible(child.RunE)
 	}
@@ -124,5 +140,27 @@ func describeBundle(w io.Writer, verb string, m recovery.Manifest) {
 		fmt.Fprintf(w, "Access store %s: generation %s, schema version %d, revision %d, sequence %d.\n", s.StoreID, s.Generation, s.SchemaVersion, s.Revision, s.Sequence)
 	} else {
 		fmt.Fprintln(w, "No access store: a worker, or a node that never ran as a coordinator.")
+	}
+}
+
+// describeActivation names what an activation replaced, its generation, its
+// rollback and the next step, or what a dry run or a rollback did.
+func describeActivation(w io.Writer, a recovery.Activation, o recovery.ActivateOptions) {
+	replaced := "nothing: this installation had no access store"
+	if len(a.Replaced) > 0 {
+		replaced = "the access store (its database and store marker)"
+	}
+	switch {
+	case o.Rollback && o.DryRun:
+		fmt.Fprintf(w, "Dry run: rolling back activation %s would restore %s. Nothing was changed.\n", a.RollbackID, replaced)
+	case o.Rollback:
+		fmt.Fprintf(w, "Rolled back activation %s: restored %s as it was before. The staging directory is kept.\n", a.RollbackID, replaced)
+	case o.DryRun:
+		fmt.Fprintf(w, "Dry run: activating would publish generation %s of access store %s and replace %s, kept in rollback %s. Nothing was changed.\n", a.Store.Generation, a.Store.StoreID, replaced, a.RollbackID)
+	default:
+		s := a.Store
+		fmt.Fprintf(w, "Activated generation %s of access store %s (schema version %d, revision %d, sequence %d), replacing %s.\n", s.Generation, s.StoreID, s.SchemaVersion, s.Revision, s.Sequence, replaced)
+		fmt.Fprintf(w, "Rollback %s keeps what was replaced, credential hashes included, under rollback/%s in the configuration directory until you remove it. The staging directory is removed.\n", a.RollbackID, a.RollbackID)
+		fmt.Fprintln(w, "Next: start the node. Every session and delegated access issued before this restore is invalid: people, the owner included, sign in again with their passwords, and app keys keep working.")
 	}
 }

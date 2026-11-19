@@ -13736,8 +13736,21 @@ components:
             outcome: { type: string, enum: [ok] }
         retained_copies:
           type: array
-          description: Retained copies of the store, which hold credentials. Empty until online backups exist.
-          items: { type: object }
+          description: >-
+            Retained copies of access records outside the database, which hold credential hashes, oldest first. Each
+            stays until the operator removes it.
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, id, created_at, size_bytes]
+            properties:
+              kind:
+                type: string
+                enum: [activation_rollback]
+                description: '`activation_rollback`: what an offline activation replaced, kept in its rollback directory.'
+              id: { type: string, description: The generation the activation published. }
+              created_at: { type: string, format: date-time }
+              size_bytes: { type: integer, minimum: 0 }
     TeamMembership:
       type: object
       description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.
