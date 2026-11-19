@@ -111,13 +111,43 @@ func (c *Core) GetAllSpendStates() map[string]*quota.SpendState {
 	return c.enforcer.GetAllSpendStates()
 }
 
-// forgetRemoved purges the spend rows of the keys and teams a commit removed.
+// forgetRemoved purges the spend rows of the keys and teams a commit removed and
+// writes the purge at once: an ID recreated before the periodic flush would
+// otherwise inherit the old row after a crash. A failed write is logged and retried
+// by the next flush; the removal itself has already committed.
 func (c *Core) forgetRemoved(commit access.Commit) {
 	for _, id := range commit.RemovedKeys {
 		c.enforcer.ForgetEntity(quota.ScopeKey, id)
 	}
 	for _, id := range commit.RemovedTeams {
 		c.enforcer.ForgetEntity(quota.ScopeTeam, id)
+	}
+	if len(commit.RemovedKeys)+len(commit.RemovedTeams) > 0 {
+		c.enforcer.FlushSpend()
+	}
+}
+
+// forgetAbsent purges the spend rows of keys and teams the store lacks, left by a
+// delete that died before the spend flush or by a database from another time.
+// Person rows stay, as in forgetRemoved; static keys never hold one.
+func (c *Core) forgetAbsent() {
+	snap := access.SnapshotOf(c.state)
+	if snap.KeysVersion() == 0 { // no store, or a failed one: absence proves nothing
+		return
+	}
+	var absent access.Commit
+	for _, st := range c.enforcer.GetAllSpendStates() {
+		switch {
+		case st.Kind == quota.ScopeKey && snap.Key(st.EntityID) == nil:
+			absent.RemovedKeys = append(absent.RemovedKeys, st.EntityID)
+		case st.Kind == quota.ScopeTeam && snap.Team(st.EntityID) == nil:
+			absent.RemovedTeams = append(absent.RemovedTeams, st.EntityID)
+		}
+	}
+	if len(absent.RemovedKeys)+len(absent.RemovedTeams) > 0 {
+		c.forgetRemoved(absent)
+		slog.Info("Forgot the spend of keys and teams absent from the access store",
+			"keys", len(absent.RemovedKeys), "teams", len(absent.RemovedTeams))
 	}
 }
 

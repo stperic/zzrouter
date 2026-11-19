@@ -58,8 +58,9 @@ func TestAuthCacheNeverServesAKeyRotatedDuringValidation(t *testing.T) {
 	store := referenceStore(t)
 	_, raw, err := store.CreateKey(t.Context(), "reader", keys.VirtualKey{Name: "Reader", Role: "user", TeamID: "team", TeamRole: "member"}, audit.Event{})
 	require.NoError(t, err)
-	state := &rotatingState{Store: store, rotate: true}
+	state := &rotatingState{Store: store}
 	c := newTestCoreFor(t, StaticKeySet{}, state)
+	state.rotate = true // armed after NewCore, which reads the snapshot to reconcile spend
 	_, err = c.Authenticate(raw)
 	require.NoError(t, err, "validated against the snapshot read before the rotation")
 	require.False(t, state.rotate, "the rotation committed inside Validate")

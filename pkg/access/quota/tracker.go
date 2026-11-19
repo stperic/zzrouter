@@ -28,6 +28,11 @@ type SpendTracker struct {
 	dirty  bool
 	path   string // spend.json
 
+	// saveMu orders saves, copy through rename, so the last copy is the file;
+	// taken before mu and never on the inference path.
+	saveMu sync.Mutex
+	write  func(path string, file *SpendFile) error // SaveSpend; tests delay it
+
 	lifecycleMu sync.Mutex
 	lifeCtx     context.Context
 	lifeCancel  context.CancelFunc
@@ -43,6 +48,7 @@ func NewSpendTracker(path string) *SpendTracker {
 	t := &SpendTracker{
 		states: make(map[string]*SpendState),
 		path:   path,
+		write:  SaveSpend,
 	}
 
 	if path != "" {
@@ -418,6 +424,8 @@ func (t *SpendTracker) save() {
 	if t.path == "" {
 		return
 	}
+	t.saveMu.Lock()
+	defer t.saveMu.Unlock()
 
 	t.mu.Lock()
 	if !t.dirty {
@@ -438,7 +446,7 @@ func (t *SpendTracker) save() {
 	t.dirty = false
 	t.mu.Unlock()
 
-	if err := SaveSpend(t.path, file); err != nil {
+	if err := t.write(t.path, file); err != nil {
 		slog.Warn("Failed to persist spend state", "error", err)
 		// Revert the dirty flag so we retry on the next save tick. A
 		// concurrent writer may have already set it, which is fine — we
