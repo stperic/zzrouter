@@ -281,3 +281,16 @@ It prepares the staged access database image so that sessions, delegated tokens
 and app-key references issued before the restore stop resolving.
 See [recovery](recovery.md) for included data, separate dependencies and required
 post-activation checks. Restoring an old valid backup can resurrect revoked access.
+
+A `handoff` archive (experimental) moves a coordinator to another machine. It holds
+the access database image, with password verifiers, app-key hashes, grants and
+the access history, and the encrypted provider connections, whose key is exported
+separately as for an installation archive. It also holds routes, spend, pricing
+overrides and the provider definitions and assets, byte for byte: a secret an
+operator wrote into a provider definition travels with it. Protect it like an
+installation archive.
+It holds no private key and no node-local trust: not `node.yaml` or the dotenv
+files and the static installation keys they hold, not the OAuth authority state,
+the cluster CA and its deny list, the node identity or `private/`. Workers pair
+again with the new coordinator, and browsers and delegated clients sign in again.
+`recovery check` refuses a handoff carrying any entry beyond its fixed list.

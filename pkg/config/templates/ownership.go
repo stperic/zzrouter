@@ -19,7 +19,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const ownershipFile = ".managed-ownership.json"
+// OwnershipFile is the receipt, at the providers root, of every key any
+// release has managed in each shipped config.yaml.
+const OwnershipFile = ".managed-ownership.json"
 const maxOwnershipBytes = 1 << 20 // Bounds historical evidence, including unknown future keys.
 
 type ownershipReceipt struct {
@@ -66,7 +68,7 @@ func managedHistory(files map[string][]byte, dstDir string) (map[string][][]stri
 		return nil, nil // Root bootstrap must never inspect service-owned evidence.
 	}
 	receipt := ownershipReceipt{Format: 1, Files: map[string][][]string{}}
-	path := filepath.Join(dstDir, ownershipFile)
+	path := filepath.Join(dstDir, OwnershipFile)
 	var previous []byte
 	f, err := os.Open(path)
 	if err == nil {

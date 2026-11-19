@@ -30,12 +30,12 @@ func NewRecoveryCmd() *cobra.Command {
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(inventory)
 	}})
-	var output, keyOutput string
+	var output, keyOutput, profile string
 	backup := &cobra.Command{Use: "backup", Short: "Back up a stopped node; export its protection key separately", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if output == "" {
 			return fmt.Errorf("--output is required")
 		}
-		manifest, err := recovery.Backup(cmd.Context(), dir, output, keyOutput)
+		manifest, err := recovery.BackupProfile(cmd.Context(), recovery.Profile(profile), dir, output, keyOutput)
 		if err != nil {
 			return err
 		}
@@ -60,11 +60,14 @@ func NewRecoveryCmd() *cobra.Command {
 		if len(manifest.MissingOptional) > 0 {
 			fmt.Fprintf(cmd.OutOrStdout(), "%d optional state paths were absent; inspect missing_optional in the archive manifest for the list. Previously recorded state must be available.\n", len(manifest.MissingOptional))
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "Model weights, runtime executables, service installation and listed external dependencies need separate recovery. Run recovery inventory for the scope.")
+		if manifest.Inventory != nil {
+			fmt.Fprintln(cmd.OutOrStdout(), "Model weights, runtime executables, service installation and listed external dependencies need separate recovery. Run recovery inventory for the scope.")
+		}
 		return nil
 	}}
 	backup.Flags().StringVar(&output, "output", "", "New archive path in secure backup storage")
 	backup.Flags().StringVar(&keyOutput, "key-output", "", "New protection-key path in separate secure storage")
+	backup.Flags().StringVar(&profile, "profile", string(recovery.ProfileInstallation), "installation, or handoff: what a new coordinator needs from this stopped one")
 	command.AddCommand(backup)
 	for _, operation := range []string{"check", "restore"} {
 		var keyFile, destination string
@@ -83,7 +86,9 @@ func NewRecoveryCmd() *cobra.Command {
 			if staged := manifest.Staged; staged != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Prepared the staged access database as generation %s: once it is activated, sessions, delegated tokens and app-key references issued before this restore do not resolve.\n", staged.Generation)
 			}
-			if operation == "restore" {
+			if operation == "restore" && manifest.Profile == recovery.ProfileHandoff {
+				fmt.Fprintln(cmd.OutOrStdout(), "Staged only. This release checks and stages a handoff bundle; activating it on a new coordinator arrives in a later release. See docs/recovery.md.")
+			} else if operation == "restore" {
 				fmt.Fprintln(cmd.OutOrStdout(), "Staged only. Keep the node stopped, review manifest.json and restore paths, ownership and separate dependencies before activation. See docs/recovery.md.")
 			}
 			return nil
@@ -113,16 +118,31 @@ func interruptible(run func(*cobra.Command, []string) error) func(*cobra.Command
 	}
 }
 
-// describeBundle names a bundle's profile, installation and access store.
+// describeBundle names a bundle's profile, installation and access store; for
+// a handoff, also what it carries and what moves separately.
 func describeBundle(w io.Writer, verb string, m recovery.Manifest) {
 	fmt.Fprintf(w, "%s %d files, profile %s", verb, len(m.Files), m.Profile)
 	if m.Inventory != nil {
 		fmt.Fprintf(w, ", for %s (%s)", m.Inventory.Node, m.Inventory.Platform)
+	}
+	if m.Source != nil {
+		fmt.Fprintf(w, ", from %s (%s, release %s)", m.Source.Node, m.Source.Platform, m.Source.Release)
 	}
 	fmt.Fprintln(w, ".")
 	if s := m.Store; s != nil {
 		fmt.Fprintf(w, "Access store %s: generation %s, schema version %d, revision %d, sequence %d.\n", s.StoreID, s.Generation, s.SchemaVersion, s.Revision, s.Sequence)
 	} else {
 		fmt.Fprintln(w, "No access store: a worker, or a node that never ran as a coordinator.")
+	}
+	if m.Profile != recovery.ProfileHandoff {
+		return
+	}
+	fmt.Fprintln(w, "It carries:")
+	for _, file := range m.Files {
+		fmt.Fprintln(w, "  "+file.Name)
+	}
+	fmt.Fprintln(w, "Move or recreate by hand on the destination:")
+	for _, item := range m.Separate {
+		fmt.Fprintln(w, "  - "+item)
 	}
 }

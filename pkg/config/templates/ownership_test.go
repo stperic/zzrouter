@@ -50,7 +50,7 @@ func ownershipBytes(t *testing.T, path string) []byte {
 func readOwnership(t *testing.T, dir string) ownershipReceipt {
 	t.Helper()
 	var receipt ownershipReceipt
-	require.NoError(t, json.Unmarshal(ownershipBytes(t, filepath.Join(dir, ownershipFile)), &receipt))
+	require.NoError(t, json.Unmarshal(ownershipBytes(t, filepath.Join(dir, OwnershipFile)), &receipt))
 	return receipt
 }
 
@@ -58,7 +58,7 @@ func writeOwnership(t *testing.T, dir string, receipt ownershipReceipt) {
 	t.Helper()
 	body, err := json.Marshal(receipt)
 	require.NoError(t, err)
-	putOwnershipFile(t, dir, ownershipFile, string(body))
+	putOwnershipFile(t, dir, OwnershipFile, string(body))
 }
 
 func TestOwnershipGeneratedFromSelectorBeforeValues(t *testing.T) {
@@ -75,15 +75,15 @@ func TestOwnershipGeneratedFromSelectorBeforeValues(t *testing.T) {
 	receipt := readOwnership(t, dir)
 	require.Len(t, receipt.Files, 1)
 	assert.ElementsMatch(t, managedPaths(template), receipt.Files[rel])
-	assert.NotContains(t, string(ownershipBytes(t, filepath.Join(dir, ownershipFile))), "do-not-record")
-	before, err := os.Stat(filepath.Join(dir, ownershipFile))
+	assert.NotContains(t, string(ownershipBytes(t, filepath.Join(dir, OwnershipFile))), "do-not-record")
+	before, err := os.Stat(filepath.Join(dir, OwnershipFile))
 	require.NoError(t, err)
 	if runtime.GOOS != "windows" { // Windows reports ACL-governed files as 0666
 		assert.Equal(t, os.FileMode(0600), before.Mode().Perm())
 	}
 	_, _, err = prepareManagedFiles(src, dir)
 	require.NoError(t, err)
-	after, err := os.Stat(filepath.Join(dir, ownershipFile))
+	after, err := os.Stat(filepath.Join(dir, OwnershipFile))
 	require.NoError(t, err)
 	assert.True(t, os.SameFile(before, after), "an unchanged receipt must not be republished")
 }
@@ -238,13 +238,13 @@ func TestOwnershipInvalidReceiptStopsEveryWriter(t *testing.T) {
 				t.Run(writer.name, func(t *testing.T) {
 					dir := t.TempDir()
 					live := putOwnershipFile(t, dir, rel, "version_source: {type: stale}\n")
-					putOwnershipFile(t, dir, ownershipFile, string(raw))
+					putOwnershipFile(t, dir, OwnershipFile, string(raw))
 					err := writer.run(dir)
 					require.Error(t, err)
 					if name == "oversized" || name == "union too large" {
 						assert.ErrorIs(t, err, utils.ErrResponseTooLarge)
 					}
-					assert.Equal(t, raw, ownershipBytes(t, filepath.Join(dir, ownershipFile)))
+					assert.Equal(t, raw, ownershipBytes(t, filepath.Join(dir, OwnershipFile)))
 					assert.Equal(t, "version_source: {type: stale}\n", string(ownershipBytes(t, live)))
 					assert.NoDirExists(t, filepath.Join(dir, "on-demand"), "seeding must not precede publication")
 				})
@@ -267,7 +267,7 @@ func TestOwnershipPublicationAndRepairIOFailures(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0700)) })
 		_, err := reconcile(src, dir)
 		require.ErrorIs(t, err, fs.ErrPermission)
-		assert.NoFileExists(t, filepath.Join(dir, ownershipFile))
+		assert.NoFileExists(t, filepath.Join(dir, OwnershipFile))
 		assert.Equal(t, "install: {old: true}\n", string(ownershipBytes(t, live)))
 	})
 	t.Run("write failure aggregates and retries", func(t *testing.T) {
@@ -334,7 +334,7 @@ func TestOwnershipRootBootstrapNeverReadsReceipt(t *testing.T) {
 	}
 	dir := t.TempDir()
 	const poisoned = "not a receipt"
-	path := putOwnershipFile(t, dir, ownershipFile, poisoned)
+	path := putOwnershipFile(t, dir, OwnershipFile, poisoned)
 	live := putOwnershipFile(t, dir, "on-demand/comfyui/config.yaml", "enabled: false\nruntime: {max_concurrent_requests: 99}\n")
 	_, err := PrepareProviders(dir)
 	require.NoError(t, err, "root bootstrap must not decode service-owned evidence")

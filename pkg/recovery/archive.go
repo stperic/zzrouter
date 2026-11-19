@@ -42,6 +42,9 @@ const (
 	ProfileInstallation Profile = "installation"
 	// ProfileDatabase is the access database image alone.
 	ProfileDatabase Profile = "database"
+	// ProfileHandoff is what a new coordinator needs from an old one: the
+	// image and the entries handoffEntry admits, nothing of the old machine.
+	ProfileHandoff Profile = "handoff"
 )
 
 // StoreMeta describes the database image a bundle carries: sqlstore.Meta
@@ -63,6 +66,13 @@ type Staged struct {
 	PreparedAt  time.Time `json:"prepared_at"`
 }
 
+// Origin names the installation a handoff bundle comes from.
+type Origin struct {
+	Release  string `json:"release"`
+	Node     string `json:"node"`
+	Platform string `json:"platform"`
+}
+
 // File is one bounded, integrity-checked archive entry.
 type File struct {
 	Name       string `json:"name"`
@@ -75,27 +85,36 @@ type File struct {
 
 // Manifest describes a recovery bundle and its separately held protection key.
 // Store is present exactly when the bundle carries imageName; Inventory only
-// in an installation bundle.
+// in an installation bundle; Source and Separate, what the operator moves or
+// recreates by hand, only in a handoff bundle.
 type Manifest struct {
 	Version         int        `json:"version"`
 	Profile         Profile    `json:"profile"`
 	Created         time.Time  `json:"created"`
 	Store           *StoreMeta `json:"store,omitempty"`
 	Inventory       *Inventory `json:"inventory,omitempty"`
+	Source          *Origin    `json:"source,omitempty"`
 	KeySHA256       string     `json:"key_sha256,omitempty"`
+	Separate        []string   `json:"separate,omitempty"`
 	Files           []File     `json:"files"`
 	MissingOptional []string   `json:"missing_optional,omitempty"`
 	Staged          *Staged    `json:"staged,omitempty"`
 	keyInfo         fs.FileInfo
 }
 
-// Backup requires a stopped installation and a fresh output path. The key is
+// Backup writes an installation bundle, as BackupProfile does.
+func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error) {
+	return BackupProfile(ctx, ProfileInstallation, dir, output, keyOutput)
+}
+
+// BackupProfile writes an installation or a handoff bundle. It requires a
+// stopped installation and a fresh output path. The key is
 // exported separately, never packed with the secret-bearing recovery archive.
 // The access database travels as an image sqlstore.CaptureStopped takes; a
 // store that refuses to open stops the backup. Temporaries live in private
 // .tmp directories beside the outputs, and the outputs are published by rename
 // at the end, so a failed or cancelled backup leaves no output.
-func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error) {
+func BackupProfile(ctx context.Context, profile Profile, dir, output, keyOutput string) (Manifest, error) {
 	var manifest Manifest
 	if _, err := Read(ctx, dir); err != nil {
 		return manifest, err
@@ -140,7 +159,9 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 			}
 		}
 	}
-	manifest = Manifest{Version: 1, Profile: ProfileInstallation, Created: utils.NowUTC(), Inventory: &inventory}
+	if manifest, err = newManifest(profile, inventory); err != nil {
+		return manifest, err
+	}
 	work, err := privateDir(output)
 	if err != nil {
 		return manifest, err
@@ -149,14 +170,18 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 	if err := captureImage(ctx, &manifest, dir, work); err != nil {
 		return manifest, err
 	}
-	if err := collect(ctx, &manifest); err != nil {
+	if err := collect(ctx, &manifest, inventory); err != nil {
 		return manifest, err
 	}
-	keyWork, err := exportKey(&manifest, output, keyOutput)
+	keyWork, err := exportKey(&manifest, inventory.KeyFile, output, keyOutput)
 	if keyWork != "" {
 		defer func() { _ = os.RemoveAll(keyWork) }()
 	}
 	if err != nil {
+		return manifest, err
+	}
+	// The checker's profile rules hold before anything is published.
+	if err := validateManifest(manifest); err != nil {
 		return manifest, err
 	}
 	archive := filepath.Join(work, "archive.tmp")
@@ -179,10 +204,14 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 }
 
 // captureImage adds the image of the stopped store in dir to manifest; a
-// worker or a node that never ran as a coordinator has none.
+// worker or a node that never ran as a coordinator has none, and so no
+// handoff.
 func captureImage(ctx context.Context, manifest *Manifest, dir, temp string) error {
 	const name = "image.sqlite"
 	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, name))
+	if errors.Is(err, sqlstore.ErrNoStore) && manifest.Profile == ProfileHandoff {
+		return fmt.Errorf("a handoff moves a coordinator's access database: %w", err)
+	}
 	if errors.Is(err, sqlstore.ErrNoStore) {
 		return nil
 	}
@@ -197,6 +226,23 @@ func captureImage(ctx context.Context, manifest *Manifest, dir, temp string) err
 	manifest.Store = &store
 	manifest.Files = append(manifest.Files, File{Name: imageName, Size: size, SHA256: sum, root: temp, source: name})
 	return nil
+}
+
+// newManifest starts a bundle of profile from the installation's inventory.
+// A handoff bundle names its source instead: the destination brings its own
+// paths.
+func newManifest(profile Profile, inventory Inventory) (Manifest, error) {
+	manifest := Manifest{Version: 1, Profile: profile, Created: utils.NowUTC()}
+	switch profile {
+	case ProfileInstallation:
+		manifest.Inventory = &inventory
+	case ProfileHandoff:
+		manifest.Source = &Origin{Release: inventory.Release, Node: inventory.Node, Platform: inventory.Platform}
+		manifest.Separate = handoffSeparate()
+	default:
+		return manifest, fmt.Errorf("recovery backup writes %s or %s bundles, not %q", ProfileInstallation, ProfileHandoff, profile)
+	}
+	return manifest, nil
 }
 
 // privateDir creates a directory only its owner can enter beside path, named
@@ -233,9 +279,10 @@ func refuseLeftover(path string) error {
 	return nil
 }
 
-// exportKey writes the protection key, for its separate export, to key.tmp in
-// the private directory it returns beside keyOutput; none without keyOutput.
-func exportKey(manifest *Manifest, output, keyOutput string) (string, error) {
+// exportKey writes the protection key at keyFile, for its separate export, to
+// key.tmp in the private directory it returns beside keyOutput; none without
+// keyOutput.
+func exportKey(manifest *Manifest, keyFile, output, keyOutput string) (string, error) {
 	needsKey := slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/credentials.enc" })
 	if needsKey && keyOutput == "" {
 		return "", errors.New("protected connections require --key-output in a separate secure backup location")
@@ -254,7 +301,7 @@ func exportKey(manifest *Manifest, output, keyOutput string) (string, error) {
 	if strings.EqualFold(filepath.Dir(outPath), filepath.Dir(keyPath)) {
 		return "", errors.New("store the protection-key backup in a separate directory from the archive")
 	}
-	key, err := secrets.LoadKeyFile(manifest.Inventory.KeyFile)
+	key, err := secrets.LoadKeyFile(keyFile)
 	if err != nil {
 		return "", fmt.Errorf("read protection key for separate export: %w", err)
 	}
@@ -311,8 +358,10 @@ func writeBundle(ctx context.Context, manifest Manifest, output string) error {
 	})
 }
 
-func collect(ctx context.Context, manifest *Manifest) error {
-	keyInfo, err := os.Stat(manifest.Inventory.KeyFile)
+// collect adds the files of inventory's sources that manifest's profile
+// carries; a handoff takes nothing from the data and provider roots.
+func collect(ctx context.Context, manifest *Manifest, inventory Inventory) error {
+	keyInfo, err := os.Stat(inventory.KeyFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -322,24 +371,24 @@ func collect(ctx context.Context, manifest *Manifest) error {
 	for _, file := range manifest.Files { // the image counts toward the limits
 		total += file.Size
 	}
-	for _, source := range manifest.Inventory.Sources {
+	for _, source := range inventory.Sources {
 		if !safeName(source.Name) || !filepath.IsAbs(source.Path) {
 			return errors.New("invalid recovery source")
 		}
-		err := collectSource(ctx, manifest, source, seen, &total)
+		if manifest.Profile == ProfileHandoff && source.Name != "config" {
+			continue
+		}
+		err := collectSource(ctx, manifest, inventory, source, seen, &total)
 		if err != nil {
 			return err
 		}
-	}
-	if !seen["config/node.yaml"] {
-		return errors.New("recovery bundle requires node.yaml")
 	}
 	slices.SortFunc(manifest.Files, func(a, b File) int { return strings.Compare(a.Name, b.Name) })
 	return nil
 }
 
-func collectSource(ctx context.Context, manifest *Manifest, source Source, seen map[string]bool, total *int64) error {
-	base, relative, err := sourcePath(*manifest.Inventory, source)
+func collectSource(ctx context.Context, manifest *Manifest, inventory Inventory, source Source, seen map[string]bool, total *int64) error {
+	base, relative, err := sourcePath(inventory, source)
 	if err != nil {
 		return err
 	}
@@ -374,10 +423,13 @@ func collectSource(ctx context.Context, manifest *Manifest, source Source, seen 
 			}
 			return nil
 		}
-		if entry.IsDir() || filepath.Join(base, filepath.FromSlash(full)) == manifest.Inventory.KeyFile {
+		if entry.IsDir() || filepath.Join(base, filepath.FromSlash(full)) == inventory.KeyFile {
 			return nil
 		}
 		name := path.Join(source.Name, rel)
+		if manifest.Profile == ProfileHandoff && !handoffEntry(name) {
+			return nil
+		}
 		if !safeName(name) || seen[strings.ToLower(name)] {
 			return fmt.Errorf("unsafe or duplicate recovery path: %s", name)
 		}

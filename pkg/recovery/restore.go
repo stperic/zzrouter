@@ -24,7 +24,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Check validates a bundle of either profile without writing installation
+// Check validates a bundle of any profile without writing installation
 // state or creating stores. A database image streams to a private directory in
 // the system's temporary directory, where sqlstore.CheckImage checks it, and
 // must match the manifest; the directory is removed on return.
@@ -405,6 +405,13 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 	if image != (manifest.Store != nil) {
 		return errors.New("a database image and its store description travel together")
 	}
+	if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
+		return errors.New("encrypted state requires its separate protection-key fingerprint")
+	}
+	handoff := manifest.Profile == ProfileHandoff
+	if handoff != (manifest.Source != nil) || !handoff && manifest.Separate != nil {
+		return errors.New("a handoff bundle, and no other, names its source and what moves separately")
+	}
 	switch manifest.Profile {
 	case ProfileInstallation:
 		if manifest.Inventory == nil || manifest.Inventory.Version != 1 {
@@ -413,12 +420,18 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 		if !seen["config/node.yaml"] {
 			return errors.New("recovery bundle requires node.yaml")
 		}
-		if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
-			return errors.New("encrypted state requires its separate protection-key fingerprint")
-		}
 	case ProfileDatabase:
 		if !image || len(manifest.Files) != 1 || manifest.Inventory != nil || manifest.KeySHA256 != "" || len(manifest.MissingOptional) > 0 {
 			return errors.New("a database bundle holds the database image alone")
+		}
+	case ProfileHandoff:
+		if !image || manifest.Inventory != nil || len(manifest.MissingOptional) > 0 {
+			return errors.New("a handoff bundle holds the access database image and its store, and no inventory")
+		}
+		for _, file := range manifest.Files {
+			if !handoffEntry(file.Name) {
+				return fmt.Errorf("a handoff bundle does not carry %s", file.Name)
+			}
 		}
 	default:
 		return fmt.Errorf("unknown recovery bundle profile %q", manifest.Profile)
