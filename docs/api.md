@@ -291,8 +291,9 @@ and returns `data.events`, never null, and `data.next`, absent on the last page.
 Pages are newest first, at most 100 events (default 50). Optional filters combine:
 `actor`, `subject` and `action` match the stored value exactly (`action` is one of
 the recorded action names), `since` is an inclusive and `until` an exclusive RFC 3339
-bound on the event time. Event times are the coordinator's and never go backwards,
-so events sharing a time keep their recorded order. A filter that matches nothing returns an empty page, so a
+bound on the event time. Pages run newest first by event time, events sharing a
+time in recorded order; an event's time is the coordinator's clock when it was
+recorded. A filter that matches nothing returns an empty page, so a
 mistake is refused rather than read as no events: an unknown parameter, a repeated
 or empty one, a value over 256 bytes, an unknown action, a malformed time or a
 `since` after `until` is refused with 400 and one `errors` entry per key

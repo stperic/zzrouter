@@ -76,8 +76,8 @@ type Filter struct {
 // a release has shipped with a field, it cannot be renamed or removed.
 // New fields must be additive and JSON-optional.
 type Event struct {
-	// Time is the UTC wall clock at which the store recorded the event,
-	// never earlier than the event before it. A caller's value is ignored.
+	// Time is the store's UTC clock when it recorded the event; it steps
+	// back when the clock does. A caller's value is ignored.
 	Time time.Time `json:"time"`
 	// Action names the mutation. One of the Action constants above.
 	Action Action `json:"action"`

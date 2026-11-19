@@ -5,8 +5,10 @@ import (
 	"go/parser"
 	"go/token"
 	"math"
+	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -70,24 +72,37 @@ func TestValidateRefusesMetadataJSONWouldAlter(t *testing.T) {
 	}
 }
 
-// TestActionsListsEveryConstant: Actions is the set a history filter accepts,
-// so an Action constant missing from it could be recorded but never filtered.
+// TestActionsListsEveryConstant: Actions is the set an event records and a
+// filter names, so an Action constant missing from it, in any file of the
+// package and written either way, could never be recorded.
 func TestActionsListsEveryConstant(t *testing.T) {
 	t.Parallel()
-	file, err := parser.ParseFile(token.NewFileSet(), "audit.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var declared, listed []string
-	for _, decl := range file.Decls {
-		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
-			for _, spec := range gen.Specs {
-				if vs := spec.(*ast.ValueSpec); vs.Type != nil && vs.Type.(*ast.Ident).Name == "Action" {
-					value, err := strconv.Unquote(vs.Values[0].(*ast.BasicLit).Value)
-					if err != nil {
-						t.Fatal(err)
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.CONST {
+				for _, spec := range gen.Specs {
+					vs := spec.(*ast.ValueSpec)
+					for _, value := range vs.Values {
+						if lit := actionLiteral(vs.Type, value); lit != nil {
+							text, err := strconv.Unquote(lit.Value)
+							if err != nil {
+								t.Fatal(err)
+							}
+							declared = append(declared, text)
+						}
 					}
-					declared = append(declared, value)
 				}
 			}
 		}
@@ -98,6 +113,20 @@ func TestActionsListsEveryConstant(t *testing.T) {
 	slices.Sort(declared)
 	slices.Sort(listed)
 	if len(declared) == 0 || !slices.Equal(declared, listed) {
-		t.Errorf("Actions lists %v; audit.go declares %v", listed, declared)
+		t.Errorf("Actions lists %v; the package declares %v", listed, declared)
 	}
+}
+
+// actionLiteral is the string of a constant written X Action = "x" or
+// X = Action("x"), and nil for any other constant.
+func actionLiteral(typ, value ast.Expr) *ast.BasicLit {
+	if call, ok := value.(*ast.CallExpr); ok && typ == nil && len(call.Args) == 1 {
+		typ, value = call.Fun, call.Args[0]
+	}
+	ident, isAction := typ.(*ast.Ident)
+	lit, isString := value.(*ast.BasicLit)
+	if isAction && ident.Name == "Action" && isString && lit.Kind == token.STRING {
+		return lit
+	}
+	return nil
 }

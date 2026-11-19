@@ -42,7 +42,10 @@ func auditNode(t *testing.T) *Server {
 func readAudit(t *testing.T, s *Server, query url.Values) []audit.Event {
 	t.Helper()
 	var events []audit.Event
+	seen := map[string]bool{}
 	for cursor := ""; ; {
+		require.False(t, seen[cursor], "a cursor came back: paging would never end")
+		seen[cursor] = true
 		values := url.Values{"limit": {"2"}}
 		for key, value := range query {
 			values[key] = value
@@ -190,15 +193,16 @@ func TestAccessAuditRefusesBadParameters(t *testing.T) {
 }
 
 // TestAccessAuditUnfilteredResponseIsUnchanged pins the unfiltered answer
-// byte for byte: the events and a cursor holding only the generation and
-// position, as before filters existed.
+// byte for byte: the events newest first in commit order, as before filters
+// existed, and a cursor naming the last one's time and seq. A cursor of the
+// earlier seq-only form is refused, never misread.
 func TestAccessAuditUnfilteredResponseIsUnchanged(t *testing.T) {
 	s := auditNode(t)
 	store, ok := s.accessStore.(*sqlstore.Store)
 	require.True(t, ok)
 	_, generation, _, _ := store.Meta()
 	total := len(auditHistory(t, store))
-	cursor := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"g":%q,"b":%d}`, generation, total-1))
+	cursor := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"g":%q,"t":%d,"s":%d}`, generation, auditEpoch.Add(4*time.Hour).UnixMicro(), total-1))
 	want := `{"success":true,"message":"Audit history retrieved successfully","data":{"events":[` +
 		`{"time":"2026-11-01T05:00:00Z","action":"team.updated","actor":"bob","subject":"sales"},` +
 		`{"time":"2026-11-01T04:00:00Z","action":"team.updated","actor":"alice","subject":"ops"}],"next":"` + cursor + `"}}`
@@ -206,8 +210,11 @@ func TestAccessAuditUnfilteredResponseIsUnchanged(t *testing.T) {
 	require.Equal(t, http.StatusOK, result.Code)
 	assert.Equal(t, want, string(result.Body))
 	next := makeAuthRequest(t, s, http.MethodGet, auditPath+"?limit=1&cursor="+cursor, TestAdminKey, nil)
-	require.Equal(t, http.StatusOK, next.Code, "a cursor of the earlier form still reads on")
+	require.Equal(t, http.StatusOK, next.Code)
 	assert.Contains(t, string(next.Body), `"actor":"bob","subject":"eng"`)
+	earlier := base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, `{"g":%q,"b":%d}`, generation, total-1))
+	stale := makeAuthRequest(t, s, http.MethodGet, auditPath+"?limit=1&cursor="+earlier, TestAdminKey, nil)
+	require.Equal(t, http.StatusConflict, stale.Code, "a cursor of the seq-only form: %s", stale.Body)
 }
 
 // TestAccessAuditGatingPrecedesValidation: filters change nothing about who

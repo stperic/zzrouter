@@ -12521,7 +12521,8 @@ paths:
       description: >-
         Administrator only, coordinator only. Reads the access history held in the coordinator's access store, newest
         first. The optional filters combine: actor, subject and action match exactly, since and until bound the event
-        time. Event times are the coordinator's and never go backwards. A cursor stays valid across new events and
+        time. Pages run newest first by event time, ties in recorded order; an event's time is the coordinator's clock
+        when it was recorded. A cursor stays valid across new events and
         restarts, under the filter that issued it. Every parameter takes
         one nonempty value of at most 256 bytes. Protocol-level OAuth sign-in history is not included.
       security:

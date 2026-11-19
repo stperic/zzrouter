@@ -45,6 +45,7 @@ func TestAuditPage(t *testing.T) {
 		events, next, err := s.AuditPage(t.Context(), audit.Filter{}, cursor, 2)
 		require.NoError(t, err)
 		pages = append(pages, subjects(events))
+		require.Less(t, len(pages), 4, "paging ends")
 		if next == "" {
 			break
 		}
@@ -69,11 +70,13 @@ func TestAuditPage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, foreign)
 	encoded := func(text string) string { return base64.RawURLEncoding.EncodeToString([]byte(text)) }
+	_, generation, _, _ := s.Meta()
 	for name, bad := range map[string]string{
 		"another generation": foreign,
 		"not base64":         "%%%",
 		"not a cursor":       encoded("[]"),
-		"no generation":      encoded(`{"b":3}`),
+		"no generation":      encoded(`{"t":3,"s":3}`),
+		"the seq-only form":  encoded(fmt.Sprintf(`{"g":%q,"b":3}`, generation)),
 		"empty":              encoded(`{}`),
 		"null":               encoded(`null`),
 	} {
@@ -86,7 +89,7 @@ func TestAuditPage(t *testing.T) {
 }
 
 // TestAuditTableIsAppendOnly refuses every rewrite of history, REPLACE
-// included, and a row earlier than the newest, so time follows seq.
+// included. A row may carry an earlier time than the newest: a clock steps back.
 func TestAuditTableIsAppendOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -95,19 +98,17 @@ func TestAuditTableIsAppendOnly(t *testing.T) {
 	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "second"})
 	require.NoError(t, s.Close())
 	db := rawDB(t, dir)
-	const newest = "(SELECT max(time) FROM audit_events)"
 	for name, query := range map[string]string{
-		"update":          "UPDATE audit_events SET subject = 'rewritten'",
-		"delete":          "DELETE FROM audit_events",
-		"replace":         "INSERT OR REPLACE INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (1, " + newest + ", 'x', 'a', 'rewritten', '')",
-		"insert before":   "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (0, " + newest + ", 'x', 'a', 'earlier', '')",
-		"an earlier time": "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (3, " + newest + " - 1, 'x', 'a', 'earlier', '')",
+		"update":        "UPDATE audit_events SET subject = 'rewritten'",
+		"delete":        "DELETE FROM audit_events",
+		"replace":       "INSERT OR REPLACE INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (1, 0, 'x', 'a', 'rewritten', '')",
+		"insert before": "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (2, 0, 'x', 'a', 'earlier', '')",
 	} {
 		_, err := db.ExecContext(t.Context(), query)
 		require.ErrorContains(t, err, "audit events are append-only", name)
 	}
-	_, err := db.ExecContext(t.Context(), "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (3, "+newest+", 'x', 'a', 'third', '')")
-	require.NoError(t, err, "appending at the newest time still works")
+	_, err := db.ExecContext(t.Context(), "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (3, 0, 'x', 'a', 'third', '')")
+	require.NoError(t, err, "appending works, with any time")
 	assert.Equal(t, []string{"first", "second", "third"}, subjects(storedEvents(t, dir)))
 }
 
@@ -134,9 +135,10 @@ func TestAuditPageWhileAnotherProgramHoldsTheDatabase(t *testing.T) {
 }
 
 // TestAuditFilterQueryPlans: in a history of many events, the query AuditPage
-// runs walks one index in seq order, the most selective equality's or the
-// table's, bounded by a seq range that time resolves with seeks on audit_time:
-// no scan and no sort for any filter. Not parallel: it sets the clock.
+// runs is two exact seeks on one index, the rest of the cursor's microsecond
+// and every older one, merged in page order: no scan and no sort, with no
+// filter, a time range, each equality with or without one, several equalities
+// (the most selective walks) and all five. Not parallel: it sets the clock.
 func TestAuditFilterQueryPlans(t *testing.T) {
 	s := openStore(t, t.TempDir(), Options{})
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
@@ -149,26 +151,27 @@ func TestAuditFilterQueryPlans(t *testing.T) {
 		record(base.Add(time.Duration(i+1)*time.Minute), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "bulk", Subject: fmt.Sprint("bulk-", i)})
 	}
 	last, second := base.Add(100*time.Minute), base.Add(time.Minute)
+	rare := audit.Filter{Subject: "rare", Actor: "rare", Action: audit.ActionPasswordChanged}
 	for _, tc := range []struct {
-		walk   string
-		filter audit.Filter
-		newest string // the first page of one event; only the unfiltered history has more
+		index, equality string // the walked index and its equality, if any
+		filter          audit.Filter
+		newest          string // the first page of one event; only the unfiltered history has more
 	}{
-		{"INTEGER PRIMARY KEY (rowid<?)", audit.Filter{}, "bulk-99"},
-		{"INDEX audit_actor (actor=? AND seq<?)", audit.Filter{Actor: "rare"}, "rare"},
-		{"INDEX audit_subject (subject=? AND seq<?)", audit.Filter{Subject: "rare"}, "rare"},
-		{"INDEX audit_action (action=? AND seq<?)", audit.Filter{Action: audit.ActionPasswordChanged}, "rare"},
-		{"INTEGER PRIMARY KEY (rowid>? AND rowid<?)", audit.Filter{Since: &last}, "bulk-99"},
-		{"INTEGER PRIMARY KEY (rowid<?)", audit.Filter{Until: &second}, "rare"},
-		{"INTEGER PRIMARY KEY (rowid>? AND rowid<?)", audit.Filter{Since: &base, Until: &second}, "rare"},
-		{"INDEX audit_actor (actor=? AND seq<?)", audit.Filter{Actor: "rare", Action: audit.ActionPasswordChanged}, "rare"},
-		{"INDEX audit_subject (subject=? AND seq<?)", audit.Filter{Subject: "rare", Action: audit.ActionPasswordChanged}, "rare"},
-		{"INDEX audit_actor (actor=? AND seq>? AND seq<?)", audit.Filter{Actor: "bulk", Since: &last}, "bulk-99"},
-		{"INDEX audit_subject (subject=? AND seq>? AND seq<?)", audit.Filter{Subject: "rare", Actor: "rare", Action: audit.ActionPasswordChanged, Since: &base, Until: &second}, "rare"},
+		{"audit_time", "", audit.Filter{}, "bulk-99"},
+		{"audit_time", "", audit.Filter{Since: &last}, "bulk-99"},
+		{"audit_time", "", audit.Filter{Until: &second}, "rare"},
+		{"audit_time", "", audit.Filter{Since: &base, Until: &second}, "rare"},
+		{"audit_actor", "actor", audit.Filter{Actor: "rare"}, "rare"},
+		{"audit_subject", "subject", audit.Filter{Subject: "rare"}, "rare"},
+		{"audit_action", "action", audit.Filter{Action: rare.Action}, "rare"},
+		{"audit_actor", "actor", audit.Filter{Actor: "bulk", Since: new(base.Add(10 * time.Minute)), Until: new(base.Add(11 * time.Minute))}, "bulk-9"},
+		{"audit_subject", "subject", audit.Filter{Subject: "rare", Since: &base, Until: &second}, "rare"},
+		{"audit_action", "action", audit.Filter{Action: rare.Action, Since: &base, Until: &second}, "rare"},
+		{"audit_actor", "actor", audit.Filter{Actor: "rare", Action: rare.Action}, "rare"},
+		{"audit_subject", "subject", audit.Filter{Subject: "rare", Action: rare.Action}, "rare"},
+		{"audit_subject", "subject", audit.Filter{Subject: "rare", Actor: "rare", Action: rare.Action, Since: &base, Until: &second}, "rare"},
 	} {
-		query, args := newAuditQuery(tc.filter).page(math.MaxInt64, 1)
-		// The plan does not show which upper bound the walk seeks to; with one there is no choice.
-		assert.Equal(t, 1, strings.Count(query, "seq < "), "%+v: one upper bound: %s", tc.filter, query)
+		query, args := newAuditQuery(tc.filter).page(math.MaxInt64, math.MaxInt64, 1)
 		rows, err := s.db.SQL().QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query, args...)
 		require.NoError(t, err)
 		var plan []string
@@ -180,17 +183,21 @@ func TestAuditFilterQueryPlans(t *testing.T) {
 		}
 		require.NoError(t, rows.Err())
 		require.NoError(t, rows.Close())
-		require.NotEmpty(t, plan)
-		assert.Equal(t, "SEARCH audit_events USING "+tc.walk, plan[0], "%+v: %v", tc.filter, plan)
-		for _, step := range plan[1:] {
-			if !strings.HasPrefix(step, "SCALAR SUBQUERY ") {
-				assert.Equal(t, "SEARCH audit_events USING COVERING INDEX audit_time (time>?)", step, "%+v: %v", tc.filter, plan)
-			}
+		equality, older := "", "time<?"
+		if tc.equality != "" {
+			equality = tc.equality + "=? AND "
 		}
+		if tc.filter.Since != nil {
+			older = "time>? AND time<?"
+		}
+		walk := "SEARCH audit_events USING INDEX " + tc.index + " ("
+		assert.Equal(t, []string{"MERGE (UNION ALL)", "LEFT", walk + equality + "time=? AND seq<?)", "RIGHT", walk + equality + older + ")"}, plan, "%+v", tc.filter)
+		// The plan does not show a second upper bound kept as a filter; until joins the cursor instead.
+		assert.Equal(t, 2, strings.Count(query, "<"), "%+v: one upper bound per seek: %s", tc.filter, query)
 		events, next, err := s.AuditPage(t.Context(), tc.filter, "", 1)
 		require.NoError(t, err)
 		assert.Equal(t, []string{tc.newest}, subjects(events), "%+v", tc.filter)
-		assert.Equal(t, tc.walk == "INTEGER PRIMARY KEY (rowid<?)" && tc.filter.Until == nil, next != "", "%+v", tc.filter)
+		assert.Equal(t, tc.filter == (audit.Filter{}), next != "", "%+v", tc.filter)
 	}
 }
 

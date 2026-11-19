@@ -40,7 +40,8 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		name string
 		run  func(*testing.T, Harness)
 	}{
-		{"AuditTimeIsTheStoresAndNeverGoesBack", testAuditTime},
+		{"AuditTimeIsTheStoresClock", testAuditTime},
+		{"AuditEventsOfOneMicrosecondPageInRecordingOrder", testAuditTies},
 		{"AuditFiltersSelectExactlyTheirEvents", testAuditFilters},
 	} {
 		t.Run(tc.name, func(t *testing.T) { tc.run(t, newHarness(t)) })
@@ -104,17 +105,9 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 // auditEvents reads every event s recorded through AuditPage, oldest first.
 func auditEvents(t *testing.T, s access.Store) []audit.Event {
 	t.Helper()
-	var events []audit.Event
-	for cursor := ""; ; {
-		page, next, err := s.AuditPage(t.Context(), audit.Filter{}, cursor, 100)
-		require.NoError(t, err)
-		events = append(events, page...)
-		if next == "" {
-			slices.Reverse(events)
-			return events
-		}
-		cursor = next
-	}
+	events, _ := filtered(t, s, audit.Filter{}, audit.MaxPage)
+	slices.Reverse(events)
+	return events
 }
 
 type recorder struct {

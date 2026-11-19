@@ -22,6 +22,7 @@ func hour(i int) time.Time { return auditBase.Add(time.Duration(i) * time.Hour) 
 func filtered(t *testing.T, s access.Store, f audit.Filter, limit int) ([]audit.Event, int) {
 	t.Helper()
 	var events []audit.Event
+	seen := map[string]bool{}
 	for cursor, pages := "", 1; ; pages++ {
 		page, next, err := s.AuditPage(t.Context(), f, cursor, limit)
 		require.NoError(t, err)
@@ -31,6 +32,8 @@ func filtered(t *testing.T, s access.Store, f audit.Filter, limit int) ([]audit.
 			return events, pages
 		}
 		require.Len(t, page, limit, "only the last page is short")
+		require.False(t, seen[next], "a cursor came back: paging would never end")
+		seen[next] = true
 		cursor = next
 	}
 }
@@ -56,43 +59,93 @@ func recordAt(t *testing.T, s access.Store, at time.Time, ev audit.Event) {
 	s.Record(t.Context(), ev)
 }
 
-// testAuditTime: the store stamps each event from its clock, ignoring the
-// caller's Time, and never earlier than the event before, so a clock stepped
-// back records the previous time and filters keep commit order.
+// ordered is events newest first by time, ties by recording order, the page
+// order written out independently of any store; events are in recording order.
+func ordered(events []audit.Event) []audit.Event {
+	out := slices.Clone(events)
+	slices.Reverse(out)
+	slices.SortStableFunc(out, func(a, b audit.Event) int { return b.Time.Compare(a.Time) })
+	return out
+}
+
+// pagesAgree pages f at several sizes and requires exactly want each time,
+// no event skipped or repeated.
+func pagesAgree(t *testing.T, s access.Store, f audit.Filter, want []audit.Event, name string) {
+	t.Helper()
+	for _, limit := range []int{1, 2, 100} {
+		got, pages := filtered(t, s, f, limit)
+		assert.Equal(t, want, got, "%s, pages of %d", name, limit)
+		assert.Equal(t, max(1, (len(want)+limit-1)/limit), pages, "%s, pages of %d", name, limit)
+	}
+}
+
+// testAuditTime: the store stamps each event with its clock's time and
+// nothing else, ignoring the caller's Time. An event recorded while the clock
+// ran a year ahead keeps that time and later events keep theirs; one recorded
+// after the clock stepped back sorts by its own, earlier time.
 func testAuditTime(t *testing.T, h Harness) {
 	s := h.Store
-	recordAt(t, s, hour(2), audit.Event{Time: hour(9), Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: "first"})
-	recordAt(t, s, hour(1), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: "stepped back"})
-	recordAt(t, s, hour(3).Add(time.Nanosecond), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: "truncated"})
-	events := auditEvents(t, s)
-	require.Len(t, events, 3)
-	assert.Equal(t, []time.Time{hour(2), hour(2), hour(3)}, times(events), "the store's clock, never back, to the microsecond")
-	got, _ := filtered(t, s, audit.Filter{Since: new(hour(2)), Until: new(hour(3))}, 1)
-	assert.Equal(t, []string{"stepped back", "first"}, subjectsOf(got), "newest first in commit order")
+	ahead := hour(0).AddDate(1, 0, 0)
+	var want []audit.Event
+	for _, step := range []struct {
+		at      time.Time
+		subject string
+	}{{ahead, "ahead"}, {hour(1), "a"}, {hour(2), "b"}, {hour(3).Add(time.Nanosecond), "c"}, {hour(2).Add(30 * time.Minute), "stepped back"}} {
+		ev := audit.Event{Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: step.subject}
+		recordAt(t, s, step.at, audit.Event{Time: hour(-9), Action: ev.Action, Actor: ev.Actor, Subject: ev.Subject})
+		ev.Time = step.at.Truncate(time.Microsecond)
+		want = append(want, ev)
+	}
+	want = ordered(want)
+	assert.Equal(t, []string{"ahead", "c", "stepped back", "b", "a"}, subjectsOf(want))
+	pagesAgree(t, s, audit.Filter{}, want, "everything, the event ahead first")
+	pagesAgree(t, s, audit.Filter{Until: new(hour(4))}, want[1:], "until now leaves out the event ahead")
+	pagesAgree(t, s, audit.Filter{Since: new(hour(2)), Until: new(hour(3))}, want[2:4], "the stepped-back event by its own time")
+}
+
+// testAuditTies: events stamped in one microsecond page in recording order,
+// across page boundaries, skipping and repeating none.
+func testAuditTies(t *testing.T, h Harness) {
+	s := h.Store
+	var want []audit.Event
+	for i := range 7 {
+		ev := audit.Event{Time: hour(5), Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: fmt.Sprint("tie-", i)}
+		recordAt(t, s, hour(5), ev)
+		want = append(want, ev)
+	}
+	recordAt(t, s, hour(4), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: "older"})
+	want = ordered(want)
+	assert.Equal(t, "tie-6", want[0].Subject)
+	pagesAgree(t, s, audit.Filter{Since: new(hour(5))}, want, "one microsecond")
+	pagesAgree(t, s, audit.Filter{Actor: "contract", Until: new(hour(5).Add(time.Microsecond))}, append(slices.Clone(want), audit.Event{Time: hour(4),
+		Action: audit.ActionKeyUsageReset, Actor: "contract", Subject: "older"}), "into the next microsecond")
 }
 
 // testAuditFilters pages a history of two actors, three subjects and two
-// actions an hour apart, with two pairs sharing a time (the second of one pair
-// recorded while the clock stood behind): each filter alone and all together
-// return exactly their events in commit order, skipping and repeating none.
+// actions an hour apart, with one event recorded while the clock ran ahead,
+// one sharing another's time and one after the clock stepped back: each
+// filter alone and all together return exactly their events in page order.
 func testAuditFilters(t *testing.T, h Harness) {
 	s := h.Store
+	var recorded []audit.Event
 	for i := range 12 {
 		at := hour(i)
 		switch i {
+		case 3:
+			at = hour(30)
 		case 7:
 			at = hour(6)
 		case 11:
 			at = hour(-1)
 		}
-		recordAt(t, s, at, audit.Event{Actor: []string{"alice", "bob"}[i%2], Subject: []string{"eng", "ops", "sales"}[i%3],
-			Action: []audit.Action{audit.ActionKeyCreated, audit.ActionTeamUpdated}[i/3%2], RequestID: fmt.Sprint("event-", i)})
+		ev := audit.Event{Time: at, Actor: []string{"alice", "bob"}[i%2], Subject: []string{"eng", "ops", "sales"}[i%3],
+			Action: []audit.Action{audit.ActionKeyCreated, audit.ActionTeamUpdated}[i/3%2], RequestID: fmt.Sprint("event-", i)}
+		recordAt(t, s, at, ev)
+		recorded = append(recorded, ev)
 	}
-	recorded := auditEvents(t, s)
-	require.Len(t, recorded, 12)
-	assert.Equal(t, hour(6), recorded[7].Time)
-	assert.Equal(t, hour(10), recorded[11].Time)
-	slices.Reverse(recorded)
+	all := ordered(recorded)
+	assert.Equal(t, []string{"event-3", "event-10", "event-9", "event-8", "event-7", "event-6"}, requests(all[:6]))
+	pagesAgree(t, s, audit.Filter{}, all, "no filter")
 	for name, f := range map[string]audit.Filter{
 		"actor":           {Actor: "alice"},
 		"subject":         {Subject: "ops"},
@@ -100,26 +153,20 @@ func testAuditFilters(t *testing.T, h Harness) {
 		"since":           {Since: new(hour(6))},
 		"until":           {Until: new(hour(6))},
 		"since and until": {Since: new(hour(3)), Until: new(hour(10))},
-		"all":             {Actor: "bob", Subject: "eng", Action: audit.ActionTeamUpdated, Since: new(hour(1)), Until: new(hour(11))},
+		"all":             {Actor: "bob", Subject: "eng", Action: audit.ActionTeamUpdated, Since: new(hour(1)), Until: new(hour(31))},
 	} {
-		want := slices.DeleteFunc(slices.Clone(recorded), func(ev audit.Event) bool { return !selects(f, ev) })
+		want := slices.DeleteFunc(slices.Clone(all), func(ev audit.Event) bool { return !selects(f, ev) })
 		require.NotEmpty(t, want, name)
-		require.Less(t, len(want), len(recorded), name)
-		for _, limit := range []int{1, 2, 100} {
-			got, pages := filtered(t, s, f, limit)
-			assert.Equal(t, want, got, "%s, pages of %d", name, limit)
-			assert.Equal(t, max(1, (len(want)+limit-1)/limit), pages, "%s, pages of %d", name, limit)
-		}
+		require.Less(t, len(want), len(all), name)
+		pagesAgree(t, s, f, want, name)
 	}
 	got, _ := filtered(t, s, audit.Filter{Since: new(hour(4)), Until: new(hour(6))}, 100)
 	assert.Equal(t, []time.Time{hour(5), hour(4)}, times(got), "since is inclusive, until exclusive")
 	got, _ = filtered(t, s, audit.Filter{Since: new(hour(4).Add(time.Nanosecond)), Until: new(hour(6).Add(time.Nanosecond))}, 1)
-	assert.Equal(t, []time.Time{hour(6), hour(6), hour(5)}, times(got), "a bound compares with the time the history returns")
-	got, _ = filtered(t, s, audit.Filter{Since: new(hour(10))}, 1)
-	assert.Equal(t, []string{"event-11", "event-10"}, requests(got), "events sharing a time page in commit order")
+	assert.Equal(t, []string{"event-7", "event-6", "event-5"}, requests(got), "a bound compares with the time the history returns")
 	for name, f := range map[string]audit.Filter{
 		"no match": {Actor: "nobody"}, "empty range": {Since: new(hour(4)), Until: new(hour(4))},
-		"after the newest": {Since: new(hour(11))}, "before the oldest": {Until: new(hour(0))},
+		"after the newest": {Since: new(hour(31))}, "before the oldest": {Until: new(hour(-1))},
 	} {
 		page, next, err := s.AuditPage(t.Context(), f, "", 10)
 		require.NoError(t, err)

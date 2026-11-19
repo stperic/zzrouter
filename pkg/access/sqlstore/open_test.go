@@ -265,7 +265,7 @@ func TestSettle(t *testing.T) {
 	tx, err := db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	_, err = tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
-		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 1 + i, (SELECT max(time) FROM audit_events), 'x', 'a', hex(randomblob(512)), '' FROM n`)
+		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 1 + i, 0, 'x', 'a', hex(randomblob(512)), '' FROM n`)
 	require.NoError(t, err)
 	crashed := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(crashed, "access"), 0o700))
