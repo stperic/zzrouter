@@ -250,10 +250,12 @@ back shows that time. A filter value is matched literally as a bound query
 argument, never as SQL or a pattern. With no filter, a time range, one exact
 filter, or one exact filter and a time range, a page reads at most two index
 entries beyond the events it returns and never sorts. With two or three exact
-filters, a page walks the index of the most selective one (subject, then actor,
-then action) inside the time range and checks the others on the rows it walks,
-so it may read every event of that one filter in the range before the page
-fills. A page cursor survives new events and restarts; a malformed cursor, one
+filters, a page walks the index of one of them, chosen in a fixed order
+(subject, then actor, then action), inside the time range and checks the others
+on the rows it walks, so it may read every event of that one filter in the
+range before the page fills. Changes to access records wait while a page is
+read, so on a very large history narrow such a query with a time range. A page
+cursor survives new events and restarts; a malformed cursor, one
 another store issued, or one sent with other filters is refused and the reader
 refreshes. Define retention operationally; nothing prunes the history
 automatically.
