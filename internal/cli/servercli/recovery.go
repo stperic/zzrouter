@@ -1,6 +1,7 @@
 package servercli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,13 @@ func NewRecoveryCmd() *cobra.Command {
 		}
 		verb, note := "Saved and checked", ""
 		if _, err := recovery.Check(cmd.Context(), output, keyOutput); err != nil {
+			if cmd.Context().Err() != nil {
+				command := "zzrouter-node recovery check " + output
+				if keyOutput != "" {
+					command += " --key-file " + keyOutput
+				}
+				return fmt.Errorf("the backup was written, but its check was interrupted: run %s before relying on it: %w", command, err)
+			}
 			// A newer release's database is captured for safety; only that release reads it.
 			var refusal *sqlstore.Refusal
 			if !errors.As(err, &refusal) || refusal.Reason != sqlstore.SchemaNewer {
@@ -86,18 +94,23 @@ func NewRecoveryCmd() *cobra.Command {
 		}
 		command.AddCommand(child)
 	}
-	// An interrupt or a service stop cancels the operation, which removes its
-	// temporaries and leaves no output.
 	for _, child := range command.Commands() {
-		run := child.RunE
-		child.RunE = func(cmd *cobra.Command, args []string) error {
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
-			cmd.SetContext(ctx)
-			return run(cmd, args)
-		}
+		child.RunE = interruptible(child.RunE)
 	}
 	return command
+}
+
+// interruptible runs run under a context an interrupt or a service stop
+// cancels, so the operation removes its temporaries and leaves no output. The
+// first signal releases the handler: a second one ends the process at once.
+func interruptible(run func(*cobra.Command, []string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		context.AfterFunc(ctx, stop)
+		cmd.SetContext(ctx)
+		return run(cmd, args)
+	}
 }
 
 // describeBundle names a bundle's profile, installation and access store.

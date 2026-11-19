@@ -260,14 +260,20 @@ another store issued, or one sent with other filters is refused and the reader
 refreshes. Define retention operationally; nothing prunes the history
 automatically.
 
-The database file is internal, not an interface. Inspect a backup copy, never
-the live file. While a tool holds the live file, each key, team or people
-change waits five seconds for it and then answers `503 access_store_busy`
-with `Retry-After`; nothing is changed, and a retry succeeds once the tool lets
-go. An access-history read answers the same way while the tool writes. A node
-that cannot open its store because a tool holds the file stops with a message
-saying so, not a damage reason. If the coordinator cannot even tell whether a change was committed, it
-answers `503 access_store_failed` and exits so its service manager restarts it.
+The database file is internal, not an interface. Inspect a backup copy, never the
+live file, and change it with no other tool, its schema included: a node refuses
+to start, with `integrity_failed`, on a database whose schema objects (tables,
+indexes, triggers, views, or the statistics `ANALYZE` adds) are not exactly those
+its release creates. If that happened, restore a checked backup: until an
+activation command exists, place a staged, prepared image by hand as
+[recovery](recovery.md) describes. While a tool holds the live file, each key,
+team or people change waits five seconds for it and then answers `503
+access_store_busy` with `Retry-After`; nothing is changed, and a retry succeeds
+once the tool lets go. An access-history read answers the same way while the tool
+writes. A node that cannot open its store because a tool holds the file stops
+with a message saying so, not a damage reason. If the coordinator cannot even
+tell whether a change was committed, it answers `503 access_store_failed` and
+exits so its service manager restarts it.
 
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.

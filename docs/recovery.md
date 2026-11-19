@@ -82,11 +82,10 @@ the image's store ID, generation, schema version, revision and sequence.
 A database that will not open stops the backup with the store's reason
 (`unreadable`, `integrity_failed`, or `missing` for a store marker without its
 database) and its next action, and writes nothing; copy a damaged database by
-hand if you need it. A
-database a newer release wrote is copied byte for byte: this release cannot
-check or restore it, `recovery backup` says so, and the release that wrote it
-reads the archive. A worker, or a node that never ran as a coordinator, has no
-access store, and its bundle carries no image and no `store`.
+hand if you need it. A database a newer release wrote is copied byte for byte:
+this release cannot check or restore it, `recovery backup` says so, and the
+release that wrote it reads the archive. A worker, or a node that never ran as a
+coordinator, has no access store, and its bundle carries no image and no `store`.
 
 Archives are limited to 20,000 files and 4 GiB; they are recovery state bundles,
 not model-library or complete operating-system images.
@@ -112,12 +111,14 @@ zzrouter-node recovery check /secure-backups/router.tar.gz \
 
 The same flags work in PowerShell; enter the command on one line with quoted
 Windows paths. Existing output files are refused. The key export is required when
-the installation has encrypted connections. It is never packed in the archive.
-A failed backup leaves neither the archive nor the exported key. If the check
-that `recovery backup` runs afterwards fails, it says so and the archive stays:
-do not use it. Keep a previous verified backup until the new one passes. Each
-command names the bundle's profile and its access store's ID, generation, schema
-version, revision and sequence.
+the installation has encrypted connections. It is never packed in the archive. A
+failed backup leaves neither the archive nor the exported key. If the check that
+`recovery backup` runs afterwards fails, it says so and the archive stays: do not
+use it. If that check is interrupted, the archive and key are already written but
+unchecked: the command says so and fails; run `zzrouter-node recovery check` on
+them before relying on them. Keep a previous verified backup until the new one
+passes. Each command names the bundle's profile and its access store's ID,
+generation, schema version, revision and sequence.
 
 `recovery backup` keeps its temporaries in private directories beside the archive
 and the key, named after them with a `.tmp` suffix (for example

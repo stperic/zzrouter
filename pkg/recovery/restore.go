@@ -180,21 +180,16 @@ func (e *imageRefusal) Error() string {
 
 func (e *imageRefusal) Unwrap() error { return e.refusal }
 
-// archiveImage gives an image operation's refusal the archive's advice.
-func archiveImage(err error) error {
+// checkImage refuses an image sqlstore.CheckImage refuses, with the archive's
+// advice, or whose meta is not the manifest's store description.
+func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
+	img, err := sqlstore.CheckImage(ctx, imagePath(images))
 	var refusal *sqlstore.Refusal
 	if errors.As(err, &refusal) {
 		return &imageRefusal{refusal}
 	}
-	return err
-}
-
-// checkImage refuses an image sqlstore.CheckImage refuses, or whose meta is
-// not the manifest's store description.
-func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
-	img, err := sqlstore.CheckImage(ctx, imagePath(images))
 	if err != nil {
-		return archiveImage(err)
+		return err
 	}
 	if StoreMeta(img.Meta) != want {
 		return errors.New("the database image does not match the manifest's store description")
@@ -203,15 +198,17 @@ func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
 }
 
 // prepareImage readies the staged image to replace a store's content, checks
-// the file it wrote and describes it for the staging manifest.
+// the file it wrote and describes it for the staging manifest. The check pass
+// already judged these bytes, so a refusal here is a fault, not a verdict on
+// the archive.
 func prepareImage(ctx context.Context, root *os.Root) (*Staged, error) {
 	prepared, err := sqlstore.PrepareImage(ctx, imagePath(root))
 	if err != nil {
-		return nil, archiveImage(err)
+		return nil, err
 	}
 	checked, err := sqlstore.CheckImage(ctx, imagePath(root))
 	if err != nil {
-		return nil, archiveImage(err)
+		return nil, err
 	}
 	if checked != prepared {
 		return nil, errors.New("the prepared database image does not check as prepared")
