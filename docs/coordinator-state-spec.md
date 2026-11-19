@@ -82,7 +82,7 @@ The **store marker** tells a lost database from a fresh installation. It is a sm
 
 The first release fixes the few things a later binary must be able to rely on: the schema version in the file header, the metadata table, and the store marker's name and format.
 
-Remove the legacy `/state/snapshot` and `/state/restore` routes and their handler. This is step 0 of the preparatory refactoring. They are test-harness facilities for four files, two of which no longer exist, and no e2e suite uses them. Keep the `state.snapshot` and `state.restore` audit action names, because imported history contains them and released actions are never repurposed.
+Remove the legacy `/state/snapshot` and `/state/restore` routes and their handler. This is step 0 of the preparatory refactoring. They are test-harness facilities for four files, two of which no longer exist, and no e2e suite uses them. Their audit action names go with them: nothing is imported, so no history can hold them.
 
 ### Extending the store
 
