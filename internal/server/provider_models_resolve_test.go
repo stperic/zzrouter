@@ -231,7 +231,7 @@ func TestProviderWorkflowDownloadsThroughExistingService(t *testing.T) {
 			}
 			require.EqualValues(t, 3, h.cluster.calls.Load())
 			require.Len(t, h.worker.jobs.List(jobs.KindDownload), 1)
-			catalog := catalogRoute(gin.RouteInfo{Method: "POST", Path: "/zzrouter/v1/providers/:name/models/resolve"})
+			catalog := (&Server{}).catalogRoute(gin.RouteInfo{Method: "POST", Path: "/zzrouter/v1/providers/:name/models/resolve"})
 			require.Equal(t, "admin", catalog.Auth)
 			require.True(t, catalog.Async)
 			id, err := (&Server{engine: h.public}).eligibleAPIRoute("POST", "/zzrouter/v1/providers/studio/models/resolve")

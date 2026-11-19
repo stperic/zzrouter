@@ -3,6 +3,8 @@ package clientcli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +26,20 @@ func recoveryFixture(t *testing.T, endpoint string) string {
 	return dir
 }
 
+// requireLocalProofRequest checks the proof arrives in its header only, with an empty JSON body.
+func requireLocalProofRequest(t *testing.T, r *http.Request, dir string) *localproof.File {
+	t.Helper()
+	file, err := localproof.Read(r.Context(), dir)
+	require.NoError(t, err)
+	require.Equal(t, []string{file.Proof}, r.Header.Values(localproof.Header))
+	require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+	body, err := io.ReadAll(r.Body)
+	require.NoError(t, err)
+	require.JSONEq(t, `{}`, string(body))
+	require.NotContains(t, r.URL.String(), file.Proof)
+	return file
+}
+
 func TestLocalOwnerRecoveryUsesOnlySelectedInstallation(t *testing.T) {
 	var dir string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,11 +47,7 @@ func TestLocalOwnerRecoveryUsesOnlySelectedInstallation(t *testing.T) {
 		require.Equal(t, "/zzrouter/v1/access/recovery/local", r.URL.Path)
 		require.Empty(t, r.Header.Get("Origin"))
 		require.Empty(t, r.Header.Get("Authorization"))
-		var input struct{ Proof string }
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
-		file, err := localproof.Read(r.Context(), dir)
-		require.NoError(t, err)
-		require.Equal(t, file.Proof, input.Proof)
+		file := requireLocalProofRequest(t, r, dir)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": localRecoveryGrant{URL: file.ConsoleURL, Token: "synthetic-once-only-code", ExpiresAt: utils.NowUTC().Add(time.Minute)}})
 	}))
 	t.Cleanup(server.Close)
@@ -56,11 +68,7 @@ func TestOwnerRecoveryCommandUsesSelectedInstallation(t *testing.T) {
 		require.Equal(t, http.MethodPost, r.Method)
 		require.Equal(t, "/zzrouter/v1/access/recovery/local", r.URL.Path)
 		require.Empty(t, r.Header.Get("Authorization"))
-		var input struct{ Proof string }
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&input))
-		file, err := localproof.Read(r.Context(), dir)
-		require.NoError(t, err)
-		require.Equal(t, file.Proof, input.Proof)
+		file := requireLocalProofRequest(t, r, dir)
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": localRecoveryGrant{URL: file.ConsoleURL, Token: "synthetic-recovery-code", ExpiresAt: utils.NowUTC().Add(time.Minute)}})
 	}))
 	t.Cleanup(server.Close)
@@ -77,6 +85,53 @@ func TestOwnerRecoveryCommandUsesSelectedInstallation(t *testing.T) {
 	file, err := localproof.Read(t.Context(), dir)
 	require.NoError(t, err)
 	require.NotContains(t, output.String(), file.Proof)
+}
+
+// The session talks only to the installation's literal local endpoint: no
+// environment proxy is consulted, even for a non-loopback address of this host.
+func TestLocalSessionReachesOnlyTheInstalledNode(t *testing.T) {
+	var proxied atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+		t.Setenv(name, proxy.URL)
+	}
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	host := "127.0.0.1"
+	if addresses, err := net.InterfaceAddrs(); err == nil {
+		for _, address := range addresses {
+			if network, ok := address.(*net.IPNet); ok && network.IP.To4() != nil && !network.IP.IsLoopback() && !network.IP.IsLinkLocalUnicast() {
+				host = network.IP.String()
+				break
+			}
+		}
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	require.NoError(t, err)
+	var dir string
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireLocalProofRequest(t, r, dir)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	dir = recoveryFixture(t, server.URL)
+	session, err := openLocal(t.Context(), dir)
+	require.NoError(t, err)
+	defer session.client.CloseIdleConnections()
+	require.Nil(t, session.client.Transport.(*http.Transport).Proxy)
+	req, err := session.request(t.Context(), http.MethodPost, "/zzrouter/v1/access/recovery/local", []byte("{}"))
+	require.NoError(t, err)
+	response, err := session.client.Do(req)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusNoContent, response.StatusCode, "reached %s directly", host)
+	require.Zero(t, proxied.Load(), "no proxy received the local proof")
 }
 
 func TestLocalOwnerRecoveryNeverFollowsCrossOriginRedirect(t *testing.T) {

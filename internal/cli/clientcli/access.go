@@ -44,36 +44,18 @@ type localRecoveryGrant struct {
 }
 
 func recoverLocalOwner(ctx context.Context, dir string) (*localRecoveryGrant, error) {
-	proof, err := localproof.Read(ctx, dir)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	session, err := openLocal(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := url.Parse(proof.Endpoint)
-	if err != nil || !localproof.Address(endpoint.Hostname()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Port() == "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" {
-		return nil, fmt.Errorf("recovery endpoint must be the installed node's literal local address")
-	}
-	transport := &http.Transport{} // No environment proxy may receive the local proof.
-	if endpoint.Scheme == "https" {
-		transport.TLSClientConfig, err = security.TLSClientConfig(proof.TLSCert)
-		if err != nil {
-			return nil, err
-		}
-		transport.TLSClientConfig.ServerName = proof.TLSName
-	}
-	defer transport.CloseIdleConnections()
-	client := httpclient.SameOrigin(&http.Client{Transport: transport, Timeout: 15 * time.Second})
-	body, err := json.Marshal(struct {
-		Proof string `json:"proof"`
-	}{proof.Proof})
+	defer session.client.CloseIdleConnections()
+	req, err := session.request(ctx, http.MethodPost, "/zzrouter/v1/access/recovery/local", []byte("{}"))
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proof.Endpoint+"/zzrouter/v1/access/recovery/local", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(req)
+	response, err := session.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contact the running local installation: %w", err)
 	}
@@ -87,8 +69,50 @@ func recoverLocalOwner(ctx context.Context, dir string) (*localRecoveryGrant, er
 	if err := json.NewDecoder(io.LimitReader(response.Body, 8192)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("could not read the recovery response")
 	}
-	if result.Data.Token == "" || len(result.Data.Token) > 256 || result.Data.URL != proof.ConsoleURL || result.Data.ExpiresAt.IsZero() {
+	if result.Data.Token == "" || len(result.Data.Token) > 256 || result.Data.URL != session.file.ConsoleURL || result.Data.ExpiresAt.IsZero() {
 		return nil, fmt.Errorf("local recovery returned an invalid grant")
 	}
 	return &result.Data, nil
+}
+
+// localSession reaches the selected installation's running node as an operator on its host.
+// Its client has no total deadline, so a long download can finish: every caller bounds
+// its own request with a context deadline, as recoverLocalOwner does.
+type localSession struct {
+	file   *localproof.File
+	client *http.Client // The only client that may send the proof: no proxy, no other origin.
+}
+
+// openLocal reads the installation's local proof and accepts only its node's literal local endpoint.
+func openLocal(ctx context.Context, dir string) (*localSession, error) {
+	file, err := localproof.Read(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := url.Parse(file.Endpoint)
+	if err != nil || !localproof.Address(endpoint.Hostname()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" || endpoint.Port() == "" || endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+		return nil, fmt.Errorf("the installation endpoint must be the installed node's literal local address")
+	}
+	transport := &http.Transport{} // No environment proxy may receive the local proof.
+	if endpoint.Scheme == "https" {
+		transport.TLSClientConfig, err = security.TLSClientConfig(file.TLSCert)
+		if err != nil {
+			return nil, err
+		}
+		transport.TLSClientConfig.ServerName = file.TLSName
+	}
+	return &localSession{file: file, client: httpclient.SameOrigin(&http.Client{Transport: transport})}, nil
+}
+
+// request builds a request to the installation's node that carries the local proof; send it with s.client.
+func (s *localSession) request(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, s.file.Endpoint+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(localproof.Header, s.file.Proof)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
 }

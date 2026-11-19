@@ -116,6 +116,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		listenerReady:       make(chan struct{}),
 		servingErrors:       make(chan error, 1),
 		idempotency:         newIdempotencyStore(),
+		localRoutes:         map[string]struct{}{},
 	}
 	constructed := false
 	defer func() {
@@ -447,6 +448,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			}
 		})
 
+		s.configDir = configDir
 		// The access store lives as long as a node that boots as a coordinator,
 		// with people beside its browser issuer. Any other role opens no store
 		// and authenticates static keys only; a role change ends the process.
@@ -462,8 +464,10 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 				return nil, err
 			}
 			s.accessStore = store
+			if err := s.initLocalProof(context.Background(), issuer); err != nil {
+				return nil, err
+			}
 		}
-		s.configDir = configDir
 
 		// === AccessControl: unified auth + quota enforcement ===
 		staticKeySet := buildStaticKeySet(cfg)

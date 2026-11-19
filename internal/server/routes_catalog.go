@@ -19,7 +19,7 @@ type RouteSpec struct {
 	Method    string `json:"method"`
 	Path      string `json:"path"`
 	Surface   string `json:"surface"` // health|infra|openai|ollama|admin|internal|nativewire|mcp|other
-	Auth      string `json:"auth"`    // none|optional|user|admin|cluster
+	Auth      string `json:"auth"`    // none|optional|user|admin|cluster|local
 	Streaming string `json:"streaming,omitempty"`
 	Async     bool   `json:"async,omitempty"`
 	// Retired marks a route that is mounted but only ever answers 410
@@ -42,7 +42,7 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 	routes := s.engine.Routes()
 	out := make([]RouteSpec, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, catalogRoute(r))
+		out = append(out, s.catalogRoute(r))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Path == out[j].Path {
@@ -53,8 +53,8 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"routes": out, "count": len(out)})
 }
 
-func catalogRoute(r gin.RouteInfo) RouteSpec {
-	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: authTierForRoute(r.Method, r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
+func (s *Server) catalogRoute(r gin.RouteInfo) RouteSpec {
+	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: s.authTier(r.Method, r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
 }
 
 // eligibleAPIRoute uses the same mounted-route facts as the public catalog
@@ -76,7 +76,7 @@ func (s *Server) eligibleAPIRoute(method, path string) (string, error) {
 	if best == "" {
 		return "", fmt.Errorf("route %s %s is not mounted; use zz_api_search", method, path)
 	}
-	route := catalogRoute(selected)
+	route := s.catalogRoute(selected)
 	if route.Auth != "admin" || route.Surface != "admin" || route.Retired || route.Streaming != "" {
 		return "", fmt.Errorf("route %s %s is unavailable: auth=%s retired=%t streaming=%s", method, path, route.Auth, route.Retired, route.Streaming)
 	}
@@ -150,6 +150,17 @@ func surfaceForPath(p string) string {
 	return "other"
 }
 
+// authLocal is the tier of routes behind localOperator, which zz_api and discovery never offer.
+const authLocal = "local"
+
+// authTier reads the routes localRoute recorded, so a gated route never reports another tier.
+func (s *Server) authTier(method, p string) string {
+	if _, local := s.localRoutes[method+" "+p]; local {
+		return authLocal
+	}
+	return authTierForRoute(method, p)
+}
+
 func authTierForRoute(method, p string) string {
 	if method == http.MethodPost {
 		switch p {
@@ -165,7 +176,7 @@ func authTierForRoute(method, p string) string {
 	case p == apipath.Session || p == apipath.Session+"/password",
 		p == "/zzrouter/v1/access/setup", p == "/zzrouter/v1/access/console-grants/exchange",
 		p == "/zzrouter/v1/access/invitations/inspect", p == "/zzrouter/v1/access/invitations/accept",
-		p == "/zzrouter/v1/access/recovery", p == "/zzrouter/v1/access/recovery/local":
+		p == "/zzrouter/v1/access/recovery":
 		// Bootstrap and login have no prior identity; mutations still require CSRF.
 		return "optional"
 	case p == apipath.Me || strings.HasPrefix(p, apipath.Me+"/"),

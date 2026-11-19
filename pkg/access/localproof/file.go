@@ -20,6 +20,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
+// Header carries the proof; a URL or body would leak it to logs and change a replayed request's hash.
+const Header = "X-Zzrouter-Local-Proof"
+
 // File is the private daemon-created proof consumed by a local operator.
 // It must never be returned by an HTTP API or printed by a client.
 type File struct {

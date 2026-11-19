@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,9 +28,9 @@ import (
 
 const personPassword = "correct test horse battery staple"
 
-func TestLocalRecoveryHostSupportsLoopbackBindNames(t *testing.T) {
+func TestLocalProofHostSupportsLoopbackBindNames(t *testing.T) {
 	for input, expected := range map[string]string{"localhost": "127.0.0.1", "127.0.0.1": "127.0.0.1", "0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1", "::1": "::1"} {
-		host, err := localRecoveryHost(t.Context(), input)
+		host, err := localProofHost(t.Context(), input)
 		require.NoError(t, err)
 		require.Equal(t, expected, host)
 	}
@@ -199,12 +199,11 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, status)
 	proof, err := localproof.Read(t.Context(), s.configDir)
 	require.NoError(t, err)
-	postProof := func(value, origin string) (int, []byte) {
-		data, err := json.Marshal(map[string]string{"proof": value})
-		require.NoError(t, err)
-		req, err := http.NewRequestWithContext(t.Context(), "POST", endpoint.URL+"/zzrouter/v1/access/recovery/local", bytes.NewReader(data))
+	postProof := func(value, origin, input string) (int, []byte) {
+		req, err := http.NewRequestWithContext(t.Context(), "POST", endpoint.URL+"/zzrouter/v1/access/recovery/local", strings.NewReader(input))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(localproof.Header, value)
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
@@ -215,13 +214,18 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 		require.NoError(t, err)
 		return response.StatusCode, body
 	}
-	status, _ = postProof(proof.Proof, endpoint.URL)
+	status, _ = postProof(proof.Proof, endpoint.URL, "{}")
 	require.Equal(t, http.StatusForbidden, status, "a browser cannot invoke host recovery")
-	status, _ = postProof("wrong-proof", "")
+	status, _ = postProof("wrong-proof", "", "{}")
 	require.Equal(t, http.StatusForbidden, status)
-	status, body := postProof(proof.Proof, "")
+	status, _ = postProof(proof.Proof, "", `{"proof":"`+proof.Proof+`"}`)
+	require.Equal(t, http.StatusBadRequest, status, "the proof no longer travels in the body")
+	status, body := postProof(proof.Proof, "", "{}")
 	require.Equal(t, http.StatusOK, status, string(body))
 	require.NotContains(t, string(body), proof.Proof)
+	events, _, err := s.accessStore.AuditPage(t.Context(), "", 1)
+	require.NoError(t, err)
+	require.Equal(t, audit.ActorLocalOperator, events[0].Actor, "the gate's principal is the audit actor")
 	grant := peopleResponse[people.IssuedGrant](t, body)
 	recovery := anonymousPeopleBrowser(t, endpoint)
 	bound := peopleCall[people.IssuedGrant](t, recovery, "POST", "/access/console-grants/exchange", map[string]string{"token": grant.Token})

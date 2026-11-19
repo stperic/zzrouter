@@ -39,6 +39,7 @@ func TestIntegrationBrowserRouteCatalogAuthority(t *testing.T) {
 	want := map[string]string{
 		"GET " + apipath.Session: "optional", "POST " + apipath.Session: "optional", "DELETE " + apipath.Session: "optional",
 		"GET " + apipath.Me: "user", "GET " + apipath.MeConnections: "user", "DELETE " + apipath.MeConnections + "/:id": "user",
+		"POST /zzrouter/v1/access/recovery/local": "local",
 	}
 	for _, route := range catalog.Routes {
 		key := route.Method + " " + route.Path

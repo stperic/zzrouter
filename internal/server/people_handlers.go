@@ -13,7 +13,6 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/people"
-	"github.com/stperic/zzrouter/pkg/audit"
 )
 
 func (s *Server) registerPeopleRoutes() {
@@ -31,8 +30,7 @@ func (s *Server) registerPeopleRoutes() {
 	public.POST("/invitations/inspect", s.handleInvitationInspect)
 	public.POST("/invitations/accept", s.handleInvitationAccept)
 	public.POST("/recovery", s.handlePeopleRecovery)
-	// Local recovery has its own filesystem proof and rejects all browser input.
-	group.POST("/access/recovery/local", s.handleLocalOwnerRecovery)
+	s.localRoute(http.MethodPost, "/access/recovery/local", false, s.handleLocalOwnerRecovery)
 	self := group.Group("/access", func(c *gin.Context) {
 		if s.access.authenticateMultiRole(c, []UserRole{RoleAdmin, RoleUser}, true) {
 			c.Next()
@@ -258,18 +256,8 @@ func (s *Server) handlePeopleRecovery(c *gin.Context) {
 }
 
 func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
-	if len(c.Request.Header.Values("Origin")) != 0 || browserCredentialPresented(c.Request) || !localRecoveryRequest(c.Request.RemoteAddr) {
-		Forbidden(c, "Use the local recovery command on the installed host")
-		return
-	}
-	var input struct {
-		Proof string `json:"proof"`
-	}
+	var input struct{}
 	if !readPeopleInput(c, &input) {
-		return
-	}
-	if !s.ownerRecovery.Verify(input.Proof) {
-		Forbidden(c, "Local installation proof is invalid")
 		return
 	}
 	owner := s.accessSnapshot().Owner()
@@ -277,7 +265,7 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 		Conflict(c, "Create the owner account through console setup first")
 		return
 	}
-	grant, err := s.accessStore.People().Issue(audit.WithIdentity(c.Request.Context(), audit.ActorLocalOperator, c.GetString("request_id")), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.ownerRecovery.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
+	grant, err := s.accessStore.People().Issue(auditContext(c), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.localProof.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
 	if err != nil {
 		writePeopleError(c, err)
 		return

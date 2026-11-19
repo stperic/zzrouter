@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -47,6 +48,7 @@ func callerRequestHeaders() http.Header {
 	h.Set("Accept-Encoding", "gzip")
 	h.Set("Content-Encoding", "identity")
 	h.Set("anthropic-version", "2023-06-01")
+	h.Set(localproof.Header, "local-proof-secret")
 	return h
 }
 
@@ -92,6 +94,7 @@ func TestUpstreamHeaders(t *testing.T) {
 			for _, name := range []string{"Connection", "X-Per-Hop", "Proxy-Authorization", "Accept-Encoding"} {
 				assert.Empty(t, got.Get(name), "%s describes the caller's connection", name)
 			}
+			assert.Empty(t, got.Values(localproof.Header), "the local proof stays on this node")
 			assert.Equal(t, "identity", got.Get("Content-Encoding"), "the body travels as it arrived")
 			assert.Equal(t, "2023-06-01", got.Get("anthropic-version"))
 			assert.Equal(t, "X-API-Key-secret", src.Get("X-API-Key"), "the caller's request is not modified")

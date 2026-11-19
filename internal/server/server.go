@@ -95,11 +95,12 @@ type Server struct {
 
 	// === Access control ===
 
-	access        *AccessControl // Unified auth + quota enforcement
-	spendEvents   *SpendEventBus // Quota breach event bus → /spend/events SSE
-	accessStore   access.Store   // Keys, teams, people and the audit history; nil unless the node booted as a coordinator
-	configDir     string         // Installation configuration directory: owner proof, OAuth state, recovery inventory
-	ownerRecovery *localproof.Proof
+	access      *AccessControl      // Unified auth + quota enforcement
+	spendEvents *SpendEventBus      // Quota breach event bus → /spend/events SSE
+	accessStore access.Store        // Keys, teams, people and the audit history; nil unless the node booted as a coordinator
+	configDir   string              // Installation configuration directory: local proof, OAuth state, recovery inventory
+	localProof  *localproof.Proof   // This process's local proof; nil unless the node booted as a coordinator
+	localRoutes map[string]struct{} // "METHOD /path" of every route localRoute mounted behind the local proof
 
 	// === Infrastructure ===
 
