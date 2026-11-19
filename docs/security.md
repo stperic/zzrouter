@@ -298,7 +298,8 @@ stages into a new directory, and never activates state across multiple filesyste
 It prepares the staged access database image so that sessions, delegated tokens
 and app-key references issued before the restore stop resolving. `recovery
 activate` publishes a staged database bundle only into a stopped installation
-whose store marker, or database, names the same store, or into a fresh one, and
+whose store marker, or database, names the same store, or into a fresh one (a
+handoff has its own rules, below), and
 publishes exactly the bytes it checked, so an image swapped after its checks
 (for example for an unprepared copy, under which old sessions would resolve) is
 refused. A staged generation is refused while the live store is at it, or while
@@ -332,3 +333,20 @@ fails without it. Workers pair again with the new coordinator, and browsers and
 delegated clients sign in again. `recovery check` refuses a handoff carrying any
 entry beyond its fixed list, a source, `separate` list or entry name that is not
 short plain text, or no provider definition; a refusal quotes the entry name.
+
+`recovery activate` publishes a staged handoff (experimental until rehearsed on
+two real machines) only into a stopped installation that starts as a coordinator
+and is not paired with a cluster, and only with `--source-stopped`: zzRouter never
+probes the source, because a health check is not an identity check, so fencing
+and stopping it is the operator's. Without `--replace` it refuses to replace an
+access store with another store ID, or the installation's own provider
+connections or cloud and registry definitions. It writes only the paths a
+handoff carries, the directories they need, and the exported key at the default
+key location; an explicit `security.credentials.key_file` is read-only and must
+already be the handoff's key. It never writes `node.yaml`, the dotenv files, the
+CA, the identity or OAuth state, and never rewrites a node name in routes or
+provider definitions: it reports them for review through the API. Each file is
+published as the bytes checked against the manifest, and everything it writes
+gets the owner and group of the configuration directory. What it replaces,
+including the installation's own access records, connections and key, stays in
+`rollback/<generation>/` until the operator deletes it.

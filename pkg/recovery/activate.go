@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -47,6 +48,18 @@ const (
 	AlreadyActivated Reason = "already_activated"
 	// NoActivation means a rollback found no incomplete activation.
 	NoActivation Reason = "no_activation"
+	// SourceNotStopped means a handoff came without the operator's word that
+	// its source coordinator is fenced and stopped, which nothing here probes.
+	SourceNotStopped Reason = "source_not_stopped"
+	// NotCoordinator means the installation would not start as a coordinator,
+	// or is still paired with a cluster.
+	NotCoordinator Reason = "not_coordinator"
+	// ReplaceRequired means a handoff would replace the installation's own
+	// access store, provider connections or cloud or registry definitions.
+	ReplaceRequired Reason = "replace_required"
+	// KeyMismatch means the installation's explicit credential key is not the
+	// one the handoff's provider connections need.
+	KeyMismatch Reason = "key_mismatch"
 )
 
 // Refusal is an activation refused before it changed anything, or a start
@@ -60,14 +73,17 @@ type Refusal struct {
 func (r *Refusal) Error() string { return string(r.Reason) + ": " + r.Detail + ". " + r.NextAction }
 
 // ActivateOptions selects what Activate does: Rollback undoes an incomplete
-// activation instead; DryRun runs every check and changes nothing.
-type ActivateOptions struct{ Rollback, DryRun bool }
+// activation instead; DryRun runs every check and changes nothing. A handoff
+// needs SourceStopped, and Replace to replace what the installation holds of
+// its own; a rerun that finishes one needs neither.
+type ActivateOptions struct{ Rollback, DryRun, SourceStopped, Replace bool }
 
 // Activation describes an activation: the staged image it publishes, its
 // rollback directory's ID, which is the image's generation, and absolute path,
 // the targets whose previous content that directory keeps, and those it
 // replaced without keeping it, because the directory was deleted while the
-// activation was incomplete.
+// activation was incomplete. A handoff's References are the node names its
+// configuration holds that the operator reviews once the node runs.
 type Activation struct {
 	Profile     Profile
 	Store       sqlstore.Image
@@ -75,10 +91,12 @@ type Activation struct {
 	RollbackDir string
 	Replaced    []string
 	Lost        []string
+	References  []Reference
 }
 
 // activation is an activation's record: its marker while it runs, and
-// rollbackFile in its rollback directory.
+// rollbackFile in its rollback directory. A handoff's Targets are recorded
+// before anything changes, so a rollback knows what each held.
 type activation struct {
 	Version    int       `json:"version"`
 	Profile    Profile   `json:"profile"`
@@ -86,22 +104,32 @@ type activation struct {
 	Generation string    `json:"generation"`
 	Created    time.Time `json:"created"`
 	Replaced   []string  `json:"replaced"`
+	Targets    []target  `json:"targets,omitempty"`
 }
 
-// Activate publishes the staged database bundle in staging as the access store
-// of the stopped installation in dir, holding its installation lock. Its checks
-// run first, in order and read-only: a staging directory outside the
-// installation, no INCOMPLETE mark, a staging manifest of a staged database
-// bundle, exactly its entries, the image's digest, check and generation as
-// staged, the installation's store identity (sqlstore.AdmitStoreID), and a
-// generation that is neither live nor kept in a rollback directory. A refusal
-// changes nothing. It then writes
-// the activation marker and the rollback directory, replaces the store
-// (sqlstore.Replace) with the bytes it checked, gives what it wrote the
-// installation's owner, and removes the marker and the staging directory. A
-// crash in between leaves the marker, which stops the node
-// (PendingActivation): a rerun completes the activation, and Rollback instead
-// restores what the rollback directory keeps. DryRun stops after the checks.
+// plan is what an activation publishes: the staged image, by its SHA-256, and
+// a handoff's configuration targets in the order it publishes them.
+type plan struct {
+	sum     string
+	targets []target
+}
+
+// Activate publishes the staged database or handoff bundle in staging into the
+// stopped installation in dir, holding its installation lock. Its checks run
+// first, in order and read-only: a staging directory outside the installation,
+// no INCOMPLETE mark, a staging manifest of a staged database or handoff
+// bundle (a handoff with SourceStopped), exactly its entries with their
+// digests, the image's check and generation as staged, the installation's
+// store identity (sqlstore.AdmitStoreID), a handoff's own checks
+// (checkHandoff), and a generation that is neither live nor kept in a rollback
+// directory. A refusal changes nothing. It then writes the activation marker
+// and the rollback directory, replaces the store (sqlstore.Replace) with the
+// bytes it checked, then a handoff's configuration targets (replaceFiles),
+// gives what it wrote the installation's owner, and removes the marker and the
+// staging directory. A crash in between leaves the marker, which stops the
+// node (PendingActivation): a rerun completes the activation, and Rollback
+// instead restores what the rollback directory keeps. DryRun stops after the
+// checks.
 func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Activation, error) {
 	lock, err := lockInstallation(dir)
 	switch {
@@ -129,25 +157,27 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 	if o.Rollback {
 		return rollBack(ctx, dir, pending, o.DryRun)
 	}
-	a, sum, err := checkStaging(ctx, dir, staging, pending)
+	a, p, err := checkStaging(ctx, dir, staging, pending, o)
 	if err != nil && pending != nil {
 		return a, incomplete(dir, pending, err)
 	}
 	if err != nil || o.DryRun {
 		return a, err
 	}
-	record := activation{Version: 1, Profile: a.Profile, Staging: staging, Generation: a.RollbackID, Created: utils.NowUTC(), Replaced: a.Replaced}
+	record := activation{Version: 1, Profile: a.Profile, Staging: staging, Generation: a.RollbackID, Created: utils.NowUTC(), Replaced: a.Replaced, Targets: p.targets}
 	if pending != nil {
 		record = *pending
 	} else if err := writeRecord(ctx, filepath.Join(dir, activationFile), record, "activation marker"); err != nil {
 		return a, err
 	}
-	lost, err := replaceStore(ctx, dir, staging, sum, record)
+	lost, err := replaceStore(ctx, dir, staging, p, record)
 	if err != nil {
 		return a, incomplete(dir, &record, err)
 	}
-	if lost {
-		a.Replaced, a.Lost = nil, a.Replaced
+	for _, name := range lost {
+		if i := slices.Index(a.Replaced, name); i >= 0 {
+			a.Replaced, a.Lost = slices.Delete(a.Replaced, i, i+1), append(a.Lost, name)
+		}
 	}
 	if err := os.RemoveAll(staging); err != nil {
 		return a, fmt.Errorf("the activation finished, but its staging directory, which holds credential hashes, could not be removed; delete it: %w", err)
@@ -156,47 +186,56 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 }
 
 // replaceStore runs the steps between the activation marker and its removal:
-// the store gets the bytes checked at sum, and everything written gets the
-// installation's owner before the marker goes. It reports whether what the
-// store replaced is lost (sqlstore.Replacement).
-func replaceStore(ctx context.Context, dir, staging, sum string, record activation) (bool, error) {
+// the store gets the bytes checked at p.sum, then each of a handoff's targets
+// its staged file, and everything written gets the installation's owner
+// before the marker goes. It returns the replaced targets whose previous
+// content is lost (sqlstore.Replacement, replaceFiles). A handoff admits
+// another store ID: checkHandoff decided whether it may replace this one.
+func replaceStore(ctx context.Context, dir, staging string, p plan, record activation) ([]string, error) {
 	marker := filepath.Join(dir, activationFile)
 	if err := sqlitedb.GiveOwner(ctx, dir, marker); err != nil {
-		return false, err
+		return nil, err
 	}
 	rollback := filepath.Join(dir, rollbackDir, record.Generation)
 	if err := sqlitedb.MakeDir(ctx, rollback); err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := writeRecord(ctx, filepath.Join(rollback, rollbackFile), record, "rollback record"); err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback), rollback, filepath.Join(rollback, rollbackFile)); err != nil {
-		return false, err
+		return nil, err
 	}
-	rep, err := sqlstore.Replace(ctx, dir, stagedImage(staging), sum, filepath.Join(rollback, "store"), false)
+	rep, err := sqlstore.Replace(ctx, dir, stagedImage(staging), p.sum, filepath.Join(rollback, "store"), record.Profile == ProfileHandoff)
 	if err == nil && rep.Generation != record.Generation {
 		err = fmt.Errorf("the published image is generation %s, not the staged %s", rep.Generation, record.Generation)
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return rep.Lost, removeMarker(ctx, dir)
+	lost, err := replaceFiles(ctx, dir, staging, rollback, p.targets)
+	if err != nil {
+		return nil, err
+	}
+	if rep.Lost {
+		lost = append(lost, "store")
+	}
+	return lost, removeMarker(ctx, dir)
 }
 
 // checkStaging runs Activate's checks, in order and read-only, and returns the
-// activation and the staged image's SHA-256.
-func checkStaging(ctx context.Context, dir, staging string, pending *activation) (Activation, string, error) {
-	restage := "Stage the database bundle again with zzrouter-node recovery restore into a new directory, and activate that one."
-	invalid := func(detail, next string) (Activation, string, error) {
-		return Activation{}, "", &Refusal{StagingInvalid, detail, next}
+// activation and what it publishes.
+func checkStaging(ctx context.Context, dir, staging string, pending *activation, o ActivateOptions) (Activation, plan, error) {
+	restage := "Stage the bundle again with zzrouter-node recovery restore into a new directory, and activate that one."
+	invalid := func(detail, next string) (Activation, plan, error) {
+		return Activation{}, plan{}, &Refusal{StagingInvalid, detail, next}
 	}
 	if err := CheckStagingDir(dir, staging); err != nil {
-		return Activation{}, "", err
+		return Activation{}, plan{}, err
 	}
 	if _, err := os.Lstat(filepath.Join(staging, incompleteName)); !errors.Is(err, fs.ErrNotExist) {
 		if err != nil {
-			return Activation{}, "", err
+			return Activation{}, plan{}, err
 		}
 		return invalid("the staging directory is marked "+incompleteName, restage)
 	}
@@ -210,13 +249,87 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 		return invalid("no staging manifest: "+err.Error(), restage)
 	case m.Profile == ProfileInstallation:
 		return invalid("it holds an installation bundle, which activate does not publish", "Stop the service, then restore it by hand as docs/recovery.md describes under Restore an installation bundle by hand.")
-	case m.Profile == ProfileHandoff:
-		return invalid("it holds a handoff bundle, whose activation is not in this release", "Keep the staging directory; docs/recovery.md describes what a handoff needs under Coordinator handoff.")
-	case m.Profile != ProfileDatabase || m.Staged == nil || m.Store == nil:
-		return invalid(fmt.Sprintf("it is not a staged database bundle (profile %q)", m.Profile), restage)
+	case m.Profile != ProfileDatabase && m.Profile != ProfileHandoff || m.Staged == nil || m.Store == nil:
+		return invalid(fmt.Sprintf("it is not a staged database bundle or handoff (profile %q)", m.Profile), restage)
+	case m.Profile == ProfileHandoff && pending == nil && !o.SourceStopped:
+		return Activation{}, plan{}, &Refusal{SourceNotStopped, "a handoff makes this installation the coordinator of another one's access records, and nothing here can tell whether that coordinator still runs",
+			"Stop the source coordinator through its supervisor, disable its restarts and withdraw it from clients and workers, then run this again with --source-stopped."}
 	}
+	sum, err := checkEntries(ctx, staging, m, restage)
+	if err != nil {
+		return Activation{}, plan{}, err
+	}
+	img, err := sqlstore.CheckImage(ctx, stagedImage(staging))
+	if err != nil {
+		return Activation{}, plan{}, archiveImage(err)
+	}
+	if img.Generation != m.Staged.Generation {
+		return invalid("the image's generation is not staged.generation", restage)
+	}
+	installed, err := sqlstore.AdmitStoreID(ctx, dir, img.StoreID, m.Profile == ProfileHandoff)
+	if errors.Is(err, sqlstore.ErrStoreIdentity) {
+		err = &Refusal{ForeignStore, err.Error(), "Activate a backup of this installation's own access store; to replace it with another installation's, move this installation's access directory and store marker aside first."}
+	}
+	if err != nil {
+		return Activation{}, plan{}, err
+	}
+	rollback := filepath.Join(dir, rollbackDir, img.Generation)
+	a := Activation{Profile: m.Profile, Store: img, RollbackID: img.Generation, RollbackDir: rollback}
+	p := plan{sum: sum}
+	if installed.StoreID != "" {
+		a.Replaced = []string{"store"}
+	}
+	if m.Profile == ProfileHandoff {
+		foreign := installed.StoreID != "" && installed.StoreID != img.StoreID
+		if p.targets, a.References, err = checkHandoff(ctx, dir, staging, m, pending, o.Replace, foreign); err != nil {
+			return Activation{}, plan{}, err
+		}
+		for _, t := range p.targets {
+			if t.replaces() {
+				a.Replaced = append(a.Replaced, t.Name)
+			}
+		}
+	}
+	if pending != nil {
+		a.Replaced = pending.Replaced
+		return a, p, nil
+	}
+	again := "Delete the staging directory, which holds credential hashes. To activate this backup again, restore its archive into a new staging directory, which gives it a new generation."
+	if installed.Generation == img.Generation {
+		return a, plan{}, &Refusal{AlreadyActivated, "the access store already is generation " + img.Generation, again}
+	}
+	if _, err := os.Lstat(rollback); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = &Refusal{AlreadyActivated, "generation " + img.Generation + " was activated here before: " + rollback + " exists", again}
+		}
+		return a, plan{}, err
+	}
+	return a, p, nil
+}
+
+// checkEntries refuses, as staging_invalid, a staging directory of m whose
+// entries are not exactly its manifest, the image as staged, every carried
+// file and the protection key restore stages beside them, or one whose SHA-256
+// is not the one m names; it returns the staged image's.
+func checkEntries(ctx context.Context, staging string, m Manifest, restage string) (string, error) {
+	want := map[string]string{imageName: m.Staged.ImageSHA256}
+	for _, file := range m.Files {
+		if file.Name != imageName {
+			want[file.Name] = file.SHA256
+		}
+	}
+	if m.KeySHA256 != "" {
+		want[keyEntry] = m.KeySHA256
+	}
+	expected := []string{"manifest.json"}
+	for name := range want {
+		for ; name != "."; name = path.Dir(name) {
+			expected = append(expected, name)
+		}
+	}
+	slices.Sort(expected)
 	var entries []string
-	err = filepath.WalkDir(staging, func(path string, _ fs.DirEntry, err error) error {
+	err := filepath.WalkDir(staging, func(path string, _ fs.DirEntry, err error) error {
 		if err == nil && path != staging {
 			var rel string
 			rel, err = filepath.Rel(staging, path)
@@ -225,52 +338,28 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 		return err
 	})
 	if err != nil {
-		return Activation{}, "", err
+		return "", err
 	}
-	if !slices.Equal(entries, []string{"manifest.json", path.Dir(imageName), imageName}) {
-		return invalid("it holds entries other than manifest.json and "+imageName, restage)
+	slices.Sort(entries)
+	switch {
+	case slices.Equal(entries, slices.Compact(expected)):
+	case want[keyEntry] != "" && !slices.Contains(entries, keyEntry):
+		return "", &Refusal{StagingInvalid, "it does not hold " + keyEntry + ", the protection key the provider connections need", "Stage the handoff again with zzrouter-node recovery restore --key-file and the key exported with it, into a new directory, and activate that one."}
+	default:
+		return "", &Refusal{StagingInvalid, "it holds entries other than the ones its manifest names", restage}
 	}
-	_, sum, err := hashFile(ctx, staging, filepath.FromSlash(imageName))
-	if err != nil {
-		return Activation{}, "", err
-	}
-	if sum != m.Staged.ImageSHA256 {
-		return invalid("the image's SHA-256 is not staged.image_sha256", restage)
-	}
-	img, err := sqlstore.CheckImage(ctx, stagedImage(staging))
-	if err != nil {
-		return Activation{}, "", archiveImage(err)
-	}
-	if img.Generation != m.Staged.Generation {
-		return invalid("the image's generation is not staged.generation", restage)
-	}
-	installed, err := sqlstore.AdmitStoreID(ctx, dir, img.StoreID, false)
-	if errors.Is(err, sqlstore.ErrStoreIdentity) {
-		err = &Refusal{ForeignStore, err.Error(), "Activate a backup of this installation's own access store; to replace it with another installation's, move this installation's access directory and store marker aside first."}
-	}
-	if err != nil {
-		return Activation{}, "", err
-	}
-	rollback := filepath.Join(dir, rollbackDir, img.Generation)
-	a := Activation{Profile: m.Profile, Store: img, RollbackID: img.Generation, RollbackDir: rollback}
-	if installed.StoreID != "" {
-		a.Replaced = []string{"store"}
-	}
-	if pending != nil {
-		a.Replaced = pending.Replaced
-		return a, sum, nil
-	}
-	again := "Delete the staging directory, which holds credential hashes. To activate this backup again, restore its archive into a new staging directory, which gives it a new generation."
-	if installed.Generation == img.Generation {
-		return a, "", &Refusal{AlreadyActivated, "the access store already is generation " + img.Generation, again}
-	}
-	if _, err := os.Lstat(rollback); !errors.Is(err, fs.ErrNotExist) {
-		if err == nil {
-			err = &Refusal{AlreadyActivated, "generation " + img.Generation + " was activated here before: " + rollback + " exists", again}
+	for _, name := range slices.Sorted(maps.Keys(want)) {
+		_, sum, err := hashFile(ctx, staging, filepath.FromSlash(name))
+		switch {
+		case err != nil:
+			return "", err
+		case sum != want[name] && name == imageName:
+			return "", &Refusal{StagingInvalid, "the image's SHA-256 is not staged.image_sha256", restage}
+		case sum != want[name]:
+			return "", &Refusal{StagingInvalid, "the SHA-256 of " + name + " is not the one its manifest names", restage}
 		}
-		return a, "", err
 	}
-	return a, sum, nil
+	return want[imageName], nil
 }
 
 // CheckStagingDir refuses, as staging_invalid, a staging directory inside, equal
@@ -318,10 +407,20 @@ func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool)
 	if dryRun {
 		return a, nil
 	}
-	err := sqlstore.Revert(ctx, dir, filepath.Join(rollback, "store"), pending.Generation)
-	if errors.Is(err, sqlstore.ErrKeptLost) {
+	// The reverse of the activation's order: its configuration targets, then
+	// the store.
+	err := revertFiles(ctx, dir, rollback, pending.Targets)
+	if err == nil {
+		err = sqlstore.Revert(ctx, dir, filepath.Join(rollback, "store"), pending.Generation)
+	}
+	var file keptLost
+	if errors.Is(err, sqlstore.ErrKeptLost) || errors.As(err, &file) {
 		finish := "zzrouter-node recovery activate " + pending.Staging + " --dir " + dir
-		return a, &Refusal{ActivationIncomplete, "the activation of " + pending.Staging + " cannot be rolled back: " + rollback + " no longer holds what it replaced, and the access store already is the staged image",
+		replaced := "the access store already is the staged image"
+		if file != "" {
+			replaced = string(file) + " was already replaced"
+		}
+		return a, &Refusal{ActivationIncomplete, "the activation of " + pending.Staging + " cannot be rolled back: " + rollback + " no longer holds what it replaced, and " + replaced,
 			"Stop the service, then run " + finish + " to finish it; without that staging directory, delete " + filepath.Join(dir, activationFile) + " to finish it by hand."}
 	}
 	if err == nil {

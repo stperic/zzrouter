@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
@@ -306,6 +307,9 @@ Examples:
 
 // runNodeConfigReset resets node configuration to defaults
 func runNodeConfigReset(yes bool) error {
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
 	if !yes {
 		fmt.Print("Reset node.yaml and provider config to defaults? [y/N]: ")
 

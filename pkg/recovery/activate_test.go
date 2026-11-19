@@ -266,8 +266,8 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 			require.NoError(t, os.Remove(filepath.Join(staging, "manifest.json")))
 		}, reason: StagingInvalid, detail: "no staging manifest"},
 		"another profile": {prepare: editManifest(func(m *Manifest) { m.Profile = "future" }), reason: StagingInvalid, detail: `profile "future"`},
-		"a handoff bundle": {prepare: editManifest(func(m *Manifest) { m.Profile = ProfileHandoff }), reason: StagingInvalid, detail: "handoff bundle, whose activation is not in this release",
-			next: "Coordinator handoff"},
+		"a handoff bundle": {prepare: editManifest(func(m *Manifest) { m.Profile = ProfileHandoff }), reason: SourceNotStopped, detail: "still runs",
+			next: "--source-stopped"},
 		"an installation bundle": {prepare: editManifest(func(m *Manifest) { m.Profile = ProfileInstallation }), reason: StagingInvalid, detail: "installation bundle",
 			next: "Restore an installation bundle by hand"},
 		"an unstaged manifest":  {prepare: editManifest(func(m *Manifest) { m.Staged = nil }), reason: StagingInvalid, detail: "not a staged database bundle"},
@@ -392,7 +392,7 @@ func TestActivateChild(t *testing.T) {
 			os.Exit(1)
 		}
 	})
-	_, err = Activate(ctx, dir, os.Getenv(childStaging), ActivateOptions{Rollback: os.Getenv(childRollback) != ""})
+	_, err = Activate(ctx, dir, os.Getenv(childStaging), ActivateOptions{Rollback: os.Getenv(childRollback) != "", SourceStopped: true, Replace: true})
 	require.NoError(t, err)
 }
 
@@ -437,7 +437,7 @@ func stepsOf(t *testing.T, dir, staging string, rollback bool) []string {
 	t.Helper()
 	var steps []string
 	ctx := sqlitedb.WithStep(t.Context(), func(step string) { steps = append(steps, step) })
-	_, err := Activate(ctx, copyTree(t, dir), staging, ActivateOptions{Rollback: rollback})
+	_, err := Activate(ctx, copyTree(t, dir), staging, ActivateOptions{Rollback: rollback, SourceStopped: true, Replace: true})
 	require.NoError(t, err)
 	return steps
 }

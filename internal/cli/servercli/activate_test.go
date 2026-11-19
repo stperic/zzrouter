@@ -17,6 +17,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/update"
@@ -260,4 +261,75 @@ func TestUpdateRunRefusesDuringAnIncompleteActivation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, update.StateFailed, status.State)
 	require.Contains(t, status.Error, "activation_incomplete")
+}
+
+// TestRecoveryActivateHandoffCommand: on a destination that holds its own
+// store, activation of a staged handoff refuses without --source-stopped, then
+// without --replace; a dry run names what it would replace and the node names
+// to review; an interrupted activation is rolled back with its own words; and
+// the activation names what it replaced, the node names and the next steps.
+func TestRecoveryActivateHandoffCommand(t *testing.T) {
+	source, _ := recoveryInstallation(t)
+	groups := modelgroup.NewGroupStore()
+	require.NoError(t, groups.Set("assistant", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "local", Model: "qwen", App: "llamacpp"}, {Name: "old", Model: "qwen", App: "llamacpp", Node: "recovery-cli"}}}))
+	require.NoError(t, groups.SaveToFile(filepath.Join(source, "model_groups.yaml")))
+	archive := filepath.Join(t.TempDir(), "handoff.tar.gz")
+	_, err := runRecovery(t, source, "backup", "--profile", "handoff", "--output", archive)
+	require.NoError(t, err)
+	dir, _ := recoveryInstallation(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "node.yaml"), []byte("node:\n  name: recovery-dest\n  port: 9090\n"), 0o600))
+	staging := filepath.Join(t.TempDir(), "staged")
+	_, err = runRecovery(t, dir, "restore", archive, "--to", staging)
+	require.NoError(t, err)
+	var manifest recovery.Manifest
+	data, err := os.ReadFile(filepath.Join(staging, "manifest.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &manifest))
+	generation, rollback := manifest.Staged.Generation, filepath.Join(dir, "rollback", manifest.Staged.Generation)
+	references := "Node names the handoff's configuration holds, unchanged; review each once the node runs:\n" +
+		`  route assistant, replica local (pinned nowhere: it served on the source, recovery-cli): zz_api {"method": "PATCH", "path": "/zzrouter/v1/model-groups/assistant/replicas/local", "body": {"node": "<node>"}}` + "\n" +
+		`  route assistant, replica old (the source): zz_api {"method": "PATCH", "path": "/zzrouter/v1/model-groups/assistant/replicas/old", "body": {"node": "<node>"}}` + "\n"
+
+	var refusal *recovery.Refusal
+	_, err = runRecovery(t, dir, "activate", staging, "--dry-run")
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, recovery.SourceNotStopped, refusal.Reason)
+	_, err = runRecovery(t, dir, "activate", staging, "--dry-run", "--source-stopped")
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, recovery.ReplaceRequired, refusal.Reason)
+	out, err := runRecovery(t, dir, "activate", staging, "--dry-run", "--source-stopped", "--replace")
+	require.NoError(t, err)
+	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+manifest.Store.StoreID+" and the handoff's coordinator configuration.\nIt would replace, keeping each in "+rollback+": store.\n"+references+"A dry run publishes nothing")
+
+	crashAt(t, dir, staging, "published model_groups.yaml", recovery.ActivateOptions{SourceStopped: true, Replace: true})
+	out, err = runRecovery(t, dir, "activate", staging, "--rollback", "--dry-run")
+	require.NoError(t, err)
+	require.Contains(t, out, "Dry run: rolling back activation "+generation+" would put back what it replaced from "+rollback+" and remove what it created. A dry run changes nothing.")
+	out, err = runRecovery(t, dir, "activate", staging, "--rollback")
+	require.NoError(t, err)
+	require.Contains(t, out, "Rolled back activation "+generation+": the access store and configuration files it replaced are as they were before, and what it created is removed. The staging directory is kept.")
+	require.NoFileExists(t, filepath.Join(dir, "model_groups.yaml"))
+
+	out, err = runRecovery(t, dir, "activate", staging, "--source-stopped", "--replace")
+	require.NoError(t, err)
+	require.Contains(t, out, "Activated generation "+generation+" of access store "+manifest.Store.StoreID+" (schema version 1, revision 0, sequence 1) and the handoff's coordinator configuration.\nReplaced from this installation and kept in "+rollback+" until you delete it, credential hashes and connections included: store.\n"+references+"The staging directory is removed. Next: start the node")
+	require.NotContains(t, out, "—")
+	require.FileExists(t, filepath.Join(dir, "model_groups.yaml"))
+}
+
+// TestTemplateWritersRefuseDuringAnIncompleteActivation: init and config reset,
+// which write provider templates without the installation lock, refuse with
+// activation_incomplete and write nothing while an activation is incomplete.
+func TestTemplateWritersRefuseDuringAnIncompleteActivation(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ZZROUTER_TEST_HOME", dir)
+	t.Setenv("ZZROUTER_CONFIG_DIR", dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "recovery-activation.json"), []byte(`{"version":1,"profile":"handoff","staging":"/staged","generation":"g"}`), 0o600))
+	installation := treeOf(t, dir)
+	for name, run := range map[string]func() error{"init": func() error { return runNodeInit(true) }, "config reset": func() error { return runNodeConfigReset(true) }} {
+		var refusal *recovery.Refusal
+		require.ErrorAs(t, run(), &refusal, name)
+		require.Equal(t, recovery.ActivationIncomplete, refusal.Reason, name)
+		require.Equal(t, installation, treeOf(t, dir), "%s wrote nothing", name)
+	}
 }

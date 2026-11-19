@@ -332,8 +332,11 @@ A staged `database` bundle holds only `manifest.json` and `store/image.sqlite`;
 when the installation had an access store, and `protection/credentials.key` when
 a key was supplied; it is restored by hand, as the last part of this section
 describes.
-A staged `handoff` bundle is not activated in this release, by command or by
-hand: see [Coordinator handoff](#coordinator-handoff-experimental).
+A staged `handoff` bundle holds `manifest.json`, `config/` with the carried
+entries, `store/image.sqlite` and, when the provider connections travel,
+`protection/credentials.key`; `recovery activate --source-stopped` publishes it
+on the new coordinator, as
+[Coordinator handoff](#coordinator-handoff-experimental) describes.
 
 Once the prepared image is in place, browser sessions, delegated OAuth tokens and
 app-key references issued before the restore do not resolve, without any edit of
@@ -358,8 +361,9 @@ lock is free (a running node or another recovery command holds it); the staging
 directory and the installation do not overlap; the staging directory is not
 marked `INCOMPLETE`; its `manifest.json` is a staging manifest of a `database`
 bundle with its `staged` object (an `installation` bundle is restored by hand,
-below; a `handoff` bundle is not activated in this release; any other profile is
-refused); the directory holds exactly
+below; a `handoff` bundle has the further checks
+[Coordinator handoff](#coordinator-handoff-experimental) lists; any other profile
+is refused); the directory holds exactly
 `manifest.json` and `store/image.sqlite`; the image's SHA-256 equals
 `staged.image_sha256`; the image passes the checks a coordinator start runs, with
 SQLite's full integrity check, and its generation equals `staged.generation`; the
@@ -490,11 +494,10 @@ archive check is not a successful activation test.
 ## Coordinator handoff (experimental)
 
 A `handoff` bundle holds what a new coordinator needs from the old one, and
-nothing that belongs to the old machine. This release writes, checks and stages
-it. Activating a staged handoff on the new coordinator arrives in a later release;
-until then the staging directory shows what would move, and nothing in this
-release, command or manual step, activates it. Treat the profile as experimental
-until that release has been rehearsed on a real two-node cluster.
+nothing that belongs to the old machine. This release writes, checks, stages and
+activates it. **EXPERIMENTAL:** the handoff is not supported until it has been
+rehearsed on two real machines; until then, keep the old coordinator whole and
+able to resume.
 
 A handoff carries exactly these entries, and `recovery check` and `recovery
 restore` refuse a handoff that carries any other, naming the entry. They also
@@ -535,11 +538,25 @@ platform, and `separate`, what the operator moves or recreates by hand:
  "files": [{"name": "config/credentials.enc", "size": 204, "sha256": "3ceac6a1…"}, "…"]}
 ```
 
-The flow, up to staging:
+The runbook, in order:
 
-1. Install the matching release on the destination.
-2. Stop the source coordinator through its supervisor and keep its supervisor from
-   restarting it. The ordinary stop drains requests and flushes spend.
+1. Prepare the destination. Install the matching release and its service. Write
+   its own `node.yaml`: node name, listen address, TLS, storage paths,
+   authentication and `cluster.mode: coordinator` (or no mode, which starts a
+   coordinator). Start it once, so it records its recovery layout and creates its
+   installation lock, then stop it through its supervisor with restarts disabled.
+   On a node that is a worker today, first reset its pairing while it runs with
+   `zzrouter-node cluster pair --reset --cancel`, which removes its `cluster/`
+   trust and closes the pairing window, then stop it and set
+   `cluster.mode: coordinator`. Its provider tree is a cache of its old
+   coordinator's: the handoff's replaces it, and its own cloud and registry
+   definitions and connections go to the rollback directory, so it needs
+   `--replace`.
+2. Fence and stop the source coordinator. Withdraw it from clients and workers,
+   stop it through its supervisor and keep the supervisor from restarting it. The
+   ordinary stop drains requests and flushes spend. zzRouter never probes the
+   source: a health check is not an identity check, so the operator owns this
+   fence and asserts it with `--source-stopped`.
 3. Take the handoff from the stopped source:
 
    ```sh
@@ -560,21 +577,134 @@ The flow, up to staging:
    ignores, and it is not carried. Links elsewhere, such as a provider install's
    environment, are not carried either. The command prints what the bundle
    carries and the `separate` list.
-4. Check it, and stage it on the destination:
+4. Check it, then move the archive and the key to the destination separately,
+   over secure channels:
 
    ```sh
    zzrouter-node recovery check /secure-backups/handoff.tar.gz \
      --key-file /separate-key-storage/handoff.key
+   ```
+
+5. Stage it on the stopped destination, outside its configuration directory:
+
+   ```sh
    zzrouter-node recovery restore /secure-backups/handoff.tar.gz \
      --key-file /separate-key-storage/handoff.key \
-     --to /new/private/handoff-staging
+     --to /new/private/handoff-staging --dir /path/to/installation
    ```
 
    Staging works as for every profile. The staging directory holds
    `manifest.json`, `config/` with the entries above, the prepared
-   `store/image.sqlite` and `protection/credentials.key`. Once a later release
-   activates it, sessions, delegated tokens and app-key references the old
-   coordinator issued do not resolve; passwords and app keys keep working.
+   `store/image.sqlite` and `protection/credentials.key`, the key restore checked
+   against `key_sha256`.
+6. Dry run, then activate:
+
+   ```sh
+   zzrouter-node recovery activate /new/private/handoff-staging --dir /path/to/installation \
+     --source-stopped --replace --dry-run
+   zzrouter-node recovery activate /new/private/handoff-staging --dir /path/to/installation \
+     --source-stopped --replace
+   ```
+
+   A destination that ever started as a coordinator holds an access store of its
+   own, so it needs `--replace`; without it the command refuses and lists what it
+   would replace. The dry run runs every check and prints what would be replaced
+   and the node names to review, exactly as the activation then prints them.
+7. Start the destination.
+8. Fix the node names the activation reported, through the running API (below).
+9. Move clients: repoint them, or move the stable public address, to the new
+   coordinator.
+10. Pair every worker again with the new coordinator through the ordinary
+    enrollment flow, verifying its fingerprint.
+11. Verify: the owner signs in with the old password, an existing app key
+    authenticates, team policy and recorded spend are there, provider
+    connections work, the access history holds the `store.restore_prepared`
+    entry, and one routed request answers.
+12. Archive the old coordinator's installation whole and reinstall the machine
+    before reusing it, even as a worker. Moving only `access/` and the store
+    marker aside would leave its CA key, OAuth state and provider connections
+    behind.
+
+Sessions, delegated tokens and app-key references the old coordinator issued do
+not resolve on the new one; passwords and app keys keep working.
+
+### What a handoff activation checks
+
+Every check of a database activation runs, with a `handoff` staging manifest in
+place of a `database` one, and these further checks, in order and read-only. A
+refusal names its closed reason and the next action, and leaves the installation
+and the staging directory byte for byte as they were, in a dry run too:
+
+| Reason | When | Next action |
+| --- | --- | --- |
+| `source_not_stopped` | `--source-stopped` is missing. | Fence and stop the source, disable its restarts, then pass the flag. |
+| `staging_invalid` | The staging directory holds other entries than its manifest names, an entry's SHA-256 differs from the manifest's, `protection/credentials.key` is missing while the provider connections travel, or the staged provider tree or routes do not load in this release. | Stage the handoff again into a new directory. |
+| `not_coordinator` | The destination's `node.yaml` does not start it as a coordinator (`cluster.mode: worker`), or its `cluster/` directory still pairs it with a cluster. | Reset its pairing while it runs (`zzrouter-node cluster pair --reset --cancel`), stop it, set `cluster.mode: coordinator`, then activate with `--replace`. |
+| `key_mismatch` | `security.credentials.key_file` names a key whose SHA-256 is not the handoff's `key_sha256`, or that cannot be read. Explicit keys are read-only. | Place the key exported with the handoff at that path, owner-only. |
+| `replace_required` | Without `--replace`, the destination holds an access store with another store ID, its own `credentials.enc`, or a cloud or registry definition, schema or asset that differs from the handoff's or that the handoff lacks. | Review with `--dry-run --replace`, then activate with `--replace`. |
+
+`in_use`, `foreign_store` (a database whose store ID cannot be read and has no
+store marker), `already_activated`, `activation_incomplete` and the image's own
+reasons refuse a handoff as they refuse a database bundle. `recovery restore`
+already refused a staging directory inside the installation.
+
+### What a handoff activation writes
+
+After the activation marker and the rollback record, it replaces the access
+store as a database activation does, admitting the handoff's store ID. Then it
+publishes its targets in name order, paths relative to the configuration
+directory:
+
+- every file the handoff carries, with `config/` dropped from its name;
+- every file the destination holds where a handoff carries one (`settings.yaml`
+  and `.managed-ownership.json` at the provider tree's root, each provider's
+  `config.yaml`, `schema.yaml` and assets, `model_groups.yaml`, `spend.json`,
+  `pricing_overrides.yaml`, `credentials.enc`): one the handoff lacks is removed;
+- the exported key at `private/credentials.key`, when the provider connections
+  travel and `node.yaml` names no explicit `key_file`;
+- each directory a new file needs.
+
+Nothing else in the provider tree is touched: provider installs that live inside
+it stay. A file whose content already is the staged one is left alone. Any other
+moves into `rollback/<generation>/files/<path>` before the staged copy takes its
+place: the copy is made in the rollback directory, its SHA-256 checked against the
+manifest's, and renamed into place. The activation record (`rollback.json`, and the
+activation marker while it runs) lists every target with the SHA-256 of what it
+held before, so one marker and one rollback record cover the store and every
+file. Everything published, created or kept gets the owner and group of the
+configuration directory, as for a database activation.
+
+A crash or an interrupt leaves the marker, and the node refuses to start with
+`activation_incomplete`. Run the same `recovery activate` command again, with or
+without the flags, to finish: a target already holding the staged content is
+done. `--rollback` instead puts every replaced file back from
+`rollback/<generation>/files/`, removes every file and directory the activation
+created, then restores the access store, so the installation is byte for byte as
+it was; it needs no staging directory. If a replaced file is neither as it was
+nor kept (its copy in the rollback directory was deleted), the rollback refuses
+with `activation_incomplete`, changing nothing, and offers finishing instead,
+which then reports the file as not kept. `--rollback` works only while the
+marker exists.
+
+The rollback directory then holds the destination's own access records, its
+protected connections and its key: keep it owner-only and delete it once the new
+coordinator is qualified.
+
+### Node names to review
+
+A handoff never rewrites node names (`nodes.<name>` describes a machine, and
+stays right if that machine joins again under its name). Activation and its dry
+run report, in `Activation.References` and on the terminal, each name that meant
+a machine of the source's cluster, with the call that changes it once the node
+runs:
+
+- a route replica with no node, which served on the source and now serves on
+  this node; one pinned to the source's node name; one pinned to this node's
+  name. Cloud replicas are not reported: any node serves them. Fix with
+  `zz_api {"method": "PATCH", "path": "/zzrouter/v1/model-groups/<route>/replicas/<replica>", "body": {"node": "<node>"}}`;
+- a provider's `nodes.<source>` and `nodes.<destination>` entries. Keep them if
+  that machine rejoins under its name, or remove one with
+  `zz_params_set {"provider": "<provider>", "patch": {"nodes": {"<node>": null}}}`.
 
 What the operator moves or recreates by hand, as `separate` lists:
 
@@ -599,7 +729,14 @@ What the operator moves or recreates by hand, as `separate` lists:
   identity and worker enrollments stay with the old one. Browsers and delegated
   OAuth clients sign in or authorize again.
 
-A handoff never rewrites node names. Provider enablement entries (`nodes.<node>`)
-and route replicas pinned to the old coordinator's node keep that name, and a
-replica with no node, which meant the old coordinator, means the new one; review
-them through the running API after activation.
+### What the first version does not do
+
+- No node mapping: node names are reported, never rewritten.
+- No transfer of `node.yaml` or the dotenv files, so no static keys: the
+  destination keeps its own.
+- No merging of provider connections: the destination's own go to the rollback
+  directory.
+- No rollback after the node started on the new state: once the activation
+  finished, go back by hand from the rollback directory, or with a new handoff
+  from the new coordinator so its later changes travel.
+- No probe of the source: the operator fences it.

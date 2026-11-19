@@ -93,6 +93,27 @@ func TestActivationHandsOverEveryNewPath(t *testing.T) {
 	}
 }
 
+// TestHandoffActivationHandsOverEveryNewPath kills a real process at each step
+// of a handoff activation, then rolls it back or finishes it: every path with
+// a new inode, each configuration file, directory and key it published and
+// what its rollback directory keeps, was handed to the installation's owner.
+// It forks, so it does not run in parallel.
+func TestHandoffActivationHandsOverEveryNewPath(t *testing.T) {
+	dir, staging, _, _ := handoffActivationFixture(t)
+	steps := stepsOf(t, dir, copyTree(t, staging), false)
+	for k := range steps[:len(steps)-1] {
+		for _, rollback := range []bool{true, false} {
+			killed, staged := copyTree(t, dir), copyTree(t, staging)
+			before := inodes(t, killed)
+			killAt(t, killed, staged, k+1, false)
+			var last []string
+			_, err := Activate(sqlitedb.WithStep(t.Context(), func(step string) { last = append(last, step) }), killed, staged, ActivateOptions{Rollback: rollback})
+			require.NoError(t, err)
+			requireHandedOver(t, killed, before, ownedIn(steps[:k+1], last), "killed at "+steps[k])
+		}
+	}
+}
+
 // TestRollbackRerunHandsOverEveryNewPath: an activation killed once the store
 // is replaced but before its hand-over, a rollback killed at each of its steps,
 // and the rollback run again: every path with a new inode was handed over.
