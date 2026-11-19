@@ -56,42 +56,74 @@ settings, while `/runs/load` has `force`. The console and MCP use `/runs`.
 The terminal client uses `/runs/load` through
 `client.LoadModelWithProviderForceParamsAndEnv` (`apipath.RunsLoad`), from
 `zzrouter run` (`internal/cli/clientcli/run.go`) and the TUI's model start
-(`tui_models_actions.go`). The routes also disagree on a field name: `/runs`,
-its internal route and `zz_run_start` say `env_vars`, while `/runs/load`,
-preview and the parameter tiers say `environment`.
+(`internal/cli/clientcli/tui/views/tui_models_actions.go`). The routes also
+disagree on a field name: `/runs`, its internal route, `POST /runs/batch` and
+`zz_run_start` say `env_vars`, while `/runs/load`, preview and the parameter
+tiers say `environment`.
 
-- Delete `POST /runs/load` (`createRunsLoad`), its internal route,
-  `LoadService.LoadModel`, `LoadExecutor.LoadLocalModel`,
-  `HandleInternalLoadModel`, `LoadModelRequest`, `apipath.RunsLoad` and the
-  client's `LoadModelWithProviderForceParamsAndEnv`. Move run preview from
-  `load_service.go` and `load_executor.go` into the runs service and executor
-  beside start.
-- `POST /runs` gains `replace` (boolean), mapped to `EnsureRequest.Force`. It
-  stops the run on the key and starts one with the request's settings, through
-  the existing admit-before-stop path, so a refused replacement leaves the old
-  run serving.
-- One field name: start, its internal route, preview and `zz_run_start` take
-  `environment`, as the parameter tiers do.
-- A start whose `parameters` or `environment` differ from the running run's
+- **Delete the second route.** Remove `POST /runs/load` (`createRunsLoad`) and
+  everything only it uses:
+  - its internal route;
+  - `LoadService.LoadModel`, `LoadExecutor.LoadLocalModel` and
+    `HandleInternalLoadModel`;
+  - `LoadModelRequest`, `apipath.RunsLoad` and the client's
+    `LoadModelWithProviderForceParamsAndEnv`;
+  - provider auto-detection (`autoDetectProvider`, `findMatchingModels` and
+    their failure rows), since `POST /runs` requires `provider`.
+- **Move preview** into the runs service and executor beside start. Its
+  request type, today an alias of `LoadModelRequest`, becomes its own struct,
+  and it stops accepting a `force` it ignores.
+- **`replace`.** `POST /runs` gains `replace` (boolean), mapped to
+  `EnsureRequest.Force`. It stops the run on the key and starts one with the
+  request's settings, through the existing admit-before-stop path. When that
+  check refuses, the old run keeps serving. Engines without a memory budget,
+  an unknown release bound, and failures after the stop keep today's
+  stop-then-start.
+- **One field name.** Start, its internal route, `POST /runs/batch`, preview
+  and `zz_run_start` take `environment`, as the parameter tiers do. Stored
+  records (pin records, `instance.Config`) keep their `env_vars` key.
+- **No silent reuse.** A start whose settings differ from the running run's
   request tier, without `replace`, answers 409 `run_settings_differ`, naming
-  the run and `replace` as the next step. A start that states no settings, or
-  the same ones, reuses the run as today. This removes the silent reuse.
-- `zz_run_start` gains `replace` and documents the refusal.
-- **Terminal client:** `zzrouter run` and the TUI start through `POST /runs`.
-  `zzrouter run --force` currently means both "pick the first match" and
-  "replace the running run". It splits: `--force` keeps match selection, and
-  `--replace` sends `replace`.
+  the run and `replace` as the next step.
+  - The rule lives in the run policy (`decideExisting` in
+    `pkg/prov_apps/run_policy.go`), where the run key is already normalized.
+    `Want` and `RunView` carry the request tier.
+  - Parameters and environment are compared as a pair, by canonical flag name
+    (`ctx_size` equals `ctx-size`).
+  - It applies only when the want states settings after pin replay; a start
+    with none, or the same ones, reuses the run as today.
+  - A start that joins one already in flight, with `replace` and different
+    settings, is refused too; today it silently gets the other start's run.
+  - Served runs (Ollama) pass through the same rule, so tests that re-ensure a
+    warm run with different settings are checked first.
+- **One routing rule.** A start with no `node` routes by model, as preview
+  does, rather than to the coordinator.
+- **MCP.** `zz_run_start` gains `replace` and documents the refusal.
+- **Terminal client.** `zzrouter run` and the TUI start through `POST /runs`.
+  - `zzrouter run --force` currently means both "pick the first match" and
+    "replace the running run". It splits: `--force` keeps match selection,
+    and `--replace` sends `replace`.
+  - `/runs` answers a reuse with 202, so `zzrouter run` on a running model no
+    longer fails on the 409 that `/runs/load` returns.
 
 ### 2. One resource snapshot
 
-Four code paths observe the same hardware:
-- `gpu.NVIDIAMemorySnapshotContext`: memory and per-process memory, for
-  admission.
-- `gpu.liveCardMetricsContext`: memory and utilization, for node metrics.
-- `inventory.GatherMemory`: host RAM, for node metrics.
-- `ProviderAppManager.memorySystem`: total RAM, for admission.
+At least eight code paths read the same hardware today, and none reads CPU
+utilization or per-process host memory:
 
-Replace them with one snapshot in `pkg/discovery`, made of resource pools:
+- **Admission:** `gpu.MemorySnapshotContext` and `NVIDIAMemorySnapshotContext`
+  (fresh, with per-process memory), and `ProviderAppManager.memorySystem` and
+  `memoryInventory` (cached totals).
+- **Node metrics:** `gpu.liveCardMetricsContext` and `gpu.LiveMetricsContext`,
+  plus `inventory.GatherMemory` and `GatherGPU` over `hardware.DiscoverMemory`.
+- **Routing input:** `mesh.ResourceTracker`, a 30 s poll that feeds routing
+  and fallback. On Apple Silicon it estimates the pool as 75% of RAM and
+  computes used memory as total minus free.
+- **Duplicates:** a third nvidia-smi call that returns summary text, and a
+  second Apple RAM reader inside `memory_snapshot.go`.
+
+Replace them with one snapshot in `pkg/discovery/resources`, made of resource
+pools:
 
 | Pool | Fields | Per-process attribution |
 |---|---|---|
@@ -99,19 +131,34 @@ Replace them with one snapshot in `pkg/discovery`, made of resource pools:
 | `unified` (Apple Silicon) | total, available, swap used, pressure level (`kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical, readable without root) | none |
 | `host` (absent when the pool is unified) | total, available, swap used, CPU utilization | Resident memory and CPU time of each run's process tree |
 
-- NVIDIA becomes one `--query-gpu` (adding `power.draw`) plus one
+- **Samplers.** NVIDIA becomes one `--query-gpu` (adding `power.draw`) plus one
   `--query-compute-apps` per snapshot. Each platform is a sampler behind the
   same pool type. AMD (`rocm-smi`, already used for inventory) becomes a
   sampler later without changing any consumer.
-- Admission, node metrics, the console's memory cards and calibration all read
-  this snapshot. Admission keeps its current inputs and rules; only their
-  source is shared. Freshness stays with the caller: admission asks for a fresh
-  snapshot, node metrics keep their cache.
-- A run's host memory is the resident set of its process group, which the node
-  already owns. Weights mapped from files count once touched, so this can
-  exceed what the run strictly needs; the report says so. A served daemon's
-  tree is shared by its models (see [Providers](#providers)).
-- The console rule stays: used memory is never computed as total minus
+- **Consumers.** Admission, node metrics, `ResourceTracker`, the console's
+  memory cards and calibration all read this snapshot.
+  - Freshness stays with the caller: admission asks for a fresh snapshot, and
+    node metrics keep one cached probe per interval.
+  - Admission keeps its inputs and rules. `gpu.MemoryDevice` remains a view of
+    a GPU pool, so admission and its test seams move in steps, and
+    `AdmitMemoryBudget` is not rewritten here.
+- **Per-run host memory.** It is the resident set and CPU time of the run's
+  process tree, walked from its PID through the same ancestry `runOwning`
+  already uses for GPU memory, so GPU and host attribution agree. Process
+  groups do not exist on Windows; there the tree comes from process children.
+  Weights mapped from files count once touched, so this can exceed what the
+  run strictly needs, and the report says so. A served daemon's tree is shared
+  by its models (see [Providers](#providers)).
+- **ResourceTracker.** It reads the snapshot, and `ResourceMetrics` keeps its
+  JSON fields. Its Apple figure becomes the unified pool's available memory,
+  the number the console shows, with no 75% ratio and no total minus free.
+  This changes routing inputs on Macs.
+- **Two existing defects** are fixed on the way:
+  - the inventory cache stamps a GPU sample before its probe returns, so a
+    slow probe looks fresher than it is;
+  - a GPU reporting 0 MiB free reads as "no GPU" in fallback, because unknown
+    and zero share one value.
+- **The console rule stays.** Used memory is never computed as total minus
   available, and a unified pool appears once.
 
 ### 3. One engine observation declaration
@@ -126,94 +173,155 @@ poller, replace `activity_probe` with one `observe` block in the provider's
 observe:
   path: /metrics
   format: prometheus             # or json
-  running: <series or field>     # requests the engine is running
-  waiting: <series or field>     # requests queued in the engine
-  kv_cache_usage: <series>       # fraction of the KV pool in use
-  busy: [<field>, ...]           # json: nonempty fields hold the run busy
+  running: <series or path>      # requests the engine is running
+  waiting: <series or path>      # requests queued in the engine
+  kv_cache_usage: <series or path> # fraction of the KV pool in use
+  busy: [<field>, ...]           # json only: a non-empty array holds the run busy
 ```
 
-- Every role is optional. `busy` keeps today's meaning exactly: the eviction
-  hold and the activity observation. ComfyUI moves to
-  `observe: {path: /queue, format: json, busy: [queue_running, queue_pending]}`.
-- One reader function in `pkg/prov_apps/health` parses a run's observation.
-  The health monitor calls it on its interval, and a calibration calls it on
-  its own sampling interval. There is one reader with two schedules, not two
-  pollers.
-- Validation follows `activity_probe`: a local path, known roles, and a format
-  from a closed set.
-- **Prometheus:** a role names a series. Engines label their series (vLLM adds
-  `engine` and `model_name`), so the reader combines every label set of a
-  series: counts (`running`, `waiting`) are summed, and fractions
-  (`kv_cache_usage`) take the maximum.
-- **JSON:** a role is a dotted path to a number (mlx-vlm:
-  `summary.in_flight`).
-- llama.cpp serves `/metrics` only with `--metrics` (501 otherwise), so its
-  shipped config sets `metrics: true`. An operator who turns it off gets null
-  engine figures, and the calibration form says why.
-- Requests go through the engine request path the activity probe uses today,
-  so a credential rule never has to be written twice.
-- Series and field names come from each pinned engine's source, confirmed on
-  the wire, never from `--help` or memory ([Findings](#findings)).
+- **Roles.** Every role is optional.
+  - `busy` keeps today's meaning exactly. A listed JSON field holding a
+    non-empty array holds the run busy (the eviction hold and the activity
+    observation). A missing or non-array field makes the read unknown.
+  - ComfyUI moves to
+    `observe: {path: /queue, format: json, busy: [queue_running, queue_pending]}`.
+  - In JSON, `running`, `waiting` and `kv_cache_usage` are dotted paths to
+    numbers (mlx-vlm: `summary.in_flight`).
+  - In Prometheus, a role names a series. Engines label their series (vLLM
+    adds `engine` and `model_name`), so the reader combines every label set:
+    counts (`running`, `waiting`) are summed, and fractions
+    (`kv_cache_usage`) take the maximum. Parsing uses `prometheus/common`,
+    already an indirect dependency.
+- **One reader, two schedules.** One reader function in
+  `pkg/prov_apps/health` parses a run's observation. The health monitor reads
+  it only for providers that declare `busy`, on its interval and with today's
+  validity window. A calibration reads every declared role on its own
+  interval.
+- **Typed failures.** The reader returns a typed cause for a failed read:
+  unreachable, an error status (llama.cpp answers 501 without `--metrics`),
+  malformed, or series absent. A report and the form can then say why a
+  figure is null. An absent series is null, never zero. The body cap stays
+  1 MiB; measure vLLM's `/metrics` size on the lab before relying on it.
+- **Strict validation.** A bad block fails the provider's schema merge (an
+  error from `Merge`), as `activity_probe` fails its load today. It must never
+  use the warn-and-drop `cache_log` uses, because a dropped block would
+  silently remove ComfyUI's eviction hold.
+  - `schema.yaml` decodes non-strictly, so unknown keys and roles are checked
+    explicitly.
+  - The local-path rule is `activity_probe`'s, exported from `pkg/config`
+    rather than copied.
+- **Credentials.** Requests go through `engineRequest`, the engine request path
+  the activity probe uses today, so a credential rule is never written twice.
+- **llama.cpp** serves `/metrics` only with `--metrics`, so its shipped config
+  sets `metrics: true`. An operator who turns it off gets null engine figures,
+  and the calibration form says why.
+- **Upgrade.** `activity_probe` stays in `managedSpineKeys` as a retired key,
+  as `model_defaults` does, so reconcile strips it from installed
+  `config.yaml` files before the strict load refuses them.
+- **Names.** Series and field names come from each pinned engine's source,
+  confirmed on the wire, never from `--help` or memory
+  ([Findings](#findings)).
 
 ### 4. One instance request path, measured without publishing
 
-A public request reaches a run through `openRun` (lease and target),
-`instanceRequest` (body with request defaults) and `sendToInstance`. Its stream
-is read by `wire.streamMeter` into an `llm.InferenceRecorder`, which also
-publishes the inference log entry, spend and GenAI metrics. Calibration needs
-the same path and the same stream reading, without publishing.
+A public request reaches a run through `openInstance` and `openRun` (lease and
+target), `instanceRequest` (body with request defaults) and `sendToInstance`.
+`wire.CopyStream` relays its stream, and `wire.streamMeter` reads that stream
+into an `llm.InferenceRecorder`. When the stream ends, the recorder publishes
+the GenAI metrics and the inference-log entry, and the inference-log bridge
+settles spend from that entry. Calibration needs the same path and the same
+stream reading, without publishing.
 
-- `openRun`, `instanceRequest` and `sendToInstance` take a typed instance
-  request (context, path, original body, client model, keep-alive hints)
-  instead of reading gin context values. Public dispatch builds it from the
-  gin request; calibration builds it directly.
-- `wire.streamMeter` reports to a small observer interface (first token,
-  usage, end of stream). `llm.InferenceRecorder` implements it for
-  production, and a calibration request sample implements it to record
-  timings and token counts. There is one SSE parser.
-- Calibration requests are never published as inference: no inference log, no
-  spend, no GenAI metrics, no client activity. They still take a lease, so the
-  run is busy and active exactly as under public traffic.
+- **Typed request.** These functions take a typed instance request instead of
+  reading gin context values. It carries:
+  - the context;
+  - path and query;
+  - the original body, already passed through `wire.ForceUsageReporting`;
+  - the client model;
+  - keep-alive hints;
+  - a non-nil header;
+  - `synthetic`.
+
+  Public dispatch builds it from the gin request, and the fallback chain's
+  `InstanceBody` stops forging context values. Calibration builds it directly.
+- **Observer seam.** `wire.streamMeter` reports to an observer: first token,
+  response model and text, usage, and end of stream with its outcome (errors
+  derived from the stream result).
+  - An adapter in `wire` maps it to `llm.InferenceRecorder`, because `llm`
+    cannot import `wire`.
+  - `CopyStream` takes an `io.Writer`, so calibration discards bodies through
+    the same relay. There is one SSE parser.
+- **Not published.** Calibration requests never reach the inference log, spend
+  or GenAI metrics. Client activity is recorded by auth middleware a
+  calibration never enters.
+  - A synthetic lease skips the admission-wait histogram.
+  - They still take a lease, so the run is busy and active exactly as under
+    public traffic.
+- **Clock.** Production's TTFT clock starts before the lease, because the
+  recorder exists before `Acquire`. A calibration sample starts its own clock
+  when the lease is granted.
+- **Request defaults.** Operator request defaults still apply, so a
+  calibration measures what production gets. The calibration itself never
+  adds `seed`.
 
 ### 5. A count of admitted requests
 
 `Instance` gains a monotonic count of leases granted, exposed in the run
 snapshot as `requests_admitted` beside `active_requests`. A calibration
 subtracts its own leases from a step's increase to report public traffic.
-`active_requests` is a gauge and would miss short requests between samples.
+`active_requests` is a gauge and would miss short requests between samples. A
+restart creates a new instance whose count starts again, so a calibration
+treats a changed run or a count that went backwards as `run_changed`.
 
 ### 6. An absolute KV budget for vLLM
 
 vLLM's `kv-cache-memory-bytes` sets the KV cache size directly and ignores
-`gpu-memory-utilization`. It is the usual way to fit two vLLM instances on one
-GPU. zzRouter's vLLM budget is declared only on `gpu-memory-utilization`
-(`fraction_total`), so admission miscounts a run that sets it.
+`gpu-memory-utilization` for sizing it. It is the usual way to fit two vLLM
+instances on one GPU.
 
-- `schema.MemoryBudget` gains `kv_bytes_parameter`. vLLM declares
-  `kv-cache-memory-bytes`.
-- vLLM 0.29 still refuses to start unless `ceil(total × gpu-memory-utilization)`
-  is free, even with an absolute KV size (`request_memory` in
-  `vllm/v1/worker/utils.py`, called unconditionally at worker init). Its KV
-  cache then takes exactly the given bytes, and memory profiling is skipped.
-- So when a launch sets the parameter, `AdmitMemoryBudget` checks free memory
-  against both requirements and refuses when either is short:
-  - the startup requirement, `fraction × total`;
-  - the hold: known weights plus the KV bytes plus the declared safety margin
-    (the one `auto` already uses).
-- It records the hold, not the fraction, as the run's commitment. Missing
-  weights evidence leaves the assessment unknown, as today.
-- To fit a second vLLM run beside a first, the operator lowers its
+**Today's behavior.** Admission records no commitment for a vLLM run; later
+launches see its real use through the GPU's free memory. Its sized checks
+(`weightMemoryFit`, `sizedMemoryFit`), though, treat
+`gpu-memory-utilization × total` as the ceiling for weights and KV, and size
+KV from context. A second instance needs a low fraction to pass vLLM's startup
+check, so a model larger than that ceiling is refused although vLLM would fit
+it, and the KV estimate ignores the size the flag fixes.
+
+**vLLM's rule.** vLLM 0.29 still refuses to start unless
+`ceil(total × gpu-memory-utilization)` is free, even with an absolute KV size
+(`request_memory` in `vllm/v1/worker/utils.py`, called unconditionally at
+worker init). Its KV cache then takes exactly the given bytes, per GPU, and
+memory profiling is skipped.
+
+**The change:**
+- `schema.MemoryBudget` gains `kv_bytes_parameter`, which must belong to a
+  `fraction_total` budget. vLLM declares `kv-cache-memory-bytes`.
+- When a launch sets it, `AdmitMemoryBudget` takes one path:
+  1. the startup requirement, through `admitFraction`: `fraction × total`
+     against free memory, plus `auto` resolution;
+  2. then, per selected device, the hold against free memory: known weights
+     divided across the devices, plus the KV bytes, plus the `auto` safety
+     margin.
+
+  A refusal names the parameter whose requirement failed. The fraction-ceiling
+  and context-sizing checks are skipped on this path.
+- No commitment is recorded, as for every vLLM launch today. A launch still
+  starting is covered by the existing admission hold for starting runs.
+- With unknown weights, only the startup requirement is checked, and the
+  assessment stays unknown (`weights_unavailable`).
+- **For operators.** To fit a second vLLM run beside a first, lower its
   `gpu-memory-utilization` until the startup requirement fits the remaining
-  free memory, and sizes its cache with `kv-cache-memory-bytes`. A refusal
-  names which requirement failed.
-- The release bound, holder reporting and reclaim read the same commitment.
-- Measured on the lab, Qwen2.5-0.5B ran beside a 27B run with
-  `gpu-memory-utilization` 0.2 and a 2 GiB KV cache:
-  - It held 6,916 MiB: 0.93 GiB of weights, exactly 2 GiB of KV (174,752
-    tokens), and about 3.9 GB of graphs and activations.
-  - Today's admission committed 19,577 MiB for it (0.2 × total).
-  - The `auto` margin, max(2,048 MiB, 5% of total) = 4,894 MiB, covered the
-    overhead.
+  free memory, and size its cache with `kv-cache-memory-bytes`.
+
+**Measured on the lab:** Qwen2.5-0.5B ran beside a 27B run with
+`gpu-memory-utilization` 0.2 and a 2 GiB KV cache.
+- It held 6,916 MiB: 0.93 GiB of weights, exactly 2 GiB of KV (174,752
+  tokens), and about 3.9 GB of graphs and activations.
+- Today's admission checked only the startup requirement for it: 19,578 MiB
+  (0.2 × total, rounded up).
+- The `auto` margin, max(2,048 MiB, ceil(5% of total)) = 4,895 MiB, covered
+  the overhead. The new hold check requires about 952 + 2,048 + 4,895 = 7,895
+  MiB free.
 
 ### 7. An expert override for memory admission
 
@@ -221,31 +329,57 @@ An operator tuning to the edge may know better than an estimate; LM Studio
 lets its users load past its estimate. Add a reserved run setting beside
 `keep-alive` and `evict-idle-on-memory-pressure`:
 
-- `memory-admission: enforce` (the default) or `report`. Under `report`, a
-  memory refusal becomes `admission_warning` on the start result and on the
-  run, with the refusal's full evidence, and the launch proceeds. The run's
-  commitment is still recorded, so later launches see it.
-- One branch in `admitMemory`; `runsettings` owns the key. The PATCH, run
-  start and preview validate it like the other reserved settings.
+- **`memory-admission: enforce`** (the default) **or `report`.** Under
+  `report`, a memory-fit refusal becomes `admission_warning` on the start
+  response and on the run, with the refusal's full evidence, and the launch
+  proceeds.
+  - Only memory-fit refusals convert. Observation failures and invalid budgets
+    stay errors.
+  - `report` also skips reclaim: no idle run is stopped to satisfy a check the
+    operator waived.
+  - Preview and capacity assessments still report the refusal.
+- **Placement.** One branch in `admitMemory`, where a refusal is acted on. The
+  warning rides the existing `AdmissionEffects` to the run snapshot and the
+  start response, as an instance-side type, because `instance` cannot import
+  `process`.
+- **Ownership.** `runsettings` owns the key. It joins the reserved keys kept
+  off the engine's command line (`process/command.go`), the served engine,
+  browser launches, and the schema spine (as an enum). The PATCH, run start
+  and preview validate it.
 
 ### 8. Cluster protocol
 
-The internal calibration route, the run snapshot fields and the provider
-`observe` block ride one cluster protocol bump. Current and minimum move
-together, as in recent bumps, so there is no older-worker code path. The
-number lives only in `pkg/version/protocol.go`.
+The protocol is 24, with a minimum of 23 (`pkg/version/protocol.go`). This
+arc changes what older peers would misread:
+- refactor 1 renames and removes internal start fields and a route;
+- older workers' strict diagnostics decode rejects refactor 6's
+  `kv_bytes_parameter`;
+- refactor 3 moves ComfyUI's eviction hold into `observe`;
+- calibration adds an internal route.
+
+Under the policy in `protocol.go`, bump to 25 and raise the minimum to 25, so
+there is no older-worker code path. Optional reply fields such as
+`requests_admitted` and `admission_warning` would not need a bump on their
+own. The number lives only in `pkg/version/protocol.go`.
 [Protocol versioning](protocol_versioning.md)
 
-### What the refactors remove
+### What the refactors cost
 
-Roughly 300 production lines leave with the second start route and the
-duplicate GPU and RAM query paths. The calibration adds:
-- `pkg/calibration`: pure validation of shape, scheduling, aggregation,
-  outcomes and report types.
-- Its HTTP and job wiring in `internal/server`.
-- The `observe` reader.
+Estimates from checking each refactor against the tree (production lines,
+tests excluded):
 
-The implementation reports the net change against its base.
+| Refactor | Added | Removed |
+|---|---|---|
+| 1. One run start | about 100 | about 330, plus about 85 in OpenAPI |
+| 2. One resource snapshot | about 560 | about 570 |
+| 3 and 5. Engine observation, admitted count | about 190 | about 90 |
+| 4. Instance request path | about 75 | about 30 |
+| 6 and 7. Memory admission | about 80 | about 8 |
+
+Together the refactors come to roughly 30 lines fewer. Refactor 2's gain is
+one source and fewer nvidia-smi calls, not fewer lines. The calibration itself
+is a new feature and adds lines ([plan](plan_calibration.md)). The
+implementation reports the real net against its base.
 
 ## API
 
@@ -256,20 +390,35 @@ browser CSRF controls, success envelopes and Problem Details.
 
 | Operation | Contract |
 |---|---|
-| `POST /calibrations` | Validates and accepts a calibration on `node`. HTTP 202 through `respondAccepted` with `data.job_id` and `data.node`; `Location` is `/zzrouter/v1/jobs/{job_id}?node={node}`. Supports `Idempotency-Key`. |
+| `POST /calibrations` | Validates and accepts a calibration on `node`. HTTP 202 through `respondAccepted` with `data.job_id` and `data.node`, like the other job-creating routes; no route sets a `Location` header. Supports `Idempotency-Key`. |
 | `GET /jobs/{id}?node={node}` | The job snapshot. While it runs, `meta` carries progress; the terminal event carries the report in `meta.report`. |
 | `GET /jobs/{id}/stream?node={node}` | The existing SSE stream and replay. |
-| `GET /jobs?node={node}&kind=calibration` | Calibrations on that node still inside retention, through the existing paginated job list. |
+| `GET /jobs?node={node}&kind=calibration` | Calibrations on that node still inside retention, through the existing paginated job list. Job lists omit `meta.report`, which only the item read and the stream's terminal event return. A worker's internal job list is unpaginated, and the coordinator's proxy refuses bodies over 1 MiB. A report at the limits is about 30 to 50 KB, so about 25 retained reports would otherwise break every job list on that node. |
 | `DELETE /jobs/{id}?node={node}` | Cancels: in-flight requests are aborted, and the report keeps the steps already measured. |
 | `GET /providers/{name}/schema` | Gains `calibration` (output-forcing request fields) and `observe` (declared roles), so a client can say what a report will contain. |
 | `GET /zzrouter/v1` (discovery) | Lists the calibration limits and workload kinds under `data.calibration`, so clients never hardcode them. |
 
-The job is the record: a new job kind, `calibration`, with ID prefix `cal_`,
-registered in `pkg/jobs/kind.go`, with an entry in `jobOutcomeTools`. The
-report reaches clients through job `Meta` set before the terminal event, as a
-restart job's `restarted` map does. The coordinator forwards
-`POST /calibrations` to the named node over cluster mTLS through the new
-internal route; job reads and cancellation use the existing job proxy.
+The job is the record. There is a new job kind, `calibration`, with ID prefix
+`cal_`, registered in `pkg/jobs/kind.go` with an entry in `jobOutcomeTools`.
+
+- **Timeouts.** The kind has its own ring policy and inactivity timeout. A
+  calibration can run 8 steps of 600 s, past the default 30-minute inactivity
+  reap. Progress `Meta` set on every sample also refreshes its activity.
+- **The report** reaches clients through job `Meta` set before the terminal
+  event, as a restart job's `restarted` map does.
+- **Cancellation.** The runner watches `context.Cause` of its job context for
+  `jobs.ErrCanceled`, publishes the partial report, then fails the job, as the
+  instance watcher does today.
+- **Forwarding.** The coordinator forwards `POST /calibrations` to the named
+  node through `routeAndParse` and the new internal route, as `POST /runs`
+  does. Job reads and cancellation use the existing job proxy.
+- **One per node.** The node holds a claim while a calibration runs, as
+  `claimInflightDeploy` does for deployments; the job list is not a lock.
+- **Retries.** The coordinator does not forward `Idempotency-Key`. A retried
+  forward whose body equals the running calibration's gets that job back
+  (`Registry.Reuse`), so a lost reply never starts a second calibration; any
+  other request gets `calibration_running`.
+
 [Cluster networking](cluster_networking.md)
 
 ### MCP
@@ -278,8 +427,10 @@ internal route; job reads and cancellation use the existing job proxy.
 returns the job, dispatching into the gin engine like every `zz_*` tool. Its
 description says how to get `run_id`s (`zz_runs`), change settings
 (`zz_params_set` with `restart_affected`, or `zz_run_start` with `replace`)
-and read the result (`zz_job`). The report is bounded by the limits, so
-`zz_job` returns it whole. Every reason names the `zz_*` tool to call next.
+and read the result (`zz_job`). `zz_job` returns a job's `Meta` only once the
+job ends, so agents see the report then. The report is bounded by the limits,
+well under the MCP response cap, so `zz_job` returns it whole. Every reason
+names the `zz_*` tool to call next.
 [MCP](mcp.md)
 
 ### Create a calibration
@@ -329,7 +480,7 @@ Submission validation is synchronous, because every run is already up:
 | 400 | field codes | Invalid fields, steps or token values. |
 | 400 | `context_too_small` | A chat run's served context (`context_length`) cannot hold `input_tokens + output_tokens`. |
 | 400 | `concurrency_above_limit` | A step's concurrency exceeds the run's `max_concurrent_requests` (zero means unlimited), so zzRouter itself would queue it. The problem names the limit and its setting. |
-| 404 | `run_not_found` | A `run_id` that is not on that node. |
+| 404 | `run_not_found` | A `run_id` that is not on that node. This is a new route code; run 404s answer a plain not-found today. |
 | 409 | `run_not_ready` | A run that is not ready to serve. |
 | 409 | `calibration_unsupported` | A workload on a run whose endpoint has no workload kind, or whose wire endpoints lack the kind's API. |
 | 409 | `calibration_running` | A calibration is already running on that node; the problem names its job. |
@@ -429,6 +580,7 @@ in place of `gpu` and `host`.
       "run_id": "run_qwen", "provider": "vllm", "model": "Qwen/Qwen3.8-27B", "endpoint": "chat",
       "resolved_parameters": {"gpu-memory-utilization": "0.65", "max-model-len": "32768", "max-num-seqs": "4"},
       "parameters_status": "current",
+      "overridden": [],
       "served_context_tokens": 32768,
       "max_concurrent_requests": 8,
       "cache": {"kv_tokens": 131072, "context_tokens": 32768, "max_concurrency": 4.0},
@@ -506,9 +658,11 @@ Definitions:
   during a step. Memory held by no process (the driver's reservation, about
   25 MiB per process) is expected, and pool figures are never required to add
   up.
-- **Settings status.** `parameters_status` says whether the tested settings are
-  saved configuration (`current`), per-run overrides (`overridden`), or behind
-  the configuration (`stale`).
+- **Settings status.** `parameters_status` is the run's own: `current`,
+  `stale` (behind the configuration) or `unknown`. `overridden` lists the keys
+  the run's request tier sets, so a non-empty list means the tested settings
+  include per-run overrides not yet saved. Both are read once per run at
+  check time, because the status re-resolves the launch.
 - **Format.** Units are milliseconds, MiB, watts, percent, and a 0 to 1
   fraction for KV usage. Unknown values are null, measured zero is zero, and an
   empty list is empty. A run idle in a step is absent from that step's `runs`.
@@ -628,16 +782,20 @@ None of these changes the request, the report shape or the console.
 ## Console
 
 The console uses the shared right-side panel, its Edit/Save footer, the job
-polling owner and the existing DOM helpers. It adds one module,
-`calibrations.mjs`, and no dependency.
+polling owner (`live-reads.mjs`) and the existing DOM helpers (`dom.mjs`). It
+adds one module, `calibrations.mjs`, registered in the console's route table
+(`internal/server/browser_console.go`) and its content-type test, and no
+dependency. The console has no chart helper, so the throughput chart is a small
+inline SVG built with the existing DOM helpers.
 
 ### Entry points
 
 - **Run details** (Workloads, Runs) gain **Calibrate** for a ready run whose
   endpoint has a workload kind. It opens the form with that run selected.
 - **Workloads** gains a **Calibrations** tab: the job list filtered by
-  `kind=calibration`, with the same per-node reads, pagination and offline
-  handling as Jobs, plus **New calibration**.
+  `kind=calibration` (the shared job-page reader gains the `kind` parameter),
+  with the same per-node reads, pagination and offline handling as Jobs, plus
+  **New calibration**.
 - **Download and test:** after a download completes, the panel offers **Start
   and calibrate**. It runs the existing start (preview, explicit start,
   readiness read), then opens the form with the new run selected.
@@ -674,11 +832,16 @@ Both paths use the provider schema's field renderer, so every parameter is
 editable by hand, with its description, type and bounds:
 
 - **Save for this model on this node:** opens the parameter editor at "Model on
-  a compute node" scope. Its "Effect on running models" section gains
-  **Restart affected runs**, which sends the PATCH with `?restart=affected`.
+  a compute node" scope. The editor gains a **Restart affected runs after
+  saving** option, which sends the PATCH with `?restart=affected`. Its "Effect
+  on running models" section then shows the restart job. The option sits
+  before saving because `restart=affected` is a PATCH option: a later,
+  unchanged PATCH is not a documented way to restart runs.
 - **Try on this run only:** opens the run form prefilled with the run's
-  request tier. The form gains a **Settings for this run** section and sends
-  `POST /runs` with `parameters` and `replace: true` after the existing
+  request tier. The form, which today sends only node, provider, model and
+  endpoint, gains a **Settings for this run** section (parameters and
+  environment) and a **Replace the running run** choice. It sends `POST /runs`
+  with `parameters`, `environment` and `replace: true` after the existing
   preview. A `run_settings_differ` refusal explains itself.
 
 ### Live view
@@ -722,7 +885,7 @@ A finished calibration renders its report in place of the generic job body:
 
 ### Changes beside the new module
 
-- **Parameter editor:** **Restart affected runs**.
+- **Parameter editor:** the **Restart affected runs after saving** option.
 - **Run form:** **Settings for this run** and **Replace the running run**.
 - **Run details:** **Calibrate**, and **Change settings** with both paths.
 - **Job details:** hands calibration jobs to the report view.
@@ -763,7 +926,7 @@ edited by hand:
   - `docs/mcp.md`: `zz_calibrate`, and `replace` on `zz_run_start`.
   - `docs/api.md`.
   - `docs/web-console.md` and `docs/console-operations-spec.md`: Calibrations,
-    both settings paths, and Restart affected runs.
+    both settings paths, and the restart-after-saving option.
   - `docs/comfyui.md`: `observe` replaces `activity_probe`.
   - `docs/protocol_versioning.md`: the bump.
   - `CHANGELOG.md`.
@@ -859,9 +1022,12 @@ terminal client can still read reports through its existing job display.
     console's memory cards unchanged.
   - ComfyUI's busy hold works through `observe`.
   - Calibration requests leave no inference log, spend or metrics.
-  - A vLLM run with `kv-cache-memory-bytes` is admitted on weights plus KV.
-  - `memory-admission: report` launches past a refusal with the warning
-    recorded.
+  - A vLLM run with `kv-cache-memory-bytes`, at a fraction smaller than its
+    weights, is admitted on the startup requirement plus weights, KV and
+    margin. Either shortfall names its parameter, and the lab numbers above
+    reproduce in a test.
+  - `memory-admission: report` launches past a memory-fit refusal with the
+    warning on the start response and the run, and stops no idle run.
 - **vLLM on the RTX PRO 6000:** Qwen3.8 at 32,768 context, `max-num-seqs` 4
   and `gpu-memory-utilization` 0.8, steps 1, 2, 4 and 8. The report shows
   `verified` up to 4 and `queued` at 8, with percentiles, KV usage,
