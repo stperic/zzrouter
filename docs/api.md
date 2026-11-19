@@ -313,8 +313,8 @@ access store: `store_id`, `generation`, `schema_version`, `revision` (advanced b
 every change to keys, teams, people or invitations), `sequence` (advanced by every
 commit, audit-only ones included), `status` (`setup_required` until the owner
 claims the installation, then `ready`), `observed_at`, `size` in integer bytes
-(`database_bytes`, `journal_bytes`, 0 outside a write, `free_page_bytes`, read
-after the latest commit, and `backup_bytes`; `null` marks a measurement the node
+(`database_bytes`, `journal_bytes`, 0 outside a write, `free_page_bytes`, as
+the latest commit left it, and `backup_bytes`; `null` marks a measurement the node
 could not take), `integrity` (the `quick_check` run when the store opened, with
 `checked_at` and `outcome`) and `retained_copies`. `backup_bytes` is 0 and
 `retained_copies` empty until online backups exist. The read runs no database

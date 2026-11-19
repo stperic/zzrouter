@@ -23,7 +23,7 @@ type Status struct {
 	Meta
 	Initialized bool // the permanent owner-claim marker
 	// DatabaseBytes and JournalBytes are the files' lengths, 0 for an absent
-	// journal; FreePageBytes is the reusable space read after the last commit.
+	// journal; FreePageBytes is the reusable space the last commit left.
 	DatabaseBytes, JournalBytes, FreePageBytes *int64
 	Integrity                                  Integrity
 }

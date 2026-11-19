@@ -13723,7 +13723,7 @@ components:
           properties:
             database_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the main database file. }
             journal_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the rollback journal, 0 outside a write. }
-            free_page_bytes: { type: integer, minimum: 0, nullable: true, description: Reusable space inside the database file, read after the latest commit. }
+            free_page_bytes: { type: integer, minimum: 0, nullable: true, description: Reusable space inside the database file, as the latest commit left it. }
             backup_bytes: { type: integer, minimum: 0, description: Total bytes in retained online backups, separate from the live database. 0 until online backups exist. }
         integrity:
           type: object
