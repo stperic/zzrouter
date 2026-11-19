@@ -311,13 +311,16 @@ func initialize(ctx context.Context, tx *sql.Tx, storeID string) error {
 // check refuses a database that fails its checks or holds a record its rules
 // refuse. A live store gets quick_check and migrates before loading, because
 // the loader reads the latest schema; an image gets integrity_check and, never
-// being migrated, must already be at the latest schema.
+// being migrated, must already be at the latest schema, with exactly its objects.
 func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
 	if err := db.Check(ctx, image); err != nil {
 		return nil, fileRefusal(err)
 	}
 	if image {
 		if err := atLatest(ctx, db); err != nil {
+			return nil, err
+		}
+		if err := sameObjects(ctx, db); err != nil {
 			return nil, err
 		}
 	} else if _, _, err := db.Migrate(ctx); err != nil {

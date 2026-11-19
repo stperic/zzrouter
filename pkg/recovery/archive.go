@@ -92,7 +92,9 @@ type Manifest struct {
 // Backup requires a stopped installation and a fresh output path. The key is
 // exported separately, never packed with the secret-bearing recovery archive.
 // The access database travels as an image sqlstore.CaptureStopped takes; a
-// store that refuses to open stops the backup, and a failure leaves no output.
+// store that refuses to open stops the backup. Temporaries live in private
+// .tmp directories beside the outputs, and the outputs are published by rename
+// at the end, so a failed or cancelled backup leaves no output.
 func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error) {
 	var manifest Manifest
 	if _, err := Read(ctx, dir); err != nil {
@@ -139,22 +141,36 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 		}
 	}
 	manifest = Manifest{Version: 1, Profile: ProfileInstallation, Created: utils.NowUTC(), Inventory: &inventory}
-	temp, err := privateDir()
+	work, err := privateDir(output)
 	if err != nil {
 		return manifest, err
 	}
-	defer func() { _ = os.RemoveAll(temp) }()
-	if err := captureImage(ctx, &manifest, dir, temp); err != nil {
+	defer func() { _ = os.RemoveAll(work) }()
+	if err := captureImage(ctx, &manifest, dir, work); err != nil {
 		return manifest, err
 	}
 	if err := collect(ctx, &manifest); err != nil {
 		return manifest, err
 	}
-	if err := exportKey(&manifest, output, keyOutput); err != nil {
+	keyWork, err := exportKey(&manifest, output, keyOutput)
+	if keyWork != "" {
+		defer func() { _ = os.RemoveAll(keyWork) }()
+	}
+	if err != nil {
 		return manifest, err
 	}
-	if err := writeBundle(ctx, manifest, output); err != nil {
-		if manifest.KeySHA256 != "" {
+	archive := filepath.Join(work, "archive.tmp")
+	if err := writeBundle(ctx, manifest, archive); err != nil {
+		return manifest, err
+	}
+	// The key first, so a published archive always has its key.
+	if keyWork != "" {
+		if err := publish(filepath.Join(keyWork, "key.tmp"), keyOutput); err != nil {
+			return manifest, err
+		}
+	}
+	if err := publish(archive, output); err != nil {
+		if keyWork != "" {
 			err = errors.Join(err, os.Remove(keyOutput))
 		}
 		return manifest, err
@@ -183,10 +199,11 @@ func captureImage(ctx context.Context, manifest *Manifest, dir, temp string) err
 	return nil
 }
 
-// privateDir creates a temporary directory only its owner can enter, for an
-// image; the caller removes it. Its .tmp suffix keeps it out of every source.
-func privateDir() (string, error) {
-	dir, err := os.MkdirTemp("", "zzrouter-recovery-*.tmp")
+// privateDir creates a directory only its owner can enter beside path, named
+// after it with a .tmp suffix; the caller removes it. Leftovers of a killed
+// process keep the suffix, which keeps them out of every source and input.
+func privateDir(path string) (string, error) {
+	dir, err := os.MkdirTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return "", err
 	}
@@ -196,34 +213,58 @@ func privateDir() (string, error) {
 	return dir, nil
 }
 
-func exportKey(manifest *Manifest, output, keyOutput string) error {
-	needsKey := slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/credentials.enc" })
-	if needsKey && keyOutput == "" {
-		return errors.New("protected connections require --key-output in a separate secure backup location")
+// publish renames a finished temporary file to path, refusing an existing path.
+func publish(temp, path string) error {
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = fmt.Errorf("%w: %s", fs.ErrExist, path)
+		}
+		return err
 	}
-	if keyOutput != "" {
-		outPath, err := canonicalOutput(output)
-		if err != nil {
-			return err
-		}
-		keyPath, err := canonicalOutput(keyOutput)
-		if err != nil {
-			return err
-		}
-		if strings.EqualFold(filepath.Dir(outPath), filepath.Dir(keyPath)) {
-			return errors.New("store the protection-key backup in a separate directory from the archive")
-		}
-		key, err := secrets.LoadKeyFile(manifest.Inventory.KeyFile)
-		if err != nil {
-			return fmt.Errorf("read protection key for separate export: %w", err)
-		}
-		defer clear(key)
-		if err := writeExclusive(keyOutput, key); err != nil {
-			return err
-		}
-		manifest.KeySHA256 = digest(key)
+	return os.Rename(temp, path)
+}
+
+// refuseLeftover refuses an input named like a temporary file, which a backup
+// killed before it finished can leave.
+func refuseLeftover(path string) error {
+	if strings.HasSuffix(strings.ToLower(path), ".tmp") {
+		return fmt.Errorf("%s is a leftover of an interrupted backup, not a recovery file; delete it", path)
 	}
 	return nil
+}
+
+// exportKey writes the protection key, for its separate export, to key.tmp in
+// the private directory it returns beside keyOutput; none without keyOutput.
+func exportKey(manifest *Manifest, output, keyOutput string) (string, error) {
+	needsKey := slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/credentials.enc" })
+	if needsKey && keyOutput == "" {
+		return "", errors.New("protected connections require --key-output in a separate secure backup location")
+	}
+	if keyOutput == "" {
+		return "", nil
+	}
+	outPath, err := canonicalOutput(output)
+	if err != nil {
+		return "", err
+	}
+	keyPath, err := canonicalOutput(keyOutput)
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(filepath.Dir(outPath), filepath.Dir(keyPath)) {
+		return "", errors.New("store the protection-key backup in a separate directory from the archive")
+	}
+	key, err := secrets.LoadKeyFile(manifest.Inventory.KeyFile)
+	if err != nil {
+		return "", fmt.Errorf("read protection key for separate export: %w", err)
+	}
+	defer clear(key)
+	work, err := privateDir(keyOutput)
+	if err != nil {
+		return "", err
+	}
+	manifest.KeySHA256 = digest(key)
+	return work, writeExclusive(filepath.Join(work, "key.tmp"), key)
 }
 
 // writeBundle writes manifest and its files to output, which must not exist;

@@ -2,11 +2,14 @@ package sqlstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/access/people"
@@ -57,6 +60,35 @@ func admitImage(path string) error {
 		return refuse(Unreadable, errors.New("the image is in WAL mode"))
 	}
 	return nil
+}
+
+// releaseObjects lists the schema objects this release's migrations create.
+var releaseObjects = sync.OnceValues(func() ([]sqlitedb.Object, error) {
+	return schema.Objects(context.Background())
+})
+
+// sameObjects refuses an image whose schema objects are not exactly the ones
+// this release creates: a trigger, view or altered table carried by an archive
+// would persist after activation and run inside the store's transactions.
+func sameObjects(ctx context.Context, db *sqlitedb.DB) error {
+	want, err := releaseObjects()
+	if err != nil {
+		return err
+	}
+	got, err := db.Objects(ctx)
+	if err == nil && !slices.Equal(got, want) {
+		err = refuse(IntegrityFailed, errors.New("the image's schema objects differ from this release's"))
+	}
+	return err
+}
+
+// MarkerStoreID returns the store ID a store marker's content names.
+func MarkerStoreID(data []byte) (string, error) {
+	var m marker
+	if err := json.Unmarshal(data, &m); err != nil || m.Version != 1 || m.StoreID == "" {
+		return "", errors.New("not a store marker")
+	}
+	return m.StoreID, nil
 }
 
 func (s *Store) image() Image {
@@ -130,7 +162,8 @@ func CaptureStopped(ctx context.Context, dir, dst string) (Image, error) {
 }
 
 // CheckImage runs a start's checks on the image at path, with a full integrity
-// check, and returns its meta. A failure is a *Refusal with a start's reason:
+// check and its schema objects compared with this release's, and returns its
+// meta. A failure is a *Refusal with a start's reason:
 // an image a newer release wrote is SchemaNewer, one at an older schema version
 // Unreadable, since images are never migrated. It never changes the image's
 // content, size or modification time, but restricts the file to its owner as

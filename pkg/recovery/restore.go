@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/stperic/common/secrets"
@@ -24,29 +25,52 @@ import (
 )
 
 // Check validates a bundle of either profile without writing installation
-// state or creating stores. A database image streams to a private temporary
-// file, where sqlstore.CheckImage checks it, and must match the manifest.
+// state or creating stores. A database image streams to a private directory in
+// the system's temporary directory, where sqlstore.CheckImage checks it, and
+// must match the manifest; the directory is removed on return.
 func Check(ctx context.Context, archive, keyFile string) (Manifest, error) {
-	return readArchive(ctx, archive, keyFile, "")
+	return readArchive(ctx, archive, keyFile, extraction{scratch: filepath.Join(os.TempDir(), "zzrouter-recovery")})
 }
 
 // Restore writes only into a new, protected staging directory. Nothing is
-// activated. A staged database image is prepared to replace a store's content
-// and checked again, and the staging manifest records it in Staged, so nothing
-// publishes an image as archived. A failed operation leaves INCOMPLETE; it
-// never overwrites state.
+// activated. It first checks the archive as Check does, with the image inside
+// the staging directory, and removes that directory if the check fails. A
+// staged database image is prepared to replace a store's content and checked
+// again, and the staging manifest records it in Staged, so nothing publishes
+// an image as archived. A later failure leaves INCOMPLETE; it never
+// overwrites state.
 func Restore(ctx context.Context, archive, keyFile, destination string) (Manifest, error) {
 	if destination == "" {
 		return Manifest{}, errors.New("a new restore staging directory is required")
 	}
-	if _, err := Check(ctx, archive, keyFile); err != nil {
+	root, err := stagingRoot(destination)
+	if err != nil {
 		return Manifest{}, err
 	}
-	return readArchive(ctx, archive, keyFile, destination)
+	defer func() { _ = root.Close() }()
+	checked, err := readArchive(ctx, archive, keyFile, extraction{scratch: filepath.Join(destination, "check")})
+	if err != nil {
+		return checked, errors.Join(err, root.Close(), os.RemoveAll(destination))
+	}
+	return readArchive(ctx, archive, keyFile, extraction{root: root, checked: &checked})
 }
 
-func readArchive(ctx context.Context, archive, keyFile, destination string) (Manifest, error) {
+// extraction says where readArchive writes. A staging pass writes every entry
+// into root, and must find the manifest its check pass read: with every
+// entry's digest verified again, the staged image is the one that pass
+// checked. Otherwise only the image is written, into a private directory
+// beside scratch, removed on return.
+type extraction struct {
+	root    *os.Root
+	scratch string
+	checked *Manifest
+}
+
+func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Manifest, error) {
 	var manifest Manifest
+	if err := refuseLeftover(archive); err != nil {
+		return manifest, err
+	}
 	f, err := openRegular(archive)
 	if err != nil {
 		return manifest, err
@@ -64,21 +88,17 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 	if err != nil {
 		return manifest, err
 	}
+	if x.checked != nil && !reflect.DeepEqual(*x.checked, manifest) {
+		return manifest, errors.New("the recovery archive changed while it was restored")
+	}
 	key, err := recoveryKey(manifest, keyFile)
 	if err != nil {
 		return manifest, err
 	}
 	defer clear(key)
-	root, err := stagingRoot(destination)
-	if err != nil {
-		return manifest, err
-	}
-	if root != nil {
-		defer func() { _ = root.Close() }()
-	}
-	images := root
+	images := x.root
 	if images == nil && manifest.Store != nil {
-		temp, err := privateDir()
+		temp, err := privateDir(x.scratch)
 		if err != nil {
 			return manifest, err
 		}
@@ -88,7 +108,7 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 		}
 		defer func() { _ = images.Close() }()
 	}
-	snapshots, err := readEntries(ctx, reader, manifest, root, images)
+	snapshots, err := readEntries(ctx, reader, manifest, x.root, images)
 	defer func() {
 		for _, data := range snapshots {
 			clear(data)
@@ -108,16 +128,16 @@ func readArchive(ctx context.Context, archive, keyFile, destination string) (Man
 	if _, err := buffered.Peek(1); err != io.EOF {
 		return manifest, errors.New("trailing recovery archive data")
 	}
-	if err := validateSnapshots(snapshots, key); err != nil {
+	if err := validateSnapshots(snapshots, key, manifest.Store); err != nil {
 		return manifest, err
 	}
 	// Last, so a refusal for a newer schema means everything else passed.
-	if manifest.Store != nil {
+	if manifest.Store != nil && x.checked == nil {
 		if err := checkImage(ctx, images, *manifest.Store); err != nil {
 			return manifest, err
 		}
 	}
-	return manifest, finishStaging(ctx, root, destination, &manifest, key)
+	return manifest, finishStaging(ctx, x.root, &manifest, key)
 }
 
 func readManifest(reader *tar.Reader) (Manifest, error) {
@@ -145,12 +165,36 @@ func imagePath(root *os.Root) string {
 	return filepath.Join(root.Name(), filepath.FromSlash(imageName))
 }
 
-// checkImage refuses an image sqlstore.CheckImage refuses, with its *Refusal,
-// or whose meta is not the manifest's store description.
+// imageRefusal is an archive's database image its check refused. Its advice
+// is about the archive, never the live store; it unwraps to the store's
+// *sqlstore.Refusal.
+type imageRefusal struct{ refusal *sqlstore.Refusal }
+
+func (e *imageRefusal) Error() string {
+	advice := "Do not use this archive: take another backup, or use another archive that passes its check."
+	if e.refusal.Reason == sqlstore.SchemaNewer {
+		advice = "A newer release wrote it: only that release can check or restore this archive."
+	}
+	return "the archive's access database image is refused: " + string(e.refusal.Reason) + ". " + advice
+}
+
+func (e *imageRefusal) Unwrap() error { return e.refusal }
+
+// archiveImage gives an image operation's refusal the archive's advice.
+func archiveImage(err error) error {
+	var refusal *sqlstore.Refusal
+	if errors.As(err, &refusal) {
+		return &imageRefusal{refusal}
+	}
+	return err
+}
+
+// checkImage refuses an image sqlstore.CheckImage refuses, or whose meta is
+// not the manifest's store description.
 func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
 	img, err := sqlstore.CheckImage(ctx, imagePath(images))
 	if err != nil {
-		return err
+		return archiveImage(err)
 	}
 	if StoreMeta(img.Meta) != want {
 		return errors.New("the database image does not match the manifest's store description")
@@ -159,15 +203,15 @@ func checkImage(ctx context.Context, images *os.Root, want StoreMeta) error {
 }
 
 // prepareImage readies the staged image to replace a store's content, checks
-// it again and describes it for the staging manifest.
+// the file it wrote and describes it for the staging manifest.
 func prepareImage(ctx context.Context, root *os.Root) (*Staged, error) {
 	prepared, err := sqlstore.PrepareImage(ctx, imagePath(root))
 	if err != nil {
-		return nil, err
+		return nil, archiveImage(err)
 	}
 	checked, err := sqlstore.CheckImage(ctx, imagePath(root))
 	if err != nil {
-		return nil, err
+		return nil, archiveImage(err)
 	}
 	if checked != prepared {
 		return nil, errors.New("the prepared database image does not check as prepared")
@@ -186,6 +230,9 @@ func recoveryKey(manifest Manifest, keyFile string) ([]byte, error) {
 	if keyFile == "" {
 		return nil, errors.New("supply the separate protection-key backup with --key-file")
 	}
+	if err := refuseLeftover(keyFile); err != nil {
+		return nil, err
+	}
 	key, err := secrets.LoadKeyFile(keyFile)
 	if err != nil {
 		return nil, err
@@ -198,9 +245,6 @@ func recoveryKey(manifest Manifest, keyFile string) ([]byte, error) {
 }
 
 func stagingRoot(destination string) (*os.Root, error) {
-	if destination == "" {
-		return nil, nil
-	}
 	if err := os.Mkdir(destination, 0o700); err != nil {
 		return nil, fmt.Errorf("restore requires a new directory: %w", err)
 	}
@@ -213,10 +257,11 @@ func stagingRoot(destination string) (*os.Root, error) {
 	return os.OpenRoot(destination)
 }
 
-func finishStaging(ctx context.Context, root *os.Root, destination string, manifest *Manifest, key []byte) error {
+func finishStaging(ctx context.Context, root *os.Root, manifest *Manifest, key []byte) error {
 	if root == nil {
 		return nil
 	}
+	destination := root.Name()
 	if manifest.Store != nil {
 		staged, err := prepareImage(ctx, root)
 		if err != nil {
@@ -366,10 +411,6 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 		}
 		if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
 			return errors.New("encrypted state requires its separate protection-key fingerprint")
-		}
-		// A marker without its database would stop the restored node as missing.
-		if seen["config/"+sqlstore.MarkerName] && !image {
-			return errors.New("the store marker requires the database image")
 		}
 	case ProfileDatabase:
 		if !image || len(manifest.Files) != 1 || manifest.Inventory != nil || manifest.KeySHA256 != "" || len(manifest.MissingOptional) > 0 {

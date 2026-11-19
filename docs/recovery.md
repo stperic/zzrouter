@@ -65,23 +65,24 @@ within each recorded root cannot traverse links, including provider parent
 directories. Special files are also refused. Installation roots themselves
 are the operator-selected boundaries; back up linked external data separately.
 
-Pairing codes, local owner-recovery proof, lock/PID/temp files, caches and pending
-update requests, pending update confirmation and executable rollback backups are
-excluded. A node creates fresh transient state after startup. The configuration's
-`access/` directory is never copied as files: the live database, any journal, an
-unpublished staged store and online backups stay out of every bundle, and restore
-refuses a bundle that carries an entry there. Instead, backup takes a consistent
-copy of the stopped access database (SQLite's `VACUUM INTO`) into a private
-temporary directory, checks it as a coordinator start would, with SQLite's full
-integrity check, and packs it as `store/image.sqlite`. It first finishes SQLite's
-recovery of a journal a crash left beside the database, so the image holds
-exactly the committed transactions; that recovery is the only change backup
-makes to the database. The manifest's `store` object names the image's store
-ID, generation, schema version, revision and sequence.
+Pairing codes, local owner-recovery proof, lock/PID/temp files, caches and
+pending update requests, pending update confirmation and executable rollback
+backups are excluded. A node creates fresh transient state after startup. The
+configuration's `access/` directory is never copied as files: the live database,
+any journal, an unpublished staged store and online backups stay out of every
+bundle, and restore refuses a bundle that carries an entry there. Instead, backup
+takes a consistent copy of the stopped access database (SQLite's `VACUUM INTO`)
+into a private directory beside the archive, checks it as a coordinator start
+would, with SQLite's full integrity check, and packs it as `store/image.sqlite`.
+It first finishes SQLite's recovery of a journal a crash left beside the
+database, so the image holds exactly the committed transactions; that recovery is
+the only change backup makes to the database. The manifest's `store` object names
+the image's store ID, generation, schema version, revision and sequence.
 
 A database that will not open stops the backup with the store's reason
 (`unreadable`, `integrity_failed`, or `missing` for a store marker without its
-database) and writes nothing; copy a damaged database by hand if you need it. A
+database) and its next action, and writes nothing; copy a damaged database by
+hand if you need it. A
 database a newer release wrote is copied byte for byte: this release cannot
 check or restore it, `recovery backup` says so, and the release that wrote it
 reads the archive. A worker, or a node that never ran as a coordinator, has no
@@ -118,19 +119,39 @@ do not use it. Keep a previous verified backup until the new one passes. Each
 command names the bundle's profile and its access store's ID, generation, schema
 version, revision and sequence.
 
+`recovery backup` keeps its temporaries in private directories beside the archive
+and the key, named after them with a `.tmp` suffix (for example
+`router.tar.gz-1234.tmp`), and moves the key and then the archive into place
+last. `recovery check` extracts the access database image into a private
+directory in the system's temporary directory (`TMPDIR`; `TMP` on Windows), so
+the archive can sit on read-only media; that directory needs room for the whole
+access database, so point `TMPDIR` at a disk with space when the default is small
+or held in memory. `recovery restore` keeps its temporaries inside the staging
+directory. An interrupt (Ctrl-C) or a service stop cancels a command, which
+removes its temporaries and exits with an error. A process killed outright can
+leave a `.tmp` directory or file behind: delete it. The commands refuse a `.tmp`
+file as an archive or a key.
+
 Checking verifies bounded archive structure, paths, file hashes, spend snapshots,
 trust key/certificate pairs and encrypted connections with the matching key. It
-streams the access database image to a private temporary file, never into
-memory, and runs the checks a coordinator start runs on it, with SQLite's full
-integrity check: foreign keys, every access record against the access rules, and
-the schema version this release writes. The image's own store ID, generation,
-schema version, revision and sequence must equal the manifest's `store` object,
-and an `installation` bundle with a store marker but no image is refused, since
-the restored node would stop with `missing`. Checking does not authenticate the archive's author or prove remote
-reachability, provider compatibility or successful inference. Use only trusted
-backups. Checks do not prune expired grants or turn corrupt spend into zero usage.
-Other configuration and provider assets are preserved byte for byte; the matching
-release validates their operational compatibility when the recovered node starts.
+streams the access database image to a private temporary file, never into memory,
+and runs the checks a coordinator start runs on it, with SQLite's full integrity
+check: foreign keys, every access record against the access rules, the schema
+version this release writes, and schema objects (tables, indexes, triggers,
+views) exactly as this release creates them, so an archive cannot carry an extra
+trigger or view into a store. The image's own store ID, generation, schema
+version, revision and sequence must equal the manifest's `store` object. In an
+`installation` bundle the store marker must name the image's store ID, and a
+marker without an image is refused, since the restored node would stop with
+`missing`. A refused image is reported as the archive's ("the archive's access
+database image is refused" and the reason) with advice about the archive: do not
+use it, take another backup or use another archive; for `schema_newer`, only the
+release that wrote it can check or restore it. Checking does not authenticate the
+archive's author or prove remote reachability, provider compatibility or
+successful inference. Use only trusted backups. Checks do not prune expired
+grants or turn corrupt spend into zero usage. Other configuration and provider
+assets are preserved byte for byte; the matching release validates their
+operational compatibility when the recovered node starts.
 
 ## Restore and activate deliberately
 
@@ -140,20 +161,35 @@ zzrouter-node recovery restore /secure-backups/router.tar.gz \
   --to /new/private/restore-staging
 ```
 
-The destination must not exist. Restore checks the archive before writing, then
-verifies the extracted bytes again. It then prepares the staged access database
-image to replace a store's content, in one transaction: a new generation (the
-store ID is kept), a new credential revision for every person, every pending
-sign-in and enrollment grant expired, and one `store.restore_prepared` row in its
-history. It checks the prepared image again and records it in the staging
-manifest's `staged` object: `image_sha256`, the new `generation` and
-`prepared_at`. The image's entry in `files` keeps the archived digest. Restore
-refuses an archive that already carries `staged`. An interrupted extraction or a
-failed preparation leaves `INCOMPLETE`; do not activate it. A successful staging
-directory contains `manifest.json`, `config/`, any separate `data/` and
-`providers/` content, `store/image.sqlite` when the bundle has an access store,
-and `protection/` when a key was supplied. Inspect the manifest's original roots
-before moving anything.
+The destination must not exist. Restore creates it, marked `INCOMPLETE`, checks
+the archive with the image inside it, and removes it again if the check fails. It
+then extracts the archive and verifies the extracted bytes against the manifest
+it checked, refusing an archive replaced in between. Then it prepares the staged
+access database image to replace a store's content, in one transaction: a new
+generation (the store ID is kept), a new credential revision for every person,
+every pending sign-in and enrollment grant expired, and one
+`store.restore_prepared` row in its history. It checks the prepared image again
+and records it in the staging manifest's `staged` object: `image_sha256`, the new
+`generation` and `prepared_at`. The image's entry in `files` keeps the archived
+digest. Restore refuses an archive that already carries `staged`. An interrupted
+extraction or a failed preparation leaves `INCOMPLETE`; do not activate it. A
+successful staging directory contains `manifest.json`, `config/`, any separate
+`data/` and `providers/` content, `store/image.sqlite` when the bundle has an
+access store, and `protection/` when a key was supplied. Inspect the manifest's
+original roots before moving anything.
+
+No command activates a staged directory yet; activation is a later change. What
+an operator can do today, by hand, with the node stopped:
+
+- A staged `installation` bundle holds `manifest.json`, `config/`, any `data/`
+  and `providers/`, `store/image.sqlite` when the installation had an access
+  store, and `protection/credentials.key` when a key was supplied. Restore all
+  of it as described below.
+- A staged `database` bundle holds only `manifest.json` and
+  `store/image.sqlite`. Place the image as the access database, exactly as
+  described below, into the installation it came from: the store ID in that
+  installation's `access-store.json` must equal `store.store_id` in the staging
+  `manifest.json`. Nothing else in the installation changes.
 
 Once the prepared image is in place, browser sessions, delegated OAuth tokens and
 app-key references issued before the restore do not resolve, without any edit of
@@ -170,16 +206,17 @@ identity with the restricted ACL. Do not loosen permissions to bypass validation
 
 Restore the access database from the prepared image only. Check that the SHA-256
 of the staged `store/image.sqlite` (`sha256sum`, `shasum -a 256` or PowerShell
-`Get-FileHash`) equals `staged.image_sha256` in the staging `manifest.json`. Move the target configuration's existing `access/` directory
-aside: it holds the database being replaced and can hold its journal, which
-SQLite would replay over the new one. Create `access/` in the target
-configuration directory, owner-only for the service account, and place the
-staged image there as `access/access.sqlite`, owner-only. The store marker,
-`config/access-store.json` in the staging directory, goes to
-`access-store.json` in the target configuration directory with the rest of
-`config/`; it names the store ID the prepared image keeps. Never place an image
-whose digest differs from `staged.image_sha256`, an image restore did not
-prepare, or a `-journal` file beside it.
+`Get-FileHash`) equals `staged.image_sha256` in the staging `manifest.json`. Move
+the target configuration's existing `access/` directory aside: it holds the
+database being replaced and can hold its journal, which SQLite would replay over
+the new one. Create `access/` in the target configuration directory, owner-only
+for the service account, and place the staged image there as
+`access/access.sqlite`, owner-only. From an `installation` bundle, the store
+marker `config/access-store.json` goes to `access-store.json` in the target
+configuration directory with the rest of `config/`; it names the store ID the
+prepared image keeps. Never place an image whose digest differs from
+`staged.image_sha256`, an image restore did not prepare, or a `-journal` file
+beside it.
 
 Staging is intentionally separate from activation: configuration and provider data
 can live on different filesystems, and replacing them is not one atomic operation.

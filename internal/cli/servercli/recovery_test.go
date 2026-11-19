@@ -1,16 +1,26 @@
 package servercli
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stretchr/testify/require"
@@ -101,4 +111,138 @@ func TestRecoveryCommandsNameTheProfileAndStore(t *testing.T) {
 	out, err = runRecovery(t, dir, "backup", "--output", filepath.Join(t.TempDir(), "worker.tar.gz"))
 	require.NoError(t, err)
 	require.Contains(t, out, "No access store")
+}
+
+// rewriteImage rewrites archive with its database image replaced by what edit
+// makes of it, and the image's digest and size recomputed, as a forger would.
+func rewriteImage(t *testing.T, archive string, edit func(t *testing.T, image string)) string {
+	t.Helper()
+	in, err := os.Open(archive)
+	require.NoError(t, err)
+	defer func() { _ = in.Close() }()
+	compressed, err := gzip.NewReader(in)
+	require.NoError(t, err)
+	reader := tar.NewReader(compressed)
+	var names []string
+	entries := make(map[string][]byte)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		entries[header.Name], err = io.ReadAll(reader)
+		require.NoError(t, err)
+		names = append(names, header.Name)
+	}
+	image := filepath.Join(t.TempDir(), "image.sqlite")
+	require.NoError(t, os.WriteFile(image, entries["store/image.sqlite"], 0o600))
+	edit(t, image)
+	data, err := os.ReadFile(image)
+	require.NoError(t, err)
+	entries["store/image.sqlite"] = data
+	var manifest recovery.Manifest
+	require.NoError(t, json.Unmarshal(entries["manifest.json"], &manifest))
+	for i, file := range manifest.Files {
+		if file.Name == "store/image.sqlite" {
+			sum := sha256.Sum256(data)
+			manifest.Files[i].Size, manifest.Files[i].SHA256 = int64(len(data)), hex.EncodeToString(sum[:])
+		}
+	}
+	entries["manifest.json"], err = json.Marshal(manifest)
+	require.NoError(t, err)
+	forged := filepath.Join(t.TempDir(), "forged.tar.gz")
+	out, err := os.Create(forged)
+	require.NoError(t, err)
+	gz := gzip.NewWriter(out)
+	writer := tar.NewWriter(gz)
+	for _, name := range names {
+		require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(entries[name]))}))
+		_, err := writer.Write(entries[name])
+		require.NoError(t, err)
+	}
+	require.NoError(t, errors.Join(writer.Close(), gz.Close(), out.Close()))
+	return forged
+}
+
+func execImage(query string) func(t *testing.T, image string) {
+	return func(t *testing.T, image string) {
+		db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(image))
+		require.NoError(t, err)
+		_, err = db.ExecContext(t.Context(), query)
+		require.NoError(t, errors.Join(err, db.Close()))
+	}
+}
+
+// TestRecoveryCommandsGiveTheArchiveItsOwnAdvice: check and restore of an
+// archive whose image is refused print the reason with advice about the
+// archive, never the live store's next action.
+func TestRecoveryCommandsGiveTheArchiveItsOwnAdvice(t *testing.T) {
+	dir, _ := recoveryInstallation(t)
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	_, err := runRecovery(t, dir, "backup", "--output", archive)
+	require.NoError(t, err)
+	for reason, edit := range map[sqlstore.Reason]func(t *testing.T, image string){
+		sqlstore.IntegrityFailed: execImage("CREATE TRIGGER planted AFTER INSERT ON teams BEGIN SELECT 1; END"),
+		sqlstore.SchemaNewer:     execImage("PRAGMA user_version = 99"),
+		sqlstore.Unreadable: func(t *testing.T, image string) {
+			require.NoError(t, os.WriteFile(image, []byte("not a database, just text long enough to have a header"), 0o600))
+		},
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			forged := rewriteImage(t, archive, edit)
+			for _, args := range [][]string{{"check", forged}, {"restore", forged, "--to", filepath.Join(t.TempDir(), "staged")}} {
+				out, err := runRecovery(t, dir, args...)
+				require.Error(t, err)
+				printed := out + err.Error()
+				require.Contains(t, printed, "the archive's access database image is refused: "+string(reason))
+				require.NotContains(t, printed, "remove the access directory")
+				require.NotContains(t, printed, "Stop the service")
+			}
+		})
+	}
+}
+
+const recoveryChildArgs = "ZZROUTER_RECOVERY_CHILD_ARGS"
+
+// TestRecoveryInterruptChild runs the recovery command its parent names in
+// recoveryChildArgs; it is TestRecoveryCommandsStopOnInterrupt's child.
+func TestRecoveryInterruptChild(t *testing.T) {
+	args := os.Getenv(recoveryChildArgs)
+	if args == "" {
+		return
+	}
+	cmd := NewRecoveryCmd()
+	cmd.SetArgs(strings.Split(args, "\n"))
+	require.NoError(t, cmd.Execute())
+}
+
+// TestRecoveryCommandsStopOnInterrupt interrupts a running recovery check: it
+// stops with an error and removes its temporary directory.
+func TestRecoveryCommandsStopOnInterrupt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows cannot send an interrupt to another process")
+	}
+	dir, _ := recoveryInstallation(t)
+	// A large compressible file keeps the check busy after its temporary exists.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "large.bin"), make([]byte, 64<<20), 0o600))
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	_, err := runRecovery(t, dir, "backup", "--output", archive)
+	require.NoError(t, err)
+	temp := t.TempDir()
+	// The child inherits these.
+	t.Setenv("TMPDIR", temp)
+	t.Setenv(recoveryChildArgs, strings.Join([]string{"check", archive, "--dir", dir}, "\n"))
+	child := host.Command(os.Args[0], "-test.run=^TestRecoveryInterruptChild$", "-test.count=1")
+	require.NoError(t, child.Start())
+	t.Cleanup(func() { _ = child.Process.Kill() })
+	require.Eventually(t, func() bool {
+		entries, err := os.ReadDir(temp)
+		return err == nil && len(entries) > 0
+	}, time.Minute, time.Millisecond, "the check created its temporary directory")
+	require.NoError(t, child.Process.Signal(os.Interrupt))
+	require.Error(t, child.Wait(), "an interrupted check fails")
+	entries, err := os.ReadDir(temp)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the interrupted check removed its temporary directory")
 }

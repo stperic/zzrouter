@@ -8,9 +8,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -165,6 +165,11 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	}
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
+	for _, path := range []string{output, keyOutput} {
+		entries, err := os.ReadDir(filepath.Dir(path))
+		require.NoError(t, err)
+		require.Len(t, entries, 1, "the output alone, no temporary beside it")
+	}
 	require.Equal(t, ProfileInstallation, manifest.Profile)
 	require.Equal(t, StoreMeta(before.meta), *manifest.Store)
 	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
@@ -323,9 +328,8 @@ func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
 }
 
 // TestRecoveryBackupCapturesTheAccessStore never reads the access directory
-// as raw files, stops with the store's reason and writes nothing for a store
-// that refuses to open, captures a newer release's database, and backs up a
-// node without a store with no image.
+// as raw files, captures a newer release's database, and backs up a node
+// without a store with no image.
 func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
 	for _, name := range []string{"access/access.sqlite.staged", "access/backups/old.tar.gz", "access/people.json"} {
@@ -339,15 +343,6 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
 	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access-store.json" }))
 	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return strings.HasPrefix(file.Name, "config/access/") }))
-
-	dir, output, keyOutput = recoveryFixture(t)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
-	_, err = Backup(t.Context(), dir, output, keyOutput)
-	var refusal *sqlstore.Refusal
-	require.ErrorAs(t, err, &refusal)
-	require.Equal(t, sqlstore.Unreadable, refusal.Reason)
-	require.NoFileExists(t, output)
-	require.NoFileExists(t, keyOutput, "a refused backup writes no output at all")
 
 	// A rolled-back binary still backs up the newer release's database before
 	// restoring over it, byte for byte; only that release can check it.
@@ -364,6 +359,7 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	image := slices.IndexFunc(manifest.Files, func(file File) bool { return file.Name == imageName })
 	require.Equal(t, digest(live), manifest.Files[image].SHA256)
 	_, err = Check(t.Context(), output, keyOutput)
+	var refusal *sqlstore.Refusal
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, sqlstore.SchemaNewer, refusal.Reason)
 
@@ -386,8 +382,69 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(destination, "store"))
 }
 
+// emptyDir requires dir to hold nothing.
+func emptyDir(t *testing.T, dir, msg string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	require.Empty(t, names, msg)
+}
+
+// privateTemp points the system's temporary directory at a new empty one.
+func privateTemp(t *testing.T) string {
+	t.Helper()
+	temp := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	return temp
+}
+
+// TestRecoveryBackupRefusalsWriteNothing: a live store that will not open
+// stops the backup with its own reason and next action, and leaves no
+// archive, no key and no temporary anywhere.
+func TestRecoveryBackupRefusalsWriteNothing(t *testing.T) {
+	for reason, damage := range map[sqlstore.Reason]func(t *testing.T, database string){
+		sqlstore.Missing: func(t *testing.T, database string) { require.NoError(t, os.Remove(database)) },
+		sqlstore.Unreadable: func(t *testing.T, database string) {
+			require.NoError(t, os.WriteFile(database, []byte("not a database, just text long enough to have a header"), 0o600))
+		},
+		sqlstore.IntegrityFailed: func(t *testing.T, database string) {
+			db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(database))
+			require.NoError(t, err)
+			var page, size int64
+			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT rootpage FROM sqlite_schema WHERE name = 'keys'").Scan(&page))
+			require.NoError(t, db.QueryRowContext(t.Context(), "PRAGMA page_size").Scan(&size))
+			require.NoError(t, db.Close())
+			data, err := os.ReadFile(database)
+			require.NoError(t, err)
+			data[(page-1)*size] = 0xff
+			require.NoError(t, os.WriteFile(database, data, 0o600))
+		},
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			dir, output, keyOutput := recoveryFixture(t)
+			temp := privateTemp(t)
+			damage(t, filepath.Join(dir, "access", "access.sqlite"))
+			_, err := Backup(t.Context(), dir, output, keyOutput)
+			var refusal *sqlstore.Refusal
+			require.ErrorAs(t, err, &refusal)
+			require.Equal(t, reason, refusal.Reason)
+			require.Contains(t, err.Error(), refusal.NextAction(), "the live store keeps its own advice")
+			emptyDir(t, filepath.Dir(output), "no archive and no temporary beside it")
+			emptyDir(t, filepath.Dir(keyOutput), "no key and no temporary beside it")
+			emptyDir(t, temp, "nothing in the system's temporary directory")
+		})
+	}
+}
+
 // TestRecoveryFailedBackupLeavesNoOutput: a bundle that fails while it is
-// written leaves no archive, and Backup then removes the key it exported.
+// written leaves no file; an existing archive or key is refused and kept, and
+// a refused archive takes its already published key with it.
 func TestRecoveryFailedBackupLeavesNoOutput(t *testing.T) {
 	sources := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(sources, "node.yaml"), []byte("node: {port: 9090}"), 0o600))
@@ -396,20 +453,52 @@ func TestRecoveryFailedBackupLeavesNoOutput(t *testing.T) {
 	require.ErrorContains(t, writeBundle(t.Context(), changed, output), "source changed")
 	require.NoFileExists(t, output, "a failed bundle leaves no partial output")
 
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("needs a directory its owner cannot write")
+	for _, existing := range []string{"archive", "key"} {
+		t.Run("an existing "+existing, func(t *testing.T) {
+			dir, output, keyOutput := recoveryFixture(t)
+			kept := map[string]string{"archive": output, "key": keyOutput}[existing]
+			require.NoError(t, os.WriteFile(kept, []byte("an earlier backup"), 0o600))
+			_, err := Backup(t.Context(), dir, output, keyOutput)
+			require.ErrorIs(t, err, fs.ErrExist)
+			data, err := os.ReadFile(kept)
+			require.NoError(t, err)
+			require.Equal(t, "an earlier backup", string(data), "never replaced")
+			for _, path := range []string{output, keyOutput} {
+				entries, err := os.ReadDir(filepath.Dir(path))
+				require.NoError(t, err)
+				if path == kept {
+					require.Len(t, entries, 1, "only the earlier file, no temporary")
+				} else {
+					require.Empty(t, entries, "no new file and no temporary")
+				}
+			}
+		})
 	}
-	dir, output, keyOutput := recoveryFixture(t)
-	require.NoError(t, os.Chmod(filepath.Dir(output), 0o500))
-	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(output), 0o700) })
-	_, err := Backup(t.Context(), dir, output, keyOutput)
-	require.ErrorIs(t, err, os.ErrPermission)
-	require.NoFileExists(t, output)
-	require.NoFileExists(t, keyOutput, "the exported key goes with the failed archive")
 }
 
-// writeTestBundle writes files, with their digests, under an installation
-// manifest that edits may change.
+// TestRecoveryRefusesLeftovers: what a killed backup leaves carries a .tmp
+// suffix, and check and restore refuse it as an archive or a key.
+func TestRecoveryRefusesLeftovers(t *testing.T) {
+	dir, output, keyOutput := recoveryFixture(t)
+	_, err := Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	leftover := func(path string) string {
+		copied := filepath.Join(t.TempDir(), "leftover.tmp")
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(copied, data, 0o600))
+		return copied
+	}
+	_, err = Check(t.Context(), leftover(output), keyOutput)
+	require.ErrorContains(t, err, "leftover of an interrupted backup")
+	_, err = Check(t.Context(), output, leftover(keyOutput))
+	require.ErrorContains(t, err, "leftover of an interrupted backup")
+	destination := filepath.Join(t.TempDir(), "restored")
+	_, err = Restore(t.Context(), leftover(output), keyOutput, destination)
+	require.ErrorContains(t, err, "leftover of an interrupted backup")
+	require.NoDirExists(t, destination)
+}
+
 func writeTestBundle(t *testing.T, files map[string][]byte, edits ...func(*Manifest)) string {
 	t.Helper()
 	manifest := Manifest{Version: 1, Profile: ProfileInstallation, Inventory: &Inventory{Version: 1}}

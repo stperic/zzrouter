@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
@@ -82,6 +85,17 @@ func NewRecoveryCmd() *cobra.Command {
 			child.Flags().StringVar(&destination, "to", "", "New, absent staging directory")
 		}
 		command.AddCommand(child)
+	}
+	// An interrupt or a service stop cancels the operation, which removes its
+	// temporaries and leaves no output.
+	for _, child := range command.Commands() {
+		run := child.RunE
+		child.RunE = func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			cmd.SetContext(ctx)
+			return run(cmd, args)
+		}
 	}
 	return command
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
@@ -80,6 +81,30 @@ func TestCopyFile(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, sqlitedb.CopyFile(cancelled, path, failed), context.Canceled)
 	require.NoFileExists(t, failed, "a cancelled copy leaves no file")
+
+	// Cancelled after its first read of a file larger than one.
+	large := filepath.Join(dir, "large.sqlite")
+	require.NoError(t, os.WriteFile(large, bytes.Repeat([]byte("page"), 1<<18), 0o600))
+	midway := &cancelOnSecondCheck{}
+	midway.Context, midway.cancel = context.WithCancel(t.Context())
+	defer midway.cancel()
+	require.ErrorIs(t, sqlitedb.CopyFile(midway, large, failed), context.Canceled)
+	require.Equal(t, int32(2), midway.checks.Load(), "it read once before the cancellation")
+	require.NoFileExists(t, failed, "a copy cancelled midway leaves no file")
+}
+
+// cancelOnSecondCheck cancels its context when Err is checked the second time.
+type cancelOnSecondCheck struct {
+	context.Context
+	cancel context.CancelFunc
+	checks atomic.Int32
+}
+
+func (c *cancelOnSecondCheck) Err() error {
+	if c.checks.Add(1) == 2 {
+		c.cancel()
+	}
+	return c.Context.Err()
 }
 
 func TestCheckCorruptPage(t *testing.T) {

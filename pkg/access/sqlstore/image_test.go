@@ -265,6 +265,14 @@ func TestCheckImage(t *testing.T) {
 		"another application":     {func(t *testing.T, path string) { alter(t, path, "PRAGMA application_id = 1") }, Unreadable},
 		// Opening it read-write would rewrite its header to leave WAL mode.
 		"WAL mode": {func(t *testing.T, path string) { alter(t, path, "PRAGMA journal_mode = WAL") }, Unreadable},
+		// Schema objects this release does not create would persist after activation.
+		"an added trigger": {func(t *testing.T, path string) {
+			alter(t, path, "CREATE TRIGGER planted AFTER INSERT ON teams BEGIN SELECT 1; END")
+		}, IntegrityFailed},
+		"an added view":   {func(t *testing.T, path string) { alter(t, path, "CREATE VIEW planted AS SELECT id FROM keys") }, IntegrityFailed},
+		"an added index":  {func(t *testing.T, path string) { alter(t, path, "CREATE INDEX planted ON keys(name)") }, IntegrityFailed},
+		"a dropped index": {func(t *testing.T, path string) { alter(t, path, "DROP INDEX audit_actor") }, IntegrityFailed},
+		"an extra column": {func(t *testing.T, path string) { alter(t, path, "ALTER TABLE keys ADD COLUMN planted TEXT") }, IntegrityFailed},
 		"junk": {func(t *testing.T, path string) {
 			require.NoError(t, os.WriteFile(path, []byte("not a database, just text long enough to have a header"), 0o600))
 		}, Unreadable},
@@ -284,6 +292,19 @@ func TestCheckImage(t *testing.T) {
 			assert.NoFileExists(t, path+"-wal")
 		})
 	}
+}
+
+// TestCheckImageAdmitsTheReleasedFixture: the committed fixture of this
+// release's schema holds exactly the objects its migrations create.
+func TestCheckImageAdmitsTheReleasedFixture(t *testing.T) {
+	t.Parallel()
+	latest, err := schema.Latest()
+	require.NoError(t, err)
+	image := filepath.Join(t.TempDir(), "image.sqlite")
+	require.NoError(t, os.WriteFile(image, readFile(t, filepath.Join("testdata", fmt.Sprintf("access-v%d.sqlite", latest))), 0o600))
+	img, err := CheckImage(t.Context(), image)
+	require.NoError(t, err)
+	assert.True(t, img.Initialized)
 }
 
 // TestImageOperationsRefuseTheLiveFile: an image operation pointed at the

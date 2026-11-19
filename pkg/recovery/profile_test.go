@@ -99,12 +99,25 @@ func TestRecoveryDatabaseProfile(t *testing.T) {
 	require.NoError(t, store.Close())
 }
 
+// requireArchiveRefusal requires err to refuse the archive's image for reason
+// with the archive's advice, never the live store's.
+func requireArchiveRefusal(t *testing.T, err error, reason sqlstore.Reason) {
+	t.Helper()
+	var refusal *sqlstore.Refusal
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, reason, refusal.Reason)
+	require.Contains(t, err.Error(), "the archive's access database image is refused: "+string(reason)+".")
+	require.NotContains(t, err.Error(), refusal.NextAction(), "the live store's next action")
+	require.NotContains(t, err.Error(), "remove the access directory")
+}
+
 // TestRecoveryProfileRefusals: each bundle breaks one profile rule, and both
 // check and restore refuse it before creating anything.
 func TestRecoveryProfileRefusals(t *testing.T) {
 	image, meta := capturedImage(t)
 	content := readBytes(t, image)
 	node := []byte("node: {port: 9090}")
+	marker := func(storeID string) []byte { return []byte(`{"version":1,"store_id":"` + storeID + `"}`) }
 	database := func(m *Manifest) { m.Profile, m.Inventory, m.Store = ProfileDatabase, nil, &meta }
 	with := func(edit func(*StoreMeta)) func(*Manifest) {
 		return func(m *Manifest) {
@@ -142,7 +155,9 @@ func TestRecoveryProfileRefusals(t *testing.T) {
 		"an installation image without store": {map[string][]byte{"config/node.yaml": node, imageName: content}, nil, ""},
 		"an installation store without image": {map[string][]byte{"config/node.yaml": node}, func(m *Manifest) { m.Store = &meta }, ""},
 		"an installation without inventory":   {map[string][]byte{"config/node.yaml": node, imageName: content}, func(m *Manifest) { m.Inventory, m.Store = nil, &meta }, ""},
-		"a store marker without the image":    {map[string][]byte{"config/node.yaml": node, "config/access-store.json": []byte(`{"version":1}`)}, nil, ""},
+		"a store marker without the image":    {map[string][]byte{"config/node.yaml": node, "config/access-store.json": marker(meta.StoreID)}, nil, ""},
+		"a store marker naming another store": {map[string][]byte{"config/node.yaml": node, "config/access-store.json": marker("another"), imageName: content}, func(m *Manifest) { m.Store = &meta }, ""},
+		"a store marker that is not one":      {map[string][]byte{"config/node.yaml": node, "config/access-store.json": []byte(`{"version":1}`), imageName: content}, func(m *Manifest) { m.Store = &meta }, ""},
 		"a staging manifest":                  {map[string][]byte{imageName: content}, func(m *Manifest) { database(m); m.Staged = &Staged{} }, ""},
 		"another store ID":                    {map[string][]byte{imageName: content}, with(func(s *StoreMeta) { s.StoreID = "another" }), ""},
 		"another generation":                  {map[string][]byte{imageName: content}, with(func(s *StoreMeta) { s.Generation = "another" }), ""},
@@ -151,6 +166,8 @@ func TestRecoveryProfileRefusals(t *testing.T) {
 		"another sequence":                    {map[string][]byte{imageName: content}, with(func(s *StoreMeta) { s.Sequence-- }), ""},
 		"a corrupt image, digests recomputed": {map[string][]byte{imageName: corrupt(t)}, database, sqlstore.IntegrityFailed},
 		"an image in WAL mode":                {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "PRAGMA journal_mode = WAL"))}, database, sqlstore.Unreadable},
+		"an image with an added trigger":      {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "CREATE TRIGGER planted AFTER INSERT ON teams BEGIN SELECT 1; END"))}, database, sqlstore.IntegrityFailed},
+		"an image a newer release wrote":      {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "PRAGMA user_version = 99"))}, database, sqlstore.SchemaNewer},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var edits []func(*Manifest)
@@ -158,36 +175,39 @@ func TestRecoveryProfileRefusals(t *testing.T) {
 				edits = append(edits, tc.edit)
 			}
 			archive := writeTestBundle(t, tc.files, edits...)
-			_, err := Check(t.Context(), archive, "")
-			require.Error(t, err)
-			var refusal *sqlstore.Refusal
-			if tc.reason != "" {
-				require.ErrorAs(t, err, &refusal)
-				require.Equal(t, tc.reason, refusal.Reason)
-			} else {
-				require.False(t, errors.As(err, &refusal), "refused by its manifest, not its image: %v", err)
-			}
 			destination := filepath.Join(t.TempDir(), "restored")
-			_, err = Restore(t.Context(), archive, "", destination)
-			require.Error(t, err)
+			_, restoreErr := Restore(t.Context(), archive, "", destination)
 			require.NoDirExists(t, destination)
+			for _, err := range []error{second(Check(t.Context(), archive, "")), restoreErr} {
+				require.Error(t, err)
+				if tc.reason != "" {
+					requireArchiveRefusal(t, err, tc.reason)
+				} else {
+					var refusal *sqlstore.Refusal
+					require.False(t, errors.As(err, &refusal), "refused by its manifest, not its image: %v", err)
+				}
+			}
 		})
 	}
+	newer := writeTestBundle(t, map[string][]byte{imageName: readBytes(t, alterImage(t, image, "PRAGMA user_version = 99"))}, database)
+	_, err := Check(t.Context(), newer, "")
+	require.ErrorContains(t, err, "only that release can check or restore this archive")
 }
 
 // TestRecoveryFailedPreparationLeavesIncomplete: an image that passes its
-// check but cannot be prepared (another tool added a trigger that refuses
-// the preparation's write) stages nothing usable: INCOMPLETE stays, no
-// staging manifest is written, and the staged image is as archived.
+// check but cannot take the preparation's commit (its history's last event
+// number leaves no room for the restore's row) stages nothing usable:
+// INCOMPLETE stays, no staging manifest is written, and the staged image is
+// as archived.
 func TestRecoveryFailedPreparationLeavesIncomplete(t *testing.T) {
 	image, meta := capturedImage(t)
-	altered := alterImage(t, image, "CREATE TRIGGER refuse_restore BEFORE UPDATE ON meta BEGIN SELECT RAISE(ABORT, 'refused'); END")
+	altered := alterImage(t, image, "INSERT INTO audit_events (seq, time, action, actor, subject, request_id) VALUES (9223372036854775807, 0, 'team.created', 'a', 'b', '')")
 	archive := databaseBundle(t, altered, meta)
 	_, err := Check(t.Context(), archive, "")
 	require.NoError(t, err, "the image passes its check")
 	destination := filepath.Join(t.TempDir(), "restored")
 	_, err = Restore(t.Context(), archive, "", destination)
-	require.ErrorContains(t, err, "refused")
+	require.Error(t, err)
 	require.FileExists(t, filepath.Join(destination, "INCOMPLETE"))
 	require.NoFileExists(t, filepath.Join(destination, "manifest.json"))
 	require.Equal(t, readBytes(t, altered), readBytes(t, filepath.Join(destination, filepath.FromSlash(imageName))))
@@ -213,3 +233,5 @@ func TestRecoveryImageNeverEntersMemory(t *testing.T) {
 	require.Empty(t, snapshots)
 	require.Equal(t, readBytes(t, image), readBytes(t, imagePath(images)))
 }
+
+func second[T any](_ T, err error) error { return err }
