@@ -308,7 +308,7 @@ func (s *TeamsService) ResetTeamUsage(ctx context.Context, id, actor string) err
 	if s.access != nil {
 		s.access.ResetTeamSpend(id)
 	}
-	s.store.Record(ctx, audit.Event{
+	recordReset(ctx, s.store, audit.Event{
 		Action:  audit.ActionTeamUsageReset,
 		Actor:   resolveActor(actor),
 		Subject: id,

@@ -95,6 +95,7 @@ managed secrets into provider files.
 | `providers/<kind>/<name>/schema.yaml` | Extended parameter schema |
 | `access/access.sqlite` | Coordinator access records: people, teams, app-key hashes, invitations and the access history |
 | `access-store.json` | Store marker: tells a lost access database from a fresh installation |
+| `access/backups/` | Online backups of the access database, owner-only: kept 24 hours, then the three newest up to seven days, at most 1 GiB ([recovery](recovery.md#online-backups-of-the-access-database)) |
 | `model_groups.yaml` | Logical model routes |
 
 Only a node that boots as a coordinator opens the access store; a worker

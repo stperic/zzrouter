@@ -87,4 +87,13 @@ const (
 	// CodeAccessStoreBusy means another process held the access database
 	// past the busy timeout; the change was not made.
 	CodeAccessStoreBusy RouteErrorCode = "access_store_busy"
+
+	// CodeStateBackupNotFound names no retained online backup.
+	CodeStateBackupNotFound RouteErrorCode = "state_backup_not_found"
+	// CodeStateBackupCapacityExceeded means the backup byte cap or the disk
+	// cannot hold another online backup; nothing was kept.
+	CodeStateBackupCapacityExceeded RouteErrorCode = "state_backup_capacity_exceeded"
+	// CodeStateImageCheckFailed means a backup's copy of the access database
+	// failed its check; nothing was kept.
+	CodeStateImageCheckFailed RouteErrorCode = "state_image_check_failed"
 )

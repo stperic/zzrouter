@@ -38,5 +38,8 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeModelDiscoveryUnavailable":     "model_discovery_unavailable",
 		"CodeAccessStoreFailed":             "access_store_failed",
 		"CodeAccessStoreBusy":               "access_store_busy",
+		"CodeStateBackupNotFound":           "state_backup_not_found",
+		"CodeStateBackupCapacityExceeded":   "state_backup_capacity_exceeded",
+		"CodeStateImageCheckFailed":         "state_image_check_failed",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }

@@ -155,8 +155,9 @@ func createFile(path string, fill func() error) (err error) {
 	return fill()
 }
 
-// Rename moves a closed database file and syncs the destination directory, so
-// the move survives a power loss. Windows refuses to move an open file.
+// Rename moves a closed file, such as a database, and syncs the destination
+// directory, so the move survives a power loss. Windows refuses to move an
+// open file.
 func Rename(from, to string) error {
 	if err := os.Rename(from, to); err != nil {
 		return err

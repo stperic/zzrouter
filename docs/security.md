@@ -275,6 +275,20 @@ with a message saying so, not a damage reason. If the coordinator cannot even
 tell whether a change was committed, it answers `503 access_store_failed` and
 exits so its service manager restarts it.
 
+Online backups (`POST /zzrouter/v1/system/state/backups`, for an administrator or
+the local operator's proof) are full copies of the access database: password
+and app-key hashes, teams, invitations and the access history. They live in the
+configuration's `access/backups` directory, owner-only (restricted ACL on
+Windows), under names the coordinator derives from an opaque ID; no request
+names a path, a file or a destination, and no answer carries a path or archive
+content. Retention removes them: each is kept for the 24-hour replay window,
+then only the three newest, and none past seven days, within 1 GiB. The
+status (`GET /zzrouter/v1/system/state`) lists every retained copy by kind,
+creation time and size. They never travel in an installation bundle. A copy an
+operator takes elsewhere holds the same credential hashes: protect it as the
+installation bundle is protected. An older backup restored later can bring back
+access revoked since.
+
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.
 It prepares the staged access database image so that sessions, delegated tokens

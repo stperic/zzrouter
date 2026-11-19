@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -489,12 +488,9 @@ func (s *Store) People() access.People {
 }
 
 // Record commits ev alone, for a change whose state lives outside the store:
-// it advances the sequence, not the revision. A failure is logged.
-func (s *Store) Record(ctx context.Context, ev audit.Event) {
-	ctx = context.WithoutCancel(ctx)
-	if err := s.mutate(ctx, auditOnly, func(t *tx) error { t.record(ev); return nil }); err != nil {
-		slog.WarnContext(ctx, "Audit record failed", "action", ev.Action, "subject", ev.Subject, "error", err)
-	}
+// it advances the sequence, not the revision. Cancellation does not stop it.
+func (s *Store) Record(ctx context.Context, ev audit.Event) error {
+	return s.mutate(context.WithoutCancel(ctx), auditOnly, func(t *tx) error { t.record(ev); return nil })
 }
 
 // Close waits for in-flight commits and closes the database; closing twice is

@@ -19,7 +19,15 @@ type storeState struct {
 	ObservedAt     time.Time      `json:"observed_at"`
 	Size           storeSize      `json:"size"`
 	Integrity      storeIntegrity `json:"integrity"`
-	RetainedCopies []struct{}     `json:"retained_copies"` // empty until online backups exist
+	RetainedCopies []retainedCopy `json:"retained_copies"`
+}
+
+// retainedCopy is a copy of the access records that holds credentials.
+type retainedCopy struct {
+	Kind      string    `json:"kind"`
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	SizeBytes int64     `json:"size_bytes"`
 }
 
 type storeSize struct {
@@ -43,10 +51,15 @@ func (s *Server) handleStoreState(c *gin.Context) {
 		RespondToError(c, err)
 		return
 	}
+	backups := s.backups.List()
+	var backupBytes int64
+	for _, backup := range backups {
+		backupBytes += backup.SizeBytes
+	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: []struct{}{},
-		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes},
+		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: retainedCopies(backups),
+		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes, BackupBytes: backupBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})
 }

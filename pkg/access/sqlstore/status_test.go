@@ -71,7 +71,7 @@ func TestStatusFollowsCommits(t *testing.T) {
 	assert.Greater(t, claimed.Sequence, opened.Sequence)
 	assert.Equal(t, opened.Integrity, claimed.Integrity, "commits keep the check Open ran")
 
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"})
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"}))
 	recorded := status(t, s)
 	assert.Equal(t, claimed.Revision, recorded.Revision, "an event alone revises nothing")
 	assert.Equal(t, claimed.Sequence+1, recorded.Sequence)

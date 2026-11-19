@@ -30,7 +30,7 @@ func (s *Server) registerPeopleRoutes() {
 	public.POST("/invitations/inspect", s.handleInvitationInspect)
 	public.POST("/invitations/accept", s.handleInvitationAccept)
 	public.POST("/recovery", s.handlePeopleRecovery)
-	s.localRoute(http.MethodPost, "/access/recovery/local", false, s.handleLocalOwnerRecovery)
+	s.localRoute(http.MethodPost, "/access/recovery/local", false, nil, s.handleLocalOwnerRecovery)
 	self := group.Group("/access", func(c *gin.Context) {
 		if s.access.authenticateMultiRole(c, []UserRole{RoleAdmin, RoleUser}, true) {
 			c.Next()

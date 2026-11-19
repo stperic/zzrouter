@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -84,6 +85,9 @@ var failureTable = []failureRow{
 	// The node exits on this through its fatal path; the supervisor restarts it.
 	{sentinel: sqlstore.ErrFailed, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreFailed), message: "Access records are unavailable while this coordinator restarts. Retry once it answers again."},
 	{sentinel: sqlstore.ErrBusy, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreBusy), message: "Another process holds the access database, so the change was not made. Retry shortly.", retryAfter: accessStoreBusyRetryAfter},
+	{sentinel: recovery.ErrBackupNotFound, status: http.StatusNotFound, code: string(httperr.CodeStateBackupNotFound), message: "No retained online backup has this ID. List the retained backups with GET /zzrouter/v1/system/state/backups."},
+	{sentinel: recovery.ErrImageCheck, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "The backup's copy of the access database failed its check, so nothing was kept. Stop the service and run zzrouter-node recovery inventory."},
+	{status: http.StatusInsufficientStorage, code: string(httperr.CodeStateBackupCapacityExceeded), resolve: resolveBackupCapacity},
 	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrPortUnavailable, status: http.StatusServiceUnavailable, code: ""},
@@ -104,6 +108,24 @@ func resolveCatalogPublication(err error, wire *httperr.Error) bool {
 	wire.Extra = map[string]any{"run_id": publication.RunID, "run_status": publication.Status, "catalog_publication": "failed"}
 	if publication.JobID != "" {
 		wire.Extra["job_id"] = publication.JobID
+	}
+	return true
+}
+
+// resolveBackupCapacity tells the byte cap, with its figures, from a full disk.
+func resolveBackupCapacity(err error, wire *httperr.Error) bool {
+	var full *recovery.CapacityError
+	if !errors.As(err, &full) {
+		return false
+	}
+	wire.Message = "The disk holding the coordinator's configuration has no room for a backup, so nothing was kept. Free space there, then retry."
+	wire.Extra = map[string]any{"capacity": "disk"}
+	if full.LimitBytes > 0 {
+		wire.Message = "Online backups would exceed their byte cap, so nothing was kept. Retry after frees_at, when retention removes an older backup."
+		wire.Extra = map[string]any{"capacity": "byte_cap", "limit_bytes": full.LimitBytes, "retained_bytes": full.RetainedBytes, "required_bytes": full.RequiredBytes}
+		if !full.FreesAt.IsZero() {
+			wire.Extra["frees_at"] = full.FreesAt
+		}
 	}
 	return true
 }

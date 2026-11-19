@@ -70,9 +70,12 @@ func peopleIssuer(ref control.CredentialReference) (people.Issuer, error) {
 // accessSnapshot is the server's one read of access records.
 func (s *Server) accessSnapshot() *access.Snapshot { return access.SnapshotOf(s.accessStore) }
 
-// closeAccess releases the local proof before the store.
+// closeAccess releases the local proof and the online backups before the store.
 func (s *Server) closeAccess() error {
 	err := s.localProof.Close()
+	if s.backups != nil {
+		s.backups.Close()
+	}
 	if s.accessStore != nil {
 		err = errors.Join(err, s.accessStore.Close())
 	}

@@ -359,7 +359,7 @@ func (s *KeysService) ResetKeyUsage(ctx context.Context, id, actor string) error
 	if s.access != nil {
 		s.access.ResetKeySpend(id)
 	}
-	s.store.Record(ctx, audit.Event{
+	recordReset(ctx, s.store, audit.Event{
 		Action:  audit.ActionKeyUsageReset,
 		Actor:   resolveActor(actor),
 		Subject: id,

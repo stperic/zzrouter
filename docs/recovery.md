@@ -72,16 +72,21 @@ writes to the installation in one case: when a crash left a journal beside a
 stopped database, copying it first recovers that journal into the live file,
 exactly as the next start would.
 
-`archives` lists the online backups in the configuration's `access/backups`
-directory, newest first and then by `id`: each archive's `id` (its file is
-`<id>.tar.gz`), `created_at`, `size_bytes`, the store identity its manifest
-names, and `readable`. `readable` says only what the manifest states: a
-`database` bundle at the schema version this release writes. It is not a check,
-since the inventory reads nothing but the manifest; `recovery check` checks an
-archive, so run it before you restore one. A regular file that is not such an
-archive is listed as `readable: false` and aged by its modification time;
-`.tmp` leftovers, links, directories and other special files are not listed,
-and the inventory never follows a link. While the lock is held (`in_use`) the
+`archives` lists the [online backups](#online-backups-of-the-access-database)
+in the configuration's `access/backups` directory, newest first and then by
+`id`: each archive's `id` (its file is `<id>.tar.gz`, the ID a UUID),
+`created_at`, `size_bytes`, the store identity its manifest names, and
+`readable`. It reads that directory exactly as a starting coordinator does.
+`readable` says only what the manifest states: a `database` bundle at the
+schema version this release writes. It is not a check, since the inventory
+reads nothing but the manifest; `recovery check` checks an archive, so run it
+before you restore one. A file named like an archive that is not one is listed
+as `readable: false` and aged by its modification time. Other files (`.tmp`
+leftovers of an interrupted backup, files under other names), links,
+directories and other special files are not listed, and the inventory never
+follows a link and deletes nothing. A coordinator deletes, when it starts, the
+regular files there that are not database archives under a backup's name.
+While the lock is held (`in_use`) the
 list is empty, because a running node owns that directory and its status lists
 them. Archives that cannot be listed, for example because a link stands on the
 way to `access/backups`, leave the store's state as it is: `archives` is empty,
@@ -200,6 +205,69 @@ successful inference. Use only trusted backups. Checks do not prune expired
 grants or turn corrupt spend into zero usage. Other configuration and provider
 assets are preserved byte for byte; the matching release validates their
 operational compatibility when the recovered node starts.
+
+## Online backups of the access database
+
+A running coordinator backs up its access database on request:
+`POST /zzrouter/v1/system/state/backups` with an empty JSON object, as an
+administrator (the API or `zz_api`) or, from the installed host, with the local
+proof in the `X-Zzrouter-Local-Proof` header, which the local commands use. It
+copies the database at one committed revision with SQLite's `VACUUM INTO` while
+the node serves, checks the copy as a start would, with SQLite's full integrity
+check, writes it as a `database` bundle (the image and a manifest naming its
+store ID, generation, schema version, revision, sequence and creation time),
+records one `store.backup_created` event in the access history and only then
+lists it.
+`GET /zzrouter/v1/system/state/backups` lists the retained backups and
+`GET /zzrouter/v1/system/state/backups/{id}` reads one, with the SHA-256 of its
+archive, `protected_until` and `expires_at`; `GET /zzrouter/v1/system/state`
+counts them in `backup_bytes` and `retained_copies`. No answer names a path.
+
+An online backup is the access database alone: people and password hashes,
+app keys and their hashes, teams, invitations and the access history. It is not
+an installation backup. It holds no configuration, routes, spend, provider
+connections, OAuth authority or cluster trust, so moving a coordinator to
+another machine needs the installation bundle that `recovery backup` writes. It
+is also not a copy elsewhere: the archives live in the configuration's
+`access/backups` directory, owner-only, beside the database, and retention
+deletes them. They never travel in an installation bundle. To keep one, copy
+`access/backups/<id>.tar.gz` as the installation account into your own
+protected backup storage, then run `recovery check` on the copy; a local export
+command comes later.
+
+A failed or interrupted backup lists nothing and leaves no file. A copy that
+fails its check answers `500 state_image_check_failed`: the live database may be
+damaged, so stop the service and run `recovery inventory`. The same
+`Idempotency-Key` and body replay the original `201` while the coordinator
+process lives; a retry after a restart creates a second backup. If the process
+dies after the `store.backup_created` event is committed and before the archive
+is in place, the history holds an event for a backup that was never listed: the
+order is deliberate, so a listed backup always has its event, and the next start
+deletes the unfinished file.
+
+Every backup is kept for at least the 24-hour replay window
+(`protected_until`), so a replayed create never names a backup that is gone.
+Past it, the three newest backups are kept, and none from seven days on. Pruning
+runs at start, after each backup and hourly; on Windows a file another program
+holds open is removed at a later pruning. Retained backups may hold at most
+1 GiB: a backup that would exceed it, counting only what retention keeps, is
+refused with `507 state_backup_capacity_exceeded`, whose `frees_at` says when
+the next retained backup expires. Before copying, the new archive is reckoned at
+the database's size, in practice an upper bound since the archive is a
+compressed compact copy; once written, at its own size. A full disk answers the same code with
+`capacity: disk`.
+
+A backup holds access writes (key, team and people changes, console sign-ins)
+only while it copies the database. On an Apple M5 Max laptop SSD that took
+about 90 ms for a 29 MiB database (100,000 access-history events) and 0.7 s for
+a 297 MiB one (1,000,000 events), and the whole backup 0.6 s and 6.8 s.
+Inference never writes to the access history, so it grows with administration,
+not with traffic.
+
+To restore an online backup today, stop the node, copy the archive out of
+`access/` and stage it with `recovery restore`, then place the prepared image as
+the next section describes for a staged `database` bundle. A command that
+activates it is a later change.
 
 ## Restore and activate deliberately
 

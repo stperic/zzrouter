@@ -31,8 +31,8 @@ func auditNode(t *testing.T) *Server {
 	require.Empty(t, auditHistory(t, s.accessStore))
 	for i := range 6 {
 		restore := utils.SetClock(utils.FixedClock(auditEpoch.Add(time.Duration(i) * time.Hour)))
-		s.accessStore.Record(t.Context(), audit.Event{Action: []audit.Action{audit.ActionKeyCreated, audit.ActionTeamUpdated}[i/3],
-			Actor: []string{"alice", "bob"}[i%2], Subject: []string{"eng", "ops", "sales"}[i%3]})
+		require.NoError(t, s.accessStore.Record(t.Context(), audit.Event{Action: []audit.Action{audit.ActionKeyCreated, audit.ActionTeamUpdated}[i/3],
+			Actor: []string{"alice", "bob"}[i%2], Subject: []string{"eng", "ops", "sales"}[i%3]}))
 		restore()
 	}
 	return s

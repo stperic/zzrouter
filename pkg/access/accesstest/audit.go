@@ -56,7 +56,7 @@ func times(events []audit.Event) []time.Time {
 // recordAt records ev with the process clock at at.
 func recordAt(t *testing.T, s access.Store, at time.Time, ev audit.Event) {
 	defer utils.SetClock(utils.FixedClock(at))()
-	s.Record(t.Context(), ev)
+	require.NoError(t, s.Record(t.Context(), ev))
 }
 
 // ordered is events newest first by time, ties by recording order, the page
@@ -198,7 +198,7 @@ func testAuditFilterValuesAreLiteral(t *testing.T, h Harness) {
 	s := h.Store
 	values := []string{"%", "a_c", "abc", "x' OR '1'='1", `say "hi"`, "nul\x00byte", "nul", `back\slash`, "semi;--"}
 	for _, value := range values {
-		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: value, Subject: value})
+		require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: value, Subject: value}))
 	}
 	for _, value := range values {
 		for _, f := range []audit.Filter{{Actor: value}, {Subject: value}} {
@@ -218,7 +218,7 @@ func testAuditFilterValuesAreLiteral(t *testing.T, h Harness) {
 func testAuditCursorBoundToFilter(t *testing.T, h Harness) {
 	s := h.Store
 	for i := range 4 {
-		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: []string{"alice", "bob"}[i%2], Subject: "eng"})
+		require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: []string{"alice", "bob"}[i%2], Subject: "eng"}))
 	}
 	first := auditEvents(t, s)[0].Time
 	filters := []audit.Filter{{}, {Actor: "alice"}, {Actor: "bob"}, {Subject: "eng"}, {Action: audit.ActionKeyUsageReset}, {Since: &first}, {Until: new(first.Add(time.Hour))}}

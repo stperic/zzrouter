@@ -316,8 +316,21 @@ claims the installation, then `ready`), `observed_at`, `size` in integer bytes
 (`database_bytes`, `journal_bytes`, 0 outside a write, `free_page_bytes`, as
 the latest commit left it, and `backup_bytes`; `null` marks a measurement the node
 could not take), `integrity` (the `quick_check` run when the store opened, with
-`checked_at` and `outcome`) and `retained_copies`. `backup_bytes` is 0 and
-`retained_copies` empty until online backups exist. The read runs no database
+`checked_at` and `outcome`) and `retained_copies`, each with `kind`
+(`online_backup`), `id`, `created_at` and `size_bytes`; `backup_bytes` totals the
+retained online backups. The read runs no database
 query and never waits for an access write; it names no path and carries no secret.
 A worker answers 421, and a store that can no longer vouch for its records answers
 503 `access_store_failed` while the coordinator restarts.
+
+`POST /zzrouter/v1/system/state/backups` backs up the access database online and
+answers 201 with the backup; it takes an empty JSON object and an optional
+`Idempotency-Key`, and accepts an administrator or, from the installed host, the
+local proof in `X-Zzrouter-Local-Proof` (a request carrying that header is judged
+by the proof alone). `GET /zzrouter/v1/system/state/backups` lists the retained
+backups and `GET /zzrouter/v1/system/state/backups/{id}` reads one, for
+administrators: `id`, `created_at`, `size_bytes`, the store identity it holds,
+`readable`, the archive's `sha256`, `protected_until` and `expires_at`. An unknown
+or expired ID is 404 `state_backup_not_found`; a full cap or disk is 507
+`state_backup_capacity_exceeded`; a copy that fails its check is 500
+`state_image_check_failed`. See [recovery](recovery.md#online-backups-of-the-access-database).

@@ -215,7 +215,7 @@ func TestAccessAuditPagesThroughTheAPI(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = other.Close() })
 	for range 2 {
-		other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "other", Subject: "elsewhere"})
+		require.NoError(t, other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "other", Subject: "elsewhere"}))
 	}
 	_, foreign, err := other.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.NoError(t, err)

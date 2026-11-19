@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -434,4 +436,22 @@ func TestIsBusy(t *testing.T) {
 	require.Equal(t, sqlite3.SQLITE_LOCKED, locked.Code()&0xff, "%v", err)
 	require.False(t, sqlitedb.IsBusy(err), "a conflict inside one connection is not busy: %v", err)
 	require.False(t, sqlitedb.IsBusy(errors.New("database is locked")), "text alone classifies nothing")
+}
+
+// TestIsFull names SQLite's "database or disk is full", here a database at its
+// page limit, and nothing else.
+func TestIsFull(t *testing.T) {
+	t.Parallel()
+	db := createDB(t, filepath.Join(t.TempDir(), "full.sqlite"), testSchema(t))
+	var pages int
+	require.NoError(t, db.SQL().QueryRowContext(t.Context(), "PRAGMA page_count").Scan(&pages))
+	execSQL(t, db.SQL(), "PRAGMA max_page_count = "+strconv.Itoa(pages))
+	_, err := db.SQL().ExecContext(t.Context(), "INSERT INTO parents VALUES(1, ?)", strings.Repeat("x", 1<<16))
+	require.Error(t, err)
+	require.True(t, sqlitedb.IsFull(err), "a database at its page limit: %v", err)
+	require.True(t, sqlitedb.IsFull(fmt.Errorf("copy: %w", err)), "a wrapped one")
+	_, err = db.SQL().ExecContext(t.Context(), "SELECT * FROM missing")
+	require.Error(t, err)
+	require.False(t, sqlitedb.IsFull(err), "a failed statement is not full: %v", err)
+	require.False(t, sqlitedb.IsFull(errors.New("database or disk is full")), "text alone classifies nothing")
 }

@@ -59,7 +59,7 @@ func TestLocalOperatorGate(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, localproof.Address(endpoint.Hostname()), file.Endpoint)
 	calls := 0
-	s.localRoute(http.MethodPost, strings.TrimPrefix(localGatePath, "/zzrouter/v1"), false, func(c *gin.Context) {
+	s.localRoute(http.MethodPost, strings.TrimPrefix(localGatePath, "/zzrouter/v1"), false, nil, func(c *gin.Context) {
 		calls++
 		require.Empty(t, c.Request.Header.Values(localproof.Header), "the gate removes the proof")
 		require.Equal(t, audit.ActorLocalOperator, PrincipalFromContext(c))
@@ -121,7 +121,7 @@ func TestLocalOperatorPrecedesIdempotency(t *testing.T) {
 	file := readLocalProof(t, s)
 	const body = `{"choice":"one"}`
 	calls := 0
-	s.localRoute(http.MethodPost, strings.TrimPrefix(localGatePath, "/zzrouter/v1"), true, func(c *gin.Context) {
+	s.localRoute(http.MethodPost, strings.TrimPrefix(localGatePath, "/zzrouter/v1"), true, nil, func(c *gin.Context) {
 		calls++
 		key, hash, ok := idempotencyOf(c)
 		require.True(t, ok)
@@ -161,8 +161,8 @@ func TestLocalOperatorRoutesStayOutOfAgentSurfaces(t *testing.T) {
 		calls++
 		c.JSON(http.StatusOK, gin.H{})
 	}
-	s.localRoute(http.MethodPost, "/system/state/reset", true, probe)
-	s.localRoute(http.MethodGet, "/system/state/backups/:id/content", false, probe)
+	s.localRoute(http.MethodPost, "/system/state/reset", true, nil, probe)
+	s.localRoute(http.MethodGet, "/system/state/backups/:id/content", false, nil, probe)
 	require.Len(t, s.localRoutes, 3, "owner recovery and two probes")
 	catalog := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/server/routes", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, catalog.Code)

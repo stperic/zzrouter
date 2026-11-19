@@ -116,12 +116,15 @@ a node down. Restore connectivity or pairing and observe REST/MCP health;
 `last_seen_at` remains the last successful probe and `last_error` reports sanitized
 probe or dispatch failures. Node health is separate from provider cooldowns.
 
-### Access store (keys, teams, people and access history)
+### Access store (keys, teams, people, access history and online backups)
 
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
 | `access_store_busy` | 503 | Another process held the coordinator's access database past the busy timeout, on a change or an access-history read. Nothing was changed. | Honor `Retry-After` and retry the same request; if it persists, an operator tool holds the live file. |
 | `access_store_failed` | 503 | The coordinator's access store can no longer vouch for its records. The change may or may not have been made, and the node is exiting so its service manager restarts it. | Wait until the node answers `/health` again, then read the record before retrying the change. |
+| `state_backup_not_found` | 404 | No retained online backup has this ID: it never existed or retention removed it. | List the retained backups (`GET /zzrouter/v1/system/state/backups`) and use one of their IDs, or create a new backup. |
+| `state_backup_capacity_exceeded` | 507 | The online backup was refused and nothing was kept. `capacity` is `byte_cap` when the retained backups and the new one would exceed the 1 GiB cap, counting only what retention keeps (`limit_bytes`, `retained_bytes`, `required_bytes`, and `frees_at` when a retained backup will expire), or `disk` when the coordinator's disk had no room. | `byte_cap`: retry after `frees_at`; without `frees_at` the database alone exceeds the cap. `disk`: ask the operator to free space on the coordinator, then retry. |
+| `state_image_check_failed` | 500 | The online backup's copy of the access database failed its integrity or record check, so nothing was kept. The live database may be damaged. | Do not retry in a loop: tell the operator to stop the service and run `zzrouter-node recovery inventory`, which reports the store's state and next action. |
 
 ### Install preflight (`POST /providers/:n/install`)
 

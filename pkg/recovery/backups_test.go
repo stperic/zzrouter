@@ -1,0 +1,561 @@
+package recovery
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stperic/zzrouter/pkg/access"
+	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
+	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// hooked is a live store whose Capture or Record a test replaces.
+type hooked struct {
+	*sqlstore.Store
+	capture func(ctx context.Context, dst string) (sqlstore.Meta, error)
+	record  func(ctx context.Context, ev audit.Event) error
+}
+
+func (h *hooked) Capture(ctx context.Context, dst string) (sqlstore.Meta, error) {
+	if h.capture != nil {
+		return h.capture(ctx, dst)
+	}
+	return h.Store.Capture(ctx, dst)
+}
+
+func (h *hooked) Record(ctx context.Context, ev audit.Event) error {
+	if h.record != nil {
+		return h.record(ctx, ev)
+	}
+	return h.Store.Record(ctx, ev)
+}
+
+// liveStore opens a new installation's access store with a shared team, and
+// returns the installation's configuration directory.
+func liveStore(t *testing.T) (*sqlstore.Store, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	_, err = store.CreateTeam(t.Context(), "eng", teams.Team{Name: "Engineering", Kind: teams.KindShared}, audit.Event{})
+	require.NoError(t, err)
+	return store, dir
+}
+
+func openBackups(t *testing.T, dir string, src LiveStore) *Backups {
+	t.Helper()
+	b, err := OpenBackups(t.Context(), dir, src)
+	require.NoError(t, err)
+	t.Cleanup(b.Close)
+	return b
+}
+
+func backupFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, "access", "backups"))
+	require.NoError(t, err)
+	names := []string{}
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func archiveOf(dir, id string) string { return filepath.Join(dir, "access", "backups", id+".tar.gz") }
+
+// recorded returns the subjects of the store's backup-created events.
+func recorded(t *testing.T, store *sqlstore.Store) []string {
+	t.Helper()
+	events, _, err := store.AuditPage(t.Context(), audit.Filter{Action: audit.ActionBackupCreated}, "", audit.MaxPage)
+	require.NoError(t, err)
+	subjects := []string{}
+	for _, ev := range events {
+		subjects = append(subjects, ev.Subject)
+	}
+	return subjects
+}
+
+// stagedKeys restores the archive into a new staging directory, as an
+// operator does, and returns the IDs of the keys its image holds.
+func stagedKeys(t *testing.T, archive string) []string {
+	t.Helper()
+	destination := filepath.Join(t.TempDir(), "staging")
+	_, err := Restore(t.Context(), archive, "", destination)
+	require.NoError(t, err)
+	ids := []string{}
+	for id := range activate(t, destination).Snapshot().Keys() {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// TestOnlineBackupsHoldTheirRevision: while one writer creates keys, three
+// backups run at once; each archive passes the check and holds exactly the
+// keys created up to the revision its manifest names.
+func TestOnlineBackupsHoldTheirRevision(t *testing.T) {
+	store, dir := liveStore(t)
+	base := store.Meta().Revision
+	b := openBackups(t, dir, store)
+	const count = 30
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := range count {
+			_, _, err := store.CreateKey(t.Context(), fmt.Sprintf("k%03d", i+1), keys.VirtualKey{Name: "Key", Role: "user", TeamID: "eng", TeamRole: "member"}, audit.Event{})
+			assert.NoError(t, err)
+		}
+	})
+	created := make([]OnlineBackup, 3)
+	errs := make([]error, 3)
+	for i := range created {
+		wg.Go(func() { created[i], errs[i] = b.Create(t.Context()) })
+	}
+	wg.Wait()
+	for i, backup := range created {
+		require.NoError(t, errs[i])
+		want := []string{}
+		for k := range backup.Revision - base {
+			want = append(want, fmt.Sprintf("k%03d", k+1))
+		}
+		require.Equal(t, want, stagedKeys(t, archiveOf(dir, backup.ID)), "revision %d", backup.Revision)
+	}
+}
+
+// sqliteFull returns SQLite's own "database or disk is full", from a scratch
+// database at its page limit.
+func sqliteFull(t *testing.T) error {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(t.TempDir(), "full.sqlite")))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, db.Close()) }()
+	db.SetMaxOpenConns(1)
+	_, err = db.ExecContext(t.Context(), "CREATE TABLE t (v TEXT); PRAGMA max_page_count = 2")
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), "INSERT INTO t VALUES (?)", strings.Repeat("x", 1<<16))
+	require.Error(t, err)
+	return err
+}
+
+// platformDiskFull is the operating system's error for a full disk.
+func platformDiskFull() error {
+	errno := syscall.ENOSPC
+	if runtime.GOOS == "windows" {
+		errno = syscall.Errno(112) // ERROR_DISK_FULL
+	}
+	return &fs.PathError{Op: "write", Path: "image", Err: errno}
+}
+
+// TestOnlineBackupFailuresListNothing: a corrupt image, a failing audit row,
+// a full disk (the platform's error or SQLite's, wrapped) and the byte cap
+// each fail the create with their own error, list nothing, record nothing and
+// leave no file in the backup directory.
+func TestOnlineBackupFailuresListNothing(t *testing.T) {
+	errInjected := errors.New("injected audit failure")
+	for name, tc := range map[string]struct {
+		hook  func(t *testing.T, h *hooked)
+		limit int64
+		check func(t *testing.T, err error)
+	}{
+		"a corrupt image": {
+			hook: func(t *testing.T, h *hooked) {
+				h.capture = func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+					meta, err := h.Store.Capture(ctx, dst)
+					storeDamages()[sqlstore.IntegrityFailed](t, dst)
+					return meta, err
+				}
+			},
+			check: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, ErrImageCheck)
+				var refusal *sqlstore.Refusal
+				require.ErrorAs(t, err, &refusal)
+			},
+		},
+		"a failing audit row": {
+			hook: func(_ *testing.T, h *hooked) {
+				h.record = func(context.Context, audit.Event) error { return errInjected }
+			},
+			check: func(t *testing.T, err error) { require.ErrorIs(t, err, errInjected) },
+		},
+		"a full disk": {
+			hook: func(_ *testing.T, h *hooked) {
+				h.capture = func(context.Context, string) (sqlstore.Meta, error) {
+					return sqlstore.Meta{}, fmt.Errorf("capture: %w", platformDiskFull())
+				}
+			},
+			check: requireDiskFull,
+		},
+		"SQLite's full database or disk": {
+			hook: func(t *testing.T, h *hooked) {
+				full := sqliteFull(t)
+				h.capture = func(context.Context, string) (sqlstore.Meta, error) {
+					return sqlstore.Meta{}, fmt.Errorf("capture: %w", full)
+				}
+			},
+			check: requireDiskFull,
+		},
+		"the byte cap": {
+			limit: 1,
+			check: func(t *testing.T, err error) {
+				var full *CapacityError
+				require.ErrorAs(t, err, &full)
+				require.Equal(t, int64(1), full.LimitBytes)
+				require.Positive(t, full.RequiredBytes)
+				require.Zero(t, full.RetainedBytes)
+				require.True(t, full.FreesAt.IsZero(), "nothing retained frees anything")
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, dir := liveStore(t)
+			h := &hooked{Store: store}
+			if tc.hook != nil {
+				tc.hook(t, h)
+			}
+			b := openBackups(t, dir, h)
+			if tc.limit != 0 {
+				b.limit = tc.limit
+			}
+			_, err := b.Create(t.Context())
+			tc.check(t, err)
+			require.Empty(t, b.List())
+			require.Empty(t, backupFiles(t, dir), "no archive and no temporary")
+			require.Empty(t, recorded(t, store))
+		})
+	}
+}
+
+func requireDiskFull(t *testing.T, err error) {
+	t.Helper()
+	var full *CapacityError
+	require.ErrorAs(t, err, &full)
+	require.Zero(t, full.LimitBytes, "a full disk has no figures")
+}
+
+// TestOnlineBackupCancellation: a create cancelled during the copy or after
+// it fails with the context's error, lists nothing and leaves nothing; one
+// cancelled after its audit row is committed completes and is listed.
+func TestOnlineBackupCancellation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hook   func(h *hooked, cancel context.CancelFunc)
+		listed bool
+	}{
+		"during the copy": {hook: func(h *hooked, cancel context.CancelFunc) {
+			h.capture = func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+				cancel()
+				return h.Store.Capture(ctx, dst)
+			}
+		}},
+		"after the copy": {hook: func(h *hooked, cancel context.CancelFunc) {
+			h.capture = func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+				defer cancel()
+				return h.Store.Capture(ctx, dst)
+			}
+		}},
+		"after the audit row": {listed: true, hook: func(h *hooked, cancel context.CancelFunc) {
+			h.record = func(ctx context.Context, ev audit.Event) error { defer cancel(); return h.Store.Record(ctx, ev) }
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store, dir := liveStore(t)
+			h := &hooked{Store: store}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			tc.hook(h, cancel)
+			b := openBackups(t, dir, h)
+			backup, err := b.Create(ctx)
+			if !tc.listed {
+				require.ErrorIs(t, err, context.Canceled)
+				require.Empty(t, b.List())
+				require.Empty(t, backupFiles(t, dir))
+				require.Empty(t, recorded(t, store))
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, []OnlineBackup{backup}, b.List())
+			require.Equal(t, []string{backup.ID + ".tar.gz"}, backupFiles(t, dir))
+			require.Equal(t, []string{backup.ID}, recorded(t, store))
+		})
+	}
+}
+
+// TestOnlineBackupAuditRowComesFirst: when the audit row is committed, the
+// archive is neither listed nor in place; once the create returns, it is.
+func TestOnlineBackupAuditRowComesFirst(t *testing.T) {
+	store, dir := liveStore(t)
+	h := &hooked{Store: store}
+	var b *Backups
+	hooked := 0
+	h.record = func(ctx context.Context, ev audit.Event) error {
+		err := store.Record(ctx, ev)
+		hooked++
+		events, _, auditErr := store.AuditPage(ctx, audit.Filter{Action: audit.ActionBackupCreated}, "", 1)
+		require.NoError(t, auditErr)
+		require.Equal(t, ev.Subject, events[0].Subject, "the row is committed")
+		require.Empty(t, b.List(), "and the archive is not listed")
+		require.NoFileExists(t, archiveOf(dir, ev.Subject))
+		return err
+	}
+	b = openBackups(t, dir, h)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, hooked)
+	require.Equal(t, []OnlineBackup{backup}, b.List())
+	require.FileExists(t, archiveOf(dir, backup.ID))
+}
+
+// TestOnlineBackupsOpenRemovesLeftovers: opening deletes temporary files, a
+// file not named after a backup, one with a non-canonical ID, a garbage
+// archive, an installation bundle and an expired backup, and keeps the
+// backup, a directory and a link. The inventory lists the unreadable ones
+// beforehand and deletes nothing.
+func TestOnlineBackupsOpenRemovesLeftovers(t *testing.T) {
+	store, dir := liveStore(t)
+	first := openBackups(t, dir, store)
+	kept, err := first.Create(t.Context())
+	require.NoError(t, err)
+	first.Close()
+	backups := filepath.Join(dir, "access", "backups")
+	place := func(name string, data []byte) {
+		require.NoError(t, os.WriteFile(filepath.Join(backups, name), data, 0o600))
+	}
+	valid := readBytes(t, archiveOf(dir, kept.ID))
+	id := uuid.NewString()
+	place(id+".image.tmp", valid)
+	place(id+".tar.gz.tmp", valid)
+	place("notes.txt", valid)
+	place(strings.ToUpper(uuid.NewString())+".tar.gz", valid)
+	garbage, installation, expired := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	place(garbage+".tar.gz", []byte("not an archive"))
+	place(installation+".tar.gz", readBytes(t, writeTestBundle(t, map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}")})))
+	image, meta := capturedImage(t)
+	place(expired+".tar.gz", readBytes(t, databaseBundle(t, image, meta, func(m *Manifest) { m.Created = utils.NowUTC().Add(-8 * 24 * time.Hour) })))
+	require.NoError(t, os.Mkdir(filepath.Join(backups, uuid.NewString()+".tar.gz"), 0o700))
+	link := uuid.NewString() + ".tar.gz"
+	linked := os.Symlink(archiveOf(dir, kept.ID), filepath.Join(backups, link)) == nil
+
+	listed, err := readArchives(dir)
+	require.NoError(t, err)
+	readable := map[string]bool{}
+	for _, archive := range listed {
+		readable[archive.ID] = archive.Readable
+	}
+	require.Equal(t, map[string]bool{kept.ID: true, garbage: false, installation: false, expired: true}, readable)
+	require.Len(t, backupFiles(t, dir), 10-map[bool]int{true: 0, false: 1}[linked], "the inventory deletes nothing")
+
+	b := openBackups(t, dir, store)
+	require.Equal(t, []string{kept.ID}, ids(b.List()))
+	remaining := backupFiles(t, dir)
+	require.Contains(t, remaining, kept.ID+".tar.gz")
+	require.Len(t, remaining, 2+map[bool]int{true: 1, false: 0}[linked], "the backup, the directory and the link: %v", remaining)
+}
+
+func ids(backups []OnlineBackup) []string {
+	out := []string{}
+	for _, backup := range backups {
+		out = append(out, backup.ID)
+	}
+	return out
+}
+
+// TestOnlineBackupRetention: every backup inside the replay window is kept;
+// past it, the three newest are kept and none from seven days on. Ages are on
+// both sides of each boundary.
+func TestOnlineBackupRetention(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	window, day, hour := constants.IdempotencyReplayWindow, 24*time.Hour, time.Hour
+	for name, tc := range map[string]struct {
+		ages []time.Duration
+		kept []bool
+	}{
+		"inside the window, at any count":                {[]time.Duration{0, hour, 2 * hour, 3 * hour, window - time.Second}, []bool{true, true, true, true, true}},
+		"just past the window":                           {[]time.Duration{window}, []bool{true}},
+		"a second short of seven days":                   {[]time.Duration{7*day - time.Second}, []bool{true}},
+		"seven days":                                     {[]time.Duration{7 * day}, []bool{false}},
+		"the three newest past the window":               {[]time.Duration{window, window + hour, window + 2*hour, window + 3*hour}, []bool{true, true, true, false}},
+		"a fourth whose third newer is in":               {[]time.Duration{window - time.Second, window + hour, window + 2*hour, window + 3*hour}, []bool{true, true, true, true}},
+		"backups inside the window are not of the three": {[]time.Duration{0, hour, 2 * hour, window + hour, window + 2*hour, window + 3*hour, window + 4*hour}, []bool{true, true, true, true, true, true, false}},
+		"seven days ends one of the three":               {[]time.Duration{window, 7*day - time.Second, 7 * day}, []bool{true, true, false}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backups := make([]OnlineBackup, len(tc.ages))
+			for i, age := range tc.ages {
+				backups[i] = OnlineBackup{Archive: Archive{ID: fmt.Sprint(i), CreatedAt: now.Add(-age)}}
+			}
+			slices.Reverse(backups) // retain orders them
+			retain(backups)
+			kept := []bool{}
+			for i, backup := range backups {
+				require.Equal(t, fmt.Sprint(i), backup.ID, "newest first")
+				require.Equal(t, backup.CreatedAt.Add(window), backup.ProtectedUntil)
+				require.False(t, backup.ExpiresAt.Before(backup.ProtectedUntil), "never before the window ends")
+				kept = append(kept, now.Before(backup.ExpiresAt))
+			}
+			require.Equal(t, tc.kept, kept)
+		})
+	}
+}
+
+// backupsAt creates n backups with the clock at at, a minute apart.
+func backupsAt(t *testing.T, b *Backups, at time.Time, n int) []OnlineBackup {
+	t.Helper()
+	created := []OnlineBackup{}
+	for i := range n {
+		restore := utils.SetClock(utils.FixedClock(at.Add(time.Duration(i) * time.Minute)))
+		backup, err := b.Create(t.Context())
+		restore()
+		require.NoError(t, err)
+		created = append(created, backup)
+	}
+	return created
+}
+
+// TestOnlineBackupCapCountsWhatRetentionKeeps: three expired backups pruning
+// has not removed yet never block a create the cap holds beside nothing else,
+// and the create prunes them; three retained ones refuse it with the figures
+// and when the oldest expires. Not parallel: it sets the clock.
+func TestOnlineBackupCapCountsWhatRetentionKeeps(t *testing.T) {
+	// roomForOne limits b to one new backup of the database's size.
+	roomForOne := func(store *sqlstore.Store, b *Backups) int64 {
+		st, err := store.Status()
+		require.NoError(t, err)
+		b.limit = *st.DatabaseBytes + 1
+		return *st.DatabaseBytes
+	}
+	store, dir := liveStore(t)
+	b := openBackups(t, dir, store)
+	old := backupsAt(t, b, utils.NowUTC().Add(-8*24*time.Hour), 3)
+	require.Empty(t, b.List(), "expired")
+	require.Len(t, backupFiles(t, dir), 3, "but not pruned yet")
+	roomForOne(store, b)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err, "the expired backups do not count")
+	require.Equal(t, []string{backup.ID + ".tar.gz"}, backupFiles(t, dir), "the create pruned them: %v", ids(old))
+
+	store, dir = liveStore(t)
+	b = openBackups(t, dir, store)
+	retained := backupsAt(t, b, utils.NowUTC().Add(-2*24*time.Hour), 3)
+	required := roomForOne(store, b)
+	_, err = b.Create(t.Context())
+	var full *CapacityError
+	require.ErrorAs(t, err, &full)
+	require.Equal(t, CapacityError{LimitBytes: b.limit, RetainedBytes: retained[0].SizeBytes + retained[1].SizeBytes + retained[2].SizeBytes,
+		RequiredBytes: required, FreesAt: retained[0].CreatedAt.Add(7 * 24 * time.Hour)}, *full)
+	require.Len(t, b.List(), 3)
+	require.Len(t, backupFiles(t, dir), 3)
+}
+
+// TestOnlineBackupsSurviveARestart: after the backups and the store close and
+// open again, a backup created before is listed as it was and its archive
+// passes recovery check with the identity it lists.
+func TestOnlineBackupsSurviveARestart(t *testing.T) {
+	store, dir := liveStore(t)
+	b, err := OpenBackups(t.Context(), dir, store)
+	require.NoError(t, err)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err)
+	before, err := json.Marshal(b.List())
+	require.NoError(t, err)
+	b.Close()
+	require.NoError(t, store.Close())
+
+	store, err = sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	reopened := openBackups(t, dir, store)
+	after, err := json.Marshal(reopened.List())
+	require.NoError(t, err)
+	require.JSONEq(t, string(before), string(after))
+	manifest, err := Check(t.Context(), archiveOf(dir, backup.ID), "")
+	require.NoError(t, err)
+	require.Equal(t, ProfileDatabase, manifest.Profile)
+	require.Equal(t, *backup.StoreMeta, *manifest.Store)
+	got, err := reopened.Get(backup.ID)
+	require.NoError(t, err)
+	require.Equal(t, backup.SHA256, got.SHA256)
+	_, err = reopened.Get(uuid.NewString())
+	require.ErrorIs(t, err, ErrBackupNotFound)
+}
+
+// TestOnlineBackupConcurrentCreates: creates at once each succeed with an
+// archive, a listing and an audit row of their own.
+func TestOnlineBackupConcurrentCreates(t *testing.T) {
+	store, dir := liveStore(t)
+	b := openBackups(t, dir, store)
+	created := make([]OnlineBackup, 4)
+	errs := make([]error, 4)
+	var wg sync.WaitGroup
+	for i := range created {
+		wg.Go(func() { created[i], errs[i] = b.Create(t.Context()) })
+	}
+	wg.Wait()
+	want := []string{}
+	for i, backup := range created {
+		require.NoError(t, errs[i])
+		want = append(want, backup.ID)
+		_, err := Check(t.Context(), archiveOf(dir, backup.ID), "")
+		require.NoError(t, err)
+	}
+	slices.Sort(want)
+	for _, got := range [][]string{ids(b.List()), recorded(t, store)} {
+		slices.Sort(got)
+		require.Equal(t, want, got)
+	}
+	require.Len(t, backupFiles(t, dir), len(want))
+}
+
+// TestOnlineBackupCreateRacesClose: Close called while a create copies waits
+// for it, and the backup is listed with its archive in place; a create after
+// Close refuses with access.ErrClosed and leaves nothing.
+func TestOnlineBackupCreateRacesClose(t *testing.T) {
+	store, dir := liveStore(t)
+	h := &hooked{Store: store}
+	b, err := OpenBackups(t.Context(), dir, h)
+	require.NoError(t, err)
+	copying := make(chan struct{})
+	h.capture = func(ctx context.Context, dst string) (sqlstore.Meta, error) {
+		close(copying)
+		<-b.closing // Close has begun
+		return store.Capture(ctx, dst)
+	}
+	type result struct {
+		backup OnlineBackup
+		err    error
+	}
+	created := make(chan result, 1)
+	go func() {
+		backup, err := b.Create(t.Context())
+		created <- result{backup, err}
+	}()
+	<-copying
+	b.Close()
+	files, listed := backupFiles(t, dir), b.List() // as Close left them
+	done := <-created
+	require.NoError(t, done.err)
+	require.Equal(t, []string{done.backup.ID + ".tar.gz"}, files, "Close waited for the create")
+	require.Equal(t, []OnlineBackup{done.backup}, listed)
+	_, err = b.Create(t.Context())
+	require.ErrorIs(t, err, access.ErrClosed)
+	require.Len(t, backupFiles(t, dir), 1)
+	b.Close()
+}

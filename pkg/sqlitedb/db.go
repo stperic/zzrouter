@@ -56,6 +56,12 @@ func IsBusy(err error) bool {
 	return errors.As(err, &e) && e.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
+// IsFull reports whether err is SQLite's "database or disk is full".
+func IsFull(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && e.Code()&0xff == sqlite3.SQLITE_FULL
+}
+
 func openError(path string, err error) error {
 	if err == nil {
 		return nil

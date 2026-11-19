@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
@@ -40,6 +42,14 @@ func auditActor(c *gin.Context) string {
 
 func auditContext(c *gin.Context) context.Context {
 	return audit.WithIdentity(c.Request.Context(), auditActor(c), c.GetString("request_id"))
+}
+
+// recordReset records a usage reset after the reset, whose state lives outside
+// the access store: best effort, so a failure is logged, not returned.
+func recordReset(ctx context.Context, store access.Store, ev audit.Event) {
+	if err := store.Record(ctx, ev); err != nil {
+		slog.WarnContext(ctx, "Audit record failed", "action", ev.Action, "subject", ev.Subject, "error", err)
+	}
 }
 
 // updateKeyChangedFields returns the fields a caller actually set on an
