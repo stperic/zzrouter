@@ -60,6 +60,7 @@ which are error texts.
 | `absent` | Neither a database nor a store marker: a worker, or a node that never ran as a coordinator. A coordinator start creates an empty store, at owner setup. | Nothing on a worker. |
 | `in_use` | The installation lock is held, by a running node or another recovery command, so the inventory opened neither the database nor its journal. | On a coordinator, read the store's state from `GET /zzrouter/v1/system/state`; a worker has no store. Or stop the service, or let the other command finish, and run the inventory again. |
 | `refused` | The database fails the check a backup runs, for `reason`: `missing` (the store marker exists and the database is gone), `schema_newer` (a newer release wrote it), `integrity_failed` (it opens but fails its checks) or `unreadable` (it cannot be opened). A start refuses for the same reasons, except that it runs SQLite's quick check and can still open a store whose only damage is in an index. `evidence` is the reason with the store's phrase for a cause it tells apart, such as `integrity_failed (its schema objects differ from this release's)` for an index, trigger or `ANALYZE` table another tool added. `next_action` is the text the node logs when it refuses to start. | Follow `next_action`; each one starts with stopping the service. |
+| `activation_incomplete` | An activation did not finish (`recovery-activation.json` exists), so the node refuses to start. It outranks `ready`, `setup_required` and `absent`; `in_use`, `unknown` and `refused` come first. `evidence` names the staging directory and the rollback. | Follow `next_action`: run the same `recovery activate` command again to finish it, or add `--rollback` to undo it. |
 | `unknown` | The inventory could not judge the store: for example, the account cannot open or write the installation lock (a held lock is `in_use` instead), or the system's temporary directory is not writable or full. `evidence` is the error. The command exits with an error. | Resolve the cause in `evidence` and run the inventory again. |
 
 When it can read the store's identity, the section carries `store_id`,
@@ -87,6 +88,13 @@ list is empty, because a running node owns that directory and its status lists
 them. Archives that cannot be listed, for example because a link stands on the
 way to `access/backups`, leave the store's state as it is: `archives` is empty,
 `archives_error` holds the error, and the command exits with an error.
+
+`rollbacks` lists the rollback directories activations kept, oldest first: each
+one's `id` (the generation it published, and its directory
+`rollback/<id>/`), `created_at` and `size_bytes`. They hold credential hashes
+until you delete them; see [Activate a database bundle](#activate-a-database-bundle).
+`rollbacks_error`, like `archives_error`, says why they could not be listed and
+leaves the store's state as it is.
 
 ## Included and separate state
 
@@ -304,7 +312,8 @@ qualified, then delete the directory. To go back to the previous store after a
 finished activation, stop the node and copy those files back over
 `access/access.sqlite` and `access-store.json` (delete one `kept.json` records as
 absent), with no `access/access.sqlite-journal` left beside the database.
-Rollback directories are never part of a recovery bundle;
+Rollback directories and the activation marker are never part of a recovery
+bundle; `recovery inventory` lists the directories under `rollbacks`, and
 `GET /zzrouter/v1/system/state` lists each as a retained copy of kind
 `activation_rollback`, with its ID, creation time and size.
 

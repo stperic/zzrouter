@@ -463,3 +463,84 @@ func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 		})
 	}
 }
+
+// interruptAt runs an activation that an interrupt stops just after step.
+func interruptAt(t *testing.T, dir, staging, step string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, err := Activate(sqlitedb.WithStep(ctx, func(reached string) {
+		if reached == step {
+			cancel()
+		}
+	}), dir, staging, ActivateOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	requireRefusal(t, err, ActivationIncomplete)
+}
+
+// TestInventoryReportsActivations: an incomplete activation outranks every
+// state but a refusal, the absent one included, and names its next action;
+// once finished, the store reports the new generation and its rollback.
+func TestInventoryReportsActivations(t *testing.T) {
+	dir, staging, manifest := activationFixture(t)
+	interruptAt(t, dir, staging, "rollback record")
+	section, err := InspectStore(t.Context(), dir)
+	require.NoError(t, err)
+	require.Equal(t, StoreActivationIncomplete, section.State)
+	require.Contains(t, section.Evidence, "did not finish")
+	require.Contains(t, section.NextAction, "zzrouter-node recovery activate "+staging)
+	require.NotNil(t, section.StoreMeta, "the store's identity is still reported")
+	require.Equal(t, []string{manifest.Staged.Generation}, rollbackIDs(section.Rollbacks))
+
+	missing := copyTree(t, dir)
+	require.NoError(t, os.Remove(filepath.Join(missing, "access", "access.sqlite")))
+	section, err = InspectStore(t.Context(), missing)
+	require.NoError(t, err)
+	require.Equal(t, [2]any{StoreRefused, sqlstore.Missing}, [2]any{section.State, section.Reason}, "a refusal outranks the activation")
+
+	fresh := t.TempDir()
+	lock, err := config.LockInstallation(fresh)
+	require.NoError(t, err)
+	require.NoError(t, lock.Close())
+	interruptAt(t, fresh, copyTree(t, staging), "rollback record")
+	section, err = InspectStore(t.Context(), fresh)
+	require.NoError(t, err)
+	require.Equal(t, StoreActivationIncomplete, section.State, "it outranks absent")
+
+	_, err = Activate(t.Context(), dir, staging, ActivateOptions{})
+	require.NoError(t, err)
+	section, err = InspectStore(t.Context(), dir)
+	require.NoError(t, err)
+	require.Equal(t, StoreSetupRequired, section.State)
+	require.Equal(t, manifest.Staged.Generation, section.Generation)
+	require.Empty(t, section.NextAction)
+	require.Equal(t, []string{manifest.Staged.Generation}, rollbackIDs(section.Rollbacks))
+}
+
+func rollbackIDs(rollbacks []Rollback) []string {
+	ids := []string{}
+	for _, r := range rollbacks {
+		ids = append(ids, r.ID)
+	}
+	return ids
+}
+
+// TestNoBundleCarriesAnActivation: an installation backup taken while an
+// activation is incomplete carries neither its marker nor its rollback
+// directory, and check refuses an archive that does.
+func TestNoBundleCarriesAnActivation(t *testing.T) {
+	dir, output, keyOutput := recoveryFixture(t)
+	staging, _ := stageDatabase(t, dir)
+	interruptAt(t, dir, staging, "kept record")
+	require.FileExists(t, filepath.Join(dir, activationFile))
+	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	for _, file := range manifest.Files {
+		require.False(t, strings.HasPrefix(file.Name, "config/"+rollbackDir+"/") || file.Name == "config/"+activationFile, "%s travels", file.Name)
+	}
+	for _, name := range []string{"config/" + activationFile, "config/" + rollbackDir + "/g/rollback.json", "config/" + rollbackDir + "/g/store/access.sqlite"} {
+		archive := writeTestBundle(t, map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}"), name: []byte("{}")})
+		_, err := Check(t.Context(), archive, "")
+		require.ErrorContains(t, err, "unsafe or duplicate recovery entry", name)
+	}
+}

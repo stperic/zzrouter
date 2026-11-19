@@ -336,12 +336,12 @@ func Rollbacks(dir string) ([]Rollback, error) {
 	root := filepath.Join(dir, rollbackDir)
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return []Rollback{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var list []Rollback
+	list := []Rollback{}
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil || !info.IsDir() {

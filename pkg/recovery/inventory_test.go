@@ -84,7 +84,7 @@ func TestInspectStoreInUseTouchesNothing(t *testing.T) {
 	require.NoError(t, err)
 	section, err := InspectStore(t.Context(), dir)
 	require.NoError(t, err)
-	require.Equal(t, StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}}, section)
+	require.Equal(t, StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}, Rollbacks: []Rollback{}}, section)
 	require.Equal(t, before, tree(t, dir), "the database and its journal are untouched")
 	emptyDir(t, temp, "nothing is copied")
 	require.NoError(t, lock.Close())
@@ -141,7 +141,7 @@ func TestInspectStoreStates(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(dir, "installation.lock"))
 	section, err := InspectStore(t.Context(), dir)
 	require.NoError(t, err)
-	require.Equal(t, StoreSection{State: StoreSetupRequired, StoreMeta: &meta, Archives: []Archive{}}, section)
+	require.Equal(t, StoreSection{State: StoreSetupRequired, StoreMeta: &meta, Archives: []Archive{}, Rollbacks: []Rollback{}}, section)
 	require.NoFileExists(t, filepath.Join(dir, "installation.lock"), "no lock file owned by the invoking account")
 
 	worker := t.TempDir()
@@ -152,7 +152,7 @@ func TestInspectStoreStates(t *testing.T) {
 	before := tree(t, worker)
 	section, err = InspectStore(t.Context(), worker)
 	require.NoError(t, err)
-	require.Equal(t, StoreSection{State: StoreAbsent, Archives: []Archive{}}, section)
+	require.Equal(t, StoreSection{State: StoreAbsent, Archives: []Archive{}, Rollbacks: []Rollback{}}, section)
 	require.Equal(t, before, tree(t, worker), "nothing is created on a worker")
 }
 
@@ -233,7 +233,7 @@ func TestInspectStoreUnknown(t *testing.T) {
 			tc.breakIt(t, dir)
 			section, err := InspectStore(t.Context(), dir)
 			require.Error(t, err)
-			require.Equal(t, StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, section)
+			require.Equal(t, StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}, Rollbacks: []Rollback{}}, section)
 			require.Contains(t, section.Evidence, tc.evidence)
 			require.NotContains(t, section.Evidence, "in use")
 		})
@@ -257,7 +257,7 @@ func TestInspectStoreNeverFollowsLinks(t *testing.T) {
 	}
 	section, err := InspectStore(t.Context(), dir)
 	require.ErrorContains(t, err, "must not contain links")
-	require.Equal(t, StoreSection{State: StoreAbsent, Archives: []Archive{}, ArchivesError: err.Error()}, section)
+	require.Equal(t, StoreSection{State: StoreAbsent, Archives: []Archive{}, Rollbacks: []Rollback{}, ArchivesError: err.Error()}, section)
 
 	dir = t.TempDir()
 	listed := backupArchive(t, dir, archive, now)
@@ -294,5 +294,5 @@ func TestInspectStoreKeepsTheVerdictWhenListingFails(t *testing.T) {
 	section, err := InspectStore(t.Context(), dir)
 	require.ErrorContains(t, err, "must not contain links")
 	require.Equal(t, StoreSection{State: StoreRefused, Reason: sqlstore.Unreadable, Evidence: string(sqlstore.Unreadable),
-		NextAction: (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), Archives: []Archive{}, ArchivesError: err.Error()}, section)
+		NextAction: (&sqlstore.Refusal{Reason: sqlstore.Unreadable}).NextAction(), Archives: []Archive{}, Rollbacks: []Rollback{}, ArchivesError: err.Error()}, section)
 }

@@ -1,5 +1,6 @@
 // Package recovery owns offline recovery bundles. It never stops services,
-// activates a restore, follows links or changes a live installation.
+// follows links or changes a running installation; only Activate changes a
+// stopped one, and only its access store.
 package recovery
 
 import (
@@ -31,7 +32,7 @@ const InventoryFile = "recovery-layout.json"
 // journal or staged file, online backups and the owner-recovery proof are
 // never raw sources.
 func configExclusions() []string {
-	return []string{"private", "models", "cache", "logs", "pids", "bin", "versions", "backups", "pairing.txt", "access", InventoryFile, "update", "update-operation.json", "update-pending-confirm.json"}
+	return []string{"private", "models", "cache", "logs", "pids", "bin", "versions", "backups", "pairing.txt", "access", InventoryFile, "update", "update-operation.json", "update-pending-confirm.json", rollbackDir, activationFile}
 }
 
 // Source paths are captured by the daemon, not inferred from the backup user's
@@ -253,21 +254,28 @@ const (
 	StoreRefused StoreState = "refused"
 	// StoreUnknown is a store the inspection could not judge; Evidence says why.
 	StoreUnknown StoreState = "unknown"
+	// StoreActivationIncomplete is an activation that did not finish, ahead
+	// of ready, setup_required and absent: the node does not start until it is
+	// finished or rolled back, as Evidence and NextAction say.
+	StoreActivationIncomplete = StoreState(ActivationIncomplete)
 )
 
 // StoreSection is recovery inventory's report on the access store, never
 // persisted. The store's identity is present when it can be read. Reason and
 // Evidence, a refusal's Summary or an inspection's error, explain a refusal or
-// an unknown state. ArchivesError is why the archives could not be listed; the
-// store's verdict stands.
+// an unknown state; Evidence and NextAction explain an incomplete activation.
+// ArchivesError and RollbacksError are why the archives or the rollback
+// directories could not be listed; the store's verdict stands.
 type StoreSection struct {
 	State StoreState `json:"state"`
 	*StoreMeta
-	Reason        sqlstore.Reason `json:"reason,omitempty"`
-	Evidence      string          `json:"evidence,omitempty"`
-	NextAction    string          `json:"next_action,omitempty"`
-	Archives      []Archive       `json:"archives"`
-	ArchivesError string          `json:"archives_error,omitempty"`
+	Reason         sqlstore.Reason `json:"reason,omitempty"`
+	Evidence       string          `json:"evidence,omitempty"`
+	NextAction     string          `json:"next_action,omitempty"`
+	Archives       []Archive       `json:"archives"`
+	ArchivesError  string          `json:"archives_error,omitempty"`
+	Rollbacks      []Rollback      `json:"rollbacks"`
+	RollbacksError string          `json:"rollbacks_error,omitempty"`
 }
 
 // Archive is an online backup archive in the installation's access directory,
@@ -288,19 +296,20 @@ const (
 	unknownAction = "Resolve the cause in evidence, for example by running as the installation owner or freeing space in the system's temporary directory, then run recovery inventory again."
 )
 
-// InspectStore reports dir's access store and its online backup archives.
-// While the installation lock is held it opens nothing and points at the
-// running node. Otherwise it takes the lock when its file exists and judges a
-// copy, checked as a backup checks it, in the system's temporary directory, so
-// the live database is never migrated. It writes to the installation in one
-// case: a journal a crash left beside a stopped store is recovered into the
-// live file, as the next start would. A store it cannot judge is StoreUnknown;
-// archives it cannot list keep the store's verdict and set ArchivesError.
-// Either returns its error.
+// InspectStore reports dir's access store, its online backup archives and its
+// activations' rollback directories. While the installation lock is held it
+// opens nothing and points at the running node. Otherwise it takes the lock
+// when its file exists and judges a copy, checked as a backup checks it, in the
+// system's temporary directory, so the live database is never migrated. It
+// writes to the installation in one case: a journal a crash left beside a
+// stopped store is recovered into the live file, as the next start would. A
+// store it cannot judge is StoreUnknown; an incomplete activation outranks every
+// state but a refusal. Archives or rollbacks it cannot list keep the store's
+// verdict and set ArchivesError or RollbacksError. Either returns its error.
 func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	lock, err := lockInstallation(dir)
 	if errors.Is(err, atomicfile.ErrLocked) {
-		return StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}}, nil
+		return StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}, Rollbacks: []Rollback{}}, nil
 	}
 	if err == nil {
 		defer func() { _ = lock.Close() }()
@@ -333,15 +342,27 @@ func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	case err != nil:
 		return unknown(err)
 	}
+	if section.State != StoreRefused {
+		var pending *Refusal
+		if err := PendingActivation(dir); errors.As(err, &pending) {
+			section.State, section.Evidence, section.NextAction = StoreActivationIncomplete, pending.Detail, pending.NextAction
+		} else if err != nil {
+			return unknown(err)
+		}
+	}
+	var listErr error
+	if section.Rollbacks, err = Rollbacks(dir); err != nil {
+		section.Rollbacks, section.RollbacksError, listErr = []Rollback{}, err.Error(), err
+	}
 	if section.Archives, err = readArchives(dir); err != nil {
 		section.Archives, section.ArchivesError = []Archive{}, err.Error()
 	}
-	return section, err
+	return section, errors.Join(listErr, err)
 }
 
 // unknown is the section for a store the inspection could not judge.
 func unknown(err error) (StoreSection, error) {
-	return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, err
+	return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}, Rollbacks: []Rollback{}}, err
 }
 
 // readArchives lists the online backup archives newest first, then by ID. It

@@ -108,6 +108,15 @@ func TestRecoveryActivateCommand(t *testing.T) {
 	require.Equal(t, recovery.ActivationIncomplete, refusal.Reason)
 	require.Contains(t, err.Error(), "run zzrouter-node recovery activate "+staging+" --dir "+dir+" to finish it")
 	require.Equal(t, installation, treeOf(t, dir), "the refused start wrote nothing")
+	out, err = runRecovery(t, dir, "inventory")
+	require.NoError(t, err)
+	var printed struct {
+		Store recovery.StoreSection `json:"store"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &printed))
+	require.Equal(t, recovery.StoreActivationIncomplete, printed.Store.State)
+	require.Contains(t, printed.Store.NextAction, "zzrouter-node recovery activate "+staging)
+	require.Equal(t, generation, printed.Store.Rollbacks[0].ID)
 
 	out, err = runRecovery(t, dir, "activate", staging, "--rollback", "--dry-run")
 	require.NoError(t, err)
