@@ -79,7 +79,7 @@ func TestRecoveryCancellationLeavesNothing(t *testing.T) {
 	runs := map[string]func(ctx context.Context) (left []string, err error){
 		"backup": func(ctx context.Context) ([]string, error) {
 			output, keyOutput := outputs()
-			_, err := Backup(ctx, dir, output, keyOutput)
+			_, err := BackupProfile(ctx, ProfileInstallation, dir, output, keyOutput)
 			if err == nil {
 				archive, key = output, keyOutput
 			}
@@ -145,10 +145,10 @@ func TestRecoveryRestoreRefusesAnArchiveReplacedBetweenPasses(t *testing.T) {
 		t.Skip("Windows refuses to replace an open file")
 	}
 	dir, output, keyOutput := recoveryFixture(t)
-	_, err := Backup(t.Context(), dir, output, keyOutput)
+	_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	other, otherKey := filepath.Join(t.TempDir(), "other.tar.gz"), filepath.Join(t.TempDir(), "other.key")
-	_, err = Backup(t.Context(), dir, other, otherKey)
+	_, err = BackupProfile(t.Context(), ProfileInstallation, dir, other, otherKey)
 	require.NoError(t, err)
 	_, err = Check(t.Context(), other, keyOutput)
 	require.NoError(t, err, "the replacement passes its own check")
