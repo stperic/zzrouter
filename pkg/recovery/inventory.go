@@ -5,14 +5,18 @@ package recovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -229,6 +233,117 @@ func Read(ctx context.Context, dir string) (Inventory, error) {
 		current.Sources[i].Required = current.Sources[i].Required || previous[current.Sources[i].Name]
 	}
 	return current, nil
+}
+
+// StoreState is the access store's state as a start would find it.
+type StoreState string
+
+const (
+	StoreReady         StoreState = "ready"          // an owner exists
+	StoreSetupRequired StoreState = "setup_required" // no owner yet
+	StoreAbsent        StoreState = "absent"         // neither a database nor a store marker, as on a worker
+	StoreInUse         StoreState = "in_use"         // a node holds the installation lock
+	StoreRefused       StoreState = "refused"        // a start would stop with Reason
+)
+
+// StoreSection is recovery inventory's report on the access store, never
+// persisted. The store's identity is present when it can be read, and Reason
+// only when the state is StoreRefused.
+type StoreSection struct {
+	State StoreState `json:"state"`
+	*StoreMeta
+	Reason     sqlstore.Reason `json:"reason,omitempty"`
+	NextAction string          `json:"next_action,omitempty"`
+	Archives   []Archive       `json:"archives"`
+}
+
+// Archive is an online backup archive in the installation's access directory,
+// described from its manifest alone. One that is not a database bundle is aged
+// by its file's modification time.
+type Archive struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	SizeBytes int64     `json:"size_bytes"`
+	*StoreMeta
+	// Readable says the manifest names a database bundle at a schema version
+	// this release reads. It is not a check: Check is.
+	Readable bool `json:"readable"`
+}
+
+// InspectStore reports dir's access store as a start would find it, and its
+// online backup archives. While a node holds the installation lock it opens
+// nothing and points at the running node's status. Otherwise it takes the lock
+// when its file exists, and judges a copy in the system's temporary directory,
+// so the live database is never migrated: finishing SQLite's recovery of a
+// journal a crash left is the only change it makes to the installation.
+func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
+	lock, err := lockInstallation(dir)
+	if errors.Is(err, atomicfile.ErrLocked) {
+		return StoreSection{State: StoreInUse, NextAction: "A node is running: read its access store's state from GET /zzrouter/v1/system/state.", Archives: []Archive{}}, nil
+	}
+	if err == nil {
+		defer func() { _ = lock.Close() }()
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return StoreSection{}, err
+	}
+	temp, err := privateDir(filepath.Join(os.TempDir(), "zzrouter-recovery"))
+	if err != nil {
+		return StoreSection{}, err
+	}
+	defer func() { _ = os.RemoveAll(temp) }()
+	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, "image.sqlite"))
+	if err == nil && !sqlstore.ReadsSchema(img.SchemaVersion) {
+		err = &sqlstore.Refusal{Reason: sqlstore.SchemaNewer} // a newer release's database is copied unchecked
+	}
+	section := StoreSection{State: StoreSetupRequired}
+	if img.StoreID != "" {
+		meta := StoreMeta(img.Meta)
+		section.StoreMeta = &meta
+	}
+	var refusal *sqlstore.Refusal
+	switch {
+	case errors.Is(err, sqlstore.ErrNoStore):
+		section.State = StoreAbsent
+	case errors.As(err, &refusal):
+		section.State, section.Reason, section.NextAction = StoreRefused, refusal.Reason, refusal.NextAction()
+	case err != nil:
+		return StoreSection{}, err
+	case img.Initialized:
+		section.State = StoreReady
+	}
+	section.Archives, err = readArchives(dir)
+	return section, err
+}
+
+// readArchives lists the online backup archives, newest first, from their
+// manifests; a file that is not one is listed as unreadable, never an error.
+// Temporary files end in .tmp and are not listed.
+func readArchives(dir string) ([]Archive, error) {
+	backups := filepath.Join(dir, "access", "backups")
+	entries, err := os.ReadDir(backups)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	archives := []Archive{}
+	for _, entry := range entries {
+		id, ok := strings.CutSuffix(entry.Name(), ".tar.gz")
+		if !ok {
+			continue
+		}
+		archive := Archive{ID: id}
+		if info, err := entry.Info(); err == nil {
+			archive.CreatedAt, archive.SizeBytes = info.ModTime().UTC(), info.Size()
+		}
+		if r, err := openArchive(filepath.Join(backups, entry.Name())); err == nil {
+			if m := r.manifest; m.Profile == ProfileDatabase {
+				archive.CreatedAt, archive.StoreMeta, archive.Readable = m.Created, m.Store, sqlstore.ReadsSchema(m.Store.SchemaVersion)
+			}
+			_ = r.Close()
+		}
+		archives = append(archives, archive)
+	}
+	slices.SortFunc(archives, func(a, b Archive) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return archives, nil
 }
 
 // Bind daemon-resolved paths to the declarations that produced them. Resolving

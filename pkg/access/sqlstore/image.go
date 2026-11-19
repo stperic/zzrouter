@@ -82,6 +82,13 @@ func sameObjects(ctx context.Context, db *sqlitedb.DB) error {
 	return err
 }
 
+// ReadsSchema reports whether this release checks and prepares an image at
+// schema version v: images are never migrated, so only the latest version.
+func ReadsSchema(v int) bool {
+	latest, err := schema.Latest()
+	return err == nil && v == latest
+}
+
 // MarkerStoreID returns the store ID a store marker's content names.
 func MarkerStoreID(data []byte) (string, error) {
 	var m marker

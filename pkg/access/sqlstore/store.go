@@ -344,9 +344,8 @@ func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
 func atLatest(ctx context.Context, db *sqlitedb.DB) error {
 	var version int
 	err := db.SQL().QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
-	latest, latestErr := schema.Latest()
-	if err = errors.Join(err, latestErr); err == nil && version != latest {
-		err = refuse(Unreadable, fmt.Errorf("image schema version %d, latest %d", version, latest))
+	if err == nil && !ReadsSchema(version) {
+		err = refuse(Unreadable, fmt.Errorf("image schema version %d is not this release's", version))
 	}
 	return err
 }

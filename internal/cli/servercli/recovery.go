@@ -20,14 +20,21 @@ func NewRecoveryCmd() *cobra.Command {
 	var dir string
 	command := &cobra.Command{Use: "recovery", Short: "Inspect, back up and stage an installation recovery"}
 	command.PersistentFlags().StringVarP(&dir, "dir", "C", config.Paths().GetConfigDir(), "Installation configuration directory")
-	command.AddCommand(&cobra.Command{Use: "inventory", Short: "Show included state and separate recovery dependencies", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	command.AddCommand(&cobra.Command{Use: "inventory", Short: "Show included state, separate recovery dependencies and the access store", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		inventory, err := recovery.Read(cmd.Context(), dir)
+		if err != nil {
+			return err
+		}
+		store, err := recovery.InspectStore(cmd.Context(), dir)
 		if err != nil {
 			return err
 		}
 		encoder := json.NewEncoder(cmd.OutOrStdout())
 		encoder.SetIndent("", "  ")
-		return encoder.Encode(inventory)
+		return encoder.Encode(struct {
+			Inventory recovery.Inventory    `json:"inventory"`
+			Store     recovery.StoreSection `json:"store"`
+		}{inventory, store})
 	}})
 	var output, keyOutput string
 	backup := &cobra.Command{Use: "backup", Short: "Back up a stopped node; export its protection key separately", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {

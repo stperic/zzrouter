@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,52 @@ func TestRecoveryCommandsNameTheProfileAndStore(t *testing.T) {
 	out, err = runRecovery(t, dir, "backup", "--output", filepath.Join(t.TempDir(), "worker.tar.gz"))
 	require.NoError(t, err)
 	require.Contains(t, out, "No access store")
+}
+
+// TestRecoveryInventoryReportsTheStore: recovery inventory prints the
+// inventory as before and a store section that holds only the closed fields:
+// its state, the store's identity, a refusal's reason and next action, and the
+// archives, with no path and no secret; with the node running it is in_use.
+func TestRecoveryInventoryReportsTheStore(t *testing.T) {
+	dir, meta := recoveryInstallation(t)
+	temp := t.TempDir()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	// Exclusions follow the providers' map order.
+	sorted := func(inventory recovery.Inventory) recovery.Inventory {
+		for _, source := range inventory.Sources {
+			slices.Sort(source.Exclude)
+		}
+		return inventory
+	}
+	inventory, err := recovery.Read(t.Context(), dir)
+	require.NoError(t, err)
+	inspect := func() map[string]any {
+		t.Helper()
+		out, err := runRecovery(t, dir, "inventory")
+		require.NoError(t, err)
+		var printed struct {
+			Inventory recovery.Inventory `json:"inventory"`
+			Store     map[string]any     `json:"store"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(out))
+		decoder.DisallowUnknownFields()
+		require.NoError(t, decoder.Decode(&printed))
+		require.Equal(t, sorted(inventory), sorted(printed.Inventory), "the inventory is printed as before")
+		require.NotContains(t, out, temp, "the copy's path is not printed")
+		return printed.Store
+	}
+	require.Equal(t, map[string]any{"state": "setup_required", "store_id": meta.StoreID, "generation": meta.Generation,
+		"schema_version": 1.0, "revision": 0.0, "sequence": 0.0, "archives": []any{}}, inspect())
+
+	lock, err := pkgConfig.LockInstallation(dir)
+	require.NoError(t, err)
+	require.Equal(t, map[string]any{"state": "in_use", "next_action": "A node is running: read its access store's state from GET /zzrouter/v1/system/state.", "archives": []any{}}, inspect())
+	require.NoError(t, lock.Close())
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "access", "access.sqlite")))
+	require.Equal(t, map[string]any{"state": "refused", "reason": "missing", "next_action": (&sqlstore.Refusal{Reason: sqlstore.Missing}).NextAction(), "archives": []any{}}, inspect())
 }
 
 // rewriteImage rewrites archive with its database image replaced by what edit

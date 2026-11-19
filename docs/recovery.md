@@ -40,6 +40,43 @@ Linux system installations normally use `/etc/zzrouter`; Windows services use
 `C:\ProgramData\zzrouter`. Use the exact path shown by your console. Follow the
 existing [service instructions](install.md#supervised-services) to stop and start it.
 
+### The access store section
+
+`recovery inventory` prints `{"inventory": ..., "store": ...}`. The `store`
+section reports the access database as a coordinator start would find it. It is
+worked out on each run and saved nowhere, neither in `recovery-layout.json` nor
+in any manifest. It prints no path and no secret.
+
+| `state` | Meaning | What to do |
+| --- | --- | --- |
+| `ready` | The database passes a start's checks and an owner exists. | Nothing. |
+| `setup_required` | The database passes a start's checks; nobody has claimed the owner account yet. | Start the node and finish owner setup. |
+| `absent` | Neither a database nor a store marker: a worker, or a node that never ran as a coordinator. A coordinator start creates an empty store, at owner setup. | Nothing on a worker. |
+| `in_use` | A node holds the installation lock, so the inventory opened neither the database nor its journal. | Read the running node's state from `GET /zzrouter/v1/system/state`, or stop the service and run the inventory again. |
+| `refused` | A start would stop with `reason`: `missing` (the store marker exists and the database is gone), `schema_newer` (a newer release wrote it), `integrity_failed` (it opens but fails its checks) or `unreadable` (it cannot be opened). `next_action` is the text the node logs when it refuses to start. | Follow `next_action`; each one starts with stopping the service. |
+
+When it can read the store's identity, the section carries `store_id`,
+`generation`, `schema_version`, `revision` and `sequence`, also for
+`schema_newer`, since every release keeps that table's layout. With the node
+stopped, the inventory takes the installation lock (only when its file exists,
+so it never creates one owned by your account), copies the database into a
+private directory in the system's temporary directory and checks the copy, so
+the live database is never migrated. The copy gets SQLite's full integrity
+check, which is stricter than a start's quick check. Finishing SQLite's recovery
+of a journal a crash left beside the database is the only change the inventory
+makes to the installation; the next start would make the same one.
+
+`archives` lists the online backups in the configuration's `access/backups`
+directory, newest first: each archive's `id` (its file is `<id>.tar.gz`),
+`created_at`, `size_bytes`, the store identity its manifest names, and
+`readable`. `readable` says only what the manifest states: a `database` bundle at
+the schema version this release writes. It is not a check, since the inventory
+reads nothing but the manifest; `recovery check` checks an archive, so run it
+before you restore one. A file that is not such an archive is listed as
+`readable: false` and aged by its modification time; `.tmp` leftovers are not
+listed. While a node runs (`in_use`) the list is empty, because the running node
+owns that directory and its status lists them.
+
 ## Included and separate state
 
 The archive includes configuration and provider definitions/assets/ownership
