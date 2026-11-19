@@ -3,6 +3,7 @@
 package recovery
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -235,24 +236,33 @@ func Read(ctx context.Context, dir string) (Inventory, error) {
 	return current, nil
 }
 
-// StoreState is the access store's state as a start would find it.
+// StoreState is what recovery inventory found of the access store.
 type StoreState string
 
 const (
-	StoreReady         StoreState = "ready"          // an owner exists
-	StoreSetupRequired StoreState = "setup_required" // no owner yet
-	StoreAbsent        StoreState = "absent"         // neither a database nor a store marker, as on a worker
-	StoreInUse         StoreState = "in_use"         // a node holds the installation lock
-	StoreRefused       StoreState = "refused"        // a start would stop with Reason
+	StoreReady         = StoreState(sqlstore.Ready)         // passes a backup's check; an owner exists
+	StoreSetupRequired = StoreState(sqlstore.SetupRequired) // passes a backup's check; no owner yet
+	// StoreAbsent is neither a database nor a store marker, as on a worker.
+	StoreAbsent StoreState = "absent"
+	// StoreInUse is a node holding the installation lock.
+	StoreInUse StoreState = "in_use"
+	// StoreRefused is a store that fails the check a backup runs, for Reason.
+	// A start refuses for the same reasons, except that it runs SQLite's quick
+	// check and can still open a store whose only damage is in an index.
+	StoreRefused StoreState = "refused"
+	// StoreUnknown is an inspection that could not finish; Evidence says why.
+	StoreUnknown StoreState = "unknown"
 )
 
 // StoreSection is recovery inventory's report on the access store, never
-// persisted. The store's identity is present when it can be read, and Reason
-// only when the state is StoreRefused.
+// persisted. The store's identity is present when it can be read. Reason and
+// Evidence, a refusal's Summary or an inspection's error, explain a refusal or
+// an unknown state.
 type StoreSection struct {
 	State StoreState `json:"state"`
 	*StoreMeta
 	Reason     sqlstore.Reason `json:"reason,omitempty"`
+	Evidence   string          `json:"evidence,omitempty"`
 	NextAction string          `json:"next_action,omitempty"`
 	Archives   []Archive       `json:"archives"`
 }
@@ -270,16 +280,31 @@ type Archive struct {
 	Readable bool `json:"readable"`
 }
 
-// InspectStore reports dir's access store as a start would find it, and its
-// online backup archives. While a node holds the installation lock it opens
-// nothing and points at the running node's status. Otherwise it takes the lock
-// when its file exists, and judges a copy in the system's temporary directory,
-// so the live database is never migrated: finishing SQLite's recovery of a
-// journal a crash left is the only change it makes to the installation.
+const (
+	inUseAction   = "A node is running. On a coordinator, GET /zzrouter/v1/system/state reports its access store; a worker has none. To inspect it here, stop the service and run recovery inventory again."
+	unknownAction = "Resolve the cause in evidence, for example by running as the installation owner or freeing space in the system's temporary directory, then run recovery inventory again."
+)
+
+// InspectStore reports dir's access store and its online backup archives.
+// While a node holds the installation lock it opens nothing and points at the
+// running node. Otherwise it takes the lock when its file exists and judges a
+// copy, checked as a backup checks it, in the system's temporary directory, so
+// the live database is never migrated. It writes to the installation in one
+// case: a journal a crash left beside a stopped store is recovered into the
+// live file, as the next start would. An inspection that cannot finish returns
+// its error with a StoreUnknown section describing it.
 func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
+	section, err := inspectStore(ctx, dir)
+	if err != nil {
+		return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}}, err
+	}
+	return section, nil
+}
+
+func inspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	lock, err := lockInstallation(dir)
 	if errors.Is(err, atomicfile.ErrLocked) {
-		return StoreSection{State: StoreInUse, NextAction: "A node is running: read its access store's state from GET /zzrouter/v1/system/state.", Archives: []Archive{}}, nil
+		return StoreSection{State: StoreInUse, NextAction: inUseAction, Archives: []Archive{}}, nil
 	}
 	if err == nil {
 		defer func() { _ = lock.Close() }()
@@ -292,10 +317,13 @@ func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	}
 	defer func() { _ = os.RemoveAll(temp) }()
 	img, err := sqlstore.CaptureStopped(ctx, dir, filepath.Join(temp, "image.sqlite"))
-	if err == nil && !sqlstore.ReadsSchema(img.SchemaVersion) {
-		err = &sqlstore.Refusal{Reason: sqlstore.SchemaNewer} // a newer release's database is copied unchecked
+	if err == nil {
+		var reads bool
+		if reads, err = sqlstore.ReadsSchema(img.SchemaVersion); err == nil && !reads {
+			err = &sqlstore.Refusal{Reason: sqlstore.SchemaNewer} // a newer release's database is copied unchecked
+		}
 	}
-	section := StoreSection{State: StoreSetupRequired}
+	section := StoreSection{State: StoreState(img.Readiness())}
 	if img.StoreID != "" {
 		meta := StoreMeta(img.Meta)
 		section.StoreMeta = &meta
@@ -305,45 +333,81 @@ func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	case errors.Is(err, sqlstore.ErrNoStore):
 		section.State = StoreAbsent
 	case errors.As(err, &refusal):
-		section.State, section.Reason, section.NextAction = StoreRefused, refusal.Reason, refusal.NextAction()
+		section.State, section.Reason, section.Evidence, section.NextAction = StoreRefused, refusal.Reason, refusal.Summary(), refusal.NextAction()
 	case err != nil:
 		return StoreSection{}, err
-	case img.Initialized:
-		section.State = StoreReady
 	}
 	section.Archives, err = readArchives(dir)
 	return section, err
 }
 
-// readArchives lists the online backup archives, newest first, from their
-// manifests; a file that is not one is listed as unreadable, never an error.
-// Temporary files end in .tmp and are not listed.
+// readArchives lists the online backup archives newest first, then by ID. It
+// never follows a link: a link on the way to the backup directory is an error,
+// and only regular files are listed, temporary ones (.tmp) excepted. A file
+// that is not an archive is listed as unreadable, never an error.
 func readArchives(dir string) ([]Archive, error) {
-	backups := filepath.Join(dir, "access", "backups")
-	entries, err := os.ReadDir(backups)
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return []Archive{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	backups := filepath.Join("access", "backups")
+	var entries []fs.DirEntry
+	if err = rejectLinks(root, backups); err == nil {
+		entries, err = fs.ReadDir(root.FS(), filepath.ToSlash(backups))
+	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	archives := []Archive{}
 	for _, entry := range entries {
-		id, ok := strings.CutSuffix(entry.Name(), ".tar.gz")
-		if !ok {
-			continue
-		}
-		archive := Archive{ID: id}
-		if info, err := entry.Info(); err == nil {
-			archive.CreatedAt, archive.SizeBytes = info.ModTime().UTC(), info.Size()
-		}
-		if r, err := openArchive(filepath.Join(backups, entry.Name())); err == nil {
-			if m := r.manifest; m.Profile == ProfileDatabase {
-				archive.CreatedAt, archive.StoreMeta, archive.Readable = m.Created, m.Store, sqlstore.ReadsSchema(m.Store.SchemaVersion)
+		if strings.HasSuffix(entry.Name(), ".tar.gz") && entry.Type().IsRegular() {
+			archive, err := describeArchive(root, filepath.Join(backups, entry.Name()), entry)
+			if err != nil {
+				return nil, err
 			}
-			_ = r.Close()
+			archives = append(archives, archive)
 		}
-		archives = append(archives, archive)
 	}
-	slices.SortFunc(archives, func(a, b Archive) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	slices.SortFunc(archives, func(a, b Archive) int {
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
+	})
 	return archives, nil
+}
+
+// describeArchive describes the archive at name under root from its manifest;
+// one that does not open as an archive is unreadable, aged by its file.
+func describeArchive(root *os.Root, name string, entry fs.DirEntry) (Archive, error) {
+	archive := Archive{ID: strings.TrimSuffix(entry.Name(), ".tar.gz")}
+	if info, err := entry.Info(); err == nil {
+		archive.CreatedAt, archive.SizeBytes = info.ModTime().UTC(), info.Size()
+	}
+	m, ok := manifestAt(root, name)
+	if !ok || m.Profile != ProfileDatabase {
+		return archive, nil
+	}
+	var err error
+	archive.CreatedAt, archive.StoreMeta = m.Created, m.Store
+	archive.Readable, err = sqlstore.ReadsSchema(m.Store.SchemaVersion)
+	return archive, err
+}
+
+// manifestAt reads the manifest of the regular file at name under root; false
+// when it does not open as an archive.
+func manifestAt(root *os.Root, name string) (Manifest, bool) {
+	f, err := openRootRegular(root, name)
+	if err != nil {
+		return Manifest{}, false
+	}
+	r, err := readArchiveManifest(f)
+	if err != nil {
+		return Manifest{}, false
+	}
+	_ = r.Close()
+	return r.manifest, true
 }
 
 // Bind daemon-resolved paths to the declarations that produced them. Resolving

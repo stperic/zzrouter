@@ -354,8 +354,11 @@ func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
 // latest: Open already refused a newer one, so a lower one is a damaged header.
 func atLatest(ctx context.Context, db *sqlitedb.DB) error {
 	var version int
-	err := db.SQL().QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
-	if err == nil && !ReadsSchema(version) {
+	if err := db.SQL().QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	reads, err := ReadsSchema(version)
+	if err == nil && !reads {
 		err = refuse(Unreadable, fmt.Errorf("image schema version %d is not this release's", version))
 	}
 	return err

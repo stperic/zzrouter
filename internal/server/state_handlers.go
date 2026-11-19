@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -44,13 +43,9 @@ func (s *Server) handleStoreState(c *gin.Context) {
 		RespondToError(c, err)
 		return
 	}
-	status := recovery.StoreSetupRequired
-	if st.Initialized {
-		status = recovery.StoreReady
-	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: string(status), ObservedAt: observed, RetainedCopies: []struct{}{},
+		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: []struct{}{},
 		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})

@@ -85,7 +85,14 @@ func openArchive(archive string) (*archiveReader, error) {
 	if err != nil {
 		return nil, err
 	}
+	return readArchiveManifest(f)
+}
+
+// readArchiveManifest reads and validates the manifest of the archive f holds;
+// it closes f when it fails.
+func readArchiveManifest(f *os.File) (*archiveReader, error) {
 	r := &archiveReader{file: f, buffered: bufio.NewReader(f)}
+	var err error
 	if r.compressed, err = gzip.NewReader(r.buffered); err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
