@@ -42,7 +42,10 @@ const (
 	MaxAssets = 64
 
 	fileMode = 0o600
-	dirMode  = 0o755
+
+	// DirMode is the mode of the provider tree's directories, assets
+	// directories included.
+	DirMode = 0o755
 )
 
 // namePattern admits a single path element with no separator. No leading
@@ -399,7 +402,7 @@ func (d Dir) writeFile(name string, data []byte) error {
 	if err := d.check(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(d.path, dirMode); err != nil {
+	if err := os.MkdirAll(d.path, DirMode); err != nil {
 		return fmt.Errorf("create asset directory: %w", err)
 	}
 	if err := atomicfile.WriteFile(filepath.Join(d.path, name), data, fileMode); err != nil {

@@ -329,7 +329,7 @@ func (s *AppsConfigStore) WriteProviderFiles(name string, kind Kind, files Provi
 		s.mu.Unlock()
 		return false, nil
 	}
-	if err := os.MkdirAll(providerDir, 0o755); err != nil {
+	if err := os.MkdirAll(providerDir, assets.DirMode); err != nil {
 		s.mu.Unlock()
 		return false, fmt.Errorf("create %s: %w", providerDir, err)
 	}

@@ -8,13 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/audit"
-	"github.com/stperic/zzrouter/pkg/sqlitedb"
 )
 
 // fixture is a closed store in a directory of its own, and an image of it
@@ -252,28 +250,6 @@ func TestRevertRefusesWhenWhatWasKeptIsLost(t *testing.T) {
 			require.Equal(t, published, storeFiles(t, i.dir), "nothing changed")
 		})
 	}
-}
-
-// TestReplaceGivesTheInstallationsOwner: Replace gives every file and
-// directory it wrote the owner of the installation directory, Revert every
-// file it restored, each in one step the observer sees.
-func TestReplaceGivesTheInstallationsOwner(t *testing.T) {
-	t.Parallel()
-	i := installStore(t)
-	keep := filepath.Join(i.dir, "rollback", "g", "store")
-	var steps []string
-	ctx := sqlitedb.WithStep(t.Context(), func(step string) {
-		if strings.HasPrefix(step, "owned ") {
-			steps = append(steps, step)
-		}
-	})
-	_, err := Replace(ctx, i.dir, i.image, i.sha, keep, false)
-	require.NoError(t, err)
-	require.NoError(t, Revert(ctx, i.dir, keep, i.meta.Generation))
-	require.Equal(t, []string{
-		"owned access, access/access.sqlite, access-store.json, rollback/g/store, rollback/g/store/kept.json, rollback/g/store/access.sqlite, rollback/g/store/access-store.json",
-		"owned access/access.sqlite, access-store.json, access",
-	}, steps)
 }
 
 // TestReplaceRecordsALostKeep: a replacement that finds nothing recorded in

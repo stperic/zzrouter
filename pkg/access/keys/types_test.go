@@ -25,10 +25,11 @@ func TestVirtualKey_IsExpired(t *testing.T) {
 	assert.False(t, vk.IsExpired())
 }
 
-// TestValidateRefusesAColonInTheID: an ID with ':' could take the name of a
-// caller that is not an app key, so a record holding one is refused.
-func TestValidateRefusesAColonInTheID(t *testing.T) {
-	for _, id := range []string{"local:operator", "static:admin", ":", "a:"} {
+// TestValidateRefusesAnotherCallersName: an ID with ':', or the actor of
+// unattributed events, could take the name of a caller that is not that app
+// key, so a record holding one is refused.
+func TestValidateRefusesAnotherCallersName(t *testing.T) {
+	for _, id := range []string{"local:operator", "static:admin", ":", "a:", "unknown"} {
 		key := VirtualKey{ID: id, Name: "Key", HashedKey: "hash", TeamID: "eng", TeamRole: "member", Role: RoleUser}
 		if err := key.Validate(); !errors.Is(err, ErrInvalid) {
 			t.Errorf("Validate with ID %q = %v, want ErrInvalid", id, err)

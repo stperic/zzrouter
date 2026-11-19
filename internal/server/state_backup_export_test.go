@@ -173,7 +173,7 @@ func TestStateBackupExportFailures(t *testing.T) {
 	damaged := serveLocalGate(s, exportRequest(t, s, backup.ID))
 	require.Equal(t, http.StatusInternalServerError, damaged.Code)
 	assert.Equal(t, string(httperr.CodeStateImageCheckFailed), problemCode(t, damaged.Body.Bytes()), "no archive byte")
-	assert.Contains(t, damaged.Body.String(), "Take a new backup and export that one", "an export's own next step")
+	assert.Contains(t, damaged.Body.String(), "Take a new backup and use that one", "the next step")
 	assert.NotContains(t, damaged.Body.String(), "recovery inventory", "the live database is not implicated")
 	require.Len(t, exportRows(t, s), 1, "a refused export records nothing")
 }

@@ -319,9 +319,11 @@ func TestOnlineBackupCancellation(t *testing.T) {
 	}
 }
 
-// TestOnlineBackupAuditRowComesFirst: when the audit row is committed, the
-// archive is neither listed nor in place; once the create returns, it is.
-func TestOnlineBackupAuditRowComesFirst(t *testing.T) {
+// TestOnlineBackupAuditRowFollowsThePublish: when the audit row is committed,
+// the archive is in place but not listed; once the create returns, it is
+// listed. A row that fails to commit leaves neither the archive nor a listing,
+// so the history never names a backup that was not published.
+func TestOnlineBackupAuditRowFollowsThePublish(t *testing.T) {
 	store, dir := liveStore(t)
 	h := &hooked{Store: store}
 	var b *Backups
@@ -333,7 +335,7 @@ func TestOnlineBackupAuditRowComesFirst(t *testing.T) {
 		require.NoError(t, auditErr)
 		require.Equal(t, ev.Subject, events[0].Subject, "the row is committed")
 		require.Empty(t, b.List(), "and the archive is not listed")
-		require.NoFileExists(t, archiveOf(dir, ev.Subject))
+		require.FileExists(t, archiveOf(dir, ev.Subject), "but published")
 		return err
 	}
 	b = openBackups(t, dir, h)
@@ -342,6 +344,42 @@ func TestOnlineBackupAuditRowComesFirst(t *testing.T) {
 	require.Equal(t, 1, hooked)
 	require.Equal(t, []OnlineBackup{backup}, b.List())
 	require.FileExists(t, archiveOf(dir, backup.ID))
+
+	var failed string
+	h.record = func(_ context.Context, ev audit.Event) error {
+		failed = ev.Subject
+		require.FileExists(t, archiveOf(dir, ev.Subject))
+		return sqlstore.ErrBusy
+	}
+	_, err = b.Create(t.Context())
+	require.ErrorIs(t, err, sqlstore.ErrBusy)
+	require.NoFileExists(t, archiveOf(dir, failed), "the published archive is removed")
+	require.Equal(t, []OnlineBackup{backup}, b.List())
+}
+
+// TestOnlineBackupCheck: Check passes a retained archive as it was created and
+// refuses one deleted after listing (ErrBackupNotFound) or replaced by another
+// valid archive (ErrArchiveRefused), recording nothing either way.
+func TestOnlineBackupCheck(t *testing.T) {
+	store, dir := liveStore(t)
+	b := openBackups(t, dir, store)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err)
+	other, err := b.Create(t.Context())
+	require.NoError(t, err)
+	checked, err := b.Check(t.Context(), backup.ID)
+	require.NoError(t, err)
+	require.Equal(t, backup, checked)
+
+	require.NoError(t, os.WriteFile(archiveOf(dir, backup.ID), readBytes(t, archiveOf(dir, other.ID)), 0o600))
+	_, err = b.Check(t.Context(), backup.ID)
+	require.ErrorIs(t, err, ErrArchiveRefused, "a valid archive, but not the one listed")
+	require.NoError(t, os.Remove(archiveOf(dir, backup.ID)))
+	_, err = b.Check(t.Context(), backup.ID)
+	require.ErrorIs(t, err, ErrBackupNotFound, "listed, but gone")
+	events, _, err := store.AuditPage(t.Context(), audit.Filter{Action: audit.ActionBackupExported}, "", audit.MaxPage)
+	require.NoError(t, err)
+	require.Empty(t, events, "a check is not an export")
 }
 
 // TestOnlineBackupsOpenDeletesOnlyItsTemporaries: opening deletes a create's
@@ -550,8 +588,8 @@ func TestOnlineBackupsCreateOneAtATime(t *testing.T) {
 }
 
 // TestOnlineBackupFailedPublishLeavesNothing: when the archive is under its
-// final name and its directory sync then fails, the create fails and the
-// archive is removed; only the audit row, already committed, remains.
+// final name and its directory sync then fails, the create fails, the archive
+// is removed and no audit row names it.
 func TestOnlineBackupFailedPublishLeavesNothing(t *testing.T) {
 	store, dir := liveStore(t)
 	b := openBackups(t, dir, store)
@@ -563,7 +601,7 @@ func TestOnlineBackupFailedPublishLeavesNothing(t *testing.T) {
 	require.ErrorContains(t, err, "directory sync failed")
 	require.Empty(t, b.List())
 	require.Empty(t, backupFiles(t, dir))
-	require.Len(t, recorded(t, store), 1, "an event without a backup")
+	require.Empty(t, recorded(t, store), "no event without a backup")
 }
 
 // TestOnlineBackupsSurviveARestart: after the backups and the store close and

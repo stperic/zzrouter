@@ -290,8 +290,9 @@ func recoveryKey(manifest Manifest, keyFile string) ([]byte, error) {
 	return key, nil
 }
 
-// incompleteName marks a staging directory restore has not finished.
-const incompleteName = "INCOMPLETE"
+// incompleteName marks a staging directory restore has not finished, and
+// keyEntry is where it stages the protection key.
+const incompleteName, keyEntry = "INCOMPLETE", "protection/credentials.key"
 
 func stagingRoot(destination string) (*os.Root, error) {
 	if err := os.Mkdir(destination, 0o700); err != nil {
@@ -319,10 +320,10 @@ func finishStaging(ctx context.Context, root *os.Root, manifest *Manifest, key [
 		manifest.Staged = staged
 	}
 	if len(key) > 0 {
-		if err := root.Mkdir("protection", 0o700); err != nil {
+		if err := root.Mkdir(path.Dir(keyEntry), 0o700); err != nil {
 			return err
 		}
-		if err := writeExclusive(filepath.Join(destination, "protection", "credentials.key"), key); err != nil {
+		if err := writeExclusive(filepath.Join(destination, filepath.FromSlash(keyEntry)), key); err != nil {
 			return err
 		}
 	}

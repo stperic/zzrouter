@@ -89,7 +89,7 @@ type Event struct {
 	Action Action `json:"action"`
 	// Actor is the caller identity. For static admin keys this is the
 	// sentinel "static:admin"; for virtual keys it is the key UUID.
-	// The store records an unresolved actor as "unknown" (Attribute).
+	// The store records an unresolved actor as ActorUnknown (Attribute).
 	Actor string `json:"actor"`
 	// Subject identifies the object being mutated (a key UUID, a team
 	// ID, or a scope string for quota resets). Required.

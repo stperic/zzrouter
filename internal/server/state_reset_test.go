@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -130,7 +132,9 @@ func TestStateResetKeepsTheOwner(t *testing.T) {
 // judged; an unknown backup is 404; a backup still listed but past its
 // protected_until is 409 state_backup_unprotected at preview and at reset; a
 // backup of another revision, at preview or after it, is 409
-// state_revision_changed. None of them resets anything.
+// state_revision_changed; a current backup whose archive was replaced or
+// deleted on disk is refused at preview and at reset. None of them resets
+// anything.
 func TestStateResetRefusals(t *testing.T) {
 	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
 	createAppKey(t, s, "reader", "")
@@ -166,6 +170,19 @@ func TestStateResetRefusals(t *testing.T) {
 	createAppKey(t, s, "writer", "")
 	refused("revision changed after the preview", resetCall(t, s, resetPath, "moved", resetBody(newer.ID)), http.StatusConflict, string(httperr.CodeStateRevisionChanged))
 	refused("backup older than the records", resetCall(t, s, resetPath+"/preview", "", resetBody(newer.ID)), http.StatusConflict, string(httperr.CodeStateRevisionChanged))
+
+	current := createdBackup(t, s)
+	archive := filepath.Join(s.configDir, "access", "backups", current.ID+".tar.gz")
+	other, err := os.ReadFile(filepath.Join(s.configDir, "access", "backups", newer.ID+".tar.gz"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(archive, other, 0o600))
+	for _, path := range []string{resetPath + "/preview", resetPath} {
+		refused(path+" archive replaced", resetCall(t, s, path, "", resetBody(current.ID)), http.StatusInternalServerError, string(httperr.CodeStateImageCheckFailed))
+	}
+	require.NoError(t, os.Remove(archive))
+	for _, path := range []string{resetPath + "/preview", resetPath} {
+		refused(path+" archive deleted", resetCall(t, s, path, "", resetBody(current.ID)), http.StatusNotFound, string(httperr.CodeStateBackupNotFound))
+	}
 	assert.Empty(t, resetRows(t, s))
 	assert.NotNil(t, s.accessStore.Snapshot().Key("reader"), "nothing was reset")
 }

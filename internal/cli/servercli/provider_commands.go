@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/recovery"
 )
 
 // NewProviderCmd creates the top-level providers command.
@@ -67,6 +68,9 @@ func newProviderListCmd() *cobra.Command {
 // store write the server's finalization uses. A worker's copy of a synced
 // provider is the coordinator's, so there it refuses and names the request.
 func toggleApp(appName string, enable bool) error {
+	if err := recovery.PendingActivation(pkgConfig.Paths().GetConfigDir()); err != nil {
+		return err
+	}
 	node, err := pkgConfig.NewConfigManager("zzrouter").LoadNodeConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load node config: %w", err)

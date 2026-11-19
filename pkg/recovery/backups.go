@@ -233,22 +233,49 @@ type Export struct {
 	File *os.File
 }
 
-// Open opens the retained backup with this ID for export. It checks the
-// archive on the open file as recovery check does, hashing it, then commits
-// the "backup exported" audit row, so no byte leaves unchecked or unrecorded.
-// A failed check, or bytes other than the ones listed, is ErrArchiveRefused;
-// a cancellation or a file-system failure is returned as it is.
+// Open opens the retained backup with this ID for export, checked (Check),
+// then commits the "backup exported" audit row, so no byte leaves unchecked
+// or unrecorded.
 func (b *Backups) Open(ctx context.Context, id string) (Export, error) {
-	backup, err := b.Get(id)
+	backup, f, err := b.open(ctx, id)
 	if err != nil {
 		return Export{}, err
+	}
+	if _, err = f.Seek(0, io.SeekStart); err == nil {
+		err = b.src.Record(ctx, audit.Event{Action: audit.ActionBackupExported, Subject: id, Metadata: map[string]any{"sha256": backup.SHA256}})
+	}
+	if err != nil {
+		_ = f.Close()
+		return Export{}, err
+	}
+	return Export{OnlineBackup: backup, File: f}, nil
+}
+
+// Check returns the retained backup with this ID once its archive on disk
+// passes the check recovery check runs and hashes to the listed SHA-256, so
+// nothing relies on an archive that is gone or altered. A failed check is
+// ErrArchiveRefused; a cancellation or a file-system failure is returned as
+// it is.
+func (b *Backups) Check(ctx context.Context, id string) (OnlineBackup, error) {
+	backup, f, err := b.open(ctx, id)
+	if err == nil {
+		err = f.Close()
+	}
+	return backup, err
+}
+
+// open is Check, keeping the checked file open.
+func (b *Backups) open(ctx context.Context, id string) (OnlineBackup, *os.File, error) {
+	backup, err := b.Get(id)
+	if err != nil {
+		return OnlineBackup{}, nil, err
 	}
 	f, err := openRegular(b.path(id + archiveSuffix))
 	if errors.Is(err, fs.ErrNotExist) {
 		err = ErrBackupNotFound // pruned since it was listed
 	}
 	if err != nil {
-		return Export{}, err
+		return OnlineBackup{}, nil, err
 	}
 	sum := sha256.New()
 	r, err := readArchiveManifest(struct { // closes f when it fails
@@ -267,22 +294,15 @@ func (b *Backups) Open(ctx context.Context, id string) (Export, error) {
 		if ctx.Err() == nil && !errors.As(err, &path) {
 			err = fmt.Errorf("%w: %w", ErrArchiveRefused, err)
 		}
-		return Export{}, err
+		return OnlineBackup{}, nil, err
 	}
-	if _, err = f.Seek(0, io.SeekStart); err == nil {
-		err = b.src.Record(ctx, audit.Event{Action: audit.ActionBackupExported, Subject: id, Metadata: map[string]any{"sha256": backup.SHA256}})
-	}
-	if err != nil {
-		_ = f.Close()
-		return Export{}, err
-	}
-	return Export{OnlineBackup: backup, File: f}, nil
+	return backup, f, nil
 }
 
-// Create copies the live store into a checked archive, commits the "backup
-// created" audit row, then lists the archive. A failure or cancellation lists
-// nothing and leaves no file; after the audit row, cancellation no longer
-// stops it. Creates run one at a time.
+// Create copies the live store into a checked archive, publishes it, commits
+// the "backup created" audit row, then lists the archive. A failure or
+// cancellation lists nothing and leaves no file; after the audit row,
+// cancellation no longer stops it. Creates run one at a time.
 func (b *Backups) Create(ctx context.Context) (OnlineBackup, error) {
 	select {
 	case b.slot <- struct{}{}:
@@ -343,12 +363,12 @@ func (b *Backups) create(ctx context.Context) (_ OnlineBackup, err error) {
 	if err != nil {
 		return OnlineBackup{}, err
 	}
-	if err := b.src.Record(ctx, audit.Event{Action: audit.ActionBackupCreated, Subject: id,
-		Metadata: map[string]any{"generation": meta.Generation, "revision": meta.Revision, "sequence": meta.Sequence}}); err != nil {
-		return OnlineBackup{}, err
-	}
 	if err := b.rename(b.path(temp), b.path(name)); err != nil {
 		return OnlineBackup{}, err
+	}
+	if err := b.src.Record(ctx, audit.Event{Action: audit.ActionBackupCreated, Subject: id,
+		Metadata: map[string]any{"generation": meta.Generation, "revision": meta.Revision, "sequence": meta.Sequence}}); err != nil {
+		return OnlineBackup{}, err // the deferred cleanup removes the published file
 	}
 	// CheckImage refuses every schema but this release's, so the archive is readable.
 	b.mu.Lock()
