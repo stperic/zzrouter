@@ -121,6 +121,30 @@ func (c *Core) forgetRemoved(commit access.Commit) {
 	}
 }
 
+// forgetAbsent purges the spend rows of keys and teams the store lacks, left by a
+// delete that died before the spend flush or by a database from another time.
+// Person rows stay, as in forgetRemoved; static keys never hold one.
+func (c *Core) forgetAbsent() {
+	snap := access.SnapshotOf(c.state)
+	if snap.KeysVersion() == 0 { // no store, or a failed one: absence proves nothing
+		return
+	}
+	var absent access.Commit
+	for _, st := range c.enforcer.GetAllSpendStates() {
+		switch {
+		case st.Kind == quota.ScopeKey && snap.Key(st.EntityID) == nil:
+			absent.RemovedKeys = append(absent.RemovedKeys, st.EntityID)
+		case st.Kind == quota.ScopeTeam && snap.Team(st.EntityID) == nil:
+			absent.RemovedTeams = append(absent.RemovedTeams, st.EntityID)
+		}
+	}
+	if len(absent.RemovedKeys)+len(absent.RemovedTeams) > 0 {
+		c.forgetRemoved(absent)
+		slog.Info("Forgot the spend of keys and teams absent from the access store",
+			"keys", len(absent.RemovedKeys), "teams", len(absent.RemovedTeams))
+	}
+}
+
 // FlushSpend persists dirty spend state to disk without stopping the
 // enforcer. Server.Stop calls this before HTTP drain so a slow shutdown
 // can't push the final flush past systemd's SIGKILL deadline.

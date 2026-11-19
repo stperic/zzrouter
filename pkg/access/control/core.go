@@ -107,7 +107,8 @@ type accessState interface {
 	OnCommit(func(access.Commit))
 }
 
-// NewCore wires the collaborators. Caller must call Start() to begin
+// NewCore wires the collaborators and forgets loaded spend rows of keys and
+// teams absent from state. Caller must call Start() to begin
 // background goroutines (auth cache cleanup, reservation reaper,
 // rate-limiter cleanup, spend persistence).
 func NewCore(
@@ -129,7 +130,9 @@ func NewCore(
 	if state == nil {
 		slog.Info("control.Core constructed without an access store; virtual keys and teams disabled")
 	} else if enforcer != nil {
+		// Subscribed first, so a removal after the read below reaches forgetRemoved.
 		state.OnCommit(c.forgetRemoved)
+		c.forgetAbsent()
 	}
 	return c
 }
