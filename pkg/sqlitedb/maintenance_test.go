@@ -255,7 +255,7 @@ func TestCopyToCorruptPage(t *testing.T) {
 
 func TestFreeBytes(t *testing.T) {
 	db := createDB(t, filepath.Join(t.TempDir(), "freelist.sqlite"), testSchema(t))
-	free, err := db.FreeBytes(t.Context())
+	free, err := sqlitedb.FreeBytes(t.Context(), db.SQL())
 	require.NoError(t, err)
 	require.Zero(t, free)
 	tx, err := db.SQL().BeginTx(t.Context(), nil)
@@ -266,10 +266,10 @@ func TestFreeBytes(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.NoError(t, tx.Commit())
-	before, err := db.FreeBytes(t.Context())
+	before, err := sqlitedb.FreeBytes(t.Context(), db.SQL())
 	require.NoError(t, err)
 	execSQL(t, db.SQL(), "DELETE FROM parents")
-	after, err := db.FreeBytes(t.Context())
+	after, err := sqlitedb.FreeBytes(t.Context(), db.SQL())
 	require.NoError(t, err)
 	require.Greater(t, after, before)
 	require.Equal(t, integer(t, db.SQL(), "PRAGMA freelist_count")*integer(t, db.SQL(), "PRAGMA page_size"), after)

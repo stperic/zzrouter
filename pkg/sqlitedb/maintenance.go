@@ -25,13 +25,17 @@ type CheckError struct {
 // Error describes the failed check for logging.
 func (e *CheckError) Error() string { return e.Check + ": " + e.Detail }
 
+// CheckName names the SQLite check Check runs before foreign_key_check.
+func CheckName(full bool) string {
+	if full {
+		return "integrity_check"
+	}
+	return "quick_check"
+}
+
 // Check runs quick_check or integrity_check, then foreign_key_check; operational errors retain their causes.
 func (d *DB) Check(ctx context.Context, full bool) error {
-	check := "quick_check"
-	if full {
-		check = "integrity_check"
-	}
-	for _, name := range []string{check, "foreign_key_check"} {
+	for _, name := range []string{CheckName(full), "foreign_key_check"} {
 		rows, err := d.db.QueryContext(ctx, "PRAGMA "+name)
 		var detail string
 		if err == nil {
@@ -68,13 +72,20 @@ func (d *DB) Check(ctx context.Context, full bool) error {
 	return nil
 }
 
-// FreeBytes returns freelist_count times page_size, the space a compact copy can reclaim.
-func (d *DB) FreeBytes(ctx context.Context) (int64, error) {
+// RowQuerier is a database or one of its transactions.
+type RowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// FreeBytes returns freelist_count times page_size, the space a compact copy
+// can reclaim. Inside a write transaction it reads that transaction's state
+// under the lock it holds.
+func FreeBytes(ctx context.Context, q RowQuerier) (int64, error) {
 	var count, size int64
-	if err := d.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&count); err != nil {
+	if err := q.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&count); err != nil {
 		return 0, err
 	}
-	err := d.db.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size)
+	err := q.QueryRowContext(ctx, "PRAGMA page_size").Scan(&size)
 	return count * size, err
 }
 

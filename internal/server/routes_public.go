@@ -28,6 +28,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.registerOperationRoutes(router)
 	router.GET("/access/audit", s.browserCoordinatorOnly, browserResponseHeaders, s.handleAccessAudit)
 	router.GET("/system/recovery", browserResponseHeaders, s.handleRecoveryInventory)
+	router.GET("/system/state", s.browserCoordinatorOnly, browserResponseHeaders, s.handleStoreState)
 
 	// Initialize services (inject routing layer). The compat surfaces need
 	// a subset of these and are registered on their own engine on a worker,
