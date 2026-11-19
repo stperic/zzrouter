@@ -31,13 +31,27 @@ func writeSpend(t *testing.T, path string, spent map[quota.SpendScope]int64) {
 	require.NoError(t, quota.SaveSpend(path, file))
 }
 
-// startCore builds a node's access control over state and the spend.json at path.
+// dyingCore builds a node's access control over state and the spend.json at path
+// for a process that dies: nothing stops it, so nothing flushes at the end.
+func dyingCore(state accessState, path string) *Core {
+	enforcer := quota.NewEnforcer(quota.NewRateLimiter(), quota.NewConcurrencyLimiter(), quota.NewSpendTracker(path))
+	return NewCore(StaticKeySet{}, state, nil, enforcer, nil)
+}
+
+// startCore is dyingCore for a node that stops when the test ends.
 func startCore(t *testing.T, state accessState, path string) *Core {
 	t.Helper()
-	enforcer := quota.NewEnforcer(quota.NewRateLimiter(), quota.NewConcurrencyLimiter(), quota.NewSpendTracker(path))
-	c := NewCore(StaticKeySet{}, state, nil, enforcer, nil)
+	c := dyingCore(state, path)
 	t.Cleanup(func() { c.Stop(context.Background()) })
 	return c
+}
+
+// spendRows reads the spend.json at path as a node's next start would.
+func spendRows(t *testing.T, path string) map[string]*quota.SpendState {
+	t.Helper()
+	file, err := quota.LoadSpend(path)
+	require.NoError(t, err)
+	return file.States
 }
 
 // spentBy maps every spend row c holds to its total.
@@ -89,36 +103,47 @@ func TestStartForgetsSpendOfKeysAndTeamsTheStoreLacks(t *testing.T) {
 		spentBy(startCore(t, store, path)), "person rows follow neither the commit subscriber nor the start")
 }
 
-// The delete committed, then the process died before the 60-second spend flush.
+// The delete committed, then the process died before its spend purge was written:
+// the delete goes through a store no core subscribes to.
 func TestStartForgetsSpendOfAKeyDeletedBeforeTheFlush(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "spend.json")
-	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
-	require.NoError(t, err)
+	store := openStoreAt(t, dir, sqlstore.Options{})
 	createTeam(t, store, "eng", spendLimits)
-	raw := createKey(t, store, "gone", "eng", spendLimits)
-	enforcer := quota.NewEnforcer(quota.NewRateLimiter(), quota.NewConcurrencyLimiter(), quota.NewSpendTracker(path))
-	first := NewCore(StaticKeySet{}, store, nil, enforcer, nil)
-	spendAs(t, first, raw, 1_000)
+	first := dyingCore(store, path)
+	spendAs(t, first, createKey(t, store, "gone", "eng", spendLimits), 1_000)
 	first.FlushSpend()
-	require.NoError(t, store.DeleteKey(t.Context(), "gone", audit.Event{}))
-	require.Nil(t, first.GetKeySpend("gone"), "the commit subscriber forgets the row in memory only")
-	require.NoError(t, store.Close()) // killed: first never stops, so nothing flushes again
-	file, err := quota.LoadSpend(path)
-	require.NoError(t, err)
-	require.Contains(t, file.States, "key:gone:")
+	require.NoError(t, store.Close())
+	unwatched := openStoreAt(t, dir, sqlstore.Options{})
+	require.NoError(t, unwatched.DeleteKey(t.Context(), "gone", audit.Event{}))
+	require.NoError(t, unwatched.Close())
+	require.Contains(t, spendRows(t, path), "key:gone:")
 
-	store, err = sqlstore.Open(t.Context(), dir, sqlstore.Options{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	second := startCore(t, store, path)
+	second := startCore(t, openStoreAt(t, dir, sqlstore.Options{}), path)
 	assert.Equal(t, map[string]int64{"team:eng:": 1_000}, spentBy(second))
-	second.FlushSpend()
-	file, err = quota.LoadSpend(path)
-	require.NoError(t, err)
-	assert.NotContains(t, file.States, "key:gone:", "the next flush persists the purge")
-	assert.Contains(t, file.States, "team:eng:")
+	rows := spendRows(t, path)
+	assert.NotContains(t, rows, "key:gone:", "the start writes its purge at once")
+	assert.Contains(t, rows, "team:eng:")
+}
+
+// A key deleted and created again under its ID, then the process died before the
+// periodic flush: the delete wrote its purge, so the new key inherits nothing.
+func TestKeyRecreatedBeforeTheFlushStartsAtZeroAfterACrash(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spend.json")
+	store := openStoreAt(t, dir, sqlstore.Options{})
+	createTeam(t, store, "eng", quota.QuotaConfig{})
+	first := dyingCore(store, path)
+	spendAs(t, first, createKey(t, store, "k", "eng", spendLimits), 4_000_000)
+	first.FlushSpend()
+	require.NoError(t, store.DeleteKey(t.Context(), "k", audit.Event{}))
+	createKey(t, store, "k", "eng", spendLimits)
+	require.NoError(t, store.Close())
+
+	second := startCore(t, openStoreAt(t, dir, sqlstore.Options{}), path)
+	assert.Nil(t, second.GetKeySpend("k"))
 }
 
 func TestKeyCreatedAgainUnderAnOldIDStartsAtZeroSpend(t *testing.T) {

@@ -450,3 +450,41 @@ func TestSpendTracker_PersistAndLoad_PreservesThresholds(t *testing.T) {
 	again, _ := tr2.SettleAndDetectCrossings(scope, 100_000, 100_000, 0, 0)
 	assert.Empty(t, again, "post-restart settle in the same period must dedup against persisted bitfield")
 }
+
+// A save that copied the rows before a purge must not land after a save that
+// copied them afterwards: the file holds the later copy.
+func TestSpendTracker_RacingSavesLeaveTheLaterCopy(t *testing.T) {
+	t.Parallel()
+	tr := NewSpendTracker(filepath.Join(t.TempDir(), "spend.json"))
+	writing, release, laterWriting := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	tr.write = func(path string, file *SpendFile) error {
+		switch calls.Add(1) {
+		case 1:
+			close(writing)
+			<-release
+		case 2:
+			close(laterWriting)
+		}
+		return SaveSpend(path, file)
+	}
+	require.True(t, tr.ReserveBudget(SpendScope{Kind: ScopeKey, EntityID: "k"}, 10, PeriodMonthly, 1))
+	earlier := make(chan struct{})
+	go func() { defer close(earlier); tr.save() }()
+	<-writing
+	tr.ForgetEntity(ScopeKey, "k")
+	later := make(chan struct{})
+	go func() { defer close(later); tr.save() }()
+	select {
+	case <-laterWriting: // unordered: the later copy lands while the earlier one is still writing
+		<-later
+	case <-time.After(100 * time.Millisecond): // ordered: the later save waits behind the earlier write
+	}
+	close(release)
+	<-earlier
+	<-later
+
+	file, err := LoadSpend(tr.path)
+	require.NoError(t, err)
+	assert.Empty(t, file.States)
+}

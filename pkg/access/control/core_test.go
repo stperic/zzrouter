@@ -39,7 +39,13 @@ func newTestCoreFor(t *testing.T, staticKeys StaticKeySet, store access.Store) *
 
 func openTestStore(t *testing.T, opts sqlstore.Options) access.Store {
 	t.Helper()
-	store, err := sqlstore.Open(t.Context(), t.TempDir(), opts)
+	return openStoreAt(t, t.TempDir(), opts)
+}
+
+// openStoreAt opens dir's store until the test ends; a test may close it sooner.
+func openStoreAt(t *testing.T, dir string, opts sqlstore.Options) access.Store {
+	t.Helper()
+	store, err := sqlstore.Open(t.Context(), dir, opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

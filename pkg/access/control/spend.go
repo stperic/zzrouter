@@ -111,13 +111,19 @@ func (c *Core) GetAllSpendStates() map[string]*quota.SpendState {
 	return c.enforcer.GetAllSpendStates()
 }
 
-// forgetRemoved purges the spend rows of the keys and teams a commit removed.
+// forgetRemoved purges the spend rows of the keys and teams a commit removed and
+// writes the purge at once: an ID recreated before the periodic flush would
+// otherwise inherit the old row after a crash. A failed write is logged and retried
+// by the next flush; the removal itself has already committed.
 func (c *Core) forgetRemoved(commit access.Commit) {
 	for _, id := range commit.RemovedKeys {
 		c.enforcer.ForgetEntity(quota.ScopeKey, id)
 	}
 	for _, id := range commit.RemovedTeams {
 		c.enforcer.ForgetEntity(quota.ScopeTeam, id)
+	}
+	if len(commit.RemovedKeys)+len(commit.RemovedTeams) > 0 {
+		c.enforcer.FlushSpend()
 	}
 }
 
