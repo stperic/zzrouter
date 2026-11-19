@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -554,34 +555,17 @@ func (m *SystemdManager) GetDataDir() string {
 // GenerateAPIKey generates a secure admin API key and saves it to the environment file.
 // Preserves existing keys if present (e.g., cluster key pushed during join).
 func (m *SystemdManager) GenerateAPIKey() (string, error) {
-	key, err := generateSecureKey()
+	legacyPath := filepath.Join(m.GetConfigDir(), "zzrouter.env")
+	unit, err := os.ReadFile(m.servicePath())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect installed service: %w", err)
+	}
+	active := strings.Contains(string(unit), "EnvironmentFile=-"+legacyPath) || strings.Contains(string(unit), "EnvironmentFile="+legacyPath)
+	key, err := config.EnsureInstallationCredentials(context.Background(), m.GetConfigDir(), config.InstallationCredentialOptions{LegacyFile: legacyPath, LegacyOverrides: active})
 	if err != nil {
-		return "", fmt.Errorf("failed to generate API key: %w", err)
+		return "", err
 	}
-
-	envPath := filepath.Join(m.GetConfigDir(), "zzrouter.env")
-
-	vars := map[string]string{
-		"ZZROUTER_ADMIN_API_KEY": key,
-	}
-
-	// Preserve existing keys if present
-	if existingVars, err := readEnvFile(envPath); err == nil {
-		if adminKey, ok := existingVars["ZZROUTER_ADMIN_API_KEY"]; ok && adminKey != "" {
-			vars["ZZROUTER_ADMIN_API_KEY"] = adminKey
-			key = adminKey // Return the existing key, not the new one
-		}
-		if clusterKey, ok := existingVars["ZZROUTER_CLUSTER_NETWORK_KEY"]; ok && clusterKey != "" {
-			vars["ZZROUTER_CLUSTER_NETWORK_KEY"] = clusterKey
-		}
-		if userKey, ok := existingVars["ZZROUTER_API_KEY"]; ok && userKey != "" {
-			vars["ZZROUTER_API_KEY"] = userKey
-		}
-	}
-
-	if err := writeEnvFile(envPath, vars); err != nil {
-		return "", fmt.Errorf("failed to write env file: %w", err)
-	}
+	envPath := filepath.Join(m.GetConfigDir(), ".env")
 
 	// Chown the env file to zzrouter user
 	if u, err := user.Lookup(ServiceUser); err == nil {
@@ -660,8 +644,6 @@ func (m *SystemdManager) SwitchToServiceUser() error {
 
 	return syscall.Exec(exe, args, env) //nolint:gosec // G702: exe is the current executable; original argv is passed directly without a shell.
 }
-
-// readEnvFile is defined in manager.go (cross-platform)
 
 // serviceUserSUArgs preserves argv through su without interpreting it as shell code.
 func serviceUserSUArgs(args []string) []string {

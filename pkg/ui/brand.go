@@ -9,17 +9,31 @@ ________   /        / __ \____  __  __/ /____  _____
   /   /______     / _, _/ /_/ / /_/ / /_/  __/ /
  /__________     /_/ |_|\____/\__,_/\__/\___/_/`
 
+const brandTerracotta = "#d97757"
+
 func brandAccent(styles Styles) lipgloss.Style {
 	accent := "#98472e"
 	if styles.Theme.IsDark {
-		accent = "#d97757"
+		accent = brandTerracotta
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(accent))
 }
 
-// BrandMark renders the shared ASCII logo in the terminal theme.
+// BrandMark draws the console's interlocking double-Z mark in terminal cells.
 func BrandMark(styles Styles) string {
-	return styles.Normal.Render(BrandASCII)
+	outer := "#242420"
+	if styles.Theme.IsDark {
+		outer = "#faf9f5"
+	}
+	ink := lipgloss.NewStyle().Foreground(lipgloss.Color(outer)).Render
+	orange := lipgloss.NewStyle().Foreground(lipgloss.Color(brandTerracotta)).Render
+	// Keep the outer strokes even on the quarter-cell grid.
+	return " " + ink("▝▀▀▀▀▀▀▀▀▀▀▀██") + "\n" +
+		orange("▀▀▀▀▀▀▀▀▙▙") + " " + ink("▟▛▘") + "\n" +
+		"   " + ink("▗█▘") + orange("▗▟▀") + ink("▗█▘") + "\n" +
+		" " + ink("▗▟▀") + orange("▗▟▛▘") + ink("▐▛") + "\n" +
+		ink("▗█▘") + orange("▝▜▛▄▄▄▄▄▄▄▄") + "\n" +
+		ink("▐█▄▄▄▄▄▄▄▄▄▄▖")
 }
 
 // BrandWordmark keeps working views compact with the plain product name.

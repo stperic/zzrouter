@@ -44,7 +44,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	require.Contains(t, session.InitializeResult().Instructions, "zz_api_search")
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 26)
+	require.Len(t, tools.Tools, 30)
 	if protocol == "2026-07-28" {
 		require.Equal(t, int((5 * time.Minute).Milliseconds()), tools.TTLMs)
 	}
@@ -185,7 +185,10 @@ func TestMCPOperationBindings(t *testing.T) {
 		require.Contains(t, bindings, name)
 		require.Empty(t, bindings[name], "escape hatches bind dynamically through the catalog/spec")
 	}
-	for tool, ids := range mcpserver.OperationBindings() {
+	for tool, ids := range mcpserver.InferenceOperationBindings() {
+		bindings[tool] = ids
+	}
+	for tool, ids := range bindings {
 		for _, id := range ids {
 			route, ok := operations[id]
 			require.True(t, ok, "%s binds missing operationId %s", tool, id)
@@ -201,7 +204,7 @@ func TestMCPOperationBindings(t *testing.T) {
 		}
 	}
 	require.Equal(t, "mcp", surfaceForPath("/zzrouter/v1/mcp"))
-	require.Equal(t, "admin", authTierForPath("/zzrouter/v1/mcp"))
+	require.Equal(t, "admin", authTierForRoute("POST", "/zzrouter/v1/mcp"))
 	discovery := buildAPIDiscovery(s)
 	require.Equal(t, "POST /zzrouter/v1/mcp", discovery.MCP)
 	require.Equal(t, "POST /inference/mcp", discovery.InferenceMCP)

@@ -87,7 +87,9 @@ fallback. Where nothing more specific applies it is a snake_case slug of
 | `forbidden` | 403 | Key authenticated but not permitted. |
 | `not_found` | 404 | No such resource. |
 | `conflict` | 409 | State prevents the operation : e.g. an upgrade with instances still running, or a provider already installed. |
+| `retired` | 410 | The route is still mounted but retired. `detail` names the replacement; call that instead. |
 | `service_unavailable` | 503 | Subsystem not wired or shutting down. |
+| `model_discovery_unavailable` | 501 | The provider declares no model-listing API. Search, popular-model and card requests cannot query its catalog; register a known provider model ID instead. Inference may still be available. |
 
 `type` carries the same identity as a URI (kebab-case, so
 `problems/not-found` pairs with `not_found`). Prefer `code`.
@@ -113,6 +115,20 @@ and `down` are excluded. Two consecutive missed probes or a graceful goodbye mar
 a node down. Restore connectivity or pairing and observe REST/MCP health;
 `last_seen_at` remains the last successful probe and `last_error` reports sanitized
 probe or dispatch failures. Node health is separate from provider cooldowns.
+
+### Access store (keys, teams, people, access history and online backups)
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `access_store_busy` | 503 | Another process held the coordinator's access database past the busy timeout, on a change or an access-history read. Nothing was changed. | Honor `Retry-After` and retry the same request; if it persists, an operator tool holds the live file. |
+| `access_store_failed` | 503 | The coordinator's access store can no longer vouch for its records. The change may or may not have been made, and the node is exiting so its service manager restarts it. | Wait until the node answers `/health` again, then read the record before retrying the change. |
+| `state_backup_not_found` | 404 | No retained online backup has this ID: it never existed or retention removed it. | List the retained backups (`zz_api_get` operation `listStateBackups`) and use one of their IDs, or create a new backup. |
+| `state_backup_capacity_exceeded` | 507 | The online backup was refused and nothing was kept. `capacity` is `byte_cap` when the retained backups, counting only what retention keeps, fill the 1 GiB cap or leave no room for the written archive (`limit_bytes`, `retained_bytes`, `required_bytes`, 0 when refused before the copy), or `disk` when the coordinator's disk had no room. | `byte_cap`: wait until retention removes older backups (each one's `expires_at` in the backup list), or ask the operator for an offline backup (`zzrouter-node recovery backup` with the node stopped); when `required_bytes` is over `limit_bytes` the archive alone exceeds the cap and only the offline backup helps. `disk`: ask the operator to free space on the coordinator, then retry. |
+| `state_image_check_failed` | 500 | On a backup create: the copy of the access database failed its integrity or record check, so nothing was kept, and the live database may be damaged. On an export: that backup's archive failed its check, or is not the one the backup list describes, so nothing was sent; the live database is not involved. On a reset or its preview: the same check failed on the backup it names, so nothing was reset. | Create: do not retry in a loop; tell the operator to stop the service and run `zzrouter-node recovery inventory`, which reports the store's state and next action. Export or reset: take a new backup and use that one. |
+| `state_revision_changed` | 409 | A reset preview or reset named a backup that does not hold the access records' current revision: something changed the records after the backup, or after the preview. Nothing was reset. If the same reset was already sent, it was applied: it shows in the access history as `store.reset`. | Take a new backup, preview the reset with it and confirm again; `zzrouter access state reset` without `--backup-id` does all three. These routes take the local operator's proof only; no API key, session or MCP tool reaches them. |
+| `state_backup_unprotected` | 409 | A reset preview or reset named a backup that is still listed but past its `protected_until`, so retention could remove it before it undoes the reset. Nothing was reset. | Take a new backup and preview the reset with it; `zzrouter access state reset` without `--backup-id` does both. |
+
+A coordinator that is stopping answers any access-store request with 503 `service_unavailable` and `Retry-After`: nothing was changed; retry once it answers `/health` again.
 
 ### Install preflight (`POST /providers/:n/install`)
 
@@ -180,7 +196,6 @@ tier that set the key: a request key is fixed in `zz_run_preview` or
 | `unknown_node` | Tier 3 cell references a node not in the cluster. | List `/zzrouter/v1/nodes`. |
 | `unknown_model` | Tier 2/3 cell references a model not in the catalog. | List `/v1/models`. |
 | `coercion_failed` | Value couldn't be converted to schema type. | Send the value as the declared type. |
-| `retired` | Key was removed from the schema. | Remove from your patch. |
 | `duplicate_flag` | Two spellings of one flag (`ctx_size`, `ctx-size`) with different values in one map: a tier's, the request's or a PATCH body's. One entry per spelling. | Keep one: drop it from the request, or set the flag once with `zz_params_set`, which replaces every spelling (a `null` removes them all). |
 | `excluded_by_runtime` | The provider declares the key, but the runtime selected for this model (named in `message`) does not take it. | Drop the key, or send `auto`; in `zz_params_get` accepts, the key's `excluded_by` lists each runtime that does not take it with the feature that selects it (`{"runtime":"mlx-vlm","feature":"vision"}`). |
 | `unknown_asset` | An asset-typed key names a file the provider does not have. | List `GET /zzrouter/v1/providers/:n/assets`, or upload the file with `PUT .../assets/:asset` first. |

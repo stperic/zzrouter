@@ -215,8 +215,8 @@ func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder 
 	// team_alias) are mirrored at recorder construction by
 	// mirrorCallerIdentityToRecorder, so the bridge has them regardless
 	// of which dispatch surface the request flowed through.
-	if ac := GetAccessContext(c); recorder != nil && ac != nil && ac.Key != nil && ac.Key.IsVirtual {
-		recorder.SetKeyID(ac.Key.ID)
+	if ac := GetAccessContext(c); recorder != nil && ac != nil && ac.Key != nil && ac.Key.TeamBound() {
+		recorder.SetSubject(string(ac.Key.IdentityKind()), ac.Key.ID, ac.Key.TeamID)
 		if ac.Team != nil {
 			recorder.SetTeamID(ac.Team.ID)
 		}

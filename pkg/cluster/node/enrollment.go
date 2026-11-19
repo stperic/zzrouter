@@ -23,12 +23,14 @@ import (
 const enrollmentPath = "/zzrouter/v1/cluster/enrollment"
 const enrollmentCodeHeader = "X-ZZRouter-Pairing-Code"
 
+// ErrEnrollmentUncertain means certificate delivery started but identity confirmation failed.
+var ErrEnrollmentUncertain = errors.New("enrollment outcome is uncertain")
+
 func (n *Node) windowInfo(w *pairingWindow) PairingWindowInfo {
-	info := PairingWindowInfo{Code: w.code, Deadline: w.deadline, Fingerprint: n.Fingerprint()}
+	info := PairingWindowInfo{NodeName: n.cfg.NodeName, Code: w.code, Deadline: w.deadline, Fingerprint: n.Fingerprint()}
 	if w.listener != nil {
-		host := ResolveSelfHost(n.cfg.BindHost, n.cfg.NodeName, n.cfg.advertiseIPs())
 		_, port, _ := net.SplitHostPort(w.listener.Addr().String())
-		info.WorkerURL = "https://" + net.JoinHostPort(host, port)
+		info.WorkerURL = "https://" + net.JoinHostPort(w.host, port)
 	}
 	return info
 }
@@ -148,10 +150,15 @@ func (n *Node) Enroll(ctx context.Context, workerURL, fingerprint, code, coordin
 	if n.Mode() != Coordinator || n.ca == nil {
 		return nil, ErrNotCoordinator
 	}
-	target, err := url.Parse(workerURL)
-	if err != nil || target.Scheme != "https" || target.Hostname() == "" || target.User != nil || (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
-		return nil, errors.New("worker_url must be an HTTPS cluster endpoint")
+	canonicalURL, err := NormalizeCoordinatorURL(coordinatorURL)
+	if err != nil {
+		return nil, err
 	}
+	coordinatorURL = canonicalURL
+	if err := validateEnrollmentURL(workerURL); err != nil {
+		return nil, err
+	}
+	target, _ := url.Parse(workerURL)
 	if !IsValidPairingCode(code) {
 		return nil, errors.New("malformed enrollment code")
 	}
@@ -229,7 +236,7 @@ func (n *Node) Enroll(ctx context.Context, workerURL, fingerprint, code, coordin
 	}
 	accepted, confirmErr := n.confirmEnrolled(ctx, target.String(), pin, pending.NodeName)
 	if confirmErr != nil {
-		return nil, errors.Join(postErr, confirmErr)
+		return nil, errors.Join(ErrEnrollmentUncertain, postErr, confirmErr)
 	}
 	return accepted, nil
 }

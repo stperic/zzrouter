@@ -22,17 +22,12 @@ const (
 	browserHostCSRFCookie    = "__Host-" + browserCSRFCookie
 )
 
-func (s *Server) initOAuth() error {
-	if s.node.IsWorker() {
-		return nil
-	}
-	issuer, err := s.config.Auth.OAuth.EffectiveIssuer(s.config.Node)
-	if err != nil {
-		return err
-	}
+// initOAuth does nothing without an issuer; the factory resolves none on a worker.
+func (s *Server) initOAuth(issuer string) error {
 	if issuer == "" {
 		return nil
 	}
+	s.initPeople(context.Background())
 	browser := oauth.BrowserOptions{SessionCookie: browserSessionCookie, CSRFCookie: browserCSRFCookie, LegacyPath: "/oauth"}
 	if strings.HasPrefix(issuer, "https://") {
 		browser = oauth.BrowserOptions{SessionCookie: browserHostSessionCookie, CSRFCookie: browserHostCSRFCookie}
@@ -48,7 +43,7 @@ func (s *Server) initOAuth() error {
 		ownedClients = map[string]oauth.OwnedClient{providerBrowserOwner: {Name: "Provider browser", RedirectURI: origin + "/oauth/callback", ResourcePath: providerBrowserResource}}
 	}
 	authority, err := oauth.New(oauth.Options[control.CredentialReference]{
-		Issuer: issuer, StatePath: filepath.Join(s.auditConfigDir, "oauth.json"),
+		Issuer: issuer, StatePath: filepath.Join(s.configDir, "oauth.json"),
 		Resources: resources, OwnedClients: ownedClients, Browser: browser,
 		Authenticate: func(_ context.Context, key string) (control.CredentialReference, error) {
 			return s.access.core.Reference(key)
@@ -97,6 +92,7 @@ func (s *Server) registerOAuthRoutes() {
 		return
 	}
 	s.registerBrowserSessionRoutes()
+	s.registerPeopleRoutes()
 	serve := gin.WrapH(s.access.oauth)
 	discovery := []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource" + adminMCPPath, "/.well-known/oauth-protected-resource" + inferenceMCPPath}
 	if s.config.Coordinator.ProviderBrowser.Origin != "" {

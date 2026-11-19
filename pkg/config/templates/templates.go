@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/config/assets"
 )
 
 //go:embed files/node-default.yaml
@@ -46,11 +47,11 @@ func GetClientTemplate() string {
 // InstallDefaults walks the embedded providers/ tree and copies each
 // file to dstDir/<relative-path>. Files that already exist on disk are
 // preserved (copy-if-missing semantics) so user edits survive an
-// upgrade-time reinstall. Subdirectories are created with 0755; files
+// upgrade-time reinstall. Subdirectories are created with assets.DirMode; files
 // are written 0600 via atomic temp+rename.
 // Nonroot calls first publish ownership and quarantine/restore historical providers.
 func InstallDefaults(dstDir string) error {
-	if err := os.MkdirAll(dstDir, 0755); err != nil {
+	if err := os.MkdirAll(dstDir, assets.DirMode); err != nil {
 		return fmt.Errorf("create %s: %w", dstDir, err)
 	}
 	if _, _, err := prepareManagedFiles(AppsFS, dstDir); err != nil {
@@ -66,7 +67,7 @@ func InstallDefaults(dstDir string) error {
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 
 		if d.IsDir() {
-			return os.MkdirAll(dst, 0755)
+			return os.MkdirAll(dst, assets.DirMode)
 		}
 
 		// Copy-if-missing: leave user edits alone.

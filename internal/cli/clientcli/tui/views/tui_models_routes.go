@@ -141,6 +141,12 @@ func (m *ModelsViewModel) updateRouteDetail(msg tea.KeyPressMsg) tea.Cmd {
 			m.detailDepCursor++
 		}
 		return nil
+	case key.Matches(msg, tui.ModelsKeys.Chat):
+		if g == nil {
+			return nil
+		}
+		name := g.Name
+		return func() tea.Msg { return tui.LaunchChatMsg{Model: name} }
 	case key.Matches(msg, tui.ModelsKeys.Edit):
 		if g != nil {
 			m.routeForm.openEditGroupForm(g)

@@ -109,7 +109,7 @@ func (a *AuthHandlers) adminAuthMiddleware() gin.HandlerFunc {
 // operators later select a dedicated access-control key without changing
 // handlers, URLs or clients.
 func (a *AuthHandlers) accessControlAuthMiddleware() gin.HandlerFunc {
-	return a.browserAuthMiddleware(RoleAdmin)
+	return a.browserAdminAuthMiddleware()
 }
 
 // internalRequestOnlyMiddleware gates the public-engine /internal/*

@@ -34,10 +34,10 @@ test('parameter patches address all four exact tiers without copying inherited v
   const leaf = { parameters: { ctx: 12, alias: null }, environment: { TOKEN: '' } };
   const all = [
     ['defaults', { defaults: leaf }], ['model', { models: { 'model/a': leaf } }],
-    ['node', { nodes: { worker: leaf } }], ['node-model', { nodes: { worker: { models: { 'model/a': leaf } } } }],
+    ['node', { nodes: { worker: leaf } }], ['node-model', { models: { 'model/a': {} }, nodes: { worker: { models: { 'model/a': leaf } } } }],
   ];
   for (const [scope, expected] of all) assert.deepEqual(parameterPatch({ scope, node: 'worker', model: 'model/a' }, changes, schema), expected);
-  assert.deepEqual(parameterPatch({ scope: 'node-model', node: 'worker', model: 'model/a', endpoint: 'embeddings' }, changes, schema), { nodes: { worker: { models: { 'model/a': { endpoints: { embeddings: leaf } } } } } });
+  assert.deepEqual(parameterPatch({ scope: 'node-model', node: 'worker', model: 'model/a', endpoint: 'embeddings' }, changes, schema), { models: { 'model/a': {} }, nodes: { worker: { models: { 'model/a': { endpoints: { embeddings: leaf } } } } } });
   assert.equal(parameterQuery({ scope: 'defaults', node: 'not-sent', model: 'not-sent' }), 'scope=defaults');
   assert.equal(parameterQuery({ scope: 'node-model', node: 'worker/a', model: 'model/a', endpoint: 'embeddings' }), 'scope=node-model&node=worker%2Fa&model=model%2Fa&endpoint=embeddings');
 });
@@ -89,7 +89,7 @@ test('unsetting an override sends null while preserving concealed unrelated envi
   const f = fixture(t); await parameterSettings(f.p, { provider: 'engine', node: 'worker/a', model: 'model/a' });
   const toggle = named(f.root, 'parameters_ctx_override'); toggle.checked = false; toggle.dispatchEvent(new Event('change'));
   await submit(f.root);
-  assert.deepEqual(f.calls.find(call => call.method === 'PATCH').body, { nodes: { 'worker/a': { models: { 'model/a': { parameters: { ctx: null } } } } } });
+  assert.deepEqual(f.calls.find(call => call.method === 'PATCH').body, { models: { 'model/a': {} }, nodes: { 'worker/a': { models: { 'model/a': { parameters: { ctx: null } } } } } });
   assert.ok(f.calls.some(call => call.path.includes('scope=node-model&node=worker%2Fa&model=model%2Fa')));
 });
 

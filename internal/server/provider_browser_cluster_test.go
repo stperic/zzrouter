@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
@@ -103,7 +104,7 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			coordinator, g, _, issuer, _ := sharedBrowserAuthorityFixture(t, "", TestNodeConfig{NodeName: "coordinator", ClusterMode: config.ClusterModeCoordinator})
 			reader := keys.VirtualKey{Name: "Cluster browser reader"}
 			if reason == "provider policy" || reason == "route policy" {
-				team, err := coordinator.services.Teams.CreateTeam(&CreateTeamRequest{ID: "browser-team", Name: "Browser team"}, "admin")
+				team, err := coordinator.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: "browser-team", Name: "Browser team"}, "admin")
 				require.NoError(t, err)
 				reader.TeamID = team.ID
 			}
@@ -122,13 +123,9 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			})
 			workerURL := enrollTransportNode(t, owner, workerNode)
 			coordinator.cluster.listener = owner
-			if coordinator.cluster.coordinator != nil {
-				coordinator.cluster.coordinator.Stop()
-			}
 			cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coordinator"}, "http://coordinator.invalid", coordinator, nil, mesh.NewConnector(mesh.ConnectorConfig{ClusterPort: workerNode.Addr().(*net.TCPAddr).Port}))
 			require.NoError(t, err)
-			t.Cleanup(cluster.Stop)
-			coordinator.cluster.coordinator = cluster
+			useTestCluster(t, coordinator, cluster)
 			require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
 			coordinator.providerBrowser.gateway = g
 			t.Cleanup(func() {
@@ -182,15 +179,17 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			require.Equal(t, payload, echo)
 			switch reason {
 			case "revocation":
-				_, err := coordinator.keyStore.RotateKey("provider-browser-cluster-reader")
+				_, _, err := coordinator.accessStore.RotateKey(t.Context(), "provider-browser-cluster-reader", audit.Event{})
 				require.NoError(t, err)
 			case "demotion":
-				require.NoError(t, coordinator.role.Set(t.Context(), role.RoleWorker, "demote with active browser socket"))
+				// The crossing ends the node, whose stop closes browser streams first.
+				crossRole(t, coordinator, role.RoleWorker)
+				require.NoError(t, coordinator.stopProviderBrowser(t.Context()))
 			case "route policy":
-				_, err := coordinator.services.Teams.UpdateTeam(reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
+				_, err := coordinator.services.Teams.UpdateTeam(t.Context(), reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
 				require.NoError(t, err)
 			case "provider policy":
-				_, err := coordinator.services.Teams.UpdateTeam(reader.TeamID, &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}}, "admin")
+				_, err := coordinator.services.Teams.UpdateTeam(t.Context(), reader.TeamID, &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}}, "admin")
 				require.NoError(t, err)
 			}
 			_, _, err = conn.ReadMessage()

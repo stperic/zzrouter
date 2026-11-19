@@ -7,6 +7,7 @@ import { startRun } from '../run-form.mjs';
 import { followStart, inspectWorkload, runDetails } from '../workload-details.mjs';
 import { workloads } from '../workloads.mjs';
 import { problem } from '../dom.mjs';
+import { details } from '../details.mjs';
 import { liveReads } from '../live-reads.mjs';
 import { installDOM, named, button, find, drain, walk } from './dom-fixture.mjs';
 
@@ -40,10 +41,12 @@ test('measured zero, missing usage, partial GPUs and unified memory stay distinc
 test('activity expires from request start, without another successful refresh', t => {
   const { root, p } = fixture(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
+  let now = 100;
+  t.mock.method(performance, 'now', () => now++);
   const activity = { state: 'active', valid_for_seconds: 0.001, stale: false };
   observeActivity(activity, -10);
   assert.equal(activityLabel(activity), 'Activity unavailable');
-  observeActivity(activity, performance.now());
+  observeActivity(activity, now);
   const label = activityText(p, activity); root.append(label);
   observeActivity(activity, -10); // deadline passes while no poll is possible
   t.mock.timers.tick(10);
@@ -95,7 +98,14 @@ test('preview, start, completed job and exact run readback form one immutable op
     if (path.startsWith('/runs/')) return { id: 'run/1', status: 'starting', provider: 'engine', model: 'local/model' };
     assert.fail(path);
   };
-  await startRun(f.p, [{ name: 'worker/a' }]);
+  await startRun(f.p, [
+    { name: 'offline', health_status: 'down', providers: [{ run_lifecycle: 'process' }] },
+    { name: 'cloud-only', health_status: 'healthy', providers: [{ run_lifecycle: 'none' }] },
+    { name: 'worker/a', health_status: 'healthy', providers: [{ run_lifecycle: 'process' }] },
+  ]);
+  const nodes = named(f.root, 'run_node');
+  assert.equal(nodes.value, 'worker/a');
+  assert.deepEqual(nodes.children.filter(option => option.disabled).map(option => option.value), ['offline', 'cloud-only']);
   named(f.root, 'run_target').value = '0'; named(f.root, 'run_target').dispatchEvent(new Event('change'));
   await click(f.root, 'Preview start');
   assert.doesNotMatch(f.root.textContent, /hidden-value|hidden-command/);
@@ -134,6 +144,25 @@ test('stop remains exact-node and read-only after transport interruption', async
   assert.ok(f.calls.every(call => call.path === '/runs/same%2Fid?node=worker%2Fa'));
   assert.ok(button(f.root, 'Stop run').disabled);
 });
+
+for (const kind of ['runs', 'jobs']) {
+  test(`failed ${kind} can open the affected model's node settings`, async t => {
+    const f = fixture(t);
+    const model = 'local/model', provider = 'engine', node = 'worker/a';
+    const reason = 'Requested 1024 sequences with 734 Mamba cache blocks available.';
+    f.p.api.data = async () => kind === 'runs' ? { provider, model, status: 'failed', error_message: reason } :
+      { kind: 'run', phase: 'failed', err: reason, meta: { provider, model, failure: { exit_code: 1 } } };
+    f.p.api.request = async (path, options) => { f.calls.push({ path, ...options }); return {}; };
+    await inspectWorkload(details(f.p, 'Details', f.p.close), kind, node, 'id');
+    assert.ok(f.root.textContent.includes(reason));
+    await click(f.root, 'Edit launch parameters');
+    assert.equal(named(f.root, 'parameter_scope').value, 'node-model');
+    assert.ok(f.calls.some(call => call.path === '/zzrouter/v1/providers/engine/parameters?scope=node-model&node=worker%2Fa&model=local%2Fmodel'));
+    assert.ok(f.calls.every(call => !call.method));
+    await click(f.root, 'Cancel');
+    assert.ok(f.root.textContent.includes(reason));
+  });
+}
 
 test('shared errors preserve Problem context and render bounded evidence as text', async t => {
   const f = fixture(t); let sent;

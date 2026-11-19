@@ -45,10 +45,7 @@ func (s *Server) startProviderBrowser(ctx context.Context) error {
 		err := gateway.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			gateway.cancel()
-			select {
-			case s.servingErrors <- fmt.Errorf("serve provider browser: %w", err):
-			case <-ctx.Done():
-			}
+			s.fail(fmt.Errorf("serve provider browser: %w", err))
 		}
 	})
 	return nil

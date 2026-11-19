@@ -52,6 +52,7 @@ type LogEntry struct {
 	FallbackCount  int    `json:"fallback_count,omitempty"`  // Number of deployments tried before success
 	FallbackFrom   string `json:"fallback_from,omitempty"`   // First attempted deployment (if fallback occurred)
 	KeyID          string `json:"key_id,omitempty"`          // Virtual key that made the request
+	PersonID       string `json:"person_id,omitempty"`       // Human account that made the request
 	TeamID         string `json:"team_id,omitempty"`         // Team the key belongs to (empty if teamless)
 
 	// Error info

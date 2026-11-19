@@ -1,5 +1,5 @@
 import { Lifetime } from './api.mjs';
-import { el, text, button, leaveButton, actions, message, card, heading, field, input, select, facts, problem, date, selectableRow, markSelection } from './dom.mjs';
+import { el, text, button, leaveButton, actions, message, card, heading, field, input, select, facts, problem, date, selectableRow, markSelection, compactTable } from './dom.mjs';
 import { details } from './details.mjs';
 import { routeForm } from './route-form.mjs';
 import { accessForm } from './access-form.mjs';
@@ -166,9 +166,9 @@ export async function routes(p, selected, mode) {
     }
     const previous = button('Previous', () => { page--; render(); }); previous.disabled = page === 0;
     const next = button('Next', () => { page++; render(); }); next.disabled = (page + 1) * 20 >= filtered.length;
-    results.replaceChildren(filtered.length ? el('div', { class: 'table-wrap' }, el('table', {},
-      el('thead', {}, el('tr', {}, ['Route', 'Destinations', 'Status', 'Assigned teams'].map(label => el('th', { scope: 'col' }, label)))), body)) : message(query ? 'No matching routes.' : 'Create a route, then assign it to a team. Clients can use its name as their model.'),
-    actions(text(`${filtered.length} routes`, 'muted'), filtered.length > 20 ? [previous, next] : null));
+    results.replaceChildren(filtered.length ? compactTable(['Route', 'Destinations', 'Status', 'Assigned teams'], body) :
+      message(query ? 'No matching routes.' : 'Create a route, then assign it to a team. Clients can use its name as their model.'),
+    actions(text(`${filtered.length} ${filtered.length === 1 ? 'route' : 'routes'}`, 'muted'), filtered.length > 20 ? [previous, next] : null));
   };
   let timer;
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { if (p.current()) { page = 0; render(); } }, 150); });

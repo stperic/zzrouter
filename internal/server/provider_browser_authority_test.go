@@ -18,6 +18,8 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +42,7 @@ func sharedBrowserAuthorityFixture(t *testing.T, lostGrant string, settings ...T
 	authority := s.access.oauth
 	require.NotNil(t, authority)
 	require.NotNil(t, s.providerBrowser.authority)
-	state := filepath.Join(s.auditConfigDir, "oauth.json")
+	state := filepath.Join(s.configDir, "oauth.json")
 	endpoint.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 		if lostGrant != "" && r.URL.Path == "/oauth/token" && r.ParseForm() == nil && r.PostForm.Get("grant_type") == lostGrant {
@@ -151,7 +153,7 @@ func TestProviderBrowserSharedAuthorityLiveKeyRevocation(t *testing.T) {
 	}
 	require.NotContains(t, response.Body.String()+response.Header().Get("Location"), token.AccessToken)
 	require.NotContains(t, response.Body.String()+response.Header().Get("Location"), token.RefreshToken)
-	_, err = s.keyStore.RotateKey("provider-browser-reader")
+	_, _, err = s.accessStore.RotateKey(t.Context(), "provider-browser-reader", audit.Event{})
 	require.NoError(t, err)
 	result := httptest.NewRecorder()
 	g.ServeHTTP(result, request)
@@ -245,7 +247,8 @@ func TestProviderBrowserSharedAuthorityLiveTeamPolicy(t *testing.T) {
 	for _, policy := range []string{"suspended", "models"} {
 		t.Run(policy, func(t *testing.T) {
 			s, g, _, endpoint, state := sharedBrowserAuthorityFixture(t, "")
-			key := loadTestKey(t, s, "provider-browser-team-reader", keys.VirtualKey{Name: "Provider team reader"})
+			seedTestTeam(t, s.accessStore, "provider-team")
+			key := loadTestKey(t, s, "provider-browser-team-reader", keys.VirtualKey{Name: "Provider team reader", TeamID: "provider-team"})
 			response, clientID := completeSharedBrowser(t, g, endpoint, key)
 			require.Equal(t, http.StatusSeeOther, response.Code)
 			request := httptest.NewRequest(http.MethodGet, g.origin.String()+"/runs/"+s.GetNodename()+"/run-a/prompt", nil)
@@ -255,13 +258,15 @@ func TestProviderBrowserSharedAuthorityLiveTeamPolicy(t *testing.T) {
 			ac, err := g.authenticate(session)
 			require.NoError(t, err)
 			require.NotNil(t, ac.Team)
-			team := *s.teamStore.Get(ac.Team.ID)
-			if policy == "suspended" {
-				team.Suspended = true
-			} else {
-				team.AllowedModels = []string{"approved-model"}
-			}
-			require.NoError(t, s.teamStore.Update(team.ID, &team))
+			_, err = s.accessStore.UpdateTeam(t.Context(), ac.Team.ID, func(team *teams.Team) error {
+				if policy == "suspended" {
+					team.Suspended = true
+				} else {
+					team.AllowedModels = []string{"approved-model"}
+				}
+				return nil
+			}, audit.Event{})
+			require.NoError(t, err)
 			result := httptest.NewRecorder()
 			g.ServeHTTP(result, request)
 			require.Equal(t, http.StatusUnauthorized, result.Code)

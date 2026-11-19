@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/search"
@@ -322,7 +323,7 @@ func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context,
 	search.RegisterCloudProvidersFromConfig(s.appsConfig, s.backend)
 	cfg := s.appsConfig()
 
-	// Config-driven: collect active search registries from enabled providers
+	// A provider enabled on any configured computer can supply a discovery source.
 	activeRegistries := s.collectActiveRegistries()
 
 	var apps []gin.H
@@ -448,8 +449,7 @@ func (s *ModelSearchService) cloudProviderStatus(name string) (configured, enabl
 	return true, enabled, connected && discoverySupported, discoverySupported
 }
 
-// collectActiveRegistries determines which search registries should be active
-// based on enabled providers in provider config. Config-driven via search.registry fields.
+// collectActiveRegistries collects search sources for providers enabled on any node.
 // Returns a set of registry keys (e.g., "huggingface", "ollama").
 func (s *ModelSearchService) collectActiveRegistries() map[string]bool {
 	registries := make(map[string]bool)
@@ -458,7 +458,14 @@ func (s *ModelSearchService) collectActiveRegistries() map[string]bool {
 		return registries
 	}
 	cfg.RangeApps(func(key string, svc pkgConfig.ServiceConfig) bool {
-		if !svc.IsEnabled() {
+		enabled := svc.IsEnabled()
+		for node := range svc.Nodes {
+			if choice := svc.EnabledOn(node); choice != nil && *choice {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
 			return true
 		}
 		// Search registries (mode: registry) are always active when enabled
@@ -677,29 +684,30 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 	}
 
 	raw := gin.H{
-		"provider":      provider,
-		"model_id":      decodedID,
-		"name":          modelCard.Name,
-		"description":   modelCard.Description,
-		"size":          totalSize,
-		"tags":          modelCard.Tags,
-		"license":       modelCard.License,
-		"author":        modelCard.Author,
-		"pipeline_tag":  modelCard.PipelineTag,
-		"downloads":     modelCard.Downloads,
-		"likes":         modelCard.Likes,
-		"created_at":    modelCard.CreatedAt,
-		"url":           modelCard.URL,
-		"siblings":      siblings,
-		"readme":        modelCard.README,
-		"updated_at":    modelCard.UpdatedAt,
-		"library_name":  modelCard.LibraryName,
-		"card_data":     modelCard.CardData,
-		"gguf":          modelCard.GGUF,
-		"safetensors":   modelCard.Safetensors,
-		"input_types":   modelCard.InputTypes,
-		"variant_count": modelCard.VariantCount,
-		"has_cloud":     modelCard.HasCloud,
+		"provider":        provider,
+		"model_id":        decodedID,
+		"name":            modelCard.Name,
+		"description":     modelCard.Description,
+		"size":            totalSize,
+		"tags":            modelCard.Tags,
+		"license":         modelCard.License,
+		"author":          modelCard.Author,
+		"pipeline_tag":    modelCard.PipelineTag,
+		"downloads":       modelCard.Downloads,
+		"likes":           modelCard.Likes,
+		"created_at":      modelCard.CreatedAt,
+		"url":             modelCard.URL,
+		"siblings":        siblings,
+		"readme":          modelCard.README,
+		"updated_at":      modelCard.UpdatedAt,
+		"library_name":    modelCard.LibraryName,
+		"card_data":       modelCard.CardData,
+		"gguf":            modelCard.GGUF,
+		"safetensors":     modelCard.Safetensors,
+		"input_types":     modelCard.InputTypes,
+		"parameter_sizes": modelCard.ParameterSizes,
+		"variant_count":   modelCard.VariantCount,
+		"has_cloud":       modelCard.HasCloud,
 	}
 	encoded, encodeErr := json.Marshal(raw)
 	if encodeErr != nil {
@@ -813,6 +821,6 @@ func respondModelDiscoveryUnavailable(c *gin.Context, err error) bool {
 	if !errors.Is(err, search.ErrModelDiscoveryUnavailable) {
 		return false
 	}
-	RespondWithProblemOpts(c, http.StatusNotImplemented, "Model discovery unavailable", err.Error(), ProblemOpts{Code: "model_discovery_unavailable"})
+	RespondWithProblemOpts(c, http.StatusNotImplemented, "Model discovery unavailable", err.Error(), ProblemOpts{Code: string(httperr.CodeModelDiscoveryUnavailable)})
 	return true
 }

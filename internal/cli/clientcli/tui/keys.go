@@ -198,6 +198,7 @@ var ModelsKeys = ModelsKeyMap{
 func (k ModelsKeyMap) RouteDetailHintsString() string {
 	return JoinHints(
 		Hint(k.Up, "navigate"),
+		Hint(k.Chat, "chat"),
 		Hint(k.Edit, "edit route"),
 		Hint(k.AddDeploy, "add deploy"),
 		Hint(k.Delete, "remove deploy"),

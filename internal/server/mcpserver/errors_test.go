@@ -238,6 +238,8 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 		"zz_chat": {"model": "m", "message": "hi"}, "zz_job": {"job_id": "j"}, "zz_job_cancel": {"job_id": "j"},
 		"zz_params_get": {"provider": "p"}, "zz_params_set": {"provider": "p", "patch": map[string]any{}},
 		"zz_api_search": {"query": "runs"}, "zz_api_get": {"path": "/zzrouter/v1/models"}, "zz_api": {"method": "POST", "path": "/zzrouter/v1/runs"},
+		"zz_operations": {}, "zz_operation": {"operation_id": "p.inspect"}, "zz_connections": {},
+		"zz_operation_execute": {"operation_id": "p.inspect", "version": 1, "definition_revision": "revision", "target": map[string]any{"provider": "p", "node": "n", "run_id": "r", "model": "m", "runtime": "p"}, "preconditions": map[string]any{"target_revision": "r"}, "input": map[string]any{}},
 	}
 	d, _ := problemFixture(t)
 	d.cfg.SearchAPI = func(string, int) ([]map[string]any, error) { return nil, errors.New("spec unavailable") }

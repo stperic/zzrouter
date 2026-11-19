@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/viper"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/security"
 	"gopkg.in/yaml.v3"
 )
 
@@ -101,6 +102,21 @@ func readNodeConfigFile(path string) (*NodeConfig, error) {
 	return unmarshalNodeConfig(v, path)
 }
 
+// ReadExistingNodeConfig never initializes files or imports dotenv values.
+func ReadExistingNodeConfig(dir string) (*NodeConfig, error) {
+	return readNodeConfigFile(filepath.Join(dir, hostConfigFileName))
+}
+
+// DecodeNodeConfig applies the same decoding/defaults as a file load, without IO.
+func DecodeNodeConfig(data []byte) (*NodeConfig, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return unmarshalNodeConfig(v, "")
+}
+
 // unmarshalNodeConfig decodes v and applies the normalization every
 // load path shares, so no caller sees a half-resolved config.
 func unmarshalNodeConfig(v *viper.Viper, path string) (*NodeConfig, error) {
@@ -139,24 +155,12 @@ func (cm *ConfigManager) SaveNodeConfigToDir(config *NodeConfig, dir string) err
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Preserve existing file ownership when overwriting.
-	// This matters when root CLI writes to zzrouter-owned /etc/zzrouter/node.yaml.
-	// Only call Chown if current process UID differs from the file owner —
-	// avoids triggering seccomp filters when the service writes its own files.
-	var owner fileOwner
-	var hasOwner bool
-	if info, err := os.Stat(configFile); err == nil {
-		owner, hasOwner = getFileOwner(info)
-	}
-
 	if err := os.WriteFile(configFile, data, 0600); err != nil {
 		return err
 	}
-
-	if hasOwner && owner.uid != os.Getuid() {
-		_ = os.Chown(configFile, owner.uid, owner.gid)
-	}
-
+	// A root CLI writing into the zzrouter-owned /etc/zzrouter leaves the file
+	// to the installation's account.
+	_ = security.GiveOwner(configFile, dir)
 	return nil
 }
 

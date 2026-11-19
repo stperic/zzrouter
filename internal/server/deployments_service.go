@@ -154,9 +154,9 @@ func (req internalDownloadRequest) validateTarget() error {
 	return req.Download.ValidateTarget()
 }
 
-func (req internalDownloadRequest) registryFor(parsed, model string) string {
-	if req.Registry != "" {
-		return req.Registry
+func downloadRegistry(registry, parsed, model string) string {
+	if registry != "" {
+		return constants.NormalizeRegistry(registry)
 	}
 	if parsed != "" {
 		return parsed
@@ -165,6 +165,22 @@ func (req internalDownloadRequest) registryFor(parsed, model string) string {
 		return constants.RepoHuggingFace
 	}
 	return constants.RepoOllama
+}
+
+// parseDownloadIdentifier binds the explicit selection before planning or admission.
+func parseDownloadIdentifier(model, registry, file string, cfg *pkgConfig.AppsConfig) (*modelregistry.Identifier, error) {
+	id, err := modelregistry.Parse(model, modelregistry.ParseOpts{Config: cfg, Registry: registry})
+	if err != nil {
+		return nil, err
+	}
+	id.Repository = downloadRegistry(registry, id.Repository, id.GetFullModelName())
+	if file != "" {
+		id.File = file
+	}
+	if id.Repository == constants.RepoOllama && id.File != "" {
+		id.Tag = id.File
+	}
+	return id, nil
 }
 
 func dispatchDownload(ctx context.Context, router routing.Router, node string, req internalDownloadRequest) (*internalDeploymentResult, error) {
@@ -185,22 +201,13 @@ func (s *DeploymentsService) Deploy(ctx context.Context, req *DeployRequest) (*D
 	ctx, cancel := ensureTimeout(ctx, constants.ClusterDefaultTimeout)
 	defer cancel()
 
-	// Parse req.Model for '@node' and '#file' suffixes so direct API consumers
-	// (curl, non-CLI clients) get the same extraction the CLI does client-side.
-	// Explicit fields on the request always win over parsed suffixes.
-	if id, perr := modelregistry.Parse(req.Model, modelregistry.ParseOpts{
-		Config:   s.appsConfig(),
-		Registry: req.Registry,
-	}); perr == nil && id != nil {
-		if clean := id.GetFullModelName(); clean != "" {
-			req.Model = clean
-		}
-		if req.File == "" && id.File != "" {
-			req.File = id.File
-		}
-		if len(req.Nodes) == 0 && id.Node != "" {
-			req.Nodes = []string{id.Node}
-		}
+	id, err := parseDownloadIdentifier(req.Model, req.Registry, req.File, s.appsConfig())
+	if err != nil {
+		return nil, newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("invalid model identifier: %v", err))
+	}
+	req.Model, req.Registry, req.File = id.GetFullModelName(), id.Repository, id.File
+	if len(req.Nodes) == 0 && id.Node != "" {
+		req.Nodes = []string{id.Node}
 	}
 
 	nodes, err := s.resolveNodes(req)

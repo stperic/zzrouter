@@ -7,6 +7,8 @@ package server
 import (
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/access/control"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 )
@@ -26,24 +28,24 @@ func GetAccessContext(c *gin.Context) *AccessContext {
 	return ac
 }
 
-// PrincipalFromContext returns a stable identifier for the authenticated
-// caller — virtual-key ID when present, otherwise the admin-key
-// fingerprint, otherwise "admin" for pre-virtual-key admin-only paths,
-// otherwise "" for anonymous. Producers opening a jobs.Handle pass this
-// as createdBy so CreatedBy attribution survives every later authz
-// refactor.
+// PrincipalFromContext names the authenticated caller, "" when anonymous: an
+// app key by its ID, which never holds ':' (keys.VirtualKey.Validate), and
+// every other kind as kind:ID ("static:admin", "person:<id>",
+// "local:operator"), so no two callers share a name. The name scopes
+// idempotent replays, is the audit actor (auditActor) and the creator of jobs
+// and claimed routes.
 func PrincipalFromContext(c *gin.Context) string {
+	if isLocalOperator(c) {
+		return audit.ActorLocalOperator // Constant: a proof-derived value would change at restart and break replay.
+	}
 	ac := GetAccessContext(c)
 	if ac == nil || ac.Key == nil {
 		return ""
 	}
-	if ac.Key.ID != "" {
-		return ac.Key.ID
+	if kind := ac.Key.IdentityKind(); kind != control.KindKey {
+		return audit.KindActor(string(kind), ac.Key.ID)
 	}
-	if ac.Key.Fingerprint != "" {
-		return ac.Key.Fingerprint
-	}
-	return "admin"
+	return ac.Key.ID
 }
 
 // setAccessContext stores the AccessContext on a gin context. Also sets

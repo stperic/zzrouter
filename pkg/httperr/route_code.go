@@ -24,6 +24,8 @@ const (
 
 	// CodeProviderConnectionUnavailable requires repairing a discovery connection.
 	CodeProviderConnectionUnavailable RouteErrorCode = "provider_connection_unavailable"
+	// CodeModelDiscoveryUnavailable requires an explicit model ID instead of catalog discovery.
+	CodeModelDiscoveryUnavailable RouteErrorCode = "model_discovery_unavailable"
 
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
@@ -78,4 +80,26 @@ const (
 	// CodePinIsClusterWide refuses a node-addressed pin for a provider the
 	// sync carries: the coordinator holds its one pin for every node.
 	CodePinIsClusterWide RouteErrorCode = "pin_is_cluster_wide"
+
+	// CodeAccessStoreFailed means the coordinator's access store can no
+	// longer vouch for its records; the node is exiting so it restarts.
+	CodeAccessStoreFailed RouteErrorCode = "access_store_failed"
+	// CodeAccessStoreBusy means another process held the access database
+	// past the busy timeout; the change was not made.
+	CodeAccessStoreBusy RouteErrorCode = "access_store_busy"
+
+	// CodeStateBackupNotFound names no retained online backup.
+	CodeStateBackupNotFound RouteErrorCode = "state_backup_not_found"
+	// CodeStateBackupCapacityExceeded means the backup byte cap or the disk
+	// cannot hold another online backup; nothing was kept.
+	CodeStateBackupCapacityExceeded RouteErrorCode = "state_backup_capacity_exceeded"
+	// CodeStateImageCheckFailed means a backup's copy of the access database
+	// failed its check; nothing was kept.
+	CodeStateImageCheckFailed RouteErrorCode = "state_image_check_failed"
+	// CodeStateRevisionChanged refuses a reset whose backup no longer holds
+	// the access records' current revision; nothing was reset.
+	CodeStateRevisionChanged RouteErrorCode = "state_revision_changed"
+	// CodeStateBackupUnprotected refuses a reset backed by a retained backup
+	// past its protected_until, which retention may remove; nothing was reset.
+	CodeStateBackupUnprotected RouteErrorCode = "state_backup_unprotected"
 )

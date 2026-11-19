@@ -97,7 +97,11 @@ func TestRouteDestinationsFitAndSelectionRemainsVisible(t *testing.T) {
 		require.Contains(t, frame, "qwen-9")
 		require.Contains(t, frame, "studio")
 		require.Contains(t, frame, "STATUS")
+		require.Contains(t, frame, "C chat")
 	}
+	_, openChat := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	require.NotNil(t, openChat)
+	require.Equal(t, tui.LaunchChatMsg{Model: g.Name}, openChat())
 }
 
 func TestDraftPromptFitsAndRetainsKeepAction(t *testing.T) {

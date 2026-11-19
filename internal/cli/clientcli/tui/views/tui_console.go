@@ -23,6 +23,7 @@ type consoleActionMsg struct {
 	owner  *ConsoleViewModel
 	action string
 	err    error
+	grant  *pkgClient.ConsoleGrant
 }
 
 // ConsoleViewModel is a normal navigation-stack view, so launching a browser
@@ -32,6 +33,7 @@ type ConsoleViewModel struct {
 	styles           ui.Styles
 	target           pkgClient.ConsoleTarget
 	discover         func(context.Context, pkgClient.ConsoleTarget) (string, error)
+	handoff          func(context.Context, pkgClient.ConsoleTarget) (*pkgClient.ConsoleGrant, error)
 	open             func(string) error
 	copy             func(string) error
 	browserAvailable func() bool
@@ -40,6 +42,7 @@ type ConsoleViewModel struct {
 	detail           tui.Detail
 	url              string
 	status           string
+	code             string
 	loading          bool
 	busy             bool
 	err              error
@@ -50,7 +53,8 @@ func NewConsoleViewModel(client *pkgClient.Client, styles ui.Styles, target pkgC
 	return &ConsoleViewModel{
 		styles: styles, target: target, loading: true,
 		discover: client.ConsoleURL, open: shared.OpenFile,
-		copy: clipboard.WriteAll, browserAvailable: shared.BrowserAvailable,
+		handoff: client.BeginConsoleHandoff,
+		copy:    clipboard.WriteAll, browserAvailable: shared.BrowserAvailable,
 		width: 80, height: 20, detail: tui.NewDetail(),
 	}
 }
@@ -91,12 +95,15 @@ func (m *ConsoleViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.busy = false
+		if msg.grant != nil {
+			m.code = msg.grant.Token
+		}
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Could not %s: %v. Use the URL above.", msg.action, msg.err)
 		} else if msg.action == "copy" {
 			m.status = "Console URL copied."
 		} else {
-			m.status = "Browser launch requested. Sign in there with your API key."
+			m.status = "Paste the temporary code into 'Use a temporary code' in the console."
 		}
 	case tui.BreadcrumbClickMsg:
 		if msg.Level == 0 {
@@ -108,40 +115,56 @@ func (m *ConsoleViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch strings.ToLower(msg.String()) {
 		case "esc", "backspace", "q":
+			m.code = ""
 			return m, tui.NavBack()
 		case "ctrl+c":
 			return m, tea.Quit
 		case "r":
 			if !m.loading && !m.busy {
-				m.loading, m.err, m.status = true, nil, ""
+				m.loading, m.err, m.status, m.code = true, nil, "", ""
 				return m, m.Init()
 			}
 		case "enter", "o", "c", "y":
-			if m.loading || m.busy || m.url == "" {
-				return m, nil
-			}
-			action, effect := "open", m.open
-			if strings.EqualFold(msg.String(), "c") || strings.EqualFold(msg.String(), "y") {
-				action, effect = "copy", m.copy
-			} else if !m.browserAvailable() {
-				m.status = "Open this URL in a browser on your computer. This terminal is remote or headless."
-				return m, nil
-			}
-			m.busy = true
-			ctx, consoleURL := m.Context(), m.url
-			return m, func() tea.Msg {
-				if ctx.Err() != nil {
-					return nil
-				}
-				err := effect(consoleURL)
-				if ctx.Err() != nil {
-					return nil
-				}
-				return consoleActionMsg{owner: m, action: action, err: err}
-			}
+			return m, m.consoleActionCmd(msg.String())
 		}
 	}
 	return m, nil
+}
+
+func (m *ConsoleViewModel) consoleActionCmd(key string) tea.Cmd {
+	if m.loading || m.busy || m.url == "" {
+		return nil
+	}
+	action, effect := "open", m.open
+	if strings.EqualFold(key, "c") || strings.EqualFold(key, "y") {
+		action, effect = "copy", m.copy
+	}
+	m.busy = true
+	ctx, consoleURL := m.Context(), m.url
+	return func() tea.Msg {
+		if ctx.Err() != nil {
+			return nil
+		}
+		var grant *pkgClient.ConsoleGrant
+		if action == "open" {
+			var err error
+			grant, err = m.handoff(ctx, m.target)
+			if err != nil {
+				return consoleActionMsg{owner: m, action: "authorize console entry", err: err}
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !m.browserAvailable() {
+				return consoleActionMsg{owner: m, action: "authorize", grant: grant}
+			}
+		}
+		err := effect(consoleURL)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return consoleActionMsg{owner: m, action: action, err: err, grant: grant}
+	}
 }
 
 // View renders the URL and action hints within the terminal viewport.
@@ -158,7 +181,11 @@ func (m *ConsoleViewModel) View() tea.View {
 	default:
 		d.Text("  ", m.url)
 		d.Write("\n")
-		d.Text("  ", "Sign in using your API key. The URL contains no credentials.")
+		d.Text("  ", "Open to get a temporary sign-in code. Copying the URL does not create one.")
+		if m.code != "" {
+			d.Write("\n")
+			d.Text("  Temporary code: ", m.code)
+		}
 	}
 	if m.status != "" {
 		d.Write("\n")

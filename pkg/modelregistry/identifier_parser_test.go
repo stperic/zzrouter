@@ -89,6 +89,23 @@ func TestParse_LocalRegistry_FullParse(t *testing.T) {
 	require.Equal(t, "8b", got.Tag)
 }
 
+func TestParseExplicitLocalRegistryPreservesProviderNamedPublishers(t *testing.T) {
+	cfg := cloudConfigFixture(t, "openai")
+	for _, registry := range []string{"ollama", "huggingface", "hf"} {
+		for _, prefix := range []string{"", registry + "/"} {
+			t.Run(registry+"/"+prefix, func(t *testing.T) {
+				got, err := Parse(prefix+"openai/gpt-oss:latest#weights@worker", ParseOpts{Config: cfg, Registry: registry})
+				require.NoError(t, err)
+				require.Equal(t, "openai/gpt-oss", got.ModelName)
+				require.Equal(t, "latest", got.Tag)
+				require.Equal(t, "weights", got.File)
+				require.Equal(t, "worker", got.Node)
+				require.Empty(t, got.ProviderKey)
+			})
+		}
+	}
+}
+
 func TestParse_NoConfig_FallsThrough(t *testing.T) {
 	// Cloud-looking input but opts.Config=nil → cannot short-circuit; full parse runs.
 	got, err := Parse("openai/gpt-4o-mini:2024-07-18", ParseOpts{})

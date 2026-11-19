@@ -2,7 +2,10 @@ package server
 
 import (
 	"embed"
+	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,98 +24,31 @@ func (s *Server) registerBrowserConsole() {
 		c.Next()
 	}, s.browserCoordinatorOnly)
 	console.GET("", func(c *gin.Context) { c.Redirect(http.StatusTemporaryRedirect, "/console/") })
-	for _, asset := range []struct{ path, file, contentType string }{
-		{"/", "index.html", "text/html; charset=utf-8"},
-		{"/console.css", "console.css", "text/css; charset=utf-8"},
-		{"/console.mjs", "console.mjs", "text/javascript; charset=utf-8"},
-		{"/appearance.mjs", "appearance.mjs", "text/javascript; charset=utf-8"},
-		{"/brand/mark-color.svg", "brand/mark-color.svg", "image/svg+xml"},
-		{"/brand/mark-dark.svg", "brand/mark-dark.svg", "image/svg+xml"},
-		{"/brand/mark-black.svg", "brand/mark-black.svg", "image/svg+xml"},
-		{"/brand/mark-white.svg", "brand/mark-white.svg", "image/svg+xml"},
-		{"/brand/app-icon.svg", "brand/app-icon.svg", "image/svg+xml"},
-		{"/brand/wordmark-color.svg", "brand/wordmark-color.svg", "image/svg+xml"},
-		{"/brand/wordmark-dark.svg", "brand/wordmark-dark.svg", "image/svg+xml"},
-		{"/brand/wordmark-black.svg", "brand/wordmark-black.svg", "image/svg+xml"},
-		{"/brand/wordmark-white.svg", "brand/wordmark-white.svg", "image/svg+xml"},
-		{"/models.mjs", "models.mjs", "text/javascript; charset=utf-8"},
-		{"/model-data.mjs", "model-data.mjs", "text/javascript; charset=utf-8"},
-		{"/model-discovery.mjs", "model-discovery.mjs", "text/javascript; charset=utf-8"},
-		{"/model-catalog-details.mjs", "model-catalog-details.mjs", "text/javascript; charset=utf-8"},
-		{"/discovery-markdown.mjs", "discovery-markdown.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/discovery-markdown.mjs", "vendor/discovery-markdown.mjs", "text/javascript; charset=utf-8"},
-		{"/deployments.mjs", "deployments.mjs", "text/javascript; charset=utf-8"},
-		{"/provider-lifecycle.mjs", "provider-lifecycle.mjs", "text/javascript; charset=utf-8"},
-		{"/provider-actions.mjs", "provider-actions.mjs", "text/javascript; charset=utf-8"},
-		{"/provider-install.mjs", "provider-install.mjs", "text/javascript; charset=utf-8"},
-		{"/parameters.mjs", "parameters.mjs", "text/javascript; charset=utf-8"},
-		{"/pricing.mjs", "pricing.mjs", "text/javascript; charset=utf-8"},
-		{"/event-stream.mjs", "event-stream.mjs", "text/javascript; charset=utf-8"},
-		{"/run-logs.mjs", "run-logs.mjs", "text/javascript; charset=utf-8"},
-		{"/logs.mjs", "logs.mjs", "text/javascript; charset=utf-8"},
-		{"/system.mjs", "system.mjs", "text/javascript; charset=utf-8"},
-		{"/updates.mjs", "updates.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/events.mjs", "vendor/events.mjs", "text/javascript; charset=utf-8"},
-		{"/api.mjs", "api.mjs", "text/javascript; charset=utf-8"},
-		{"/chat.mjs", "chat.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/chat.mjs", "vendor/chat.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/chat-transport.mjs", "vendor/chat-transport.mjs", "text/javascript; charset=utf-8"},
-		{"/observations.mjs", "observations.mjs", "text/javascript; charset=utf-8"},
-		{"/live-reads.mjs", "live-reads.mjs", "text/javascript; charset=utf-8"},
-		{"/diagnostics.mjs", "diagnostics.mjs", "text/javascript; charset=utf-8"},
-		{"/workloads.mjs", "workloads.mjs", "text/javascript; charset=utf-8"},
-		{"/workload-data.mjs", "workload-data.mjs", "text/javascript; charset=utf-8"},
-		{"/workload-details.mjs", "workload-details.mjs", "text/javascript; charset=utf-8"},
-		{"/run-form.mjs", "run-form.mjs", "text/javascript; charset=utf-8"},
-		{"/dom.mjs", "dom.mjs", "text/javascript; charset=utf-8"},
-		{"/providers.mjs", "providers.mjs", "text/javascript; charset=utf-8"},
-		{"/inventory.mjs", "inventory.mjs", "text/javascript; charset=utf-8"},
-		{"/network-data.mjs", "network-data.mjs", "text/javascript; charset=utf-8"},
-		{"/details.mjs", "details.mjs", "text/javascript; charset=utf-8"},
-		{"/nodes.mjs", "nodes.mjs", "text/javascript; charset=utf-8"},
-		{"/clients.mjs", "clients.mjs", "text/javascript; charset=utf-8"},
-		{"/overview.mjs", "overview.mjs", "text/javascript; charset=utf-8"},
-		{"/topology.mjs", "topology.mjs", "text/javascript; charset=utf-8"},
-		{"/topology-data.mjs", "topology-data.mjs", "text/javascript; charset=utf-8"},
-		{"/provider-icons.mjs", "provider-icons.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/graph.mjs", "vendor/graph.mjs", "text/javascript; charset=utf-8"},
-		{"/vendor/elk-worker.min.js", "vendor/elk-worker.min.js", "text/javascript; charset=utf-8"},
-		{"/vendor/THIRD_PARTY_NOTICES.txt", "vendor/THIRD_PARTY_NOTICES.txt", "text/plain; charset=utf-8"},
-		{"/icons/client.svg", "icons/client.svg", "image/svg+xml"},
-		{"/icons/coordinator.svg", "icons/coordinator.svg", "image/svg+xml"},
-		{"/icons/node.svg", "icons/node.svg", "image/svg+xml"},
-		{"/icons/cloud.svg", "icons/cloud.svg", "image/svg+xml"},
-		{"/icons/provider.svg", "icons/provider.svg", "image/svg+xml"},
-		{"/icons/provider-openai.svg", "icons/provider-openai.svg", "image/svg+xml"},
-		{"/icons/provider-anthropic.svg", "icons/provider-anthropic.svg", "image/svg+xml"},
-		{"/icons/provider-azure.svg", "icons/provider-azure.svg", "image/svg+xml"},
-		{"/icons/provider-bedrock.svg", "icons/provider-bedrock.svg", "image/svg+xml"},
-		{"/icons/provider-cloudflare.svg", "icons/provider-cloudflare.svg", "image/svg+xml"},
-		{"/icons/provider-gemini.svg", "icons/provider-gemini.svg", "image/svg+xml"},
-		{"/icons/provider-groq.svg", "icons/provider-groq.svg", "image/svg+xml"},
-		{"/icons/provider-openrouter.svg", "icons/provider-openrouter.svg", "image/svg+xml"},
-		{"/icons/provider-ollama.svg", "icons/provider-ollama.svg", "image/svg+xml"},
-		{"/icons/provider-comfyui.svg", "icons/provider-comfyui.svg", "image/svg+xml"},
-		{"/icons/provider-vllm.svg", "icons/provider-vllm.svg", "image/svg+xml"},
-		{"/icons/provider-huggingface.svg", "icons/provider-huggingface.svg", "image/svg+xml"},
-		{"/icons/provider-mlx.svg", "icons/provider-mlx.svg", "image/svg+xml"},
-		{"/icons/provider-llamacpp.svg", "icons/provider-llamacpp.svg", "image/svg+xml"},
-		{"/icons/provider-strata.svg", "icons/provider-strata.svg", "image/svg+xml"},
-		{"/icons/status-healthy.svg", "icons/status-healthy.svg", "image/svg+xml"},
-		{"/icons/status-down.svg", "icons/status-down.svg", "image/svg+xml"},
-		{"/icons/status-degraded.svg", "icons/status-degraded.svg", "image/svg+xml"},
-		{"/icons/status-unknown.svg", "icons/status-unknown.svg", "image/svg+xml"},
-		{"/access.mjs", "access.mjs", "text/javascript; charset=utf-8"},
-		{"/routes.mjs", "routes.mjs", "text/javascript; charset=utf-8"},
-		{"/route-form.mjs", "route-form.mjs", "text/javascript; charset=utf-8"},
-		{"/access-form.mjs", "access-form.mjs", "text/javascript; charset=utf-8"},
-		{"/access-policy.mjs", "access-policy.mjs", "text/javascript; charset=utf-8"},
-		{"/access-budget.mjs", "access-budget.mjs", "text/javascript; charset=utf-8"},
-	} {
-		body, err := consoleAssets.ReadFile("web/console/" + asset.file)
+	contentTypes := map[string]string{
+		".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+		".mjs": "text/javascript; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+		".svg": "image/svg+xml", ".txt": "text/plain; charset=utf-8",
+	}
+	err := fs.WalkDir(consoleAssets, "web/console", func(file string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			panic("missing embedded console asset: " + asset.file)
+			return err
 		}
-		console.GET(asset.path, func(c *gin.Context) { c.Data(http.StatusOK, asset.contentType, body) })
+		if entry.IsDir() {
+			return nil
+		}
+		route := strings.TrimPrefix(file, "web/console")
+		if route == "/index.html" {
+			route = "/"
+		}
+		body, err := consoleAssets.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		contentType := contentTypes[path.Ext(file)]
+		console.GET(route, func(c *gin.Context) { c.Data(http.StatusOK, contentType, body) })
+		return nil
+	})
+	if err != nil {
+		panic("invalid embedded console assets: " + err.Error())
 	}
 }

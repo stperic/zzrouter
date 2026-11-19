@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,16 +19,12 @@ import (
 func newGatewayWithEnforcer(t *testing.T) (*AccessControl, *quota.Enforcer) {
 	t.Helper()
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
-
 	rl := quota.NewRateLimiter()
 	cl := quota.NewConcurrencyLimiter()
 	st := quota.NewSpendTracker("")
 	enforcer := quota.NewEnforcer(rl, cl, st)
 
-	gw := NewAccessControl(StaticKeySet{}, keyStore, teamStore, nil, enforcer, nil, ModelHooks{})
+	gw := NewAccessControl(StaticKeySet{}, newTestAccessStore(t), nil, enforcer, nil, ModelHooks{})
 	// Note: we deliberately do NOT call Start() here — the reaper test drives
 	// reapStalePendingReservations directly with an injected "now".
 	t.Cleanup(func() { gw.Stop(context.Background()) })
@@ -191,11 +186,11 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Seed the key store.
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
+	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
+	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 
-	svc := NewKeysService(keyStore, nil, gw)
+	svc := NewKeysService(store, gw)
 
 	// Empty state — usage endpoint should succeed with zeroes, not 501.
 	usage, err := svc.GetKeyUsage("alice")
@@ -230,10 +225,10 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	svc := NewKeysService(keyStore, nil, gw)
+	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
+	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
+	svc := NewKeysService(store, gw)
 
 	chain := []quota.QuotaScope{{
 		Scope:    quota.ScopeKey,
@@ -247,7 +242,7 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 500_000, 10, 20)
 
-	require.NoError(t, svc.ResetKeyUsage("alice", "test"))
+	require.NoError(t, svc.ResetKeyUsage(t.Context(), "alice", "test"))
 
 	usage, err := svc.GetKeyUsage("alice")
 	require.NoError(t, err)
@@ -259,11 +254,11 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
-	svc := NewKeysService(keyStore, nil, gw)
+	store := newTestAccessStore(t)
+	seedTestTeam(t, store, "t")
+	seedTestKey(t, store, "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
+	seedTestKey(t, store, "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
+	svc := NewKeysService(store, gw)
 
 	// Two key-scope requests + one team-scope request. The report must
 	// include only the key rows.
@@ -301,12 +296,9 @@ func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
 	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
-	svc := NewTeamsService(teamStore, keyStore, gw)
+	svc := NewTeamsService(newTestAccessStore(t), gw)
 
-	_, err := svc.CreateTeam(&CreateTeamRequest{
+	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{
 		ID: "eng", Name: "Engineering", SpendLimit: 100.0, ResetPeriod: "monthly",
 	}, "admin")
 	require.NoError(t, err)
@@ -342,12 +334,9 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
-	svc := NewTeamsService(teamStore, keyStore, gw)
+	svc := NewTeamsService(newTestAccessStore(t), gw)
 
-	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
+	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
 	require.NoError(t, err)
 
 	chain := []quota.QuotaScope{{
@@ -358,7 +347,7 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 1_500_000, 50, 75)
 
-	require.NoError(t, svc.ResetTeamUsage("eng", "test"))
+	require.NoError(t, svc.ResetTeamUsage(t.Context(), "eng", "test"))
 
 	usage, err := svc.GetTeamUsage("eng")
 	require.NoError(t, err)
@@ -371,10 +360,7 @@ func TestTeamsService_GetTeamUsage_NotFound(t *testing.T) {
 	t.Parallel()
 	gw, _ := newGatewayWithEnforcer(t)
 
-	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
-	svc := NewTeamsService(teamStore, keyStore, gw)
+	svc := NewTeamsService(newTestAccessStore(t), gw)
 
 	_, err := svc.GetTeamUsage("ghost")
 	require.Error(t, err)

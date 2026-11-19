@@ -6,10 +6,12 @@ package constants
 const (
 	HeaderServingNode     = "X-zzrouter-Node"
 	HeaderServingProvider = "X-zzrouter-Provider"
+	// HeaderResponseOwner carries a caller-and-tenant digest only between trusted nodes.
+	HeaderResponseOwner = "X-Zzrouter-Response-Owner"
 )
 
 // RoutingHintHeaders returns the request headers that steer dispatch and
 // that no client may set. A fresh slice, so a caller cannot change the set.
 func RoutingHintHeaders() []string {
-	return []string{HeaderServingNode, HeaderServingProvider}
+	return []string{HeaderServingNode, HeaderServingProvider, HeaderResponseOwner}
 }

@@ -11,7 +11,6 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
@@ -21,8 +20,7 @@ import (
 )
 
 // Topology captures the cluster-shape questions the Proxy asks during a
-// request: who am I, is this node me, where does a remote node live, and
-// how much memory does each node have available.
+// request: who am I, is this node me, and where does a remote node live.
 type Topology interface {
 	// NodeName returns the local node's advertised hostname.
 	NodeName() string
@@ -35,20 +33,6 @@ type Topology interface {
 	// (https://host:port), the only surface a worker serves inference on,
 	// or empty when the node is unknown.
 	ClusterURL(node string) string
-
-	// NodeMetrics returns the cached resource snapshot for the named
-	// node, or nil when no metrics are available. Consulted for the
-	// memory-fitness filter before attempting an on-demand start on a
-	// remote node.
-	NodeMetrics(node string) *mesh.ResourceMetrics
-
-	// NodeCacheReady reports whether the node resource cache is wired up.
-	// False on standalone installs, during early startup, and in tests
-	// that don't wire a cache. Lets the memory-fitness filter
-	// short-circuit the per-candidate NodeMetrics loop when no metrics
-	// will ever come back. Matches the pre-extraction short-circuit at
-	// fallback_proxy.go's old `f.server.model.NodeCache == nil` check.
-	NodeCacheReady() bool
 }
 
 // ProviderConfig exposes the static provider metadata the Proxy needs

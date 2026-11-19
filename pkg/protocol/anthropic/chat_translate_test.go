@@ -8,12 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A tool-using turn as Claude Code sends it: a system prompt in blocks,
+// A synthetic Claude-style turn without unsupported generation/cache controls:
 // a user turn of several text blocks, the assistant's thinking, text and
 // two calls, then the two results (one failed) with a follow-up.
 const toolConversation = `{
   "model": "qwen", "max_tokens": 1024, "stream": true,
-  "system": [{"type": "text", "text": "You are a coder."}, {"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral"}}],
+  "system": [{"type": "text", "text": "You are a coder."}, {"type": "text", "text": "Be brief."}],
   "messages": [
     {"role": "user", "content": [{"type": "text", "text": "<reminder>"}, {"type": "text", "text": "List and read."}]},
     {"role": "assistant", "content": [
@@ -34,8 +34,7 @@ const toolConversation = `{
   ],
   "tool_choice": {"type": "auto", "disable_parallel_tool_use": true},
   "stop_sequences": ["END"], "temperature": 0.2, "top_k": 20,
-  "metadata": {"user_id": "u1"},
-  "thinking": {"type": "enabled", "budget_tokens": 1000}
+  "metadata": {"user_id": "u1"}
 }`
 
 func TestToChatRequest_ToolConversation(t *testing.T) {
@@ -60,6 +59,39 @@ func TestToChatRequest_ToolConversation(t *testing.T) {
 	  "tools": [{"type": "function", "function": {"name": "ls", "description": "List files", "parameters": {"type": "object"}}}],
 	  "tool_choice": "auto", "parallel_tool_calls": false
 	}`, string(got.Body))
+}
+
+func TestToChatRequest_ExplicitControls(t *testing.T) {
+	for _, tc := range []struct{ body, param string }{
+		{`{"thinking":{"type":"enabled","budget_tokens":1024}}`, "thinking"},
+		{`{"thinking":{"type":"disabled"}}`, "thinking"},
+		{`{"service_tier":"standard_only"}`, "service_tier"},
+		{`{"cache_control":{"type":"ephemeral"}}`, "cache_control"},
+		{`{"system":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}`, "system.0.cache_control"},
+		{`{"messages":[{"role":"user","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}`, "messages.0.content.0.cache_control"},
+		{`{"tools":[{"name":"f","input_schema":{},"cache_control":{"type":"ephemeral"}}]}`, "tools.0.cache_control"},
+		{`{"messages":[{"role":"user","content":[{"type":"tool_result","content":[{"type":"text","text":"x","cache_control":{"type":"ephemeral"}}]}]}]}`, "messages.0.content.0.content.0.cache_control"},
+		{`{"extra_params":{"messages":[]}}`, "extra_params.messages"},
+		{`{"n":2}`, "n"}, {`{"extra_params":{"modalities":["audio"]}}`, "extra_params.modalities"},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			for _, translate := range []func([]byte) (ChatRequest, error){ToChatRequest, ToCountTokensRequest} {
+				_, err := translate([]byte(tc.body))
+				var terr *TranslateError
+				require.ErrorAs(t, err, &terr)
+				assert.Equal(t, tc.param, terr.Param)
+			}
+		})
+	}
+	got, err := ToChatRequest([]byte(`{"model":"m","thinking":null,"messages":[{"role":"user","content":"x"}],"extra_params":{"seed":9007199254740993,"min_p":0.05},"native":{"enabled":false},"future_field":"kept"}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(got.Body), `"seed":9007199254740993`)
+	assert.Contains(t, string(got.Body), `"native":{"enabled":false}`)
+	assert.Contains(t, string(got.Body), `"future_field":"kept"`)
+	assert.NotContains(t, string(got.Body), "extra_params")
+	count, err := ToCountTokensRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"extra_params":{"seed":9007199254740993}}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(count.Body), `"seed":9007199254740993`)
 }
 
 func TestToChatRequest_ShapesAndChoices(t *testing.T) {
@@ -168,6 +200,39 @@ func TestCountTokens(t *testing.T) {
 
 	_, err = FromChatTokenCount([]byte(`{"choices":[]}`), "m")
 	assert.Error(t, err, "no usage, no count")
+}
+
+func TestCountTokens_LimitAliasesCannotBypassProbe(t *testing.T) {
+	for _, fields := range []string{
+		`"max_tokens":8192`, `"max_completion_tokens":8192`,
+		`"max_tokens":9,"max_completion_tokens":8192`,
+		`"MAX_TOKENS":9,"MAX_COMPLETION_TOKENS":8192`,
+	} {
+		req, err := ToCountTokensRequest([]byte(`{"model":"m","stream":true,"messages":[{"role":"user","content":"x"}],"native":{"seed":9007199254740993},` + fields + `}`))
+		require.NoError(t, err)
+		assert.False(t, req.Stream)
+		assert.JSONEq(t, `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"x"}],"native":{"seed":9007199254740993}}`, string(req.Body))
+		assert.Contains(t, string(req.Body), `"seed":9007199254740993`)
+		assert.NotContains(t, string(req.Body), "completion_tokens")
+	}
+	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+		_, err := ToCountTokensRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"x"}],"extra_params":{"` + key + `":8192}}`))
+		var terr *TranslateError
+		require.ErrorAs(t, err, &terr)
+		assert.Equal(t, "extra_params."+key, terr.Param)
+	}
+}
+
+func TestToChatRequest_RefusesConflictingTokenLimitAlias(t *testing.T) {
+	for _, key := range []string{"max_completion_tokens", "MAX_COMPLETION_TOKENS"} {
+		_, err := ToChatRequest([]byte(`{"model":"m","max_tokens":4,"messages":[{"role":"user","content":"x"}],"` + key + `":8192}`))
+		var terr *TranslateError
+		require.ErrorAs(t, err, &terr)
+		assert.Equal(t, key, terr.Param)
+	}
+	req, err := ToChatRequest([]byte(`{"model":"m","max_tokens":4,"max_completion_tokens":null,"messages":[{"role":"user","content":"x"}]}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(req.Body), `"max_tokens":4`)
 }
 
 // The translator sees only user and assistant turns: context turns are

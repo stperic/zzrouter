@@ -21,6 +21,7 @@ for (const [label, sessionExpiry, keyExpiry, expected] of [
     t.mock.method(globalThis, 'clearTimeout', () => {});
     t.mock.method(globalThis, 'fetch', async path => ({ ok: true, status: 200, json: async () => {
       if (path.endsWith('/session')) return { data: { authenticated: !expired, csrf: 'fixture-proof', issuer: location.origin, node_name: 'Fixture', expires_at: sessionExpiry } };
+      if (path.endsWith('/access/setup')) return { data: { initialized: true } };
       if (path.endsWith('/me')) return { data: { id: 'fixture', name: 'Fixture', role: 'user', is_virtual: true, expires_at: keyExpiry, limits: {}, team: null, usage: null } };
       if (path.endsWith('/me/connections')) return { data: [] };
       assert.fail(`unexpected request: ${path}`);
@@ -30,6 +31,7 @@ for (const [label, sessionExpiry, keyExpiry, expected] of [
     assert.equal(timers.length, 1);
     assert.equal(timers[0].delay, expected);
     assert.match(app.textContent, /My Access/);
+    assert.doesNotMatch(app.textContent, /\bnull\b/, 'key-only access has no account placeholder text');
     const secret = new Element('input');
     secret.type = 'password';
     secret.value = 'synthetic-transient-value';

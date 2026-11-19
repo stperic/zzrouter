@@ -20,10 +20,8 @@ import (
 	"github.com/stperic/common/httpclient"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
-	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
@@ -59,6 +57,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -117,6 +116,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		listenerReady:       make(chan struct{}),
 		servingErrors:       make(chan error, 1),
 		idempotency:         newIdempotencyStore(),
+		localRoutes:         map[string]struct{}{},
 	}
 	constructed := false
 	defer func() {
@@ -129,9 +129,10 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.node = NewNodeIdentity(cfg)
 
 	// Cluster role. Derived from static config at construction;
-	// pairing completion and renewal failure handlers promote/demote
-	// via s.role.Set. Every read site uses s.role.Current() — no
-	// direct config sampling.
+	// pairing and leaving move a worker between Unclaimed and Worker
+	// via s.role.Set. What the boot role decides (the access store,
+	// the coordinator group, mounted routes) reads s.node; a change
+	// across the coordinator boundary ends the process instead.
 	paths := clusternode.PathsFromConfigDir(pkgConfig.Paths().GetConfigDir())
 	initialRole := role.RoleFromConfig(cfg.Cluster, clusternode.IsPaired(paths))
 	roleMgr, err := role.NewManager(initialRole)
@@ -161,16 +162,15 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.GetNodename, s.failureClassifier)
 	s.inference.affinity = newResponseAffinity(0)
 
-	// Initialize the model subsystem. Pricing wires up front; Cache and
-	// NodeCache are assigned in server_wiring.go once cluster setup has
-	// built the dependencies they need.
+	// Initialize the model subsystem. Pricing wires up front; the catalog
+	// cache is assigned once its cluster dependencies are available.
 	s.model = &model.Subsystem{}
 	if cfg.Models.Pricing.IsEnabled() {
 		cm := pkgConfig.NewConfigManager("zzrouter")
 		cacheDir := filepath.Join(cm.GetNodeConfigDir(), "pricing")
 		s.model.Pricing = pricing.NewStore(&cfg.Models.Pricing, cacheDir)
 		// Overrides live with the other operator-authored state
-		// (keys.yaml, teams.yaml, model_groups.yaml), not in the cache
+		// (model_groups.yaml, provider config), not in the cache
 		// dir the upstream table is refetched into.
 		overridesPath := filepath.Join(cm.GetNodeConfigDir(), "pricing_overrides.yaml")
 		if err := s.model.Pricing.LoadOverrides(overridesPath); err != nil {
@@ -384,6 +384,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.model.Resolver = defaultResolver
 
 	// Load model groups and virtual keys from their respective config files.
+	var issuer string
 	s.model.Groups = modelgroup.NewGroupStore()
 	s.model.Groups.SetCloudAppChecker(func(app string) bool {
 		return s.appsConfig().GetCloud(app) != nil
@@ -403,11 +404,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			slog.Info("Model groups loaded", "count", s.model.Groups.Len(), "path", groupsPath)
 		}
 		s.model.Resolver = resolver.NewGroup(s.model.Groups, defaultResolver)
-		s.model.NodeCache = cache.NewNodeResourceCache()
-
-		// Wire Cache — must happen after NodeCache is built. AutoRoute is
-		// set via SetAutoRoute below (breaks the construction cycle:
-		// autoroute.New needs Cache.GetAllModels).
+		// AutoRoute is wired below once Cache.GetAllModels is available.
 		s.model.Cache = cache.New(cache.Config{
 			InventoryStatus: s.providerInventoryStatus,
 			ModelDetails: func(provider, model string, details map[string]any) map[string]any {
@@ -420,8 +417,6 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			Registry:                  func() *modelregistry.Registry { return s.model.Registry },
 			AppsConfig:                s.appsConfig,
 			ClusterClient:             s.getClusterClient,
-			NodeCache:                 s.model.NodeCache,
-			Resources:                 s.cluster.resources,
 			NodeConfig:                cfg,
 			ResolveEndpointToNodename: s.resolveEndpointToNodename,
 		})
@@ -446,38 +441,29 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			}
 		})
 
-		// Load keys.yaml
-		keysPath := filepath.Join(configDir, "keys.yaml")
-		s.keyStore = keys.NewFileKeyStore(keysPath)
-		if err := s.keyStore.Load(); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				logger.Warn("Failed to load keys.yaml", "error", err)
+		s.configDir = configDir
+		// The access store lives as long as a node that boots as a coordinator,
+		// with people beside its browser issuer. Any other role opens no store
+		// and authenticates static keys only; a role change ends the process.
+		if !s.node.IsWorker() {
+			if issuer, err = s.config.Auth.OAuth.EffectiveIssuer(s.config.Node); err != nil {
+				return nil, err
 			}
-		} else {
-			keyCount := len(s.keyStore.List())
-			if keyCount > 0 {
-				slog.Info("Virtual keys loaded", "count", keyCount)
+			// A refusal ends construction: the node exits with its reason and next action.
+			store, err := sqlstore.Open(context.Background(), configDir, sqlstore.Options{
+				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, Fatal: s.fail,
+			})
+			if err != nil {
+				return nil, err
+			}
+			s.accessStore, s.stateStore = store, store
+			if s.backups, err = recovery.OpenBackups(context.Background(), configDir, store); err != nil {
+				return nil, err
+			}
+			if err := s.initLocalProof(context.Background(), issuer); err != nil {
+				return nil, err
 			}
 		}
-
-		// Load teams.yaml
-		teamsPath := filepath.Join(configDir, "teams.yaml")
-		s.teamStore = teams.NewFileTeamStore(teamsPath)
-		if err := s.teamStore.Load(); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("load teams.yaml: %w", err)
-			}
-		} else if teamCount := len(s.teamStore.List()); teamCount > 0 {
-			slog.Info("Teams loaded", "count", teamCount)
-		}
-
-		// === Audit sink ===
-		// Opened/closed in start/stopCoordinatorSubsystems so runtime
-		// role transitions (Unclaimed → Coordinator via pairing) get
-		// audit coverage. The factory leaves the sink at audit.Null;
-		// workers stay on Null for their entire lifecycle.
-		s.auditSink = audit.Null{}
-		s.auditConfigDir = configDir
 
 		// === AccessControl: unified auth + quota enforcement ===
 		staticKeySet := buildStaticKeySet(cfg)
@@ -493,7 +479,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		}
 		s.spendEvents = NewSpendEventBus()
 		enforcer.SetBreachObserver(s.spendEvents)
-		s.access = NewAccessControl(staticKeySet, s.keyStore, s.teamStore, s.model.Groups, enforcer, cfg,
+		s.access = NewAccessControl(staticKeySet, s.accessStore, s.model.Groups, enforcer, cfg,
 			ModelHooks{IsCloudBacked: s.modelIsCloudBacked, Identity: s.modelIdentity})
 
 		// Wire gateway into the inference log bridge for post-response settlement
@@ -506,16 +492,14 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// zz.remaining.api.key.budget.metric) report live SpendLimit /
 		// remaining-budget rows on every Prometheus scrape. The gauges
 		// register lazily against the current global meter provider.
-		// Workers also reach this branch but their keystore is empty
-		// in production (virtual keys only on coordinators), so the
-		// snapshotter returns no rows and the gauges emit nothing —
-		// the unconditional registration is harmless.
-		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.keyStore, s.teamStore, s.access))
+		// A node without a store reads an empty snapshot, so its gauges
+		// emit nothing.
+		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.accessSnapshot, s.access))
 	}
 
 	s.initFallbackProxy()
 
-	if err := s.initOAuth(); err != nil {
+	if err := s.initOAuth(issuer); err != nil {
 		return nil, err
 	}
 
@@ -586,6 +570,13 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		}
 	}
 
+	inventory, err := recovery.Capture(s.shutdownCtx, cfg, s.appsConfig())
+	if err != nil {
+		return nil, fmt.Errorf("prepare recovery inventory: %w", err)
+	}
+	if err := recovery.Save(s.shutdownCtx, inventory); err != nil {
+		return nil, fmt.Errorf("save recovery inventory: %w", err)
+	}
 	constructed = true
 	return s, nil
 }
@@ -684,6 +675,8 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 				"stack", string(stack),
 			)
 		}),
+		RequestIDMiddleware(),
+		APIVersionMiddleware(),
 	)
 
 	// Install dialect-aware handlers for unmatched routes so 404/405
@@ -743,19 +736,19 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 		}
 	}
 
+	s.engine.Use(requestBodyReadDeadlineMiddleware(2 * time.Minute))
+
+	// CORS precedes size refusals and auth/ClusterModeGate so browsers
+	// can read 413s and preflights to gated routes still get a 204.
+	// The read deadline stays before every middleware that can abort.
+	s.engine.Use(CORSMiddleware(cfg.Security.CORS))
+
 	// SECURITY: Add request size limit middleware to prevent memory exhaustion attacks
 	maxRequestSize := int64(defaultMaxRequestSize)
 	if cfg.Node.MaxRequestSize > 0 {
 		maxRequestSize = cfg.Node.MaxRequestSize
 	}
 	s.engine.Use(requestSizeLimitMiddleware(maxRequestSize))
-	s.engine.Use(requestBodyReadDeadlineMiddleware(2 * time.Minute))
-
-	// CORS policy runs before everything auth-related and before
-	// ClusterModeGate so preflights to gated routes still get a 204
-	// with the right headers even when the node is not in an allowed
-	// role for the real request. Zero-cost when disabled.
-	s.engine.Use(CORSMiddleware(cfg.Security.CORS))
 
 	// Register cluster detection middleware (detects cluster-internal requests)
 	// Must be registered BEFORE authentication to populate context for auth checks
@@ -830,10 +823,7 @@ func (s *Server) initClusterNetworking(cfg *pkgConfig.NodeConfig) error {
 	// Initialize HTTP-based routing
 	utils.LogDebugf("[Routing] Initializing request router...")
 	serverPort := fmt.Sprintf("%d", s.config.Node.Port)
-	initialRouter := s.buildRouterForMode(s.config.Cluster.IsWorker(), serverPort)
-	s.cluster.routerSwap = routing.NewSwappable(initialRouter)
-	s.cluster.router = s.cluster.routerSwap
-	s.nodeConfigStore.OnChange("reconfigureRouter", s.reconfigureRouter)
+	s.cluster.router = s.buildRouterForMode(s.config.Cluster.IsWorker(), serverPort)
 	s.nodeConfigStore.OnChange("handleClusterModeReload", s.handleClusterModeReload)
 	s.role.Subscribe(s.handleRoleTransition)
 
@@ -918,7 +908,7 @@ func wireRouteEventEmitters(bus *route_events.Bus, cooldowns *fallback.CooldownM
 	}
 }
 
-// observePeerSnapshot accepts resources from the existing authenticated health cadence.
+// observePeerSnapshot records peer identity and attaches the signal poller.
 func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) {
 	s.cachePeerName(hostURL, snapshot.NodeName)
 	if s.cluster.poller != nil && snapshot.Quality == mesh.QualityFull {
@@ -926,9 +916,6 @@ func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) 
 		if clusterURL != "" {
 			s.cluster.poller.Observe(clusterURL, snapshot.NodeName)
 		}
-	}
-	if snapshot.Quality == mesh.QualityFull && snapshot.Resources != nil && s.model.NodeCache != nil {
-		s.model.NodeCache.Put(snapshot.NodeName, snapshot.Resources, snapshot.ResourcesObservedAt)
 	}
 }
 

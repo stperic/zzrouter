@@ -1,6 +1,7 @@
 import { el, text, leaveButton, badge, actions, heading, facts, message, problem, date, copyField, card, markSelection } from './dom.mjs';
 import { clientKey, clientLabel, clientState, protocolName } from './network-data.mjs';
 import { details } from './details.mjs';
+import { sharingReadiness } from './sharing.mjs';
 
 export const readClients = p => Promise.allSettled([
   p.api.request('/zzrouter/v1/clients', { signal: p.scope.signal }),
@@ -13,29 +14,34 @@ export function clientTile(p, row, page = 'clients') {
   tile.setAttribute('data-selection', `client/${clientKey(row)}`);
   tile.append(el('span', { class: 'network-item-title' }, el('strong', {}, clientLabel(row)), badge(...clientState(row))),
     el('span', { class: 'network-meta' }, protocolName(row.protocol)),
-    el('span', { class: 'network-hardware' }, row.active_requests > 0 ? `${row.active_requests} request${row.active_requests === 1 ? '' : 's'} at last refresh` : date(row.last_seen_at)));
+    el('span', { class: 'network-hardware' }, row.active_requests > 0 ? `${row.active_requests} active at refresh` : date(row.last_seen_at, 'Last activity unknown')));
   return tile;
 }
 
 export function showClient(p, row) {
   if (!row) { p.root.append(message('This client activity is no longer in the observation window.', 'warning')); return; }
-  p.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, clientLabel(row)), row.source === 'managed' ? leaveButton('View key', () => p.go('access', `keys/${row.key_id}`), p.api) : null), badge(...clientState(row)),
-    facts([['Protocol', protocolName(row.protocol)], ['Key ID', row.key_id], ['Key source', row.source === 'managed' ? 'Managed key' : 'Startup key'],
+  const person = row.source === 'person';
+  p.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, clientLabel(row)), person ? leaveButton('View person', () => p.go('people', row.key_id), p.api) : row.source === 'managed' ? leaveButton('View key', () => p.go('access', `keys/${row.key_id}`), p.api) : null), badge(...clientState(row)),
+    facts([['Protocol', protocolName(row.protocol)], [person ? 'Person ID' : 'Key ID', row.key_id], ['Identity source', person ? 'Local account' : row.source === 'managed' ? 'Managed key' : 'Startup key'],
       ['Authentication', row.authentication === 'oauth' ? 'OAuth' : 'API key'], ['Requests at refresh', row.active_requests],
       ['Last activity', date(row.last_seen_at)], ['First observed', date(row.first_seen_at)], ['Observed requests', row.request_count]]),
-    text('The label shows the key name recorded at the last activity. Activity is grouped by key identity, protocol and authentication method. Multiple applications may share one identity. This is not a device count or a current authorization check.', 'muted'));
+    text('The label shows the account or key name recorded at the last activity. Activity is grouped by identity, protocol and authentication method. Multiple applications may share one identity. This is not a device count or a current authorization check.', 'muted'));
 }
 
 export function connectionGuide(p) {
-  const guide = card('Connect a client', text('Give each application its own named user key so its activity is easy to recognize.', 'muted'),
-    el('section', { class: 'access-section' }, el('h3', {}, '1. Create a client key'),
-      text('Choose a team with the routes, providers and budget this client should use.'),
-      p.identity.role === 'admin' ? leaveButton('+ Create key', () => p.go('access', 'keys', 'create'), p.api, 'primary') : text('Use your current user key, or ask your administrator for one.')),
-    el('section', { class: 'access-section' }, el('h3', {}, '2. Connect your application'),
-      copyField('Inference MCP endpoint', p.state.issuer + '/inference/mcp'), text('Add a remote HTTP MCP server in your application. Choose browser sign-in, use the client’s user key, and approve the named client.', 'muted'),
-      copyField('OpenAI-compatible API base URL', p.state.issuer + '/v1'), text('For an API client, use this base URL and your client key. Select a route or model allowed by its team.', 'muted')),
-    el('section', { class: 'access-section' }, el('h3', {}, '3. Send a request'), text('The client appears in the overview after its first authenticated request. Refresh to see its key name and activity.')));
-  return guide;
+  return card('Connection options', text('Choose the sign-in method your application supports.', 'muted'), sharingReadiness(p),
+    el('section', { class: 'access-section' }, el('h3', {}, 'Browser sign-in for an MCP client'),
+      text('Add a remote HTTP MCP server, then choose browser sign-in. Use a User account for inference, and approve the named application. Its access follows your team.'),
+      copyField('Inference MCP endpoint', p.state.issuer + '/inference/mcp'),
+      p.identity.role === 'admin' ? el('div', {}, text('Your Administrator account authorizes management MCP. For model requests, use a User account or a named user app key.', 'muted'), copyField('Management MCP endpoint', p.state.issuer + '/zzrouter/v1/mcp')) : null,
+      text('No app key is needed. Enter your account password only on your router’s sign-in page.', 'muted')),
+    el('section', { class: 'access-section' }, el('h3', {}, 'API key for an app or automation'),
+      text('Create one named user key per application, assigned to a team with the intended routes, providers and budget.'),
+      p.identity.role === 'admin' ? leaveButton('+ Create app key', () => p.go('access', 'keys', 'create'), p.api, 'primary') : text('Ask your administrator for a named app key assigned to your team.'),
+      copyField('OpenAI-compatible API base URL', p.state.issuer + '/v1'),
+      text('Paste the app key into the client’s API key field and select an allowed route or model. Your account password is not an API key.', 'muted')),
+    el('section', { class: 'access-section' }, el('h3', {}, 'Verify the connection'),
+      text(p.identity.role === 'admin' ? 'Send one request, then refresh Clients. You will see the account or app-key name and its observed activity.' : 'Send one request and check the response in your application. Your administrator can confirm its account name and activity in Clients.')));
 }
 
 export async function clients(p, selection) {
@@ -56,11 +62,11 @@ export async function clients(p, selection) {
     if (activity.status === 'rejected') throw activity.reason;
     const result = activity.value; rows = result.data || [];
     listing.replaceChildren(text(`Updated ${date(new Date().toISOString())}.`, 'network-caption'),
-      el('div', { class: 'node-grid' }, rows.map(row => clientTile(p, row))),
-      text('Activity is reported at refresh. A client can remain connected between requests.', 'muted'));
-    if (!rows.length) listing.append(message('No client activity yet.'), leaveButton('Connect a client', () => p.go('clients', 'connect'), p.api));
+      rows.length ? el('div', { class: 'node-grid' }, rows.map(row => clientTile(p, row))) : message('No client activity yet. Connect a client and send a request to see it here.'));
     if (result.metadata?.truncated) listing.append(message('The observation limit was reached. Some activity is omitted.', 'warning'));
-    listing.append(text(`Observed since ${date(result.metadata?.observed_since)}. Inactive entries expire after 24 hours; observations reset when the coordinator restarts.`, 'footer-note'),
+    listing.append(el('details', { class: 'network-caption' }, el('summary', {}, 'About client activity'),
+      result.metadata?.observed_since ? text(`Observed since ${date(result.metadata.observed_since)}.`) : null,
+      text('Activity is captured at refresh. Inactive entries expire after 24 hours and the coordinator clears observations on restart.')),
       actions(leaveButton('Manage keys & teams', () => p.go('access'), p.api), leaveButton(grants.status === 'fulfilled' ? `Your authorizations (${grants.value.length})` : 'Your authorizations', () => p.go('connections'), p.api)));
     markSelection(listing, selection);
   };
@@ -68,7 +74,7 @@ export async function clients(p, selection) {
     try { await read(); if (p.current()) selectClient(selection); }
     catch (error) { if (p.current()) listing.prepend(problem(error)); }
   };
-  p.root.append(heading('Clients', 'Client activity labeled by key name and grouped by protocol.',
+  p.root.append(heading('Clients', 'Client activity labeled by account or app-key name and grouped by protocol.',
     leaveButton('Refresh', refresh, p.api), leaveButton('+ Connect client', () => p.go('clients', 'connect'), p.api, 'primary')), workspace);
   listing.append(message('Reading client activity…'));
   await read();

@@ -19,17 +19,14 @@ connection:
       secret: true
 runtime:
   endpoint: "${AWS_BEDROCK_ENDPOINT:-https://bedrock-runtime.us-east-1.amazonaws.com}"
-  models_path: ""  # Bedrock Runtime does not list models.
+  openai_path: /openai/v1
+  # The runtime host has no Models API or safe credential-check endpoint.
+  models_path: ""
   model_url: "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html#%s"
   api:
     auth_type: bearer
     auth_header: "Authorization"
     auth_prefix: "Bearer "
     token: "${AWS_BEDROCK_TOKEN}"
-  health_check:
-    path: /v1/models
-    interval: 60s
-    timeout: 10s
-    retries: 3
 capabilities:
   wire_endpoints: [chat_completions]

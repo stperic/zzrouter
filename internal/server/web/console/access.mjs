@@ -1,7 +1,7 @@
-import { el, text, button, leaveButton, badge, actions, message, card, heading, input, facts, date, problem, selectableRow, markSelection } from './dom.mjs';
+import { el, text, button, leaveButton, badge, actions, message, card, heading, input, facts, date, problem, selectableRow, markSelection, compactTable } from './dom.mjs';
 import { Lifetime } from './api.mjs';
 import { details } from './details.mjs';
-import { accessForm, limitSummary } from './access-form.mjs';
+import { accessForm, limitSummary, membershipSummary } from './access-form.mjs';
 import { accessLabel, policySummary } from './access-policy.mjs';
 import { budgetLabel, budgetUsage } from './access-budget.mjs';
 export { editableValues } from './access-form.mjs';
@@ -48,7 +48,7 @@ export async function access(p, section = 'keys', mode) {
       if (!owner.panel.current() || owner.panel.revision !== revision || !p.api.canLeave()) return false;
       const [catalog, models, groups] = choices.map(result => result.status === 'fulfilled' ? result.value : []);
       const members = keys.filter(key => key.team_id === id);
-      const options = { teams, catalog, models, groups, catalogUnavailable: choices[0].status === 'rejected', modelsUnavailable: choices.slice(1).some(result => result.status === 'rejected'), memberCount: members.length };
+      const options = { teams, catalog, models, groups, catalogUnavailable: choices[0].status === 'rejected', modelsUnavailable: choices.slice(1).some(result => result.status === 'rejected') };
       const show = () => {
         const reader = owner.panel.view(type === 'keys' ? 'Key details' : 'Team details');
         const team = type === 'keys' ? teams.find(team => team.id === record.team_id) : record;
@@ -61,7 +61,7 @@ export async function access(p, section = 'keys', mode) {
           type === 'keys' ? leaveButton('View team', () => openRecord('teams', team.id), p.api, 'link') : null));
         if (record.kind === 'personal') reader.root.append(message('This personal team belongs to an existing key. Create a shared team and replacement key to manage its policy.'));
         if (type === 'keys' && (record.spend_limit > 0 || ['rpm_limit', 'tpm_limit', 'max_parallel_requests', 'default_max_tokens'].some(key => record[key] > 0))) reader.root.append(el('section', { class: 'access-section' }, el('h3', {}, 'Additional key limits'), budgetUsage(reader, 'keys', record), limitSummary(record)));
-        if (type === 'teams') reader.root.append(el('section', { class: 'access-section' }, el('h3', {}, `Member keys (${members.length})`), members.length ? el('ul', { class: 'member-keys' }, members.map(key => el('li', {}, leaveButton(key.name || key.id, () => openRecord('keys', key.id), p.api, 'link'), badge(key.suspended ? 'Suspended' : key.is_expired ? 'Expired' : key.team_role || 'Member')))) : text('No member keys yet. Select this team when creating a key.', 'muted')));
+        if (type === 'teams') reader.root.append(el('section', { class: 'access-section' }, el('h3', {}, 'People and applications'), text(membershipSummary(record)), text('Suspended accounts and keys remain members. Pending enrollments also reserve this team.', 'muted'), leaveButton('Manage people & invitations', () => p.go('people'), p.api, 'link')), el('section', { class: 'access-section' }, el('h3', {}, `App keys (${record.membership?.app_keys ?? 'unavailable'})`), members.length ? el('ul', { class: 'member-keys' }, members.map(key => el('li', {}, leaveButton(key.name || key.id, () => openRecord('keys', key.id), p.api, 'link'), badge(key.suspended ? 'Suspended' : key.is_expired ? 'Expired' : key.team_role || 'Member')))) : text('No member keys yet. Select this team when creating a key.', 'muted')));
         p.syncActivity();
       };
       const edit = () => {
@@ -133,7 +133,7 @@ export async function access(p, section = 'keys', mode) {
       const team = type === 'keys' ? teams.find(team => team.id === record.team_id) : record;
       body.append(selectableRow(record.id, selected, () => openRecord(type, record.id),
         el('td', {}, leaveButton(record.name, () => openRecord(type, record.id), p.api, 'link entity-title'), text(record.id, 'muted'), record.role === 'admin' ? badge('Administrator') : null),
-        el('td', {}, type === 'keys' ? team?.name || 'Team unavailable' : `${keys.filter(key => key.team_id === record.id).length} ${keys.filter(key => key.team_id === record.id).length === 1 ? 'key' : 'keys'}`, text(type === 'teams' && record.kind === 'personal' ? 'Personal' : accessLabel(team), 'muted')),
+        el('td', {}, type === 'keys' ? team?.name || 'Team unavailable' : membershipSummary(record), text(type === 'teams' && record.kind === 'personal' ? 'Personal' : accessLabel(team), 'muted')),
         el('td', {}, type === 'teams' ? budgetUsage(rowsOwner, type, record, { compact: true }) : [
           text(team ? budgetLabel(team) : 'Team budget unavailable'),
           record.spend_limit > 0 ? text(`Additional key budget: ${budgetLabel(record)}`, 'muted') : null,
@@ -148,7 +148,8 @@ export async function access(p, section = 'keys', mode) {
       previous.disabled = page === 0; next.disabled = (page + 1) * pageSize >= filtered.length;
       pagination.append(previous, next);
     }
-    results.replaceChildren(rows.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Name', type === 'keys' ? 'Team & access' : 'Members & access', type === 'keys' ? 'Team budget' : 'Budget', 'Status'].map(label => el('th', { scope: 'col' }, label)))), body)) : text(query ? 'No matching results.' : type === 'keys' ? 'No managed keys yet. Create one for each person or client.' : 'No teams yet. Create a shared team to control access and usage.', 'empty'), pagination);
+    results.replaceChildren(rows.length ? compactTable(['Name', type === 'keys' ? 'Team & access' : 'Members & access', type === 'keys' ? 'Team budget' : 'Budget', 'Status'], body) :
+      text(query ? 'No matching results.' : type === 'keys' ? 'No managed keys yet. Create one for each application. People use their own accounts.' : 'No teams yet. Create a shared team to control access and usage.', 'empty'), pagination);
   };
   let searchTimer;
   p.scope.signal.addEventListener('abort', () => clearTimeout(searchTimer), { once: true });
@@ -157,7 +158,7 @@ export async function access(p, section = 'keys', mode) {
   tabs.classList.add('tabs'); tabs.children[type === 'keys' ? 0 : 1].setAttribute('aria-current', 'true');
   listing.append(card(type === 'keys' ? 'Client keys' : 'Access teams', search, results));
   p.root.replaceChildren(heading('Keys & teams', 'Named keys for your clients. Shared access and budgets for your teams.', leaveButton('Refresh', refresh, p.api), leaveButton(type === 'keys' ? '+ Create key' : '+ Create team', () => p.go('access', type, 'create'), p.api, 'primary')), tabs, workspace,
-    text('Teams define provider access, budgets and usage limits. Keys inherit their team’s policy. Startup keys are managed in installation configuration.', 'footer-note'));
+    text('Teams define provider access, budgets and usage limits. People and keys inherit their team’s policy. Startup keys are managed in installation configuration.', 'footer-note'));
   p.handleSelection?.(choose, next => (next || 'keys').split('/')[0] === type);
   render(); await choose(section, mode);
 }

@@ -30,7 +30,8 @@ func (ctrl *KeysController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.POST("/keys/:id/rotate", ctrl.RotateKey)
 	router.GET("/keys/:id/usage", ctrl.GetKeyUsage)
 	router.POST("/keys/:id/usage/reset", ctrl.ResetKeyUsage)
-	router.POST("/keys/reload", ctrl.ReloadKeys)
+	router.POST("/keys/reload", newRetiredHandler("app keys are managed through the keys API: "+
+		"POST /zzrouter/v1/keys, PATCH /zzrouter/v1/keys/{id}"))
 	router.GET("/spend/report", ctrl.GetSpendReport)
 }
 
@@ -50,7 +51,7 @@ func (ctrl *KeysController) CreateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.CreateKey(req.ID, &req.CreateKeyRequest, callerKeyID(c))
+	resp, err := ctrl.service.CreateKey(c.Request.Context(), req.ID, &req.CreateKeyRequest, auditActor(c))
 	if err != nil {
 		if isConflict(err) {
 			Conflict(c, err.Error())
@@ -60,7 +61,7 @@ func (ctrl *KeysController) CreateKey(c *gin.Context) {
 			BadRequest(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -95,7 +96,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.UpdateKey(id, &req, callerKeyID(c))
+	resp, err := ctrl.service.UpdateKey(c.Request.Context(), id, &req, auditActor(c))
 	if err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
@@ -105,7 +106,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 			BadRequest(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -116,12 +117,12 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 func (ctrl *KeysController) DeleteKey(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := ctrl.service.DeleteKey(id, auditActor(c)); err != nil {
+	if err := ctrl.service.DeleteKey(c.Request.Context(), id, auditActor(c)); err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -132,30 +133,17 @@ func (ctrl *KeysController) DeleteKey(c *gin.Context) {
 func (ctrl *KeysController) RotateKey(c *gin.Context) {
 	id := c.Param("id")
 
-	resp, err := ctrl.service.RotateKey(id, auditActor(c))
+	resp, err := ctrl.service.RotateKey(c.Request.Context(), id, auditActor(c))
 	if err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
 	respondSuccess(c, "Key rotated successfully. Save the new key value: it will not be shown again.", resp)
-}
-
-// ReloadKeys handles POST /zzrouter/v1/keys/reload
-func (ctrl *KeysController) ReloadKeys(c *gin.Context) {
-	if err := ctrl.service.ReloadKeys(); err != nil {
-		// Surface the actual reason (e.g. file parse error, missing file) so
-		// operators can fix it without tailing logs. SanitizeErrorMessage
-		// inside InternalNodeError scrubs paths and stack traces.
-		InternalNodeError(c, "failed to reload keys: "+err.Error())
-		return
-	}
-
-	respondSuccess(c, "Keys reloaded successfully", nil)
 }
 
 // GetKeyUsage handles GET /zzrouter/v1/keys/:id/usage.
@@ -168,7 +156,7 @@ func (ctrl *KeysController) GetKeyUsage(c *gin.Context) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 	respondSuccess(c, "Key usage retrieved", resp)
@@ -178,12 +166,12 @@ func (ctrl *KeysController) GetKeyUsage(c *gin.Context) {
 func (ctrl *KeysController) ResetKeyUsage(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := ctrl.service.ResetKeyUsage(id, auditActor(c)); err != nil {
+	if err := ctrl.service.ResetKeyUsage(c.Request.Context(), id, auditActor(c)); err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 	respondSuccess(c, "Key usage reset successfully", nil)

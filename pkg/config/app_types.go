@@ -33,6 +33,7 @@ const (
 // ServiceConfig represents a single app's configuration (synthesized
 // view of a typed Provider in the providers/ directory tree)
 type ServiceConfig struct {
+	Operations map[string]OperationDefinition  `yaml:"operations,omitempty" json:"operations,omitempty"`
 	Connection *ConnectionConfig               `yaml:"connection,omitempty" json:"connection,omitempty"`
 	Schema     map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
 	// node is the node this view is read for: IsEnabled and its siblings

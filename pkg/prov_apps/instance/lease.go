@@ -18,6 +18,9 @@ import (
 // active-request count, and its activity stamps. It is the only way to hold a slot.
 type Lease struct {
 	instance *Instance
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopRun  func() bool
 	once     sync.Once
 	mu       sync.Mutex
 	watch    *streamWatch
@@ -45,7 +48,12 @@ func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (_ *L
 	atomic.AddInt64(&i.activeRequests, 1)
 	i.mu.Unlock()
 	i.StampActivityWithHints(hints)
-	return &Lease{instance: i}, nil
+	requestCtx, cancel := context.WithCancel(ctx)
+	stopRun := context.AfterFunc(i.Context(), cancel)
+	if i.Context().Err() != nil {
+		cancel()
+	}
+	return &Lease{instance: i, ctx: requestCtx, cancel: cancel, stopRun: stopRun}, nil
 }
 
 // AdmissionRetryAfter is the delay a refused caller is told to wait: slots free as soon as an
@@ -143,6 +151,8 @@ func (i *Instance) acquireSlot(ctx context.Context) error {
 // keep_alive: a later request's hint must not be overwritten by an earlier one finishing.
 func (l *Lease) Release() {
 	l.once.Do(func() {
+		l.stopRun()
+		l.cancel()
 		l.mu.Lock()
 		l.released = true
 		if l.watch != nil {
@@ -156,6 +166,9 @@ func (l *Lease) Release() {
 		}
 	})
 }
+
+// Context carries the caller's values and ends when the caller, run or lease ends.
+func (l *Lease) Context() context.Context { return l.ctx }
 
 // Instance returns the leased instance.
 func (l *Lease) Instance() *Instance {

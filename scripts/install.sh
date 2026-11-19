@@ -7,9 +7,9 @@
 #
 #   --port PORT          admin/API port (default 9090, auto-increments if taken)
 #   --bind ADDR          listen address (default 127.0.0.1; use 0.0.0.0 for LAN)
-#   --role ROLE          disabled | worker | coordinator (default disabled)
+#   --role ROLE          disabled | worker | coordinator (default coordinator)
 #   --cluster-port PORT  mTLS cluster listener (default 9091)
-#   --service            install a system service (the default when root)
+#   --service            systemd on Linux; per-user LaunchAgent on macOS
 #   --no-service         do not install a service; run detached instead
 #   --uninstall          remove zzRouter
 #   --yes                do not prompt (unattended)
@@ -24,10 +24,9 @@
 # the coordinator reaches each worker by putting its own cluster port onto
 # the worker's host.
 #
-# Run as root (sudo), this installs a supervised system service by
-# default, the same shape as ollama's own installer: a dedicated user, a
-# systemd unit, enabled at boot. Run as a normal user, it installs
-# per-user and starts the node detached.
+# Linux root installs use a dedicated user and a systemd service enabled
+# at boot. macOS installs run as the current user and register a LaunchAgent
+# that starts at login. Unprivileged Linux and --no-service run detached.
 #
 # Detached is a weaker guarantee and is not the default for a reason: it
 # survives logoff but NOT a reboot, and it is killed when the session that
@@ -44,9 +43,10 @@ DEFAULT_CLUSTER_PORT=9091
 # Set in main() from the flags above.
 INSTALL_DIR="${HOME}/.local/bin"
 BIND="127.0.0.1"
-ROLE="disabled"
+ROLE="coordinator"
 CLUSTER_PORT="$DEFAULT_CLUSTER_PORT"
 SERVICE_MODE=0
+LOGIN_SERVICE=0
 NO_SERVICE=0
 ASSUME_YES=0
 FORCE_CONFIG=0
@@ -89,15 +89,6 @@ check() { echo -e "  ${ORANGE}✔${RESET} $1"; }
 fail()  { echo -e "  ${RED}✘${RESET} $1" >&2; }
 info()  { echo -e "  $1"; }
 dim()   { echo -e "  ${DIM}$1${RESET}"; }
-
-# --- Key generation ---
-
-generate_random_hex() {
-    openssl rand -hex 24 2>/dev/null \
-        || LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 48 \
-        || date +%s%N | sha256sum 2>/dev/null | head -c 48 \
-        || echo "$(date +%s)-$(od -An -tx4 -N16 /dev/random 2>/dev/null | tr -d ' ')" | head -c 48
-}
 
 # --- Port detection ---
 
@@ -165,7 +156,7 @@ detect_platform() {
 find_binaries() {
     BINARY_SRC=""
     BINARY_SUFFIX=""
-    for dir in "$PROJECT_ROOT" "."; do
+    for dir in "$SCRIPT_DIR" "$PROJECT_ROOT" "."; do
         # New release layout: dist/<platform>/{zzrouter,zzrouter-launcher,zzrouter-node}
         if [ -f "$dir/dist/${PLATFORM}/zzrouter-node" ]; then
             BINARY_SRC="$dir/dist/${PLATFORM}"
@@ -187,6 +178,17 @@ find_binaries() {
     exit 1
 }
 
+# Validate the whole release before stopping the currently installed version.
+validate_binary_set() {
+    local bin
+    for bin in $BINARIES; do
+        if [ ! -f "${BINARY_SRC}/${bin}${BINARY_SUFFIX}" ]; then
+            fail "Incomplete release: missing ${bin}${BINARY_SUFFIX}. The installed node was not changed."
+            return 1
+        fi
+    done
+}
+
 # --- Stop a running node ---
 
 # stop_running_node stops whatever is currently serving, BEFORE the
@@ -199,6 +201,9 @@ find_binaries() {
 # already running" without restarting it -- so the install would report
 # success while the old binary kept serving.
 stop_running_node() {
+    if [ "$OS" = "darwin" ] && [ "$(id -u)" != "0" ] && [ -f "${HOME}/Library/LaunchAgents/com.zzrouter.node.plist" ]; then
+        launchctl unload "${HOME}/Library/LaunchAgents/com.zzrouter.node.plist" 2>/dev/null || true
+    fi
     if [ "$(id -u)" = "0" ]; then
         if command -v systemctl >/dev/null 2>&1 &&
            systemctl list-unit-files 2>/dev/null | grep -q '^zzrouter-node\.service'; then
@@ -254,9 +259,6 @@ install_binaries() {
     for bin in $BINARIES; do
         src="${BINARY_SRC}/${bin}${BINARY_SUFFIX}"
         dst="${INSTALL_DIR}/${bin}"
-        if [ ! -f "$src" ]; then
-            continue
-        fi
 
         # A development install has $dst symlinked AT $src -- `make
         # install` does exactly that. cp then fails with "are identical",
@@ -282,8 +284,6 @@ install_binaries() {
             exit 2
         fi
         chmod +x "$dst"
-        # Clear macOS quarantine for unsigned binaries
-        [ "$OS" = "darwin" ] && xattr -cr "$dst" 2>/dev/null || true
         INSTALLED+=("$bin")
     done
 
@@ -296,9 +296,7 @@ install_binaries() {
 get_version() {
     local node_bin="${INSTALL_DIR}/zzrouter-node"
     if [ -x "$node_bin" ]; then
-        "$node_bin" version 2>/dev/null | head -1 || echo "unknown"
-    else
-        echo "unknown"
+        "$node_bin" version 2>/dev/null | sed -n '1s/^zzrouter-node version //p'
     fi
 }
 
@@ -369,22 +367,7 @@ write_node_yaml() {
     # --force-config overwrites (after a backup) for the case where the
     # operator really is re-provisioning the node.
     if [ -f "$node_yaml" ] && [ "$FORCE_CONFIG" != "1" ]; then
-        local existing_role
-        existing_role="$(sed -n '/^cluster:/,/^[^[:space:]]/s/^[[:space:]]*mode:[[:space:]]*\([a-z]*\).*/\1/p' "$node_yaml" | head -1)"
-        if [ -n "$existing_role" ]; then
-            # Follow the file, so the checks below verify what is really
-            # running rather than what the command line asked for.
-            ROLE="$existing_role"
-        fi
-        # The port belongs to the file too. Without this the health and
-        # identity checks below poll the port the installer picked while
-        # the node binds the one its config names, so a perfectly good
-        # install reports itself as failed.
-        local existing_port
-        existing_port="$(sed -n '/^node:/,/^[^[:space:]]/s/^[[:space:]]*port:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$node_yaml" | head -1)"
-        if [ -n "$existing_port" ]; then
-            RESOLVED_PORT="$existing_port"
-        fi
+        read_existing_identity "${INSTALL_DIR}/zzrouter-node" "$config_dir"
 
         check "Keeping existing ${node_yaml} (cluster.mode=${ROLE:-unset}, port=${RESOLVED_PORT:-$port})"
         dim "Pass --force-config to regenerate it from the installer template."
@@ -396,11 +379,8 @@ write_node_yaml() {
         check "Backed up existing node.yaml"
     fi
 
-    # Keyless inference only where nobody else can reach it.
+    # New installs use scoped app keys even on loopback. Existing policy is preserved.
     local require_compat_auth=true
-    if bind_is_loopback; then
-        require_compat_auth=false
-    fi
 
     cat > "$node_yaml" <<YAML
 # Minimal zzrouter node.yaml written by install.sh
@@ -422,8 +402,7 @@ cluster:
 auth:
   admin_key: "ZZROUTER_ADMIN_API_KEY"
   user_key: "ZZROUTER_API_KEY"
-  # true: /v1/* and /api/* refuse a request without a key. Written false
-  # only for a loopback bind; give LAN clients virtual keys instead.
+  # Applications use named keys whose access and budgets come from their team.
   require_compat_auth: ${require_compat_auth}
 YAML
     # 0600 (0640 for a service, whose account must read it). The node
@@ -437,6 +416,55 @@ YAML
     fi
     RESOLVED_PORT="$port"
     check "Wrote ${node_yaml} (bind ${BIND}:${port}, cluster.mode=${ROLE}, cluster.bind_port=${CLUSTER_PORT})"
+}
+
+# The Go configuration owner interprets YAML and defaults. This adapter reads
+# only its small, secret-free JSON projection, never the credential environment.
+read_existing_identity() {
+    local node_binary="$1" config_dir="$2" identity
+    identity="$("$node_binary" config identity --dir "$config_dir" --json)" || return 1
+    if printf '%s' "$identity" | grep -Eq '"secure"[[:space:]]*:[[:space:]]*true'; then
+        fail "This installation uses HTTPS. Use its authenticated updater or configure the correct TLS trust before reinstalling."
+        dim "The installer has not stopped the node or changed its configuration."
+        return 1
+    fi
+    ROLE="$(printf '%s' "$identity" | sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')"
+    BIND="$(printf '%s' "$identity" | sed -n 's/.*"bind"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    RESOLVED_PORT="$(printf '%s' "$identity" | sed -n 's/.*"port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+    CLUSTER_PORT="$(printf '%s' "$identity" | sed -n 's/.*"cluster_port"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+    if [ -z "$ROLE" ] || [ -z "$BIND" ] || [ -z "$RESOLVED_PORT" ] || [ -z "$CLUSTER_PORT" ]; then
+        fail "Could not read the existing installation identity. No configuration was rewritten."
+        return 1
+    fi
+}
+
+# Keep migration limited to the known service definition. Custom service
+# authority needs operator reconciliation, not an incomplete systemd parser.
+# Directory arguments make this preflight testable without touching live units.
+check_service_dropins() {
+    local unit_root dropin_dir file status
+    for unit_root in "$@"; do
+        for dropin_dir in "$unit_root/service.d" "$unit_root/zzrouter-.service.d" "$unit_root/zzrouter-node.service.d"; do
+            for file in "$dropin_dir/"*.conf; do
+                if [ ! -e "$file" ] && [ ! -L "$file" ]; then continue; fi
+                if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+                    fail "Cannot inspect service override: $file"
+                    return 1
+                fi
+                if grep -Eq '^[[:space:]]*(Environment|EnvironmentFile|ExecStart|User)[[:space:]]*=' "$file"; then
+                    fail "Custom service authority in $file needs explicit reconciliation."
+                    dim "Use the existing managed updater or reconcile this override before reinstalling."
+                    return 1
+                else
+                    status=$?
+                    if [ "$status" != 1 ]; then
+                        fail "Cannot inspect service override: $file"
+                        return 1
+                    fi
+                fi
+            done
+        done
+    done
 }
 
 # The install policy is the root-owned file that lets this node apply
@@ -545,39 +573,19 @@ print_install_policy_hint() {
     echo ""
 }
 
-# write_env_file seeds the admin/user keys. Cluster traffic uses mTLS on
-# the cluster-port listener (pkg/cluster/node), so these are the only
-# shared secrets needed. An existing file is never overwritten: it may
-# hold keys already distributed to clients.
+# Credential creation and migration belong to the same Go API as service setup.
 write_env_file() {
     local config_dir="$1"
-    local env_file="${config_dir}/.env"
-
-    if [ ! -f "$env_file" ]; then
-        local admin_key api_key env_template
-        admin_key="zzr_$(generate_random_hex)"
-        api_key="zzr_$(generate_random_hex)"
-        env_template="${SCRIPT_DIR}/../pkg/config/templates/files/env-default"
-        if [ -f "$env_template" ]; then
-            sed \
-                -e "s|^# ZZROUTER_ADMIN_API_KEY=$|ZZROUTER_ADMIN_API_KEY=${admin_key}|" \
-                -e "s|^# ZZROUTER_API_KEY=$|# ZZROUTER_API_KEY=${api_key}|" \
-                "$env_template" > "$env_file"
-        else
-            echo "ZZROUTER_ADMIN_API_KEY=${admin_key}" > "$env_file"
-            echo "# ZZROUTER_API_KEY=${api_key}" >> "$env_file"
+    local legacy_file="${config_dir}/zzrouter.env"
+    local args=(config credentials --dir "$config_dir")
+    if [ -f "$legacy_file" ]; then
+        args+=(--legacy-file "$legacy_file")
+        if [ "$OS" = "linux" ] && [ -f /etc/systemd/system/zzrouter-node.service ] &&
+           grep -Fqx "EnvironmentFile=-${legacy_file}" /etc/systemd/system/zzrouter-node.service; then
+            args+=(--legacy-active)
         fi
-        chmod 600 "$env_file"
-        check "Generated admin/user keys in ${env_file}"
-    elif ! grep -q "^ZZROUTER_ADMIN_API_KEY=" "$env_file" 2>/dev/null; then
-        local admin_key
-        admin_key="zzr_$(generate_random_hex)"
-        echo "" >> "$env_file"
-        echo "ZZROUTER_ADMIN_API_KEY=${admin_key}" >> "$env_file"
-        check "Added admin key to existing ${env_file}"
-    else
-        check "Keeping existing ${env_file}"
     fi
+    "${INSTALL_DIR}/zzrouter-node" "${args[@]}"
 }
 
 # --- Health + identity ---
@@ -666,24 +674,25 @@ report_startup_failure() {
 # config_path is loopback-only, and this probe is on 127.0.0.1.
 verify_identity() {
     local port="$1" expect_config="$2"
-    local body loaded mode
+    local body loaded mode running_version
 
     if ! have_http_client; then
-        dim "Skipping identity check: no curl or wget to query /health."
-        return 0
+        fail "Install curl or wget to verify which router is running."
+        return 1
     fi
 
     body="$(http_get "http://127.0.0.1:${port}/health?detailed=true" || true)"
     if [ -z "$body" ]; then
         fail "Could not read node_identity from /health?detailed=true"
         dim "Cannot confirm which node.yaml the running server loaded."
-        return 0
+        return 1
     fi
 
     loaded="$(printf '%s' "$body" | sed -n 's/.*"config_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
     mode="$(printf '%s' "$body" | sed -n 's/.*"cluster_mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    running_version="$(printf '%s' "$body" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 
-    if [ -n "$loaded" ] && [ "$loaded" != "$expect_config" ]; then
+    if [ -z "$loaded" ] || [ "$loaded" != "$expect_config" ]; then
         fail "The server on port ${port} is NOT running the config this script wrote."
         info "  wrote  : $expect_config"
         info "  loaded : $loaded"
@@ -691,12 +700,25 @@ verify_identity() {
         info "  Another zzrouter is reading a different config. Stop it and re-run."
         exit 2
     fi
-    if [ -n "$mode" ] && [ "$mode" != "$ROLE" ]; then
+    if [ -z "$mode" ] || [ "$mode" != "$ROLE" ]; then
         fail "The running node reports cluster mode '${mode}' but was installed as '${ROLE}'."
         info "  config : ${loaded:-unknown}"
         exit 2
     fi
-    check "Running node loaded ${loaded:-$expect_config} (cluster mode: ${mode:-$ROLE})"
+    if [ -z "$VERSION" ] || [ "$running_version" != "$VERSION" ]; then
+        fail "The running node version '${running_version:-unknown}' does not match the installed bundle '${VERSION:-unknown}'."
+        return 1
+    fi
+    check "Running ${running_version}, loaded ${loaded} (cluster mode: ${mode})"
+}
+
+# Existing Linux services start through the managed version tree, not the
+# public binary we just replaced. Reuse the updater to activate this bundle.
+start_system_service() {
+    if [ "$OS" = "linux" ] && systemctl cat zzrouter-node.service >/dev/null 2>&1; then
+        "${INSTALL_DIR}/zzrouter-node" update enable --restart=false || return 1
+    fi
+    "${INSTALL_DIR}/zzrouter-node" start --dir "$1"
 }
 
 # chown_service_config hands the files this installer wrote to the account
@@ -760,7 +782,7 @@ grant_operator_access() {
 # unreachable with nothing explaining why.
 open_firewall_port() {
     local port="$1"
-    if bind_is_loopback; then
+    if [ "$port" != "$CLUSTER_PORT" ] && bind_is_loopback; then
         return 0
     fi
     if [ "$(id -u)" != "0" ]; then
@@ -944,12 +966,12 @@ usage() {
 
     --port PORT          admin/API port (default 9090)
     --bind ADDR          listen address (default 127.0.0.1; 0.0.0.0 for LAN)
-    --role ROLE          disabled | worker | coordinator (default disabled)
+    --role ROLE          disabled | worker | coordinator (default coordinator)
     --cluster-port PORT  mTLS cluster listener (default 9091)
-    --service            install a system service (default when run as root)
+    --service            systemd on Linux; per-user LaunchAgent on macOS
     --no-service         do not install a service; run detached instead
     --uninstall          remove zzRouter
-    --yes, -y            do not prompt (for unattended uninstall)
+    --yes, -y            do not prompt or open the browser
     --force-config       overwrite an existing node.yaml (backs it up first)
     --no-install-policy  do not write the root-owned install policy (root only)
     --help               this text
@@ -1003,21 +1025,13 @@ main() {
         *) fail "--role must be disabled, worker or coordinator (got '$ROLE')"; exit 1 ;;
     esac
 
-    # macOS has no working service install yet, and pretending otherwise
-    # produces a broken node rather than an error. The launchd plist is
-    # written to $HOME/Library/LaunchAgents via os.UserHomeDir(), which
-    # under sudo is /var/root, and it pins ZZROUTER_CONFIG_DIR to root's
-    # Application Support -- not the directory this script writes. The
-    # node also refuses to run as root on every platform, so the agent
-    # could not start even if the paths lined up. Say so instead.
-    if [ "$OS" = "darwin" ] && { [ "$SERVICE_MODE" = "1" ] || [ "$(id -u)" = "0" ]; }; then
-        fail "A system service install is not supported on macOS yet."
-        info "  The launchd job would be installed into root's home and would"
-        info "  read a different config than the one written here."
-        info "  Install as your own user instead:"
-        info "    ./install.sh --bind ${BIND} --role ${ROLE}"
-        info "  The node then runs detached; it survives logoff but not a reboot."
-        exit 1
+    if [ "$OS" = "darwin" ]; then
+        if [ "$(id -u)" = "0" ]; then
+            fail "Install on macOS as your own user, without sudo."
+            exit 1
+        fi
+        if [ "$NO_SERVICE" != "1" ]; then LOGIN_SERVICE=1; fi
+        SERVICE_MODE=0
     fi
 
     if [ "$SERVICE_MODE" = "1" ] && [ "$(id -u)" != "0" ]; then
@@ -1047,13 +1061,29 @@ main() {
     # A service runs as its own account, so an install into $HOME would be
     # unreadable to it. Machine-wide locations for a machine-wide service.
     local config_dir
-    if [ "$SERVICE_MODE" = "1" ]; then
-        INSTALL_DIR="$SERVICE_INSTALL_DIR"
+    if [ "$SERVICE_MODE" = "1" ]; then INSTALL_DIR="$SERVICE_INSTALL_DIR"; fi
+    if [ -n "${ZZROUTER_CONFIG_DIR:-}" ]; then
+        config_dir="$ZZROUTER_CONFIG_DIR"
+        case "$config_dir" in
+            /*) ;;
+            *) fail "ZZROUTER_CONFIG_DIR must be an absolute path."; exit 1 ;;
+        esac
+        if [ "$config_dir" != "$(printf '%s' "$config_dir" | LC_ALL=C tr -d '[:cntrl:]')" ]; then
+            fail "ZZROUTER_CONFIG_DIR must not contain control characters."
+            exit 1
+        fi
+    elif [ "$SERVICE_MODE" = "1" ]; then
         config_dir="$SERVICE_CONFIG_DIR"
     elif [ "$OS" = "darwin" ]; then
         config_dir="$HOME/Library/Application Support/zzrouter"
     else
         config_dir="$HOME/.config/zzrouter"
+    fi
+    if [ "$OS" = linux ] && [ "$SERVICE_MODE" = 1 ] && [ "$config_dir" != "$SERVICE_CONFIG_DIR" ]; then
+        fail "Linux service installations require ${SERVICE_CONFIG_DIR}."
+        dim "A custom configuration directory is supported for per-user installs only."
+        dim "No node was stopped and no files were changed."
+        exit 1
     fi
 
     echo ""
@@ -1061,11 +1091,20 @@ main() {
     echo ""
 
     find_binaries
+    validate_binary_set
+    if [ -f "${config_dir}/node.yaml" ] && [ "$FORCE_CONFIG" != "1" ]; then
+        read_existing_identity "${BINARY_SRC}/zzrouter-node${BINARY_SUFFIX}" "$config_dir"
+    fi
+    if [ "$OS" = linux ] && [ "$SERVICE_MODE" = 1 ]; then
+        check_service_dropins /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system
+    fi
     stop_running_node
     install_binaries
 
     local port
-    if [ -n "$requested_port" ]; then
+    if [ -n "$RESOLVED_PORT" ]; then
+        port="$RESOLVED_PORT"
+    elif [ -n "$requested_port" ]; then
         if is_port_available "$requested_port"; then
             port="$requested_port"
         else
@@ -1077,13 +1116,15 @@ main() {
     fi
 
     mkdir -p "$config_dir"
+    export ZZROUTER_CONFIG_DIR="$config_dir"
 
     # Point login shells at the service's config root so the operator's
     # CLI and the service resolve ONE node.yaml. Without this the service
     # reads /etc/zzrouter while `zzrouter-node status` reads the invoking
     # user's copy, and the two disagree with nothing saying why.
     if [ "$SERVICE_MODE" = "1" ]; then
-        printf 'export ZZROUTER_CONFIG_DIR=%s\n' "$SERVICE_CONFIG_DIR" > "$PROFILE_SNIPPET"
+        SERVICE_CONFIG_DIR="$config_dir"
+        printf 'export ZZROUTER_CONFIG_DIR=%q\n' "$SERVICE_CONFIG_DIR" > "$PROFILE_SNIPPET"
         chmod 644 "$PROFILE_SNIPPET"
         export ZZROUTER_CONFIG_DIR="$SERVICE_CONFIG_DIR"
         check "ZZROUTER_CONFIG_DIR=${SERVICE_CONFIG_DIR} (via ${PROFILE_SNIPPET})"
@@ -1111,7 +1152,7 @@ main() {
     VERSION="$(get_version)"
 
     echo ""
-    echo -e "  ${ORANGE}✔${RESET} ${BOLD}zzRouter installed${RESET}"
+    echo -e "  ${BOLD}Starting zzRouter${RESET}"
     echo ""
     info "  Version:   ${ORANGE}${VERSION}${RESET}"
     info "  Location:  ${ORANGE}${INSTALL_DIR}${RESET}"
@@ -1129,14 +1170,12 @@ main() {
         echo ""
     fi
 
-    # Two ways to bring the node up, and they are not interchangeable.
-    # A service is registered with systemd/launchd, so it outlives this
-    # shell and comes back after a reboot. A detached node is a child of
-    # this shell and dies with the session that launched it.
+    # Use the platform's supervisor where available. macOS starts at user
+    # login; systemd starts at boot. Detached mode has no restart supervisor.
     if [ "$SERVICE_MODE" = "1" ]; then
         chown_service_config
         info "  Installing and starting the system service..."
-        if ! "${INSTALL_DIR}/zzrouter-node" start; then
+        if ! start_system_service "$config_dir"; then
             fail "Service install/start failed"
             report_startup_failure
             exit 2
@@ -1144,9 +1183,16 @@ main() {
         # After, not before: the service user and group are created by
         # that start, so there is nothing to join until it has run.
         grant_operator_access
+    elif [ "$LOGIN_SERVICE" = "1" ]; then
+        info "  Starting zzRouter when you log in..."
+        if ! "${INSTALL_DIR}/zzrouter-node" start --start-at-login --dir "$config_dir"; then
+            fail "Could not start the user LaunchAgent"
+            report_startup_failure
+            exit 2
+        fi
     else
         info "  Starting zzrouter-node on port ${port}..."
-        if ! "${INSTALL_DIR}/zzrouter-node" start --no-setup --detach -P "$port"; then
+        if ! "${INSTALL_DIR}/zzrouter-node" start --no-setup --detach --dir "$config_dir" -P "$port"; then
             fail "Failed to start server"
             report_startup_failure
             exit 2
@@ -1157,10 +1203,14 @@ main() {
         report_startup_failure
         exit 2
     fi
-    verify_identity "$port" "${config_dir}/node.yaml"
+    if ! verify_identity "$port" "${config_dir}/node.yaml"; then
+        report_startup_failure
+        exit 2
+    fi
+    check "zzRouter installed and running"
 
     echo ""
-    if [ "$SERVICE_MODE" != "1" ]; then
+    if [ "$SERVICE_MODE" != "1" ] && [ "$LOGIN_SERVICE" != "1" ]; then
         # Said plainly because the failure is otherwise a mystery: the
         # install reports healthy, the session ends, and the node is gone.
         echo -e "  ${RED}!${RESET} Started detached: this node does NOT survive a reboot, and it"
@@ -1172,6 +1222,12 @@ main() {
 
     print_next_steps "$port"
     print_install_policy_hint
+    if [ "$ROLE" != "worker" ]; then
+        info "  Open your router: zzrouter console"
+        if [ "$ASSUME_YES" != "1" ] && [ -t 0 ] && [ -t 1 ] && [ "$(id -u)" != "0" ]; then
+            "${INSTALL_DIR}/zzrouter" console || dim "Open the console later with: zzrouter console"
+        fi
+    fi
 }
 
 # print_next_steps names the exact commands for this node's role, so the
@@ -1182,22 +1238,23 @@ print_next_steps() {
     case "$ROLE" in
         worker)
             echo -e "  ${BOLD}Next: pair this worker with your coordinator.${RESET}"
-            info "    Here:         zzrouter-node cluster pair --coordinator-url https://COORDINATOR_HOST:${CLUSTER_PORT}"
-            info "    On the coord: zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:${CLUSTER_PORT} --worker-fingerprint SHA256_FROM_WORKER"
+            info "    Return to Nodes > Add compute node in your coordinator console."
+            dim "Copy its pairing command and run it on this computer."
+            dim "Copy the pairing document into Nodes > Add compute node in the console."
+            dim "Or save it and review on the coordinator: zzrouter-node cluster accept --file pairing.json"
             echo ""
-            dim "The coordinator reaches this node at $(reachable_address):${CLUSTER_PORT},"
-            dim "so that port must stay open and its cluster.bind_port must match."
+            dim "Keep TCP ${CLUSTER_PORT} reachable from your coordinator."
             ;;
         coordinator)
-            echo -e "  ${BOLD}This node is a coordinator. To add a worker:${RESET}"
-            info "    On the worker: zzrouter-node cluster pair --coordinator-url https://$(reachable_address):${CLUSTER_PORT}"
-            info "    Here:          zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:${CLUSTER_PORT} --worker-fingerprint SHA256_FROM_WORKER"
+            echo -e "  ${BOLD}Your coordinator is ready. Workers are optional.${RESET}"
+            dim "When ready, open Nodes > Add compute node in the console."
+            dim "It provides installation and pairing instructions for the new computer."
             ;;
         *)
             echo -e "  ${BOLD}Next: run ${RESET}zzrouter quickstart${BOLD} to get started${RESET}"
             echo ""
             dim "This node is not clustered (cluster.mode: disabled)."
-            dim "To make it a worker, re-run with --role worker, then pair."
+            dim "To make it a worker, set cluster.mode to worker in node.yaml, restart, then pair."
             ;;
     esac
     echo ""

@@ -14,12 +14,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// ListHuggingFaceRepoFiles returns the file list of a HuggingFace repo
+// ListHuggingFaceRepoFiles returns the file list and architecture of a HuggingFace repo
 // (one network call). Surfaced on Registry so HTTP-layer callers don't
 // need to reach through to the connector type.
-func (r *Registry) ListHuggingFaceRepoFiles(ctx context.Context, modelID string) ([]metadata.TreeFileEntry, error) {
-	listing, err := r.huggingfaceConnector.GetRepoFiles(ctx, modelID)
-	return listing.Files, err
+func (r *Registry) ListHuggingFaceRepoFiles(ctx context.Context, modelID string) (metadata.RepoFiles, error) {
+	return r.huggingfaceConnector.GetRepoFiles(ctx, modelID)
 }
 
 // PullOllamaModel pulls a model from Ollama in the caller's goroutine.

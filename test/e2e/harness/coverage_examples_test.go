@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 )
 
 // Example capture must never change what the consumer observes, and
@@ -144,6 +147,77 @@ func TestExampleCapture_RequestBodyRedactedAndWireIntact(t *testing.T) {
 	}
 	if ex.Status != http.StatusCreated {
 		t.Errorf("status = %d", ex.Status)
+	}
+}
+
+// The local proof travels only in its header, and no example ever holds it.
+func TestExampleCapture_LocalProofNeverStored(t *testing.T) {
+	resetCoverage(t)
+	srv := exampleTestServer(t)
+	defer srv.Close()
+	proof := strings.Repeat("P", 43)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/zzrouter/v1/access/recovery/local", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(localproof.Header, proof)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := coverageClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	exs := capturedExamples(t)
+	if len(exs) != 1 {
+		t.Fatalf("want 1 example, got %d", len(exs))
+	}
+	if encoded, _ := json.Marshal(exs); strings.Contains(string(encoded), proof) {
+		t.Fatalf("local proof stored in example: %s", encoded)
+	}
+}
+
+// Binary bodies, such as an exported archive, are stored as their length;
+// text cut mid-rune by the cap is still text.
+func TestExampleCapture_BinaryBodiesKeepOnlyTheirLength(t *testing.T) {
+	resetCoverage(t)
+	archive := "PK\x03\x04\x00\x00zzr_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ab\xff\xfe"
+	text := strings.Repeat("x", exampleBodyCap-1) + "é and more"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/text" {
+			_, _ = w.Write([]byte(text))
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte(archive))
+	}))
+	defer srv.Close()
+	resp, err := coverageClient.Post(srv.URL+"/archive", "application/octet-stream", strings.NewReader(archive))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(got) != archive {
+		t.Fatal("consumer body altered")
+	}
+	getViaRecorder(t, srv.URL+"/text")
+	exs := capturedExamples(t)
+	if len(exs) != 2 {
+		t.Fatalf("want 2 examples, got %d", len(exs))
+	}
+	for _, ex := range exs {
+		switch ex.Path {
+		case "/archive":
+			want := fmt.Sprintf("[%d bytes of binary content not retained]", len(archive))
+			if ex.RequestBody != want || ex.ResponseBody != want {
+				t.Errorf("binary bodies stored as %q and %q", ex.RequestBody, ex.ResponseBody)
+			}
+		case "/text":
+			if !ex.ResponseTruncated || !strings.HasPrefix(ex.ResponseBody, "xxx") {
+				t.Errorf("truncated text not kept: %.40q", ex.ResponseBody)
+			}
+		}
 	}
 }
 

@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 // ProviderAccess restricts provider identities independently of model names.
 // The zero value preserves the unrestricted policy of existing teams.
 type ProviderAccess struct {
-	Mode      string   `json:"mode" yaml:"mode"`
-	Providers []string `json:"providers,omitempty" yaml:"providers,omitempty"`
+	Mode      string   `json:"mode"`
+	Providers []string `json:"providers,omitempty"`
 }
 
 // IsZero matches omission in PATCH and preserves allocated-empty client slices.
@@ -97,26 +95,4 @@ func (p ProviderAccess) MarshalJSON() ([]byte, error) {
 		p.Mode = "all"
 	}
 	return json.Marshal(plain(p))
-}
-
-// UnmarshalYAML rejects misspelled or incomplete persisted policies.
-func (p *ProviderAccess) UnmarshalYAML(node *yaml.Node) error {
-	if node.Kind != yaml.MappingNode {
-		return fmt.Errorf("provider_access must be a policy object")
-	}
-	for i := 0; i < len(node.Content); i += 2 {
-		if key := node.Content[i].Value; key != "mode" && key != "providers" {
-			return fmt.Errorf("unknown provider_access field %q", key)
-		}
-	}
-	type plain ProviderAccess
-	var value plain
-	if err := node.Decode(&value); err != nil {
-		return err
-	}
-	if value.Mode == "" {
-		return fmt.Errorf("provider_access.mode is required")
-	}
-	*p = ProviderAccess(value)
-	return p.Validate()
 }

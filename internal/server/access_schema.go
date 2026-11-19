@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/access/control"
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 )
 
@@ -37,13 +38,12 @@ func resetPeriodEnum() []string {
 	return []string{string(quota.PeriodDaily), string(quota.PeriodWeekly), string(quota.PeriodMonthly)}
 }
 
-// validateKeyRole rejects values not in the closed enum the schema
-// advertises. Empty is allowed because CreateKey defaults it to "user".
+// validateKeyRole rejects a role keys.ValidRole refuses.
 func validateKeyRole(role string) error {
-	if role == "" || role == string(control.RoleAdmin) || role == string(control.RoleUser) {
+	if keys.ValidRole(role) {
 		return nil
 	}
-	return invalidInputf("invalid role %q (expected %q or %q)", role, control.RoleAdmin, control.RoleUser)
+	return invalidInputf("invalid role %q (expected %q or %q)", role, keys.RoleAdmin, keys.RoleUser)
 }
 
 // validateResetPeriod rejects values not in the closed enum. Empty is

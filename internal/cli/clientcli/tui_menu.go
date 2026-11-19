@@ -2,15 +2,28 @@ package clientcli
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	"github.com/stperic/zzrouter/pkg/ui"
 	"github.com/stperic/zzrouter/pkg/version"
 )
+
+const (
+	menuLogoFrames   = 8
+	menuLogoInterval = 75 * time.Millisecond
+)
+
+type menuLogoTickMsg struct{}
+
+func menuLogoTick() tea.Cmd {
+	return tea.Tick(menuLogoInterval, func(time.Time) tea.Msg { return menuLogoTickMsg{} })
+}
 
 type menuItem struct {
 	name        string
@@ -65,17 +78,32 @@ func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
 }
 
 func (m *tuiModel) menuHeader() string {
-	// Keep all top-level items visible; short terminals start with compact chrome.
-	if m.menuWelcome && m.termHeight >= 30 {
-		label := m.styles.HintsBar.Render("Local + cloud AI") + "  " +
-			m.styles.ChatDim.Render("v"+version.Current.ShortString())
-		welcome := ui.BrandMark(m.styles) + "\n" + label
+	// The banner, six two-line menu items and footer fit a 24-line terminal.
+	if m.menuWelcome && m.termHeight >= 24 {
+		label := m.styles.Normal.Bold(true).Render("Router") + "  " +
+			m.styles.HintsBar.Render("v"+version.Current.ShortString()) + "\n" +
+			m.styles.HintsBar.Render("Local + cloud AI")
+		welcome := lipgloss.JoinHorizontal(lipgloss.Center, m.menuMark(), "   ", label)
 		if m.termWidth >= lipgloss.Width(welcome)+2 {
-			return "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(welcome) + "\n\n" +
+			return "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(welcome) + "\n" +
 				shared.Hrule(m.styles, m.termWidth) + "\n\n"
 		}
 	}
 	return shared.RenderTitleBar(m.styles, m.termWidth) + "\n\n"
+}
+
+func (m *tuiModel) menuMark() string {
+	mark := ui.BrandMark(m.styles)
+	if m.menuLogoFrame == 0 || m.menuLogoFrame >= menuLogoFrames {
+		return mark
+	}
+	width := lipgloss.Width(mark)
+	columns := (width*m.menuLogoFrame + menuLogoFrames - 1) / menuLogoFrames
+	rows := strings.Split(mark, "\n")
+	for i, row := range rows {
+		rows[i] = ansi.Truncate(row, columns, "")
+	}
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(rows, "\n"))
 }
 
 func (m *tuiModel) menuFooter() string {

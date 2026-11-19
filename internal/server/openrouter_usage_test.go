@@ -16,6 +16,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/inferencelog"
@@ -162,21 +163,22 @@ func assertUsageClean(t *testing.T, body string, stream bool, cost float64, sour
 	}
 }
 
+// A paired worker relays usage untouched; the coordinator it answers cleans it.
 func TestClusterUsageSurvivesUntilCoordinator(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
+	paired := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: pkgConfig.ClusterModeWorker})
+	require.NoError(t, paired.role.Set(t.Context(), role.RoleWorker, "worker relay"))
 	for _, stream := range []bool{false, true} {
 		for _, output := range []string{"metadata", "disabled", "suppressed"} {
 			t.Run(fmt.Sprintf("stream=%v/%s", stream, output), func(t *testing.T) {
 				const cost = 0.000001989
-				require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "worker relay"))
 				body := usageResponse(cost, 0)
 				if stream {
 					body = usageStream(body)
 				}
 				worker := httptest.NewRecorder()
-				relayUsageFixture(t, s, worker, body, stream, wire.RoutingMetadata{SuppressBodyMetadata: true}, nil)
+				relayUsageFixture(t, paired, worker, body, stream, wire.RoutingMetadata{SuppressBodyMetadata: true}, nil)
 				assert.Equal(t, body, worker.Body.String())
-				require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "coordinator relay"))
 				rec := llm.NewInferenceRecorder(t.Context(), "gpt-4o", "openrouter")
 				w := httptest.NewRecorder()
 				meta := wire.RoutingMetadata{Provider: "openrouter", InjectUsage: output == "metadata", SuppressBodyMetadata: output != "metadata"}

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { details } from '../details.mjs';
 import { input } from '../dom.mjs';
 import { overview } from '../overview.mjs';
-import { showNode, addNode } from '../nodes.mjs';
-import { clientKey, nodeSummary, networkNodes, cloudProviders } from '../network-data.mjs';
+import { showNode, approveNode } from '../nodes.mjs';
+import { clientKey, clientLabel, nodeSummary, networkNodes, cloudProviders } from '../network-data.mjs';
 import { walk, button, named, find, drain, installDOM } from './dom-fixture.mjs';
 
 const ok = value => ({ status: 'fulfilled', value });
@@ -35,9 +35,9 @@ function fixture(t) {
       writes.push({ path, ...options });
       return { node_name: 'new-node' };
     },
-    data: async (path, options) => { writes.push({ path, ...options }); return {}; },
+    data: async (path, options = {}) => { if (options.method) writes.push({ path, ...options }); return {}; },
   };
-  return { root, controller, routes, writes, p: { root, api, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {}, go: (...route) => routes.push(route) } };
+  return { root, controller, routes, writes, p: { root, api, identity: { role: 'admin' }, state: { node_name: 'atlas' }, scope: { signal: controller.signal }, current: () => !controller.signal.aborted, syncActivity() {}, go: (...route) => routes.push(route) } };
 }
 
 test('physical node counts deduplicate identity and preserve unknown failures', () => {
@@ -47,6 +47,8 @@ test('physical node counts deduplicate identity and preserve unknown failures', 
   assert.deepEqual(networkNodes([failed, inventory[1]]), [{ name: 'atlas' }]);
   assert.notEqual(clientKey(client), clientKey({ ...client, source: 'startup' }));
   assert.notEqual(clientKey(client), clientKey({ ...client, authentication: 'api-key' }));
+  assert.equal(clientLabel({ ...client, source: 'person', name: 'Alex' }), 'Account: Alex');
+  assert.equal(clientLabel(client), 'Key: Editor');
 });
 
 test('cloud providers associate reported nodes without conflating registry or local runtimes', () => {
@@ -125,7 +127,9 @@ test('node editor refuses stale settings and avoids duplicate submission during 
 });
 
 function pairingForm(f) {
-  addNode(f.p);
+  approveNode(f.p);
+  named(f.root, 'pairing_method').value = 'manual';
+  named(f.root, 'pairing_method').dispatchEvent(new Event('change'));
   named(f.root, 'worker_url').value = 'https://new-node.example:9091';
   named(f.root, 'worker_fingerprint').value = 'synthetic-fingerprint';
   named(f.root, 'pairing_code').value = 'synthetic-code';
@@ -146,7 +150,7 @@ test('pairing consumes the bare response and distinguishes enrollment from healt
 
 test('pairing error after commitment clears code, blocks replay and directs inspection', async t => {
   const f = fixture(t);
-  f.p.api.request = async () => { f.writes.push('attempt'); throw Object.assign(new Error('Certificate confirmation failed'), { status: 400 }); };
+  f.p.api.request = async () => { f.writes.push('attempt'); throw Object.assign(new Error('Certificate confirmation failed'), { status: 503, uncertain: true }); };
   pairingForm(f);
   await submit(f.root);
   assert.equal(named(f.root, 'pairing_code').value, '');
@@ -197,13 +201,14 @@ test('automatic refresh preserves a control focused while inventory is in flight
  assert.match(f.root.textContent, /changed-node/);
 });
 
-test('unavailable node reads never claim a configured cloud provider has no enabled node', async t => {
+test('cloud details retain coordinator configuration when node reads are unavailable', async t => {
  const f = fixture(t);
  const original = f.p.api.list;
  f.p.api.list = path => ['/nodes', '/providers'].includes(path) ? Promise.reject(new Error('unavailable')) : original(path);
  await overview(f.p, 'cloud/groq');
- assert.match(f.root.textContent, /Groq.*Configured.*Enabled onNode enablement unavailable/s);
- assert.doesNotMatch(f.root.textContent, /No node reports this provider enabled/);
+ assert.match(f.root.textContent, /Groq.*Configured/s);
+ const dialog = find(f.root, element => element.tag === 'dialog');
+ assert.doesNotMatch(dialog.textContent, /Enabled on|Node enablement|No enabled nodes|Compute nodes/);
 });
 
 test('detail dialogs intercept Escape during writes and scrub secrets on owner abort', t => {

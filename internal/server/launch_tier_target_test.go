@@ -95,7 +95,8 @@ func (c *capturingCache) IsLocalNode(host string) bool { return host == "" || ho
 
 func (c *capturingCache) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
 	c.body = body
-	return &routing.Response{StatusCode: 200, Body: []byte(`{"instance_id":"i1","status":"loading"}`), Node: c.owner}, nil
+	reply, err := json.Marshal(map[string]string{"instance_id": "i1", "status": "loading", "node": c.owner})
+	return &routing.Response{StatusCode: 200, Body: reply, Node: c.owner}, err
 }
 
 // A preview and a start leave the coordinator alike, carrying only what the

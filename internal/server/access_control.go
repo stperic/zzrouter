@@ -14,7 +14,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -22,10 +21,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/common/mcp/oauth"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
-	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
@@ -73,18 +71,14 @@ type ModelHooks struct {
 // must call Start() to begin background goroutines.
 func NewAccessControl(
 	staticKeys StaticKeySet,
-	keyStore keys.KeyStore,
-	teamStore teams.TeamStore,
+	store access.Store,
 	groups modelgroup.GroupReader,
 	enforcer *quota.Enforcer,
 	config *pkgConfig.NodeConfig,
 	hooks ModelHooks,
 ) *AccessControl {
-	if teamStore == nil {
-		slog.Info("AccessControl constructed without a team store; team features disabled")
-	}
 	return &AccessControl{
-		core:   control.NewCore(staticKeys, keyStore, teamStore, groups, enforcer, hooks.Identity),
+		core:   control.NewCore(staticKeys, store, groups, enforcer, hooks.Identity),
 		config: config,
 		hooks:  hooks,
 	}
@@ -283,7 +277,7 @@ func (a *AccessControl) Enforce(c *gin.Context, modelName string, prepare func()
 		}
 	}
 	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return true
 	}
 	decision, release, reservationID := a.core.EnforceQuotas(ac, quotes)
@@ -348,7 +342,7 @@ func (a *AccessControl) resolveVirtualOrRespond(c *gin.Context, modelName string
 		}
 		return nil, true
 	}
-	if ac.Key == nil || !ac.Key.IsVirtual {
+	if ac.Key == nil || !ac.Key.TeamBound() {
 		return nil, true
 	}
 	return ac, true
@@ -544,7 +538,7 @@ func parseRateLimitReset(formatted string) int64 {
 // during stream completion and this is a no-op.
 func (a *AccessControl) CancelPendingReservationIfUnsettled(c *gin.Context) {
 	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return
 	}
 	val, ok := c.Get(string(CtxKeyReservationID))
@@ -555,7 +549,7 @@ func (a *AccessControl) CancelPendingReservationIfUnsettled(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a.core.CancelPending(ac.Key.ID, id)
+	a.core.CancelPending(ac.Key.ReservationKey(), id)
 }
 
 // ReleaseConcurrency is called by the deferred middleware after response
@@ -595,18 +589,6 @@ func (a *AccessControl) GetAllSpendStates() map[string]*quota.SpendState {
 
 func (a *AccessControl) RecordSpendByKey(keyID string, reservationID uint64, costMicro, tokensIn, tokensOut int64) {
 	a.core.RecordSpendByKey(keyID, control.ReservationID(reservationID), costMicro, tokensIn, tokensOut)
-}
-
-func (a *AccessControl) OnKeyDeleted(keyID string) {
-	a.core.OnKeyDeleted(keyID)
-}
-
-func (a *AccessControl) OnTeamDeleted(teamID string) {
-	a.core.OnTeamDeleted(teamID)
-}
-
-func (a *AccessControl) InvalidateAuthCache() {
-	a.core.InvalidateAuthCache()
 }
 
 // FlushSpend persists dirty spend state to disk without stopping the

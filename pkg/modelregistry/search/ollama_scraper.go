@@ -4,23 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stperic/common/httpclient"
 
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
-const (
-	// Characters of HTML kept after a tag link when reading its size and
-	// context window.
-	tagSectionSize = 1000
-)
+// Bounds the metadata search after the final tag link.
+const tagSectionSize = 4096
+const unknownOllamaAge = 999999
 
 // Multipliers for the abbreviated counts a library card shows
 // ("38.7M Pulls", "523K Pulls").
@@ -51,10 +51,17 @@ var (
 	libraryStatRegex = regexp.MustCompile(`>\s*([\d.,]+)\s*([KMB])?\s*</span>\s*<span[^>]*>(?:&nbsp;|\s)*(Pulls|Tags)\b`)
 
 	// The relative date is the span that FOLLOWS the "Updated" label.
-	updatedRegex = regexp.MustCompile(`Updated(?:&nbsp;|\s)*</span>\s*<span[^>]*>\s*([^<]+?)\s*</span>`)
+	updatedRegex      = regexp.MustCompile(`Updated(?:&nbsp;|\s)*</span>\s*<span[^>]*>\s*([^<]+?)\s*</span>`)
+	updatedTitleRegex = regexp.MustCompile(`<span\b[^>]*\btitle="([A-Z][a-z]{2} \d{1,2}, \d{4} \d{1,2}:\d{2} [AP]M UTC)"`)
 
 	// A model with cloud-served variants carries a "cloud" badge.
 	cloudBadgeRegex = regexp.MustCompile(`>\s*cloud\s*</span>`)
+
+	// The library uses indigo badges for capabilities and neutral badges
+	// for parameter sizes. Keep those labels separate from tag counts.
+	ollamaCapabilityRegex  = regexp.MustCompile(`<span\b[^>]*\bclass="[^"]*\bbg-indigo-50\b[^"]*"[^>]*>\s*([^<]+)</span>`)
+	ollamaSizeBadgeRegex   = regexp.MustCompile(`<span\b[^>]*\bclass="[^"]*\bbg-\[#ddf4ff\][^"]*"[^>]*>\s*(\d+(?:\.\d+)?[bBmM])\s*</span>`)
+	ollamaDescriptionRegex = regexp.MustCompile(`<p\b[^>]*\bclass="[^"]*\bbreak-words\b[^"]*"[^>]*>\s*([^<]+)</p>`)
 
 	// Tag link pattern
 	tagLinkRegex = regexp.MustCompile(`<a[^>]*href="/library/([^/:"]+):([^"]+)"[^>]*>`)
@@ -63,7 +70,10 @@ var (
 	tagSizeRegex = regexp.MustCompile(`(?:•|\s)+([0-9.]+\s*[KMGT]B)(?:•|\s)+`)
 
 	// Context extraction from tag section
-	tagContextRegex = regexp.MustCompile(`([0-9]+K)\s+context\s+window`)
+	tagContextRegex = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?[KM]?)\s+context\s+window`)
+
+	tagInputRegex = regexp.MustCompile(`>\s*([A-Za-z]+(?:\s*,\s*[A-Za-z]+)*)\s+input\b`)
+	tagMLXRegex   = regexp.MustCompile(`<span\b[^>]*>\s*MLX\s*</span>`)
 )
 
 // ScrapeOllamaLibrary scrapes the Ollama library page to get all available models
@@ -156,13 +166,15 @@ func extractLibraryStat(section, label string) int {
 // extractModelsFromLibraryHTML builds one model per card on the library
 // listing page. A card whose stats fail to parse still yields a model:
 // dropping it would spend the whole catalog to hide a missing number.
-func extractModelsFromLibraryHTML(html string) []OllamaModelInfo {
-	cards := extractLibraryCards(html)
+func extractModelsFromLibraryHTML(page string) []OllamaModelInfo {
+	cards := extractLibraryCards(page)
 	models := make([]OllamaModelInfo, 0, len(cards))
 	for _, card := range cards {
 		model := OllamaModelInfo{
-			Name:  card.name,
-			Model: card.name + ":latest",
+			Capabilities:   extractOllamaBadges(card.section, ollamaCapabilityRegex),
+			ParameterSizes: extractOllamaBadges(card.section, ollamaSizeBadgeRegex),
+			Name:           card.name,
+			Model:          card.name + ":latest",
 			// Estimated, not read: actual sizes are fetched lazily when
 			// the user opens a model's details or tags.
 			Size:       EstimateOllamaModelSize(card.name),
@@ -172,10 +184,27 @@ func extractModelsFromLibraryHTML(html string) []OllamaModelInfo {
 			HasCloud:   cloudBadgeRegex.MatchString(card.section),
 			ModifiedAt: extractUpdatedFromSection(card.section),
 		}
+		if match := ollamaDescriptionRegex.FindStringSubmatch(card.section); len(match) > 1 {
+			model.Description = strings.TrimSpace(html.UnescapeString(match[1]))
+		}
+		if match := updatedTitleRegex.FindStringSubmatch(card.section); len(match) > 1 {
+			model.UpdatedAt, _ = time.Parse("Jan 2, 2006 3:04 PM UTC", match[1])
+		}
 		model.DaysAgo = parseRelativeDate(model.ModifiedAt)
 		models = append(models, model)
 	}
 	return models
+}
+
+func extractOllamaBadges(section string, pattern *regexp.Regexp) []string {
+	var labels []string
+	for _, match := range pattern.FindAllStringSubmatch(section, -1) {
+		name := strings.TrimSpace(html.UnescapeString(match[1]))
+		if name != "" && !slices.Contains(labels, name) {
+			labels = append(labels, name)
+		}
+	}
+	return labels
 }
 
 // extractUpdatedFromSection extracts the relative update date from a
@@ -191,7 +220,7 @@ func extractUpdatedFromSection(section string) string {
 // Examples: "1 month ago" -> 30, "2 weeks ago" -> 14, "3 days ago" -> 3
 func parseRelativeDate(relativeDate string) int {
 	if relativeDate == "" {
-		return 999999 // Unknown dates go to the end
+		return unknownOllamaAge
 	}
 
 	lower := strings.ToLower(relativeDate)
@@ -201,7 +230,7 @@ func parseRelativeDate(relativeDate string) int {
 	matches := re.FindStringSubmatch(lower)
 
 	if len(matches) < 3 {
-		return 999999 // Can't parse, put at end
+		return unknownOllamaAge
 	}
 
 	var num int
@@ -223,7 +252,7 @@ func parseRelativeDate(relativeDate string) int {
 	case "minute":
 		return 0 // Less than a day
 	default:
-		return 999999
+		return unknownOllamaAge
 	}
 }
 
@@ -294,13 +323,9 @@ func extractTagDetailsFromHTML(html string) []OllamaTagInfo {
 	var tags []OllamaTagInfo
 	seenTags := make(map[string]bool) // Track duplicates but preserve order
 
-	// Find all tag sections - each section contains a tag link and its metadata
-	// Pattern: <a href="/library/model:tag">...</a> followed by size/context
-	// Must have colon in href to distinguish from model name links
-	// Use pre-compiled regex for better performance
 	linkMatches := tagLinkRegex.FindAllStringSubmatchIndex(html, -1)
 
-	for _, match := range linkMatches {
+	for i, match := range linkMatches {
 		if len(match) < 6 {
 			continue
 		}
@@ -317,10 +342,13 @@ func extractTagDetailsFromHTML(html string) []OllamaTagInfo {
 		}
 		seenTags[tagName] = true
 
-		// Extract a section of HTML around this tag
-		sectionStart := match[0]
-		sectionEnd := min(sectionStart+tagSectionSize, len(html))
-		section := html[sectionStart:sectionEnd]
+		// The first link wraps the compact version card. Stop at the next
+		// link so a later tag's badge and inputs cannot leak into this one.
+		sectionEnd := min(match[1]+tagSectionSize, len(html))
+		if i+1 < len(linkMatches) {
+			sectionEnd = min(sectionEnd, linkMatches[i+1][0])
+		}
+		section := html[match[1]:sectionEnd]
 
 		// Extract size from this section using pre-compiled regex
 		size := "-"
@@ -336,10 +364,9 @@ func extractTagDetailsFromHTML(html string) []OllamaTagInfo {
 			context = contextMatches[1]
 		}
 
-		// Determine input type
-		input := "Text"
-		if strings.Contains(section, "Image") || strings.Contains(section, "Vision") || strings.Contains(section, "vision") {
-			input = "Image+Text"
+		input := ""
+		if matches := tagInputRegex.FindStringSubmatch(section); len(matches) > 1 {
+			input = strings.Join(strings.Fields(matches[1]), " ")
 		}
 
 		// Append in order (preserves HTML order)
@@ -348,6 +375,7 @@ func extractTagDetailsFromHTML(html string) []OllamaTagInfo {
 			Size:    size,
 			Context: context,
 			Input:   input,
+			IsMLX:   tagMLXRegex.MatchString(section),
 		})
 	}
 

@@ -24,7 +24,6 @@ const messagesEndpoint = "messages"
 func (s *Server) registerMessagesRoutes() {
 	messages := s.engine.Group("/v1/messages",
 		httperr.AttachResponder(s.responders.anthropic),
-		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 	)
 	messages.POST("", s.handleMessages)

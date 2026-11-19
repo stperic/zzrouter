@@ -3,6 +3,9 @@ package server
 import (
 	"errors"
 	"fmt"
+
+	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
 // invalidInputError marks a user-input failure that a controller must
@@ -24,7 +27,8 @@ func invalidInputf(format string, a ...any) error {
 	return &invalidInputError{err: fmt.Errorf(format, a...)}
 }
 
+// A record the access store refuses as invalid is the caller's input too.
 func isInvalidInput(err error) bool {
 	var v *invalidInputError
-	return errors.As(err, &v)
+	return errors.As(err, &v) || errors.Is(err, keys.ErrInvalid) || errors.Is(err, teams.ErrInvalid)
 }

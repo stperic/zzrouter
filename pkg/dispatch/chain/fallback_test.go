@@ -20,7 +20,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -46,9 +45,8 @@ func init() {
 // ProxyForwardDetached + Backend. Everything else returns
 // defaults safe for the tests below.
 type fakeDeps struct {
-	classifier  *httperr.Classifier
-	nodeName    string
-	nodeMetrics map[string]*mesh.ResourceMetrics
+	classifier *httperr.Classifier
+	nodeName   string
 
 	// forward maps targetURL → canned response. Missing key returns a 404.
 	forward map[string]func() (*http.Response, error)
@@ -89,11 +87,9 @@ func newFakeDeps() *fakeDeps {
 
 // ===== Topology =====
 
-func (f *fakeDeps) NodeName() string                              { return f.nodeName }
-func (f *fakeDeps) IsLocalNode(node string) bool                  { return node == f.nodeName }
-func (f *fakeDeps) ClusterURL(node string) string                 { return f.clusterURLs[node] }
-func (f *fakeDeps) NodeMetrics(node string) *mesh.ResourceMetrics { return f.nodeMetrics[node] }
-func (f *fakeDeps) NodeCacheReady() bool                          { return f.nodeMetrics != nil }
+func (f *fakeDeps) NodeName() string              { return f.nodeName }
+func (f *fakeDeps) IsLocalNode(node string) bool  { return node == f.nodeName }
+func (f *fakeDeps) ClusterURL(node string) string { return f.clusterURLs[node] }
 
 // ===== ProviderConfig =====
 
@@ -544,7 +540,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, up, _, err := p.resolveDeploymentTarget(tc.dep, "/v1/chat/completions", "", "")
+			target, up, _, err := p.resolveDeploymentTarget(context.Background(), tc.dep, "/v1/chat/completions", "", "")
 			require.NoError(t, err)
 			assert.Equal(t, tc.target, target)
 			assert.Equal(t, tc.up, up)
@@ -556,7 +552,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 // worker serves inference nowhere else.
 func TestResolveDeploymentTarget_UnknownNodeIsAnError(t *testing.T) {
 	p := newProxyWithFake(newFakeDeps())
-	_, _, _, err := p.resolveDeploymentTarget(
+	_, _, _, err := p.resolveDeploymentTarget(context.Background(),
 		pfallback.Candidate{Name: "c", App: "llamacpp", Model: "m", Node: "nowhere"}, "/v1/chat/completions", "", "")
 	assert.ErrorContains(t, err, "cluster port")
 }
@@ -776,22 +772,6 @@ func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
 			assert.True(t, p.providerCooldowns.InCooldown("failed"))
 		})
 	}
-}
-
-// Replicas of one group can serve different models; each is sized by its own, not by the first.
-func TestFilterByMemorySizesEachReplicaByItsOwnModel(t *testing.T) {
-	deps := newFakeDeps()
-	deps.nodeMetrics = map[string]*mesh.ResourceMetrics{"small-gpu": {GPUMemoryFreeMB: 8 << 10}, "big-gpu": {GPUMemoryFreeMB: 8 << 10}}
-	p := newProxyWithFake(deps)
-	candidates := []pfallback.Candidate{
-		{Name: "large", App: "vllm", Model: "meta-llama/Llama-3.1-70B-Instruct", Node: "big-gpu"},
-		{Name: "small", App: "vllm", Model: "Qwen/Qwen2.5-0.5B-Instruct", Node: "small-gpu"},
-	}
-
-	kept := p.filterByMemory(candidates, "")
-
-	require.Len(t, kept, 1)
-	assert.Equal(t, "small", kept[0].Name, "the 70B replica does not fit 8 GiB; the 0.5B one does")
 }
 
 func TestChainOnDemandRefusalCarriesCause(t *testing.T) {

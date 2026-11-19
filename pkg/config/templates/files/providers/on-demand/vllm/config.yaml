@@ -1,6 +1,34 @@
 # MANAGED FILE : overwritten on every cluster sync.
 # Edit on the coordinator, never here.
 description: "vLLM high-performance inference engine"
+operations:
+  tokenize:
+    version: 1
+    description: Tokenize text with the selected live engine.
+    adapter: run_json_read
+    audience: admin
+    effect: read
+    target_scope: run
+    transport: json
+    runtimes: [base]
+    binding: {method: POST, path: /tokenize}
+    input_schema:
+      type: object
+      required: [prompt]
+      additionalProperties: false
+      properties:
+        prompt: {type: string}
+        model: {type: string, minLength: 1}
+        add_special_tokens: {type: boolean}
+        return_token_strs: {type: boolean}
+    output_schema:
+      type: object
+      required: [tokens, count, max_model_len]
+      properties:
+        tokens: {type: array, items: {type: integer}}
+        count: {type: integer, minimum: 0}
+        max_model_len: {type: integer, minimum: 0}
+        token_strs: {type: [array, 'null'], items: {type: string}}
 features:
   tools:
     requires_parameters: [enable-auto-tool-choice, tool-call-parser]
@@ -95,6 +123,7 @@ defaults:
     context_param: "max-model-len"
 
 runtime:
+  listener: {host_parameter: host, default_host: 127.0.0.1}
   failure_patterns:
     - pattern: "CUDA out of memory"
       isRegex: false

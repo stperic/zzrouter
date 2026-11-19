@@ -94,10 +94,11 @@ type tuiModel struct {
 	styles       ui.Styles
 	chatSettings pkgConfig.ChatSettings
 
-	pane         tuiPane
-	menu         tui.List
-	menuExpanded map[int]bool // group indices that are expanded
-	menuWelcome  bool         // cleared after the first menu activation
+	pane          tuiPane
+	menu          tui.List
+	menuExpanded  map[int]bool // group indices that are expanded
+	menuWelcome   bool         // cleared after the first menu activation
+	menuLogoFrame int
 
 	root *tui.Root
 
@@ -205,6 +206,10 @@ func (m *tuiModel) Init() tea.Cmd {
 		// withQuickstart pre-pushed a view; run its Init.
 		return tea.Batch(fetchNodes, m.root.Active().Init())
 	}
+	if m.menuWelcome {
+		m.menuLogoFrame = 1
+		return tea.Batch(fetchNodes, menuLogoTick())
+	}
 	return fetchNodes
 }
 
@@ -227,6 +232,15 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- View-switching messages from children. These construct the
 	// target view and push it onto root, regardless of current pane. ---
 	switch msg := msg.(type) {
+	case menuLogoTickMsg:
+		if m.pane == paneMenu && m.menuWelcome && m.menuLogoFrame < menuLogoFrames {
+			m.menuLogoFrame++
+			if m.menuLogoFrame < menuLogoFrames {
+				return m, menuLogoTick()
+			}
+		}
+		return m, nil
+
 	// tui.NavToMsg from any source must reach root even if pane just
 	// flipped to paneMenu (e.g. NavBack + NavTo in the same tea.Batch).
 	// Forward verbatim so OnPop callbacks are preserved.

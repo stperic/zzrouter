@@ -47,6 +47,33 @@ func TestCoordinatorInitiatedEnrollmentAndRenewal(t *testing.T) {
 	require.NoError(t, worker.verifyRenewedCert([]byte(cert)))
 	require.NoError(t, worker.Stop(context.Background()))
 }
+func TestEnrollmentNormalizesBothSidesOfIntent(t *testing.T) {
+	coord, coordURL := startNode(t, Coordinator)
+	worker, _ := startNode(t, Unclaimed)
+	window, err := worker.BeginPairing(t.Context(), BeginPairingOptions{CoordinatorURL: coordURL + "/", CAFingerprint: coord.CAFingerprint()})
+	require.NoError(t, err)
+	_, err = coord.Enroll(t.Context(), window.WorkerURL, window.Fingerprint, window.Code, coordURL+"/console?ignored=1")
+	require.NoError(t, err)
+	stored, err := ReadCoordinatorURL(worker.cfg.ClusterDir)
+	require.NoError(t, err)
+	require.Equal(t, coordURL, stored)
+}
+
+func TestEnrollmentDeliveryWithoutConfirmationIsUncertain(t *testing.T) {
+	coord, coordURL := startNode(t, Coordinator)
+	worker, err := New(testConfig(t, Unclaimed))
+	require.NoError(t, err)
+	require.NoError(t, worker.SetAdminAPIHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })))
+	require.NoError(t, worker.SetWorkerCompatHandler(stubInferenceHandler()))
+	require.NoError(t, worker.Start(t.Context()))
+	t.Cleanup(func() { _ = worker.Stop(context.Background()) })
+	window, err := worker.BeginPairing(t.Context(), BeginPairingOptions{CoordinatorURL: coordURL, CAFingerprint: coord.CAFingerprint()})
+	require.NoError(t, err)
+	_, err = coord.Enroll(t.Context(), window.WorkerURL, window.Fingerprint, window.Code, coordURL)
+	require.ErrorIs(t, err, ErrEnrollmentUncertain)
+	require.Equal(t, Worker, worker.Mode(), "certificate delivery committed despite failed observation")
+}
+
 func TestEnrollmentRegenerationClosesPreviousListener(t *testing.T) {
 	worker, _ := startNode(t, Unclaimed)
 	one, err := worker.BeginPairing(t.Context(), BeginPairingOptions{CoordinatorURL: "https://coord:9091"})
@@ -202,6 +229,31 @@ func TestEnrollmentURLUsesCanonicalAdvertisedHost(t *testing.T) {
 			require.Equal(t, tc.want, endpoint.Hostname())
 		})
 	}
+}
+
+func TestEnrollmentUsesCoordinatorRouteWithAutomaticAddresses(t *testing.T) {
+	coord, coordURL := startNode(t, Coordinator)
+	cfg := testConfig(t, Unclaimed)
+	cfg.BindHost = "0.0.0.0"
+	cfg.AdvertiseIPs = nil
+	worker, err := New(cfg)
+	require.NoError(t, err)
+	require.NoError(t, worker.SetAdminAPIHandler(stubInferenceHandler()))
+	require.NoError(t, worker.SetWorkerCompatHandler(stubInferenceHandler()))
+	require.NoError(t, worker.Start(t.Context()))
+	t.Cleanup(func() { _ = worker.Stop(context.Background()) })
+	window, err := worker.BeginPairing(t.Context(), BeginPairingOptions{CoordinatorURL: coordURL, CAFingerprint: coord.CAFingerprint()})
+	require.NoError(t, err)
+	endpoint, err := url.Parse(window.WorkerURL)
+	require.NoError(t, err)
+	require.Equal(t, "127.0.0.1", endpoint.Hostname(), "Use the interface reaching this coordinator, not enumeration order")
+	snapshot, active := worker.PairingWindowInfoSnapshot()
+	require.True(t, active)
+	require.Equal(t, window.WorkerURL, snapshot.WorkerURL)
+	accepted, err := coord.Enroll(t.Context(), window.WorkerURL, window.Fingerprint, window.Code, coordURL)
+	require.NoError(t, err)
+	require.Equal(t, cfg.NodeName, accepted.NodeName)
+	require.Equal(t, Worker, worker.Mode())
 }
 
 func TestEnrollmentCancelledAdmissionCannotOpenLateWindow(t *testing.T) {

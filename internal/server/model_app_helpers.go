@@ -16,6 +16,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
@@ -150,18 +151,25 @@ func (s *Server) openRun(req *http.Request, inst *instance.Instance, recorder *l
 		fail(instanceSendFailure(recorder, err))
 		return nil, nil, backend.Upstream{}, false
 	}
+	if expected, bound := affinity.Expected(req.Context()); bound && (expected.RunID != inst.ID || !backend.SameEndpoint(expected.Endpoint, base)) {
+		lease.Release()
+		fail(httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "response_origin_unavailable", Message: "The response's originating run is no longer available"})
+		return nil, nil, backend.Upstream{}, false
+	}
+	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+	affinity.Observe(req.Context(), affinity.Origin{ProviderKey: inst.Provider, RunID: inst.ID, Endpoint: base, Model: wire.ModelFromBody(body)})
 	return lease, target, up, true
 }
 
 // sendToInstance is the one way a request reaches a leased local run; a streaming one gets the
 // lease's first-byte and idle deadlines.
 func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte, target *url.URL, up backend.Upstream) (*http.Response, error) {
-	ctx := req.Context()
+	ctx := lease.Context()
 	var wrap func(io.ReadCloser) io.ReadCloser
 	if wire.StreamFromBody(body) {
 		ctx, wrap = lease.WatchStream(ctx)
 	}
-	proxyReq := req.Clone(ctx)
+	proxyReq := req.Clone(ctx) //nolint:contextcheck // Acquire derives Lease.Context from this request; WatchStream only narrows its lifetime.
 	proxyReq.URL = target
 	proxyReq.Host = target.Host
 	proxyReq.RequestURI = ""
@@ -181,7 +189,7 @@ func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body [
 	}
 	resp, err := s.httpStreamingClient.Do(proxyReq)
 	if err != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) {
+		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) { //nolint:contextcheck // ctx is the request-derived lease context, optionally narrowed by WatchStream.
 			return nil, cause
 		}
 		return nil, err
@@ -354,6 +362,7 @@ func (s *Server) forwardToRun(w http.ResponseWriter, req *http.Request, inst *in
 		return
 	}
 	defer lease.Release()
+	req = req.WithContext(lease.Context()) //nolint:contextcheck // openRun acquires this lease from req.Context and adds run/release cancellation.
 	body, _ := s.instanceRequest(req, inst)
 	s.proxy.ForwardToBackend(w, req, inst.Provider, target.String(), up, body)
 }

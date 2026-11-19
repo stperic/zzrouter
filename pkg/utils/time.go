@@ -111,6 +111,23 @@ func NowUTC() time.Time {
 	return Now().UTC()
 }
 
+// InRFC3339Range reports whether every non-nil time has a year from 0001 to
+// 9999 both in its own zone and in UTC, so RFC 3339 text and UTC storage can
+// both hold it.
+func InRFC3339Range(times ...*time.Time) bool {
+	for _, t := range times {
+		if t == nil {
+			continue
+		}
+		for _, year := range []int{t.Year(), t.UTC().Year()} {
+			if year < 1 || year > 9999 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // SetClock swaps the global Clock and returns a function that restores the
 // previous value. Intended for tests:
 //

@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -65,17 +66,46 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 	if s == nil {
 		return
 	}
-	tool.InputSchema = objectSchema[In]{}
-	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		var out Out
+	if tool.InputSchema == nil {
+		tool.InputSchema = objectSchema[In]{}
+	}
+	inputSchema, schemaErr := resolveToolSchema(tool.InputSchema)
+	outputSchema, outputErr := resolveToolSchema(tool.OutputSchema)
+	// SDK typed tools re-marshal arguments through float64 while applying defaults.
+	// Keep one raw registration path and let the schema library retain JSON numbers.
+	s.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := errors.Join(schemaErr, outputErr); err != nil {
+			return nil, fmt.Errorf("tool schema: %w", err)
+		}
+		input, err := applyToolSchema(req.Params.Arguments, inputSchema, true)
+		var in In
+		if err == nil {
+			in, err = decodeToolInput[In](input)
+		}
+		if err != nil {
+			result := &mcp.CallToolResult{}
+			result.SetError(fmt.Errorf("validating arguments: %w", err))
+			return result, nil
+		}
 		d, err := newDispatcher(ctx, cfg, bindings)
+		var out Out
 		if err == nil {
 			out, err = handler(d, ctx, in)
 		}
 		if err != nil {
-			return nil, out, err
+			result := &mcp.CallToolResult{}
+			result.SetError(err)
+			return result, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.summary()}}}, out, nil
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling output: %w", err)
+		}
+		encoded, err = applyToolSchema(encoded, outputSchema, false)
+		if err != nil {
+			return nil, fmt.Errorf("validating tool output: %w", err)
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: out.summary()}}, StructuredContent: json.RawMessage(encoded)}, nil
 	})
 }
 
@@ -87,6 +117,7 @@ func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Omit job_id to list recent jobs on the coordinator or selected node, with limit and offset; this is not a cluster-wide list. Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. " + jobRetentionDescription + " Job-not-found hints name an outcome tool. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"listJobs", "getJob"}, dispatcher.job)
 	registerAgentTools(s, cfg, bindings, jobRetentionDescription)
 	registerAPITools(s, cfg, bindings)
+	registerProviderTools(s, cfg, bindings, false)
 	return bindings
 }
 

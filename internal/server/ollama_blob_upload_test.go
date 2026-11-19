@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,6 +35,7 @@ func TestCreateBlob_ForwardsLengthAndNoKey(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/blobs/sha256:abc", bytes.NewReader(blob))
 	c.Request.Header.Set("X-API-Key", TestAdminKey)
+	setAccessContext(c, adminResponseOwner())
 
 	require.NoError(t, svc.CreateBlob(c, "sha256:abc"))
 	require.NotNil(t, got, "the daemon was not reached")
@@ -59,15 +59,18 @@ func TestOllamaDirectCallsCarryTheDaemonsCredential(t *testing.T) {
 		return &backend.Resolved{Endpoint: srv.URL, Upstream: backend.Credential(
 			&config.APIConfig{AuthType: config.AuthTypeBearer, Token: "daemon-token"})}, nil
 	}
-	svc := &OllamaServiceImpl{ollamaDaemon: daemon, httpClient: srv.Client()}
+	svc := &OllamaServiceImpl{ollamaDaemon: daemon, httpClient: srv.Client(), httpStreamingClient: srv.Client()}
 	exec := NewInternalExecutor(nil, nil, nil, srv.Client(), nil, nil, nil, nil, nil)
 
-	ctx := context.Background()
 	d, _ := daemon()
 	calls := map[string]func(){
-		"HEAD /api/blobs/sha256:abc":  func() { _, _ = svc.CheckBlob(ctx, "sha256:abc") },
-		"POST /api/show (pre-flight)": func() { _, _ = svc.ollamaModelExists(ctx, d, "m") },
-		"POST /api/show (details)":    func() { _, _ = exec.getOllamaModelDetails(ctx, d, "m", false) },
+		"HEAD /api/blobs/sha256:abc": func() {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequestWithContext(t.Context(), http.MethodHead, "/api/blobs/sha256:abc", nil)
+			_ = svc.CheckBlob(c, "sha256:abc")
+		},
+		"POST /api/show (pre-flight)": func() { _, _ = svc.ollamaModelExists(t.Context(), d, "m") },
+		"POST /api/show (details)":    func() { _, _ = exec.getOllamaModelDetails(t.Context(), d, "m", false) },
 	}
 	for name, call := range calls {
 		clear(seen)

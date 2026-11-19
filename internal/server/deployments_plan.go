@@ -82,13 +82,7 @@ func (s *DeploymentsService) planDeploy(ctx context.Context, req *DeployRequest,
 	if owner == "" {
 		owner, _, _ = cfg.LookupVariant(req.Model)
 	}
-	registry := req.Registry
-	if registry == "" {
-		registry = constants.RepoOllama
-		if strings.Contains(req.Model, "/") {
-			registry = constants.RepoHuggingFace
-		}
-	}
+	registry := downloadRegistry(req.Registry, "", req.Model)
 	huggingFace := registry == constants.RepoHuggingFace || registry == constants.RepoHFAlias
 	plans := make(map[string]deployPlan, len(nodes))
 	listing, err := s.deployListing(ctx, cfg, req, owner, huggingFace)

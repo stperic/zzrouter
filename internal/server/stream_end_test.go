@@ -147,7 +147,8 @@ func instanceStreamTestServer() (*Server, *instance.Instance) {
 	s.inference.normalizers = NewResponseNormalizers()
 	s.providers.appMgr, _ = prov_apps.NewProviderAppManager(nil) // a launched run is reached on its port
 	// The health host names the fake transport's engine.
-	inst := &instance.Instance{ID: "test", Provider: "engine", HealthURL: "http://engine.test/health", Port: 80}
+	inst := instance.NewInstance("test", "engine", "", 80, 0, 0)
+	inst.HealthURL = "http://engine.test/health"
 	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 	return s, inst
 }

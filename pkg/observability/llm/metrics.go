@@ -411,6 +411,8 @@ type InferenceRecorder struct {
 	fallbackCount   int
 	fallbackFrom    string
 	keyID           string
+	subjectKind     string
+	subjectID       string
 	keyAlias        string
 	hashedKey       string
 	teamID          string
@@ -654,6 +656,19 @@ func (r *InferenceRecorder) SetFallback(count int, firstDeployment string) {
 func (r *InferenceRecorder) SetKeyID(id string) {
 	if r != nil {
 		r.keyID = id
+		r.subjectKind = "key"
+		r.subjectID = id
+	}
+}
+
+// SetSubject captures human or application identity and the admitted team.
+func (r *InferenceRecorder) SetSubject(kind, id, teamID string) {
+	if r != nil {
+		r.subjectKind, r.subjectID, r.teamID = kind, id, teamID
+		r.keyID = ""
+		if kind == "key" {
+			r.keyID = id
+		}
 	}
 }
 
@@ -820,6 +835,8 @@ func (r *InferenceRecorder) RecordCompletion(tokensIn, tokensOut int64) {
 			FallbackCount:   r.fallbackCount,
 			FallbackFrom:    r.fallbackFrom,
 			KeyID:           r.keyID,
+			SubjectKind:     r.subjectKind,
+			SubjectID:       r.subjectID,
 			KeyAlias:        r.keyAlias,
 			HashedKey:       r.hashedKey,
 			TeamID:          r.teamID,

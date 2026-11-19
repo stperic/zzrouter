@@ -1,6 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-<title id="title">zzRouter</title>
-<path fill="#faf9f5" d="M56 24H204c22 0 35 24 21 42l-56 73c-3 4-6 6-12 6h-18l68-88c4-5 1-11-6-11H56a11 11 0 0 1 0-22Z"/>
-<path fill="#faf9f5" d="M87 104h20L40 192c-5 7-1 18 9 18h150a11 11 0 0 1 0 22H43c-24 0-35-25-20-45l55-74c3-4 5-9 9-9Z"/>
-<path fill="#d97757" d="M26 62H162c12 0 18 12 11 22l-70 87h121a11 11 0 0 1 0 22H87c-12 0-18-13-11-23l71-86H26a11 11 0 0 1 0-22Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">ZZ</title>
+  <g fill="#faf9f5" transform="scale(.25)">
+    <path d="M56 24H204c22 0 35 24 21 42l-56 73c-3 4-6 6-12 6h-18l68-88c4-5 1-11-6-11H56a11 11 0 0 1 0-22Z" />
+    <path d="M87 104h20L40 192c-5 7-1 18 9 18h150a11 11 0 0 1 0 22H43c-24 0-35-25-20-45l55-74c3-4 5-9 9-9Z" />
+    <path d="M26 62H162c12 0 18 12 11 22l-70 87h121a11 11 0 0 1 0 22H87c-12 0-18-13-11-23l71-86H26a11 11 0 0 1 0-22Z" fill="#d97757" />
+  </g>
 </svg>

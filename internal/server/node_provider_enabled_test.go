@@ -87,8 +87,7 @@ func newEnableCluster(t *testing.T, cert *x509.Certificate) enableCluster {
 		HTTPClient: workerSrv.Client(), ClusterPort: workerPort,
 	}))
 	require.NoError(t, err)
-	coord.cluster.coordinator = cluster
-	t.Cleanup(cluster.Stop)
+	useTestCluster(t, coord, cluster)
 	coord.clusterMTLSClient = workerSrv.Client()
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerSrv.URL, ClusterURL: workerSrv.URL, NodeName: "worker", Status: mesh.StatusUp}))
 

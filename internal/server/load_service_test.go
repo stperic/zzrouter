@@ -18,10 +18,15 @@ type loadResultRouter struct {
 	status  int
 	body    string
 	headers http.Header
+	node    string
 }
 
 func (r *loadResultRouter) Unicast(context.Context, string, string, string, []byte) (*routing.Response, error) {
-	return &routing.Response{StatusCode: r.status, Body: []byte(r.body), Headers: r.headers, Node: "worker"}, nil
+	node := r.node
+	if node == "" {
+		node = "worker"
+	}
+	return &routing.Response{StatusCode: r.status, Body: []byte(r.body), Headers: r.headers, Node: node}, nil
 }
 func TestLoadServicePreservesWorkerErrorsAndWarmReuse(t *testing.T) {
 	for _, tc := range []struct {
@@ -35,7 +40,7 @@ func TestLoadServicePreservesWorkerErrorsAndWarmReuse(t *testing.T) {
 		{"bad provider", 404, `{"status":404,"title":"Not Found","detail":"unknown provider"}`, false},
 		{"upstream failure", 500, `{"status":500,"title":"Internal Server Error","detail":"load failed"}`, false},
 		{"malformed success", 200, `not-json`, false},
-		{"warm reuse", 409, `{"instance_id":"warm-run","model":"base","provider":"llamacpp","status":"running","port":8080,"job_id":"existing-job"}`, true},
+		{"warm reuse", 409, `{"instance_id":"warm-run","model":"base","provider":"llamacpp","status":"running","port":8080,"job_id":"existing-job","node":"worker"}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := &loadResultRouter{status: tc.status, body: tc.body}

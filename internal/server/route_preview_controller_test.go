@@ -30,7 +30,7 @@ func mountPreviewRouter(t *testing.T, yamlBody string) *gin.Engine {
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice", IsVirtual: true}})
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")

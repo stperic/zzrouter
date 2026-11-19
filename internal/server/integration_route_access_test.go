@@ -25,7 +25,7 @@ func TestIntegrationRouteAccessWireDeniesDirectModels(t *testing.T) {
 	_, enableErr := s.configStore.SetProviderEnabled("ollama", "", true)
 	require.NoError(t, enableErr)
 	require.NoError(t, s.model.Groups.Set("coding", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "local", App: "ollama", Model: "local"}}}))
-	_, err := s.services.Teams.CreateTeam(&CreateTeamRequest{ID: "routes", Name: "Routes", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}}, "admin")
+	_, err := s.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: "routes", Name: "Routes", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}}, "admin")
 	require.NoError(t, err)
 	raw := loadTestKey(t, s, "route-client", keys.VirtualKey{Name: "Client", Role: "user", TeamID: "routes"})
 	for _, tc := range []struct{ method, path, model string }{
@@ -45,7 +45,7 @@ func TestIntegrationRouteAccessWireDeniesDirectModels(t *testing.T) {
 func TestIntegrationRouteProviderBindingAcrossWorkerHop(t *testing.T) {
 	coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
 	require.NoError(t, coordinator.model.Groups.Set("coding", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "initial", App: "vllm", Model: "allowed", Node: "worker"}}}))
-	_, err := coordinator.services.Teams.CreateTeam(&CreateTeamRequest{ID: "bound", Name: "Bound", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}, ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"vllm"}}}, "admin")
+	_, err := coordinator.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: "bound", Name: "Bound", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}, ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"vllm"}}}, "admin")
 	require.NoError(t, err)
 	key := loadTestKey(t, coordinator, "bound-client", keys.VirtualKey{Name: "Bound client", Role: "user", TeamID: "bound"})
 	root := t.TempDir()

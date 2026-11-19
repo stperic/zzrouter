@@ -20,9 +20,8 @@ import (
 // coordinator group, Cache.Start/Stop + Downloads.Stop in the common
 // group).
 type Subsystem struct {
-	Pricing   *pricing.Store
-	Cache     *cache.Cache
-	NodeCache *cache.NodeResourceCache
+	Pricing *pricing.Store
+	Cache   *cache.Cache
 
 	Registry  *modelregistry.Registry
 	Groups    *modelgroup.GroupStore

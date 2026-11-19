@@ -28,16 +28,29 @@ func LoadSpend(path string) (*SpendFile, error) {
 		return nil, err
 	}
 
-	var file SpendFile
-	if err := json.Unmarshal(data, &file); err != nil {
+	file, err := DecodeSpend(data)
+	if err != nil {
 		slog.Warn("Corrupt spend.json, resetting to zero", "error", err, "path", path)
 		return &SpendFile{Version: 1, States: make(map[string]*SpendState)}, nil
 	}
+	return file, nil
+}
 
-	if file.States == nil {
-		file.States = make(map[string]*SpendState)
+// DecodeSpend is the strict recovery boundary. Startup may explicitly choose
+// its documented empty-state fallback; backup validation must never do so.
+func DecodeSpend(data []byte) (*SpendFile, error) {
+	var file SpendFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return nil, err
 	}
-
+	if file.Version != 1 || file.States == nil {
+		return nil, fmt.Errorf("invalid spend snapshot")
+	}
+	for _, state := range file.States {
+		if state == nil {
+			return nil, fmt.Errorf("invalid spend entry")
+		}
+	}
 	return &file, nil
 }
 

@@ -14,6 +14,7 @@ info:
     | `/openapi.{yaml,json}` | This schema                          | None            |
     | `/zzrouter/v1`      | Management API                          | `AdminKey`      |
     | `/zzrouter/v1/internal` | Cluster-internal API                | mTLS, undocumented |
+    | `/inference/v1`      | User-scoped provider discovery          | User key, required |
     | `/v1`               | OpenAI-compatible inference             | `InferenceBearer` / `InferenceKey` |
     | `/v1/messages`      | Anthropic-compatible inference          | `InferenceBearer` / `InferenceKey` |
     | `/api`              | Ollama-compatible inference             | `InferenceBearer` / `InferenceKey` |
@@ -48,7 +49,7 @@ info:
     ## Spec coverage
 
     This spec is hand-authored, and every route the coordinator serves on
-    `/zzrouter/v1/*`, `/v1/*` and `/api/*` is described here. Drift tests in
+    `/zzrouter/v1/*`, `/inference/v1/*`, `/v1/*` and `/api/*` is described here. Drift tests in
     `internal/server` compare the spec against the live routing table in both
     directions, so an undocumented route and a documented route that does not
     exist are both build failures.
@@ -73,6 +74,8 @@ security:
 # segment (cluster-capable, unlike the node-local /server family).
 # Pinned to the live routing table by TestOpenAPITags in internal/server.
 tags:
+  - name: Access
+    description: Local people, trusted enrollment and recovery.
   - name: Session
     description: Browser sign-in, bootstrap and logout.
   - name: Me
@@ -92,6 +95,10 @@ tags:
   - name: Cache
   - name: Runs
   - name: Providers
+  - name: Operations
+    description: Definition-driven provider diagnostics with exact target preconditions.
+  - name: Connections
+    description: Native and routed endpoint discovery under existing visibility rules.
   - name: Clients
     description: Observed authenticated client activity on the coordinator.
   - name: Nodes
@@ -107,8 +114,6 @@ tags:
   - name: Cluster
   - name: Config
     description: Reloading provider configuration from disk.
-  - name: State
-    description: Snapshot and restore of this node's persistent state.
   - name: Server
     description: Node introspection, version and system info.
   - name: InferenceLogs
@@ -565,8 +570,8 @@ paths:
     post:
       tags: ["Providers"]
       operationId: "testProviderConnection"
-      summary: "Test a candidate without saving or activating it"
-      description: "Uses only submitted candidate fields. Does not change stored state, enable a provider or publish configuration. Redirects are refused and upstream response bodies are not returned. Browser calls require exact Origin and X-CSRF-Token."
+      summary: "Test a candidate or stored coordinator connection"
+      description: "Send values for a complete candidate, or stored: true to test the current managed or installation connection without returning or resubmitting its secrets. The modes are mutually exclusive. Stored tests also support configured providers that are disabled. Candidates never inherit hidden saved secrets. Does not change stored state, enable a provider or publish configuration. Redirects are refused and upstream response bodies are not returned. Browser calls require exact Origin and X-CSRF-Token."
       security:
         - AdminKey: []
         - BrowserSession: []
@@ -575,16 +580,28 @@ paths:
         content:
           "application/json":
             schema:
-              type: "object"
-              required: ["values"]
-              additionalProperties: false
-              properties:
-                values:
-                  type: "object"
-                  additionalProperties:
-                    type: "string"
-                    maxLength: 16384
-                  description: "Complete candidate fields, including explicit replacement secrets. Never merge hidden stored secrets into a new destination."
+              oneOf:
+                - type: "object"
+                  required: ["values"]
+                  additionalProperties: false
+                  properties:
+                    stored:
+                      type: "boolean"
+                      enum: [false]
+                    values:
+                      type: "object"
+                      additionalProperties:
+                        type: "string"
+                        maxLength: 16384
+                      description: "Complete candidate fields, including explicit replacement secrets. Never merge hidden stored secrets into a new destination."
+                - type: "object"
+                  required: ["stored"]
+                  additionalProperties: false
+                  properties:
+                    stored:
+                      type: "boolean"
+                      enum: [true]
+                      description: "Probe the coordinator's current bound endpoint and credential snapshot. No candidate values or node selection are accepted."
       responses:
         "200":
           description: "OK"
@@ -598,7 +615,7 @@ paths:
                       data:
                         $ref: "#/components/schemas/ProviderConnectionTest"
         "400":
-          description: "Malformed request or invalid complete candidate (invalid_provider_connection)."
+          description: "Malformed or mixed test modes, invalid complete candidate (invalid_provider_connection), or missing stored credentials (provider_connection_not_configured)."
           content:
             "application/problem+json":
               schema:
@@ -710,7 +727,7 @@ paths:
       tags: ["Registries"]
       operationId: "listRegistriesOllamaTags"
       summary: "Read Ollama catalog versions through the coordinator"
-      description: "Returns catalog tags, sizes, context and cloud flags from the fixed Ollama library origin. The client does not scrape upstream HTML. The request follows the caller's cancellation."
+      description: "Returns catalog tags, sizes, context, inputs and published MLX flags from the fixed Ollama library origin. The request follows the caller's cancellation."
       security:
         - AdminKey: []
         - BrowserSession: []
@@ -3735,6 +3752,14 @@ paths:
           schema: { type: string }
         - $ref: '#/components/parameters/ProviderParam'
         - $ref: '#/components/parameters/RegistryParam'
+        - in: query
+          name: format
+          description: Weight format for the selected model variant, when known.
+          schema: { type: string }
+        - in: query
+          name: architecture
+          description: Model architecture from registry metadata, when known.
+          schema: { type: string }
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/OffsetParam'
       responses:
@@ -4063,6 +4088,15 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Key' }
+        '400':
+          description: >
+            The body is malformed (an unknown `role` or `reset_period`, or an
+            `expires_at` that is not RFC 3339), whether or not the key exists,
+            or the change would leave a key the node cannot load, such as an
+            empty name. `code` is `bad_request`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Key not found
@@ -4498,6 +4532,72 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /zzrouter/v1/cluster/pairing/setup:
+    get:
+      tags: [Cluster]
+      operationId: getWorkerSetup
+      summary: Get installation and pairing instructions for an optional worker
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      description: |
+        Read-only, coordinator administrator access. Returns OS-specific commands
+        with the canonical cluster endpoint and public CA fingerprint. Contains no
+        administrator key and does not start installation or grant worker trust.
+        Worker port follows the coordinator cluster bind port independently of a
+        public advertised port. Downloads link to the matching release page;
+        development builds link to release selection. Local-only cluster addresses
+        are refused rather than presented as instructions for another computer.
+      responses:
+        '200':
+          description: Installation guide; commands run on the new computer.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [coordinator_url, ca_fingerprint, worker_port, download_url, version, platforms]
+                    properties:
+                      coordinator_url: {type: string, format: uri}
+                      ca_fingerprint: {type: string}
+                      worker_port: {type: integer, minimum: 1, maximum: 65535}
+                      download_url: {type: string, format: uri}
+                      version: {type: string}
+                      platforms:
+                        type: array
+                        items:
+                          type: object
+                          required: [os, label, archives, installations]
+                          properties:
+                            os: {type: string, enum: [darwin, windows, linux]}
+                            label: {type: string}
+                            archives: {type: string}
+                            installations:
+                              type: array
+                              minItems: 1
+                              items:
+                                type: object
+                                required: [id, label, shell, startup, install_command, pair_command]
+                                properties:
+                                  id: {type: string}
+                                  label: {type: string}
+                                  shell: {type: string}
+                                  startup: {type: string}
+                                  install_command: {type: string}
+                                  pair_command: {type: string}
+                                  pair_shell: {type: string}
+        '400':
+          description: Configure a reachable cluster endpoint before adding another computer.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Coordinator administrator required.
+        '503':
+          description: Cluster listener is not ready.
+
   /zzrouter/v1/cluster/pairing/accept:
     post:
       tags: [Cluster]
@@ -4514,10 +4614,11 @@ paths:
         material travels directly to the worker. Retry after a committed
         delivery confirms the existing identity without rotating its key.
         Browser calls require an administrator session, exact Origin and
-        X-CSRF-Token. Only pairing acceptance opts into browser authority;
+        X-CSRF-Token. Pairing setup and acceptance opt into browser authority;
         decommission and revocation remain API-key-only.
-        Certificate delivery may continue after a request is canceled. An error
-        can follow commitment; inspect nodes before retrying. A successful response
+        Validation refusals before certificate delivery return 400. An uncertain
+        result after delivery returns 503. Certificate delivery may continue
+        after a request is canceled; inspect nodes before retrying. A successful response
         confirms pairing, while healthy membership must be checked using /nodes.
       requestBody:
         required: true
@@ -4525,8 +4626,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [code, worker_url, worker_fingerprint]
+              oneOf:
+                - required: [transfer]
+                - required: [code, worker_url, worker_fingerprint]
               properties:
+                transfer:
+                  $ref: '#/components/schemas/PairingTransfer'
                 code:
                   type: string
                   description: The pairing code printed by the worker.
@@ -5447,10 +5552,22 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Team' }
+        '400':
+          description: >-
+            A malformed body, an unknown field, a `members` object, an invalid `reset_period`, route or provider policy, or
+            a change that would leave a team the node cannot load.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '403': { $ref: '#/components/responses/MgmtForbidden' }
         '404':
           description: Not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: The team is a key's personal team, which cannot be edited.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -5621,19 +5738,16 @@ paths:
     post:
       tags: [Keys]
       operationId: reloadKeys
-      summary: Reload keys.yaml from disk
+      summary: "Retired: Reload keys.yaml from disk"
       description: |
-        Re-reads the on-disk keys store, invalidates the auth cache, and
-        applies any external changes. Intended for out-of-band edits.
+        Retired. The route is still mounted and answers `410 Gone` with
+        code `retired`. App keys are managed through the keys API:
+        `POST /zzrouter/v1/keys` and `PATCH /zzrouter/v1/keys/{id}`.
+      deprecated: true
       responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '500':
-          description: The store could not be re-read; the in-memory keys are unchanged.
+        '410':
+          description: Gone, manage app keys through the keys API.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -6425,7 +6539,7 @@ paths:
         - in: query
           name: full_description
           schema: { type: boolean, default: false }
-          description: Expand the OpenRouter description from its public model page when available.
+          description: Expand an OpenRouter description from its public model page when available. The catalog excerpt remains the fallback.
       description: |
         The upstream registry's card for a model: description, licence,
         files, and for cloud providers the native catalog fields enriched
@@ -6455,7 +6569,7 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '501':
-          description: The provider declares no model catalog. The problem code is model_discovery_unavailable.
+          description: The provider declares no model-listing API. Code model_discovery_unavailable; register a known provider model ID instead. Inference may still be available.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -6585,6 +6699,7 @@ paths:
                     type: object
                     properties:
                       model_id: { type: string }
+                      architecture: { type: string, description: Architecture reported by the repository, when known. }
                       variants:
                         type: array
                         items:
@@ -8002,7 +8117,7 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '501':
-          description: The provider declares no model catalog. The problem code is model_discovery_unavailable.
+          description: The provider declares no model-listing API. Code model_discovery_unavailable; register a known provider model ID instead. Inference may still be available.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -8104,116 +8219,6 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: This node has no provider config loaded.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /zzrouter/v1/state/snapshot:
-    post:
-      tags: [State]
-      operationId: createStateSnapshot
-      summary: Download this node's persistent state as a tar.gz
-      description: |
-        Flushes the key, team and model-group stores, then streams a
-        gzipped tar of `keys.yaml`, `teams.yaml`, `model_groups.yaml`
-        and `spend.json`. A file that does not exist is skipped rather
-        than archived empty.
-
-        Two things to know before using it as a backup:
-
-        - The archive is the raw on-disk files, including the Argon2id
-          hashes that `GET /zzrouter/v1/keys` redacts. An admin key
-          gets material the key listing deliberately withholds; treat
-          the download accordingly.
-        - Reads are not fenced against concurrent admin writes, and
-          `spend.json` reflects the spend tracker's last flush rather
-          than the instant of the request. Quiesce the node if you need
-          a coherent point-in-time image.
-      responses:
-        '200':
-          description: Gzipped tar, sent as an attachment.
-          content:
-            application/gzip:
-              schema: { type: string, format: binary }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '500':
-          description: A store failed to flush, or a file could not be read or archived.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: This node has no config directory configured.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
-  /zzrouter/v1/state/restore:
-    post:
-      tags: [State]
-      operationId: restoreState
-      summary: Restore persistent state from a snapshot archive
-      description: |
-        Accepts an archive produced by
-        `POST /zzrouter/v1/state/snapshot`, writes the files it carries
-        into the config directory, and reloads the matching in-memory
-        stores so the running node sees the restored state without a
-        restart.
-
-        Only the four snapshot filenames are accepted, and only as bare
-        names: an entry with a path in it is rejected rather than
-        written. Each entry is size-capped, so an admin-key holder
-        cannot post a decompression bomb.
-
-        Every entry is decoded and validated before anything is
-        written, then files are staged as siblings and renamed in a
-        fixed order. A crash mid-restore therefore leaves a
-        deterministic prefix applied, and re-posting the same archive
-        is the recovery.
-
-        Restoring a `keys.yaml` replaces the key set wholesale, which is
-        the one path that bypasses reserved-name validation. That is
-        deliberate: a round-trip has to reproduce what it captured.
-      requestBody:
-        required: true
-        content:
-          application/gzip:
-            schema: { type: string, format: binary }
-      responses:
-        '200':
-          description: |
-            Restored. `restored` names the files the archive actually
-            carried; a file absent from the archive is left untouched
-            rather than cleared.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [restored]
-                properties:
-                  restored:
-                    type: array
-                    items: { type: string }
-                    example: [keys.yaml, teams.yaml]
-        '400':
-          description: Not a valid gzip or tar, or it carries an entry outside the accepted set.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '413':
-          description: An entry exceeds the per-entry size cap.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '500':
-          description: |
-            Staging, renaming or reloading failed. Disk is consistent,
-            but in-memory state may be partially new: restart the node.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: This node has no config directory configured.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -8438,6 +8443,11 @@ paths:
       operationId: openaiCreateCompletion
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: OpenAI-compatible legacy text completion
+      description: |
+        Prompt accepts native text and token-ID batches. Omitted, null and empty
+        string prompts retain upstream default behavior. Arrays must be nonempty
+        and homogeneous; token IDs must be nonnegative integers. Valid bodies are
+        forwarded unchanged; supported prompt forms also depend on the provider.
       requestBody:
         required: true
         content:
@@ -8447,7 +8457,14 @@ paths:
               required: [model]
               properties:
                 model:      { type: string }
-                prompt:     { oneOf: [{ type: string }, { type: array, items: { type: string } }] }
+                prompt:
+                  oneOf:
+                    - { type: string, nullable: true }
+                    - { type: array, minItems: 1, items: { type: string } }
+                    - { type: array, minItems: 1, items: { type: integer, minimum: 0 } }
+                    - type: array
+                      minItems: 1
+                      items: { type: array, minItems: 1, items: { type: integer, minimum: 0 } }
                 stream:     { type: boolean, default: false }
                 max_tokens: { type: integer }
       parameters:
@@ -8712,9 +8729,15 @@ paths:
         The model resolves to native `responses` or translated `responses_compat`
         using per-model runtime endpoints before static provider capabilities.
         Translation dispatches Chat Completions and returns Responses JSON or
-        SSE. A previous_response_id with stored affinity keeps its provider;
-        image admission checks that pinned target without redirecting state.
-        Provider-only affinity with ambiguous matching models remains unknown.
+        SSE. Native stored responses (store omitted or true) require an
+        authenticated caller. Anonymous native requests must use store:false.
+        Stored IDs bind the caller and tenant to the pre-dispatch connection or
+        exact run. A previous_response_id never selects a default backend or
+        replacement run. Missing or cross-owner IDs return 404 response_not_found;
+        stale origins return 409 response_origin_unavailable; changing the original
+        caller model returns 409 response_model_mismatch. Image admission checks
+        that pinned target without redirecting state. Translated response IDs are
+        stateless and cannot be retrieved through the native resource routes.
 
         Image-bearing input is admitted before endpoint selection and replica
         fallback. Present vision replicas are preferred; when none is present,
@@ -8747,7 +8770,11 @@ paths:
         '400': { $ref: '#/components/responses/OpenAIBadRequest' }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
         '404': { $ref: '#/components/responses/OpenAINotFound' }
-        '409': { $ref: '#/components/responses/OpenAIModelNameConflict' }
+        '409':
+          description: Model naming or feature evidence conflicts, or a stored-response origin/model conflict. Branch on the returned code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OpenAIError' }
         '422':
           description: >
             The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
@@ -9154,19 +9181,18 @@ paths:
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: Mint an ephemeral realtime session
       description: |
-        HTTP helper for the Realtime API. The body carries a `model`
-        field used to route the request; everything else is forwarded
-        to the configured backend verbatim and the backend's response
-        is streamed back unchanged.
+        Uses openai_compat.realtime_backend and the same opaque forwarding
+        admission as the realtime WebSocket. Request and response bodies retain
+        native provider shapes. Model aliases and route groups do not apply.
+        Policies requiring model inspection or usage accounting are refused.
+        Later direct upstream sessions are not metered by zzRouter.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [model]
-              properties:
-                model: { type: string }
+              additionalProperties: true
       responses:
         '200':
           description: OK
@@ -9175,8 +9201,11 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OpenAIBadRequest' }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
+        '403': { $ref: '#/components/responses/OpenAIForbidden' }
+        '413': { $ref: '#/components/responses/OpenAIRequestTooLarge' }
         '429': { $ref: '#/components/responses/OpenAIRateLimit' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
+        '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
 
   /v1/realtime/transcription_sessions:
@@ -9186,17 +9215,18 @@ paths:
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: Mint a transcription-only realtime session
       description: |
-        HTTP helper mirroring /v1/realtime/sessions but for
-        transcription-only sessions.
+        Uses openai_compat.realtime_backend and the same opaque forwarding
+        admission as the realtime WebSocket. The native transcription session
+        body is unchanged and need not contain a root model field. Model aliases
+        and route groups do not apply. Policies requiring model inspection or
+        usage accounting are refused; later direct upstream sessions are not metered.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [model]
-              properties:
-                model: { type: string }
+              additionalProperties: true
       responses:
         '200':
           description: OK
@@ -9205,8 +9235,11 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OpenAIBadRequest' }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
+        '403': { $ref: '#/components/responses/OpenAIForbidden' }
+        '413': { $ref: '#/components/responses/OpenAIRequestTooLarge' }
         '429': { $ref: '#/components/responses/OpenAIRateLimit' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
+        '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
 
   /v1/realtime/client_secrets:
@@ -9216,17 +9249,19 @@ paths:
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: Mint a client secret for browser-initiated realtime sessions
       description: |
-        HTTP helper that issues a short-lived client secret. The body
-        carries a `model` field used to route the request.
+        Uses openai_compat.realtime_backend and the same opaque forwarding
+        admission as the realtime WebSocket. Forwards the native GA body,
+        including nested session.model, unchanged. A root model is not required.
+        Model aliases and route groups do not apply. Policies requiring model
+        inspection or usage accounting are refused. The returned secret can open
+        a direct upstream session that zzRouter does not meter.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [model]
-              properties:
-                model: { type: string }
+              additionalProperties: true
       responses:
         '200':
           description: OK
@@ -9235,8 +9270,11 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OpenAIBadRequest' }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
+        '403': { $ref: '#/components/responses/OpenAIForbidden' }
+        '413': { $ref: '#/components/responses/OpenAIRequestTooLarge' }
         '429': { $ref: '#/components/responses/OpenAIRateLimit' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
+        '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
 
   # =========================================================================
@@ -9281,24 +9319,28 @@ paths:
     get:
       tags: [OpenAICompat]
       operationId: openaiGetResponse
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires the authenticated owner of the stored native response. Uses the original connection or exact run; unknown or cross-owner IDs return 404 and unavailable origins return 409. Never routes to a default backend.
       summary: Retrieve a response (pass-through)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
         '404': { $ref: '#/components/responses/OpenAINotFound' }
+        '409': { $ref: '#/components/responses/ResponseOriginConflict' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
         '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
     delete:
       tags: [OpenAICompat]
       operationId: openaiDeleteResponse
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires the authenticated owner of the stored native response. Uses the original connection or exact run; unknown or cross-owner IDs return 404 and unavailable origins return 409. Never routes to a default backend.
       summary: Delete a response (pass-through)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
         '404': { $ref: '#/components/responses/OpenAINotFound' }
+        '409': { $ref: '#/components/responses/ResponseOriginConflict' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
         '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
@@ -9312,12 +9354,14 @@ paths:
     post:
       tags: [OpenAICompat]
       operationId: openaiCancelResponse
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires the authenticated owner of the stored native response. Uses the original connection or exact run; unknown or cross-owner IDs return 404 and unavailable origins return 409. Never routes to a default backend.
       summary: Cancel an in-progress response (pass-through)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
         '404': { $ref: '#/components/responses/OpenAINotFound' }
+        '409': { $ref: '#/components/responses/ResponseOriginConflict' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
         '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
@@ -9331,12 +9375,14 @@ paths:
     get:
       tags: [OpenAICompat]
       operationId: openaiListResponseInputItems
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires the authenticated owner of the stored native response. Uses the original connection or exact run; unknown or cross-owner IDs return 404 and unavailable origins return 409. Never routes to a default backend.
       summary: List input items for a response (pass-through)
       responses:
         '200': { description: OK, content: { application/json: { schema: { type: object } } } }
         '401': { $ref: '#/components/responses/OpenAIUnauthorized' }
         '404': { $ref: '#/components/responses/OpenAINotFound' }
+        '409': { $ref: '#/components/responses/ResponseOriginConflict' }
         '500': { $ref: '#/components/responses/OpenAIInternal' }
         '502': { $ref: '#/components/responses/OpenAIBadGateway' }
         '503': { $ref: '#/components/responses/OpenAIUnavailable' }
@@ -11150,6 +11196,7 @@ paths:
       operationId: ollamaGetVersion
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: Ollama version endpoint (required for Ollama CLI compat)
+      description: Returns engine version metadata. Route-restricted callers may complete this handshake when their provider policy permits Ollama; no model or account data is returned.
       responses:
         '200':
           description: OK
@@ -11174,7 +11221,9 @@ paths:
         configured the request is proxied through unchanged so the
         daemon's per-host keypair drives the response. When no upstream
         is configured the server synthesizes a 401 in the native Ollama
-        shape so the CLI's "endpoint exists" check still passes.
+        shape so the CLI's "endpoint exists" check still passes. Route-restricted
+        callers whose provider policy permits Ollama receive the same synthetic
+        401 without querying or exposing the upstream account.
       requestBody:
         required: false
         content:
@@ -11347,10 +11396,19 @@ paths:
         '502': { $ref: '#/components/responses/OllamaBadGateway' }
 
   /api/pull:
+    parameters:
+      - $ref: '#/components/parameters/OllamaNodeHeader'
     post:
       tags: [OllamaCompat]
       operationId: ollamaPull
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: |
+        Requires an administrator key even when compatible inference permits anonymous calls.
+        Existing provider and route policy still applies. X-Node and model@node select
+        the owner; if both are supplied they must match. Unknown or unreachable nodes
+        fail without local fallback. The Ollama API rejects ?node, file selectors and
+        qualifiers for another provider. Use the same X-Node on every blob check,
+        upload and create request in a worker import; earlier blobs are not moved.
       summary: Pull a model (native Ollama endpoint)
       requestBody:
         required: true
@@ -11365,15 +11423,25 @@ paths:
             application/json:     { schema: { type: object } }
         '400': { $ref: '#/components/responses/OllamaBadRequest' }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
         '502': { $ref: '#/components/responses/OllamaBadGateway' }
         '503': { $ref: '#/components/responses/OllamaUnavailable' }
 
   /api/create:
+    parameters:
+      - $ref: '#/components/parameters/OllamaNodeHeader'
     post:
       tags: [OllamaCompat]
       operationId: ollamaCreate
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: |
+        Requires an administrator key even when compatible inference permits anonymous calls.
+        Existing provider and route policy still applies. X-Node and model@node select
+        the owner; if both are supplied they must match. Unknown or unreachable nodes
+        fail without local fallback. The Ollama API rejects ?node, file selectors and
+        qualifiers for another provider. Use the same X-Node on every blob check,
+        upload and create request in a worker import; earlier blobs are not moved.
       summary: Create a model (Ollama shape, pass-through)
       requestBody:
         required: true
@@ -11388,6 +11456,7 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OllamaBadRequest' }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
         '502': { $ref: '#/components/responses/OllamaBadGateway' }
 
@@ -11395,7 +11464,8 @@ paths:
     delete:
       tags: [OllamaCompat]
       operationId: ollamaDelete
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires an administrator key even when compatible inference permits anonymous calls. User keys are refused. Existing provider and route policy still applies.
       summary: Delete a model (Ollama shape, pass-through)
       requestBody:
         required: true
@@ -11409,6 +11479,7 @@ paths:
             application/json:
               schema: { type: object }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '404': { $ref: '#/components/responses/OllamaNotFound' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
         '502': { $ref: '#/components/responses/OllamaBadGateway' }
@@ -11417,7 +11488,8 @@ paths:
     post:
       tags: [OllamaCompat]
       operationId: ollamaCopy
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires an administrator key even when compatible inference permits anonymous calls. User keys are refused. Existing provider and route policy still applies.
       summary: Copy a model (Ollama shape, pass-through)
       requestBody:
         required: true
@@ -11432,6 +11504,7 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OllamaBadRequest' }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '404': { $ref: '#/components/responses/OllamaNotFound' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
         '502': { $ref: '#/components/responses/OllamaBadGateway' }
@@ -11463,7 +11536,8 @@ paths:
     post:
       tags: [OllamaCompat]
       operationId: ollamaPush
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires an administrator key even when compatible inference permits anonymous calls. User keys are refused. Existing provider and route policy still applies.
       summary: Push a model to a registry (Ollama shape, pass-through)
       requestBody:
         required: true
@@ -11478,6 +11552,7 @@ paths:
             application/json:     { schema: { type: object } }
         '400': { $ref: '#/components/responses/OllamaBadRequest' }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '404':
           description: >
             No such model on this node.
@@ -11489,6 +11564,7 @@ paths:
 
   /api/blobs/{digest}:
     parameters:
+      - $ref: '#/components/parameters/OllamaNodeHeader'
       - in: path
         name: digest
         required: true
@@ -11499,14 +11575,20 @@ paths:
       operationId: ollamaCheckBlob
       security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
       summary: Check whether a blob exists
+      description: Uses X-Node for the selected owner; no selector uses local Ollama. Unknown or unreachable nodes fail without fallback. The Ollama API rejects ?node.
       responses:
         '200': { description: Blob exists. }
+        '400': { $ref: '#/components/responses/OllamaBadRequest' }
+        '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '404': { $ref: '#/components/responses/OllamaNotFound' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
+        '502': { $ref: '#/components/responses/OllamaBadGateway' }
     post:
       tags: [OllamaCompat]
       operationId: ollamaPushBlob
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }]
+      description: Requires an administrator key even when compatible inference permits anonymous calls. User keys are refused. Existing provider and route policy still applies.
       summary: Upload a blob (raw body)
       requestBody:
         required: true
@@ -11521,8 +11603,1664 @@ paths:
               schema: { type: object }
         '400': { $ref: '#/components/responses/OllamaBadRequest' }
         '401': { $ref: '#/components/responses/OllamaUnauthorized' }
+        '403': { $ref: '#/components/responses/OllamaForbidden' }
         '413': { $ref: '#/components/responses/OllamaRequestTooLarge' }
         '500': { $ref: '#/components/responses/OllamaInternal' }
+        '502': { $ref: '#/components/responses/OllamaBadGateway' }
+
+  "/zzrouter/v1/session/password":
+    post:
+      tags: ["Session"]
+      operationId: "passwordSession"
+      summary: "Sign in with a local account"
+      description: "Requires exact browser Origin and CSRF proof. Replaces the current session after password verification."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                username:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 64
+                password:
+                  type: "string"
+                  format: "password"
+                  minLength: 12
+                  maxLength: 128
+              required: ["username", "password"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/setup":
+    get:
+      tags: ["Access"]
+      operationId: "getOwnerSetup"
+      summary: "Read whether owner setup is complete"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security: []
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SetupState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+    post:
+      tags: ["Access"]
+      operationId: "claimOwner"
+      summary: "Create the first owner using a browser-bound setup grant"
+      description: >-
+        Requires a browser-bound setup grant. Account creation and code consumption are atomic. If session
+        persistence fails, sign in with the new account.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                token:
+                  type: "string"
+                  maxLength: 256
+                username:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 64
+                name:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 120
+                password:
+                  type: "string"
+                  format: "password"
+                  minLength: 12
+                  maxLength: 128
+              required: ["token", "username", "name", "password"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/console-grants":
+    post:
+      tags: ["Access"]
+      operationId: "createConsoleGrant"
+      summary: "Issue a short-lived console code for the authenticated identity"
+      description: >-
+        Only installation administrator authority can start initial owner setup. After setup, a grant
+        transfers the issuing identity without elevation. No secret appears in the console URL.
+      security:
+        - BrowserSession: []
+        - IdentityKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties: {}
+      responses:
+        "201":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConsoleGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/console-grants/exchange":
+    post:
+      tags: ["Access"]
+      operationId: "exchangeConsoleGrant"
+      summary: "Bind a code to this browser or sign in with its existing authority"
+      description: >-
+        Requires exact browser Origin and CSRF proof. Replaces a code with an in-memory browser-bound grant,
+        or creates a session for a session grant.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                token:
+                  type: "string"
+                  maxLength: 256
+              required: ["token"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConsoleExchange"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/invitations":
+    get:
+      tags: ["Access"]
+      operationId: "listPeopleInvitations"
+      summary: "List invitation and recovery grant status"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        type: "array"
+                        items:
+                          $ref: "#/components/schemas/AccessGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+    post:
+      tags: ["Access"]
+      operationId: "createPeopleInvitation"
+      summary: "Invite one person to a shared team"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                team_id:
+                  type: "string"
+                role:
+                  type: "string"
+                  enum: ["admin", "user"]
+                expires_in_hours:
+                  type: "integer"
+                  minimum: 1
+                  maximum: 168
+              required: ["team_id", "role"]
+      responses:
+        "201":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConsoleGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/invitations/{id}":
+    delete:
+      tags: ["Access"]
+      operationId: "revokePeopleInvitation"
+      summary: "Revoke a pending invitation"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+          description: "Server-generated person or grant identifier."
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/EmptyResult"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/invitations/inspect":
+    post:
+      tags: ["Access"]
+      operationId: "inspectPeopleInvitation"
+      summary: "Review invitation authority without consuming its token"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                token:
+                  type: "string"
+                  maxLength: 256
+              required: ["token"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/AccessGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/invitations/accept":
+    post:
+      tags: ["Access"]
+      operationId: "acceptPeopleInvitation"
+      summary: "Consume a browser-bound invitation and create an account"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                token:
+                  type: "string"
+                  maxLength: 256
+                username:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 64
+                name:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 120
+                password:
+                  type: "string"
+                  format: "password"
+                  minLength: 12
+                  maxLength: 128
+              required: ["token", "username", "name", "password"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/people":
+    get:
+      tags: ["Access"]
+      operationId: "listPeople"
+      summary: "List local people and their assigned teams"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        type: "array"
+                        items:
+                          $ref: "#/components/schemas/Person"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/people/{id}":
+    get:
+      tags: ["Access"]
+      operationId: "getPerson"
+      summary: "Read a local person without credential material"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+          description: "Server-generated person or grant identifier."
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Person"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+    patch:
+      tags: ["Access"]
+      operationId: "updatePerson"
+      summary: "Change mutable membership or suspension; the owner is protected"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+          description: "Server-generated person or grant identifier."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                name:
+                  type: "string"
+                  minLength: 1
+                  maxLength: 120
+                role:
+                  type: "string"
+                  enum: ["admin", "user"]
+                team_id:
+                  type: "string"
+                suspended:
+                  type: "boolean"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/Person"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/people/{id}/recovery":
+    post:
+      tags: ["Access"]
+      operationId: "createPersonRecovery"
+      summary: "Issue a single-use password reset for a nonowner person"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      parameters:
+        - name: "id"
+          in: "path"
+          required: true
+          schema:
+            type: "string"
+          description: "Server-generated person or grant identifier."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties: {}
+      responses:
+        "201":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConsoleGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/password":
+    post:
+      tags: ["Access"]
+      operationId: "changeOwnPassword"
+      summary: "Verify current password, change it and rotate the current session"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - IdentityKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                current_password:
+                  type: "string"
+                  format: "password"
+                password:
+                  type: "string"
+                  format: "password"
+                  minLength: 12
+                  maxLength: 128
+              required: ["current_password", "password"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/sessions/revoke":
+    post:
+      tags: ["Access"]
+      operationId: "revokeOtherPersonSessions"
+      summary: "Advance own credential revision and rotate the current session"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - IdentityKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties: {}
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/recovery/local":
+    post:
+      tags: ["Access"]
+      operationId: "beginLocalOwnerRecovery"
+      summary: "Prove host filesystem authority and issue owner recovery code"
+      description: "Coordinator with browser sign-in only. Called by `zzrouter access recover-owner` on the installed host: the local proof travels in the `X-Zzrouter-Local-Proof` header, never in the body, and every refused proof, peer or header answers the same `403`. The body is an empty object, limited to 8192 bytes."
+      security:
+        - LocalProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ConsoleGrant"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/recovery":
+    post:
+      tags: ["Access"]
+      operationId: "recoverPersonPassword"
+      summary: "Consume a browser-bound recovery grant and choose a password"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                token:
+                  type: "string"
+                  maxLength: 256
+                password:
+                  type: "string"
+                  format: "password"
+                  minLength: 12
+                  maxLength: 128
+              required: ["token", "password"]
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+  "/zzrouter/v1/access/onboarding":
+    get:
+      parameters:
+        - name: node
+          in: query
+          description: Restrict provider/model availability to this exact compute node. Persisted owner milestones remain global.
+          schema: {type: string}
+      tags: ["Access"]
+      operationId: "getAccessOnboarding"
+      summary: "Read setup choices, observed availability and successful-response evidence"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OnboardingProgress"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+    patch:
+      tags: ["Access"]
+      operationId: "updateAccessOnboarding"
+      summary: "Save only the current setup step or dismissal"
+      description: "Coordinator only. Browser mutations require exact Origin and CSRF proof. Request bodies are limited to 8192 bytes."
+      security:
+        - BrowserSession: []
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: "object"
+              additionalProperties: false
+              properties:
+                step:
+                  type: "string"
+                  enum: ["", "owner", "provider", "model", "test", "app", "complete"]
+                dismissed:
+                  type: "boolean"
+      responses:
+        "200":
+          description: "Success"
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OnboardingProgress"
+        "400":
+          $ref: "#/components/responses/Access400"
+        "401":
+          $ref: "#/components/responses/Access401"
+        "403":
+          $ref: "#/components/responses/Access403"
+        "409":
+          $ref: "#/components/responses/Access409"
+        "429":
+          $ref: "#/components/responses/Access429"
+        "503":
+          $ref: "#/components/responses/Access503"
+
+
+
+  /zzrouter/v1/access/audit:
+    get:
+      tags: [Access]
+      operationId: readAccessAudit
+      summary: Read recent committed access changes
+      description: >-
+        Administrator only, coordinator only. Reads the access history held in the coordinator's access store, newest
+        first. The optional filters combine: actor, subject and action match exactly, since and until bound the event
+        time. Pages run newest first by event time, ties in recorded order; an event's time is the coordinator's clock
+        when it was recorded. A cursor stays valid across new events and
+        restarts, under the filter that issued it. Every parameter takes
+        one nonempty value of at most 256 bytes. Protocol-level OAuth sign-in history is not included.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: cursor
+          description: The previous page's `next`, sent with the same filter parameters.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: actor
+          description: Exact actor, such as a person ID, an app key UUID or `static:admin`.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: subject
+          description: Exact subject, such as a key, team or person ID.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [key.created, key.updated, key.rotated, key.deleted, key.usage_reset, team.created, team.updated, team.deleted,
+              team.usage_reset, person.created, person.updated, person.password_changed, person.recovered,
+              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared, store.backup_created,
+              store.backup_exported, store.reset]
+        - in: query
+          name: since
+          description: Inclusive lower bound on the event time, an RFC 3339 date-time.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          description: Exclusive upper bound on the event time, an RFC 3339 date-time not before since.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: A bounded page of access history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/AuditPage' }
+        '400':
+          description: >-
+            A refused parameter, with one `errors` entry per key: `unknown_field` for a parameter this route does not
+            define, `invalid_value` for a repeated or empty parameter, an unknown action, a malformed time, a since
+            after until or an unparsable query string, `out_of_range` for a value over 256 bytes or a limit outside
+            1 to 100, `wrong_type` for a limit that is not an integer. `want` names what is accepted.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '409':
+          description: The cursor is malformed, another store issued it, or it was issued under different filters; read again without it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503': { $ref: '#/components/responses/Access503' }
+
+  /zzrouter/v1/system/recovery:
+    get:
+      tags: [System]
+      operationId: getRecoveryInventory
+      summary: Inspect this installation's recovery scope
+      description: Read-only administrator projection of daemon-resolved paths, included sources and separate dependencies. Contains no credential values. Backup and staged restore are offline local CLI operations, not HTTP operations.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        '200':
+          description: Current recovery inventory
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/RecoveryInventory' }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '503': { $ref: '#/components/responses/Access503' }
+
+  /zzrouter/v1/system/state:
+    get:
+      tags: [System]
+      operationId: getStoreState
+      summary: Read the access store's status and size
+      description: >-
+        Administrator only, coordinator only. Reports the access store's identity, revision and sequence, whether owner
+        setup is still required, its file sizes and the integrity check the coordinator ran when it opened the store. The
+        read runs no database query and never waits for an access write. The answer contains no filesystem path, secret
+        or database error. `GET /zzrouter/v1/system/recovery` still describes the whole installation.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        '200':
+          description: The access store's current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/StoreState' }
+              example:
+                success: true
+                message: Access store state retrieved successfully
+                data:
+                  store_id: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  generation: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  schema_version: 1
+                  revision: 3
+                  sequence: 4
+                  status: ready
+                  observed_at: '2026-11-19T08:14:15.584169Z'
+                  size: { database_bytes: 94208, journal_bytes: 0, free_page_bytes: 0, backup_bytes: 0 }
+                  integrity: { checked_at: '2026-11-19T08:14:15.331629Z', check: quick_check, outcome: ok }
+                  retained_copies: []
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator; a paired worker names the coordinator's host in `detail`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting. Read
+            again once it answers.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups:
+    get:
+      tags: [System]
+      operationId: listStateBackups
+      summary: List the access store's retained online backups
+      description: >-
+        Administrator only, coordinator only. Lists the retained online backups of the access store, newest first, from
+        the coordinator's index: no file is read. The answer carries no filesystem path or archive content. An archive
+        holds credential hashes and access policy, and no route serves its content.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        '200':
+          description: The retained online backups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, total, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/StateBackup' } }
+                  total: { type: integer, minimum: 0 }
+                  has_more: { type: boolean, enum: [false] }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    post:
+      tags: [System]
+      operationId: createStateBackup
+      summary: Back up the access store online
+      description: >-
+        Coordinator only, for an administrator or, from the installed host, the local operator's proof in the
+        `X-Zzrouter-Local-Proof` header. A request carrying that header, even empty, is judged by the proof alone and
+        never by an API key or session. Copies the access store at one committed revision while the coordinator serves, checks the copy
+        as a start would with SQLite's full integrity check, writes it as a `database` recovery archive, records one
+        `store.backup_created` access-history event and only then lists the archive. Access writes wait only while
+        the database is copied. A failed or interrupted backup lists nothing and leaves no file. The body is an empty
+        JSON object. The same Idempotency-Key and body replay the original `201` while the coordinator process lives;
+        a retry after a restart creates another backup. Every backup is kept for at least the 24-hour replay window;
+        past it the three newest are kept and none beyond seven days, within a 1 GiB cap.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+        - LocalProof: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '201':
+          description: The backup was checked, recorded and listed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateBackup' }
+        '400':
+          description: The body is not an empty JSON object.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the copy of the access database failed its check, so nothing was kept. The live
+            store may be damaged: stop the service and run `zzrouter-node recovery inventory`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_busy`: another process holds the access database; retry after `Retry-After`.
+            `access_store_failed`: the coordinator is restarting. `service_unavailable`: the coordinator is stopping;
+            retry after `Retry-After`. Nothing was kept.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '507':
+          description: >-
+            `state_backup_capacity_exceeded`, nothing kept. `capacity` is `byte_cap` when the retained backups, counting
+            only what retention keeps, reach the 1 GiB cap or leave no room for the written archive, with
+            `limit_bytes`, `retained_bytes` and `required_bytes` (0 when refused before the copy): wait for retention to
+            remove older backups (their `expires_at`), or take an offline backup with `zzrouter-node recovery backup`
+            while the node is stopped. It is `disk` when the disk had no room: free space on the coordinator, then
+            retry.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups/{id}:
+    get:
+      tags: [System]
+      operationId: getStateBackup
+      summary: Read one retained online backup
+      description: >-
+        Administrator only, coordinator only. The backup's metadata, the SHA-256 of its archive and when retention
+        removes it. No filesystem path or archive content.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The backup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/StateBackup' }
+              example:
+                success: true
+                message: Online backup retrieved successfully
+                data:
+                  id: 0f6b5f7e-3f0e-4d56-9a43-2f4f5b0f6c11
+                  created_at: '2026-11-19T08:20:01.104Z'
+                  size_bytes: 7208
+                  store_id: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  generation: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  schema_version: 1
+                  revision: 3
+                  sequence: 5
+                  readable: true
+                  sha256: 3b2c5e0f4b1d8e7a6c9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f
+                  protected_until: '2026-11-20T08:20:01.104Z'
+                  expires_at: '2026-11-26T08:20:01.104Z'
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or retention removed it. List the retained backups.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups/{id}/content:
+    get:
+      tags: [System]
+      operationId: exportStateBackup
+      summary: Download a retained online backup's archive
+      description: >-
+        Local operator only, coordinator only: the local proof in the `X-Zzrouter-Local-Proof` header, from an address
+        of the node's host; an API key or session alone is refused. Called by `zzrouter access state export`. Before the
+        first byte the coordinator checks the archive on the file it streams from, as `zzrouter-node recovery check`
+        does, and records one `store.backup_exported` access-history event; then it sends the whole archive. A
+        `Range` header is ignored. The archive holds credential hashes and access policy: the copy belongs to the
+        operator, who keeps it protected.
+      security:
+        - LocalProof: []
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The archive, a `database` recovery bundle.
+          headers:
+            Content-Disposition:
+              description: An attachment named `zzrouter-access-<creation time>-<first 8 characters of the id>.tar.gz`.
+              schema: { type: string }
+            Content-Length: { description: The archive's length., schema: { type: integer } }
+            Repr-Digest: { description: "The archive's SHA-256 (RFC 9530), as `sha-256=:<base64>:`.", schema: { type: string } }
+            Accept-Ranges: { description: Always `none`., schema: { type: string } }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or retention removed it.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: this backup's archive failed its check, or is not the archive the backup list
+            describes; nothing was sent and nothing recorded. The live access database is not involved: take a new
+            backup and export that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            The export could not be recorded (`access_store_busy`, `access_store_failed`, or `service_unavailable`
+            while the coordinator stops), so nothing was sent. Retry after `Retry-After`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/reset/preview:
+    post:
+      tags: [System]
+      operationId: previewStateReset
+      summary: Preview a reset of the access store
+      description: >-
+        Local operator only, coordinator only: the local proof in the `X-Zzrouter-Local-Proof` header, from an address
+        of the node's host; an API key or session alone is refused. Called by `zzrouter access state reset`. Names what
+        a reset removes from the current records (every app key, every team but the owner's, every person but the
+        owner, every grant and the onboarding progress) and what it keeps (the owner and the owner's team, with its
+        policy and spend). The backup must be retained, inside its `protected_until`, and hold the current revision;
+        the reset checks the same again before it commits. Changes nothing.
+      security:
+        - LocalProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [backup_id]
+              properties:
+                backup_id: { type: string, format: uuid, description: A retained online backup of the current records. }
+      responses:
+        '200':
+          description: What the reset removes and keeps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateResetPreview' }
+        '400':
+          description: The body is not a JSON object with `backup_id` and nothing else.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID. Take a new backup.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >-
+            `state_revision_changed`: the records changed after the backup was taken. `state_backup_unprotected`: the
+            backup is listed but past its `protected_until`, so it cannot back a reset. Either way, take a new backup
+            and preview again.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the backup's archive on disk failed its check or is not the one listed, so
+            nothing was previewed. The live access database is not involved: take a new backup and use that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: '`access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/reset:
+    post:
+      tags: [System]
+      operationId: resetState
+      summary: Reset the access store to its owner
+      description: >-
+        Local operator only, coordinator only, as the preview. Removes what the preview named, in one transaction with
+        one `store.reset` access-history event: every app key, every team but the owner's, every
+        person but the owner, every grant and the onboarding progress. The owner keeps their ID and password under a
+        new credential revision, so their sessions and delegated grants stop resolving; the owner's team keeps its
+        policy and spend. Without an owner nothing stays and owner setup stays open. The access history is kept.
+        Removed keys stop authenticating at once, and their spend and that of removed teams is purged. Before it
+        commits, the backup must still be retained, inside its `protected_until`, and hold the current revision, so
+        nothing changed since the preview and the backup can undo the reset. An optional Idempotency-Key replays the
+        `200` while the coordinator process lives; a repeat after the reset meets the changed revision with `409
+        state_revision_changed`, and the reset shows in the access history. To undo a reset, restore the backup it
+        names; the purged spend does not come back.
+      security:
+        - LocalProof: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [backup_id]
+              properties:
+                backup_id: { type: string, format: uuid, description: The backup the preview named. }
+      responses:
+        '200':
+          description: What the committed reset did
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateResetResult' }
+        '400':
+          description: The body is not a JSON object with `backup_id` and nothing else. Answered before the backup is judged.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID. Take a new backup and preview again.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >-
+            Nothing was reset. `state_revision_changed`: the records changed after the backup was taken; if this reset
+            was already sent, it shows in the access history as `store.reset`. `state_backup_unprotected`: the backup is
+            past its `protected_until`. Either way, take a new backup and preview again.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the backup's archive on disk failed its check or is not the one listed, so
+            nothing was reset. The live access database is not involved: take a new backup and use that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_busy`: another process holds the access database; retry after `Retry-After`.
+            `access_store_failed`: the coordinator is restarting; read the status before retrying. `service_unavailable`:
+            the coordinator is stopping. Nothing was reset unless the store failed.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/operations:
+    get:
+      tags: [Operations]
+      operationId: listOperations
+      summary: Discover provider operations
+      description: >-
+        Returns visible definition summaries and run evidence. No probes or launches.
+        The initial run_json_read adapter requires an administrator. Target evidence
+        does not guarantee that an installed engine implements the declared operation.
+      parameters:
+        - { $ref: '#/components/parameters/OperationProvider' }
+        - { $ref: '#/components/parameters/OperationNode' }
+        - { $ref: '#/components/parameters/OperationModel' }
+        - { $ref: '#/components/parameters/OperationRuntime' }
+        - { $ref: '#/components/parameters/OperationOffset' }
+        - { $ref: '#/components/parameters/OperationLimit' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationList' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /zzrouter/v1/operations/{id}:
+    get:
+      tags: [Operations]
+      operationId: describeOperation
+      summary: Read one provider operation definition
+      description: Returns input/output schemas and the current definition revision. Unknown or invisible operations return 404. Does not probe or start an engine.
+      parameters:
+        - { $ref: '#/components/parameters/OperationID' }
+        - { $ref: '#/components/parameters/OperationNode' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationDescription' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /zzrouter/v1/operations/{id}/execute:
+    post:
+      tags: [Operations]
+      operationId: executeOperation
+      summary: Execute a provider operation on an exact run
+      description: >-
+        Validates the envelope and declared input schema before dispatch. The owning
+        node rechecks definition and run revisions and acquires the existing instance
+        lease. No cold starts, automatic fallback, arbitrary URLs or caller-supplied
+        upstream headers. The JSON request and response are bounded to 1 MiB and
+        execution to 30 seconds. Streaming and binary output are unsupported.
+      parameters:
+        - { $ref: '#/components/parameters/OperationID' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderOperationRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationExecution' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '409': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '413': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '502': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '504': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /zzrouter/v1/connections:
+    get:
+      tags: [Connections]
+      operationId: listConnections
+      summary: Discover native and routed connections
+      description: >-
+        Read-only endpoint metadata for direct use, comparison or diagnostics. Does
+        not change listeners, start runs, reveal credentials or probe reachability.
+        A native loopback URL belongs to its named node. Stopped runs do not expose
+        live native endpoints. Direct calls use native authentication and bypass
+        zzRouter policy, accounting and logging.
+      parameters:
+        - { $ref: '#/components/parameters/OperationProvider' }
+        - { $ref: '#/components/parameters/OperationNode' }
+        - { $ref: '#/components/parameters/OperationModel' }
+        - { $ref: '#/components/parameters/OperationRuntime' }
+        - { $ref: '#/components/parameters/OperationRun' }
+        - { $ref: '#/components/parameters/OperationOffset' }
+        - { $ref: '#/components/parameters/OperationLimit' }
+      responses:
+        '200': { $ref: '#/components/responses/ConnectionList' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /inference/v1/operations:
+    get:
+      tags: [Operations]
+      operationId: listInferenceOperations
+      summary: Discover operations visible to a user
+      description: >-
+        Requires a User key. Administrator keys do not satisfy this audience.
+        Uses the same operation catalog as management. The initial adapter is
+        administrator-only, so this collection is empty until a user adapter exists.
+        Metadata cannot lower an adapter's required role.
+      security:
+        - InferenceBearer: []
+        - InferenceKey: []
+      parameters:
+        - { $ref: '#/components/parameters/OperationProvider' }
+        - { $ref: '#/components/parameters/OperationNode' }
+        - { $ref: '#/components/parameters/OperationModel' }
+        - { $ref: '#/components/parameters/OperationRuntime' }
+        - { $ref: '#/components/parameters/OperationOffset' }
+        - { $ref: '#/components/parameters/OperationLimit' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationList' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /inference/v1/operations/{id}:
+    get:
+      tags: [Operations]
+      operationId: describeInferenceOperation
+      summary: Read a user-visible operation definition
+      description: Requires a User key and operation visibility. The initial administrator diagnostic adapter is not visible here and returns 404.
+      security:
+        - InferenceBearer: []
+        - InferenceKey: []
+      parameters:
+        - { $ref: '#/components/parameters/OperationID' }
+        - { $ref: '#/components/parameters/OperationNode' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationDescription' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /inference/v1/operations/{id}/execute:
+    post:
+      tags: [Operations]
+      operationId: executeInferenceOperation
+      summary: Execute a user-visible provider operation
+      description: >-
+        Shares management execution and validation, with strict User audience and
+        operation visibility. Initial administrator diagnostics return 404 here.
+        No user execution adapter is enabled by this release.
+      security:
+        - InferenceBearer: []
+        - InferenceKey: []
+      parameters:
+        - { $ref: '#/components/parameters/OperationID' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderOperationRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/OperationExecution' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '409': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '413': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '502': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '504': { $ref: '#/components/responses/ProviderOperationProblem' }
+
+  /inference/v1/connections:
+    get:
+      tags: [Connections]
+      operationId: listInferenceConnections
+      summary: Discover connections visible to a user
+      description: >-
+        Requires a User key. Applies existing provider, model and route visibility
+        without inference quota admission or a new direct-access grant. Shares the
+        management connection projection and does not start runs or probe endpoints.
+        Reading an address does not transfer router credentials or enforce router
+        budgets on subsequent direct calls.
+      security:
+        - InferenceBearer: []
+        - InferenceKey: []
+      parameters:
+        - { $ref: '#/components/parameters/OperationProvider' }
+        - { $ref: '#/components/parameters/OperationNode' }
+        - { $ref: '#/components/parameters/OperationModel' }
+        - { $ref: '#/components/parameters/OperationRuntime' }
+        - { $ref: '#/components/parameters/OperationRun' }
+        - { $ref: '#/components/parameters/OperationOffset' }
+        - { $ref: '#/components/parameters/OperationLimit' }
+      responses:
+        '200': { $ref: '#/components/responses/ConnectionList' }
+        '400': { $ref: '#/components/responses/ProviderOperationProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '503': { $ref: '#/components/responses/ProviderOperationProblem' }
 
 components:
   securitySchemes:
@@ -11554,16 +13292,27 @@ components:
       in: header
       name: X-API-Key
       description: Admin API key for `/zzrouter/v1/*`.
+    LocalProof:
+      type: apiKey
+      in: header
+      name: X-Zzrouter-Local-Proof
+      description: >-
+        The running coordinator's local proof, read by the zzrouter client from the installation's protected
+        file and replaced at every node start. Accepted only from an address assigned to the node's host, on a
+        request with no Origin, Cookie, X-CSRF-Token, Sec-Fetch-*, Forwarded, Via, X-Forwarded-* or X-Real-IP
+        header. No API key or browser session substitutes for it, MCP tools cannot send it, and the node never
+        forwards it upstream.
     InferenceBearer:
       type: http
       scheme: bearer
       description: |
-        A key for the inference routes (/v1/*, /api/*): a virtual key from
+        A key for the inference routes (/v1/*, /api/*, /inference/v1/*): a virtual key from
         POST /zzrouter/v1/keys, or a static key. The `{}` alternative on
         these operations means a node may be configured to answer without
         one (auth.require_compat_auth: false, loopback nodes only by
         default); GET /zzrouter/v1 reports which in
-        data.authentication.compatible_apis.
+        data.authentication.compatible_apis. The /inference/v1 metadata routes
+        always require a User key and never allow anonymous or Administrator access.
     InferenceKey:
       type: apiKey
       in: header
@@ -11606,6 +13355,45 @@ components:
       schema: { type: string }
 
   parameters:
+    OperationID:
+      name: id
+      in: path
+      required: true
+      description: Provider-qualified operation identity, such as vllm.tokenize.
+      schema: { type: string }
+    OperationProvider:
+      name: provider
+      in: query
+      description: Exact provider configuration name.
+      schema: { type: string }
+    OperationNode:
+      name: node
+      in: query
+      description: Exact known node name, or '*' for all nodes. Addresses are not selectors. Omission selects all nodes.
+      schema: { type: string }
+    OperationModel:
+      name: model
+      in: query
+      description: Exact model identity from the run snapshot.
+      schema: { type: string }
+    OperationRuntime:
+      name: runtime
+      in: query
+      description: Exact runtime name from the run snapshot.
+      schema: { type: string }
+    OperationRun:
+      name: run_id
+      in: query
+      description: Exact run ID.
+      schema: { type: string }
+    OperationOffset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
+    OperationLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
     RestartParam:
       in: query
       name: restart
@@ -11616,6 +13404,12 @@ components:
         and it serves nothing until the model has loaded again. Without it,
         the response only reports the runs; nothing restarts.
       schema: { type: string, enum: [affected] }
+    OllamaNodeHeader:
+      in: header
+      name: X-Node
+      required: false
+      schema: { type: string }
+      description: Select an Ollama node by name. Omit for local ownership. Use the same header for blob checks, uploads and model creation throughout a worker import. Unknown or unreachable nodes fail without local fallback.
     NodeParam:
       in: query
       name: node
@@ -11676,6 +13470,102 @@ components:
       schema: { type: integer, minimum: 0, default: 0 }
 
   responses:
+    ProviderOperationProblem:
+      description: >-
+        RFC 9457 refusal. Invalid input is 400; invisible operation is 404;
+        stale definition, target mismatch or unavailable/replaced run is 409;
+        oversized input is 413; malformed or unsupported upstream output is 502.
+        Existing routing errors retain node and transport codes. Branch on code.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    OperationList:
+      description: Visible operations with definition revisions and target evidence.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - { $ref: '#/components/schemas/ListEnvelope' }
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProviderOperationSummary' }
+    OperationDescription:
+      description: One operation and its validated definition, including input/output schemas.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - { $ref: '#/components/schemas/SuccessEnvelope' }
+              - type: object
+                properties:
+                  data:
+                    allOf:
+                      - { $ref: '#/components/schemas/ProviderOperationSummary' }
+                      - type: object
+                        required: [definition]
+                        properties:
+                          definition: { $ref: '#/components/schemas/ProviderOperationDefinition' }
+    OperationExecution:
+      description: Validated JSON from the admitted exact run, with the definition and target actually used.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - { $ref: '#/components/schemas/SuccessEnvelope' }
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ProviderOperationResult' }
+    ConnectionList:
+      description: Authorized connection metadata. No credentials or claim of client reachability.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - { $ref: '#/components/schemas/ListEnvelope' }
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProviderConnectionInfo' }
+    Access400:
+      description: "Invalid fields, code or invitation."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Access401:
+      description: "Sign-in failed or required."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Access403:
+      description: "Origin, proof, role or owner protection refused."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Access409:
+      description: "Account or setup changed."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Access429:
+      description: "Attempt or record limit reached."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Access503:
+      description: "Persistence unavailable; inspect state before retrying."
+      content:
+        "application/problem+json":
+          schema:
+            $ref: "#/components/schemas/Problem"
+
     ProviderModelProblem:
       description: |
         RFC 9457 failure. 400 includes invalid_model_category, invalid_file_name,
@@ -11839,6 +13729,16 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/OllamaError' }
+    OllamaForbidden:
+      description: Administrator authority or existing provider policy refuses the operation.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OllamaError' }
+    ResponseOriginConflict:
+      description: The original provider connection or exact run is unavailable (response_origin_unavailable), or the continuation changes its caller model (response_model_mismatch). No replacement or fallback is selected.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/OpenAIError' }
     OllamaModelNameConflict:
       description: A configured variant name also identifies real weights; disambiguate the name.
       content:
@@ -11877,10 +13777,469 @@ components:
           schema: { $ref: '#/components/schemas/OllamaError' }
 
   schemas:
+    ProviderOperationTarget:
+      type: object
+      additionalProperties: false
+      required: [provider, node, run_id, model, runtime]
+      description: Exact identity copied from discovery. Model and runtime may be empty only when empty in the discovered target.
+      properties:
+        provider: { type: string, minLength: 1 }
+        node: { type: string, minLength: 1 }
+        run_id: { type: string, minLength: 1 }
+        model: { type: string }
+        runtime: { type: string }
+    ProviderOperationSummary:
+      type: object
+      required: [id, provider, version, definition_revision, description, audience, effect, target_scope, transport, targets]
+      properties:
+        id: { type: string, example: vllm.tokenize }
+        provider: { type: string }
+        version: { type: integer, enum: [1] }
+        definition_revision: { type: string }
+        description: { type: string }
+        audience: { type: string, enum: [admin] }
+        effect: { type: string, enum: [read] }
+        target_scope: { type: string, enum: [run] }
+        transport: { type: string, enum: [json] }
+        targets:
+          type: array
+          items:
+            type: object
+            required: [target, target_revision, state, availability, source]
+            properties:
+              target: { $ref: '#/components/schemas/ProviderOperationTarget' }
+              target_revision: { type: string }
+              state: { type: string }
+              availability: { type: string, enum: [unknown] }
+              source: { type: string, enum: [definition_and_run_snapshot] }
+    ProviderOperationDefinition:
+      type: object
+      additionalProperties: false
+      required: [version, description, adapter, audience, effect, target_scope, transport, binding, input_schema, output_schema, runtimes]
+      properties:
+        version: { type: integer, enum: [1] }
+        description: { type: string, minLength: 1, maxLength: 1024 }
+        adapter: { type: string, enum: [run_json_read] }
+        audience: { type: string, enum: [admin] }
+        effect: { type: string, enum: [read] }
+        target_scope: { type: string, enum: [run] }
+        transport: { type: string, enum: [json] }
+        binding:
+          type: object
+          additionalProperties: false
+          required: [method, path]
+          properties:
+            method: { type: string, enum: [GET, POST] }
+            path: { type: string, description: 'Fixed engine-relative path with no authority, query or fragment.' }
+        input_schema:
+          type: object
+          additionalProperties: true
+          description: Bounded JSON Schema with local references only, compiled when configuration is validated.
+        output_schema:
+          type: object
+          additionalProperties: true
+          description: Bounded JSON Schema validated against actual upstream JSON before returning it.
+        runtimes:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          items: { type: string }
+          description: Explicit runtime applicability. The name base represents the provider's base runtime.
+    ProviderOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [version, definition_revision, target, preconditions, input]
+      properties:
+        version: { type: integer, enum: [1] }
+        definition_revision: { type: string, minLength: 1 }
+        target: { $ref: '#/components/schemas/ProviderOperationTarget' }
+        preconditions:
+          type: object
+          additionalProperties: false
+          required: [target_revision]
+          properties:
+            target_revision: { type: string, minLength: 1 }
+        input:
+          description: JSON value validated by the selected operation's input_schema. Not an arbitrary URL, command or header override.
+    ProviderOperationResult:
+      type: object
+      required: [operation_id, version, definition_revision, target, target_revision, result_kind, result]
+      properties:
+        operation_id: { type: string }
+        version: { type: integer, enum: [1] }
+        definition_revision: { type: string }
+        target: { $ref: '#/components/schemas/ProviderOperationTarget' }
+        target_revision: { type: string }
+        result_kind: { type: string, enum: [json] }
+        result:
+          description: JSON value validated by the operation's output_schema.
+    ProviderConnectionInfo:
+      type: object
+      required: [provider, node, state, routed_urls, listener, native_authentication, routed_authentication, remote_reachability, evidence]
+      properties:
+        provider: { type: string }
+        node: { type: string }
+        run_id: { type: string }
+        model: { type: string }
+        runtime: { type: string }
+        target_revision: { type: string }
+        connection_revision: { type: string }
+        state: { type: string }
+        native_url:
+          type: string
+          description: Native engine base URL when known. User info, query and fragment are removed. Loopback refers to the named node.
+        routed_urls:
+          type: array
+          items: { type: string }
+          description: Router compatibility bases supported by the configured provider.
+        routes:
+          type: array
+          items: { type: string }
+          description: Visible route aliases whose destinations match this provider or run.
+        browser_proxy_url:
+          type: string
+          description: Existing authenticated native-browser proxy, present only when supported by the run.
+        browser_available: { type: boolean }
+        listener:
+          type: object
+          required: [scope, authentication, source]
+          properties:
+            url: { type: string }
+            host: { type: string }
+            scope: { type: string, description: 'Declared effective bind scope, or unknown.' }
+            authentication: { type: string }
+            source: { type: string }
+        native_authentication:
+          type: string
+          description: Native authentication requirement, or unknown. No credential value is returned.
+        routed_authentication: { type: string, enum: [zzrouter] }
+        remote_reachability: { type: string, enum: [unknown] }
+        evidence:
+          type: object
+          required: [source, observed_at]
+          properties:
+            source: { type: string }
+            observed_at: { type: string, format: date-time }
+
+    SetupState:
+      type: "object"
+      required: ["initialized"]
+      properties:
+        initialized:
+          type: "boolean"
+
+    Person:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        username:
+          type: "string"
+        name:
+          type: "string"
+        role:
+          type: "string"
+          enum: ["admin", "user"]
+        team_id:
+          type: "string"
+        owner:
+          type: "boolean"
+        suspended:
+          type: "boolean"
+        revision:
+          type: "string"
+        created_at:
+          type: "string"
+          format: "date-time"
+        updated_at:
+          type: "string"
+          format: "date-time"
+
+    AccessGrant:
+      type: "object"
+      properties:
+        id:
+          type: "string"
+        purpose:
+          type: "string"
+          enum: ["setup", "session", "invitation", "recovery"]
+        team_id:
+          type: "string"
+        role:
+          type: "string"
+        person_id:
+          type: "string"
+        created_at:
+          type: "string"
+          format: "date-time"
+        expires_at:
+          type: "string"
+          format: "date-time"
+        used_at:
+          type: "string"
+          format: "date-time"
+        revoked_at:
+          type: "string"
+          format: "date-time"
+        status:
+          type: "string"
+          enum: ["pending", "accepted", "expired", "revoked"]
+
+    ConsoleGrant:
+      allOf:
+        - $ref: "#/components/schemas/AccessGrant"
+        - type: "object"
+          properties:
+            token:
+              type: "string"
+              description: "Shown once. Never put in browser storage or logs."
+            url:
+              type: "string"
+              description: "Clean console URL, or a private invitation fragment URL."
+
+    ConsoleExchange:
+      oneOf:
+        - $ref: "#/components/schemas/ConsoleGrant"
+        - type: "object"
+          properties:
+            session:
+              type: "boolean"
+              enum: [true]
+
+    OnboardingProgress:
+      type: "object"
+      properties:
+        node:
+          type: "string"
+          description: "Selected node for provider/model availability, if requested."
+        step:
+          type: "string"
+          enum: ["", "owner", "provider", "model", "test", "app", "complete"]
+        dismissed:
+          type: "boolean"
+        provider_ready:
+          type: "boolean"
+          readOnly: true
+          description: "A provider is observed as available in the current local inventory or a healthy worker's authenticated inventory. Retained inventory from unhealthy or unobserved workers does not count."
+        model_ready:
+          type: "boolean"
+          readOnly: true
+          description: "The current published model cache contains a complete model matching an observed available provider and node. An invalid or unpopulated cache does not count. This does not prove successful inference."
+        response_verified:
+          type: "boolean"
+          readOnly: true
+          description: "The server recorded a successful routed response for the initial owner. Independent of current inventory availability."
+        app_connected:
+          type: "boolean"
+          readOnly: true
+        updated_at:
+          type: "string"
+          format: "date-time"
+
+    EmptyResult:
+      type: "object"
+      nullable: true
+
+    AuditPage:
+      type: object
+      required: [events]
+      properties:
+        next: { type: string, description: Opaque cursor for older records. Absent once the oldest record is on this page. }
+        events:
+          type: array
+          items:
+            type: object
+            required: [time, action, actor, subject]
+            properties:
+              time: { type: string, format: date-time }
+              action: { type: string }
+              actor: { type: string }
+              subject: { type: string }
+              request_id: { type: string }
+              metadata: { type: object, additionalProperties: true }
+    RecoveryInventory:
+      description: Daemon-resolved installation scope. Storage declaration changes require a fresh daemon inventory before backup.
+      type: object
+      required: [version, storage_config_sha256, release, platform, node, config_dir, data_dir, provider_dir, key_file, model_paths, sources, separate]
+      properties:
+        version: { type: integer }
+        storage_config_sha256: { type: string, description: Opaque drift guard for storage declarations; not an archive signature. }
+        release: { type: string }
+        platform: { type: string }
+        node: { type: string }
+        config_dir: { type: string }
+        data_dir: { type: string }
+        provider_dir: { type: string }
+        model_paths: { type: array, items: { type: string } }
+        key_file: { type: string, description: Local path only. The key value is never exposed. }
+        sources:
+          type: array
+          items:
+            type: object
+            required: [name, path, required]
+            properties:
+              name: { type: string }
+              required: { type: boolean, description: State observed by the node or current inventory; backup refuses it becoming unavailable. }
+              path: { type: string }
+              exclude: { type: array, items: { type: string } }
+        separate:
+          type: array
+          items:
+            type: object
+            required: [reason]
+            properties:
+              path: { type: string }
+              reason: { type: string }
+    StoreState:
+      description: The coordinator's access store, read without a database query. Contains no filesystem path, secret or database error.
+      type: object
+      additionalProperties: false
+      required: [store_id, generation, schema_version, revision, sequence, status, observed_at, size, integrity, retained_copies]
+      properties:
+        store_id: { type: string, description: Immutable identity of this installation's access store. }
+        generation: { type: string, description: Replaced when a restore publishes another copy of the store. }
+        schema_version: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 0, description: Advances with every change to keys, teams, people or invitations. }
+        sequence: { type: integer, minimum: 0, description: Advances with every commit, including one that records an audit event alone. }
+        status:
+          type: string
+          enum: [ready, setup_required]
+          description: '`setup_required` until the owner claims the installation. A store in any other state stopped the node at startup.'
+        observed_at: { type: string, format: date-time }
+        size:
+          type: object
+          additionalProperties: false
+          required: [database_bytes, journal_bytes, free_page_bytes, backup_bytes]
+          description: Integer bytes. File lengths are observations that may change during a write; `null` is a measurement the coordinator could not take.
+          properties:
+            database_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the main database file. }
+            journal_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the rollback journal, 0 outside a write. }
+            free_page_bytes: { type: integer, minimum: 0, nullable: true, description: Reusable space inside the database file, as the latest commit left it. }
+            backup_bytes: { type: integer, minimum: 0, description: Total bytes in retained online backups, separate from the live database. }
+        integrity:
+          type: object
+          additionalProperties: false
+          required: [checked_at, check, outcome]
+          description: The check the coordinator ran when it opened the store. A failed check stops the node at startup, so an answering coordinator reports `ok`.
+          properties:
+            checked_at: { type: string, format: date-time }
+            check: { type: string, enum: [quick_check], description: SQLite quick_check, followed by foreign_key_check. }
+            outcome: { type: string, enum: [ok] }
+        retained_copies:
+          type: array
+          description: >-
+            Copies of the access records the coordinator keeps beside the live database, which hold credential hashes:
+            online backups, then the rollback directories offline activations kept, each oldest first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, id, created_at, size_bytes]
+            properties:
+              kind:
+                type: string
+                enum: [online_backup, activation_rollback]
+                description: >-
+                  `online_backup`: a retained online backup. `activation_rollback`: what an offline activation
+                  replaced, kept in its rollback directory until the operator removes it.
+              id: { type: string, description: "The backup's ID, or the generation the activation published." }
+              created_at: { type: string, format: date-time }
+              size_bytes: { type: integer, minimum: 0 }
+              pending:
+                type: boolean
+                description: >-
+                  Present and true on the `activation_rollback` of an activation that did not finish, so the node does
+                  not start. Do not remove that directory; rolling the activation back needs it.
+        retained_copies_error:
+          type: string
+          description: Present, without a path, when retained copies could not be listed; the store's state still stands. The coordinator's log names the cause.
+    StateBackup:
+      description: >-
+        A retained online backup of the access store: a `database` recovery archive. No filesystem path or content.
+      type: object
+      additionalProperties: false
+      required: [id, created_at, size_bytes, store_id, generation, schema_version, revision, sequence, readable, sha256, protected_until, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        size_bytes: { type: integer, minimum: 0, description: Length of the archive. }
+        store_id: { type: string, description: "As the manifest names it: a bundle of another store copied in names that store." }
+        generation: { type: string }
+        schema_version: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 0, description: The store's revision the backup holds. }
+        sequence: { type: integer, minimum: 0, description: The store's sequence the backup holds; its own access-history event comes after it. }
+        readable: { type: boolean, description: The archive is at the schema version this release checks and restores. }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the archive's bytes. }
+        protected_until: { type: string, format: date-time, description: Creation plus the replay window; never removed before. }
+        expires_at:
+          type: string
+          format: date-time
+          description: When retention removes it; a newer backup can bring it forward, never back.
+    StateResetCounts:
+      type: object
+      additionalProperties: false
+      required: [app_keys, teams, people, grants]
+      properties:
+        app_keys: { type: integer, minimum: 0 }
+        teams: { type: integer, minimum: 0 }
+        people: { type: integer, minimum: 0 }
+        grants: { type: integer, minimum: 0, description: 'Invitation, sign-in and recovery grants, used or not.' }
+    StateResetPreview:
+      type: object
+      additionalProperties: false
+      required: [store_id, generation, revision, backup_id, removes, keeps]
+      properties:
+        store_id: { type: string }
+        generation: { type: string }
+        revision: { type: integer, minimum: 0, description: The revision previewed, which the backup holds. }
+        backup_id: { type: string, format: uuid }
+        removes: { $ref: '#/components/schemas/StateResetCounts' }
+        keeps:
+          description: The owner and the owner's team; null when no owner exists, so nothing stays and owner setup stays open.
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [owner_id, owner_username, team_id, team_name]
+          properties:
+            owner_id: { type: string }
+            owner_username: { type: string }
+            team_id: { type: string }
+            team_name: { type: string }
+    StateResetResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, created_at, backup_id, store_id, generation, old_revision, new_revision, sequence, removed]
+      properties:
+        operation_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        backup_id: { type: string, format: uuid, description: The backup to restore to undo the reset. }
+        store_id: { type: string }
+        generation: { type: string }
+        old_revision: { type: integer, minimum: 0 }
+        new_revision: { type: integer, minimum: 0 }
+        sequence: { type: integer, minimum: 0, description: The commit that reset the records. }
+        removed: { $ref: '#/components/schemas/StateResetCounts' }
+    TeamMembership:
+      type: object
+      description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.
+      required: [people, app_keys, invitations, enrollment_grants, owner_protected, can_delete, can_suspend]
+      properties:
+        people: { type: integer, minimum: 0 }
+        app_keys: { type: integer, minimum: 0 }
+        invitations: { type: integer, minimum: 0 }
+        enrollment_grants: { type: integer, minimum: 0, description: Pending setup or recovery grants, excluding invitations. }
+        owner_protected: { type: boolean }
+        can_delete: { type: boolean }
+        can_suspend: { type: boolean }
+
     BrowserSessionState:
       type: "object"
-      required: ["authenticated","csrf","issuer","node_name"]
+      required: ["authenticated","csrf","issuer","node_name","sharing"]
       properties:
+        sharing:
+          type: string
+          enum: [local_only, configured, unavailable]
+          description: Canonical issuer configuration only. Configured HTTPS does not prove remote reachability.
         authenticated:
           type: "boolean"
         csrf:
@@ -11901,6 +14260,9 @@ components:
       description: "Safe current identity and existing policy projection. No credential fingerprint, key metadata or installation configuration. Does not calculate a new permission policy."
       required: ["id","name","role","is_virtual","limits","team","usage"]
       properties:
+        kind: { type: string, enum: [key, person] }
+        username: { type: string }
+        owner: { type: boolean }
         id:
           type: "string"
         name:
@@ -11912,7 +14274,7 @@ components:
           type: "string"
         is_virtual:
           type: "boolean"
-          description: "True for a managed key; false for a startup key."
+          description: "True for a managed application key; false for a person or installation key."
         expires_at:
           type: "string"
           format: "date-time"
@@ -11925,9 +14287,9 @@ components:
               nullable: true
               enum: [null]
         usage:
-          description: "Own managed-key usage from KeysService, or null when unavailable. Never another key's usage."
+          description: "Own identity usage, or null when unavailable. Team usage is shared with all members."
           oneOf:
-            - $ref: "#/components/schemas/KeyUsage"
+            - $ref: "#/components/schemas/BrowserUsage"
             - type: "object"
               nullable: true
               enum: [null]
@@ -12045,10 +14407,10 @@ components:
       properties:
         status:
           type: "string"
-          enum: ["ok","failed"]
+          enum: ["ok","failed","unknown"]
         code:
           type: "string"
-          enum: ["accepted","invalid_endpoint","unreachable","upstream_rejected","authentication_failed","redirect_refused","rate_limited"]
+          enum: ["accepted","invalid_endpoint","unreachable","upstream_rejected","authentication_failed","redirect_refused","rate_limited","probe_unavailable"]
         http_status:
           type: "integer"
     ProviderConnectionApply:
@@ -12097,10 +14459,14 @@ components:
                 type: "string"
               input:
                 type: "string"
+                description: "Input types reported for this tag, or empty if unavailable."
               digest:
                 type: "string"
               is_cloud:
                 type: "boolean"
+              is_mlx:
+                type: "boolean"
+                description: "True when Ollama displays the MLX badge for this tag."
     ModelDiscovery:
       type: "object"
       required: ["provider","api_id","display_name"]
@@ -12138,6 +14504,11 @@ components:
         parameter_count:
           type: "integer"
           format: "int64"
+        parameter_sizes:
+          type: "array"
+          items:
+            type: "string"
+          description: "Parameter-size labels published by the registry."
         variant_count:
           type: "integer"
           format: "int64"
@@ -12202,8 +14573,8 @@ components:
         is_cloud: { type: boolean }
         configured: { type: boolean }
         enabled: { type: boolean }
-        discovery_available: { type: boolean }
-        discovery_supported: { type: boolean }
+        discovery_available: { type: boolean, description: Whether model listing is declared and its cloud connection resolves with the required credentials. This does not probe the catalog. }
+        discovery_supported: { type: boolean, description: Whether the cloud connection declares a model-list endpoint. }
     ProviderServiceStatus:
       type: object
       required: [provider, node, supervisor, managed, enabled, desired_running, running, healthy, manager]
@@ -13702,7 +16073,7 @@ components:
         model:     { type: string }
         format:    { type: string }
         registry:  { type: string }
-        file:      { type: string, description: Specific file for GGUF models. }
+        file:      { type: string, description: Selected Hugging Face weights file or Ollama version tag. }
         status:
           type: string
           enum: [pending, downloading, completed, failed, cancelled]
@@ -14185,6 +16556,33 @@ components:
         rpm_limit:    { type: integer, minimum: 0 }
         tpm_limit:    { type: integer, minimum: 0 }
 
+    BrowserUsage:
+      type: object
+      description: |
+        Current calendar-period usage for a virtual key. Mirrors
+        `internal/server/keys_service.go:KeyUsageResponse`. `reserved_usd`
+        reflects in-flight budget reservations that have not yet been
+        settled by the inference log bridge.
+      required: [ spend_usd, tokens_in, tokens_out, request_count, tracked]
+      properties:
+        tracked: { type: boolean, description: Whether this scope has a configured budget and a recorded ledger window. }
+        remaining_usd: { type: number, minimum: 0, description: Budget less current spending and reservations. Omitted when untracked. }
+        reset_at: { type: string, format: date-time, description: Next calendar reset in UTC. }
+        key_id:       { type: string }
+        person_id:    { type: string }
+        spend_usd:    { type: number, minimum: 0 }
+        reserved_usd: { type: number, minimum: 0 }
+        tokens_in:    { type: integer, format: int64, minimum: 0 }
+        tokens_out:   { type: integer, format: int64, minimum: 0 }
+        request_count: { type: integer, format: int64, minimum: 0 }
+        period_start: { type: string, format: date-time }
+        period:
+          type: string
+          enum: [daily, weekly, monthly]
+        spend_limit:  { type: number, minimum: 0 }
+        rpm_limit:    { type: integer, minimum: 0 }
+        tpm_limit:    { type: integer, minimum: 0 }
+
     SpendReport:
       type: object
       required: [keys, total_spend_usd]
@@ -14203,8 +16601,9 @@ components:
         member list. `kind` distinguishes the two flavors: `personal`
         teams are auto-created per key and can only have one owner;
         `shared` teams are admin-created and support multiple members.
-      required: [id, uuid, name, kind, suspended]
+      required: [id, uuid, name, kind, suspended, membership]
       properties:
+        membership: { $ref: "#/components/schemas/TeamMembership" }
         id:   { type: string }
         uuid: { type: string, format: uuid }
         name: { type: string }
@@ -15496,6 +17895,8 @@ components:
       type: object
       required: [status]
       properties:
+        transfer:
+          $ref: '#/components/schemas/PairingTransfer'
         status:
           type: string
           enum: [new, existing, cancelled, no_active_window]
@@ -15532,6 +17933,23 @@ components:
             delivered exactly once and then cleared. This is where a
             coordinator-side refusal surfaces, rather than as a generic
             "no active window".
+
+    PairingTransfer:
+      type: object
+      additionalProperties: false
+      description: >-
+        One-use pairing details to paste or upload for review on the coordinator.
+        The document is limited to 8192 bytes. The pinned enrollment protocol still
+        verifies the worker and code. Do not combine transfer with legacy fields.
+      required: [type, version, node_name, code, worker_url, worker_fingerprint, expires_at]
+      properties:
+        type: { type: string, enum: [zzrouter-pairing] }
+        version: { type: integer, enum: [1] }
+        node_name: { type: string }
+        code: { type: string }
+        worker_url: { type: string, format: uri }
+        worker_fingerprint: { type: string }
+        expires_at: { type: string, format: date-time }
 
     PairingAcceptance:
       type: object
@@ -15882,8 +18300,8 @@ components:
           description: Which API group the route belongs to.
         auth:
           type: string
-          enum: [none, optional, user, admin, cluster]
-          description: Credential tier the route expects.
+          enum: [none, optional, user, admin, cluster, local]
+          description: Credential tier the route expects. `local` routes take only the local proof (the `LocalProof` scheme); `zz_api` refuses them and discovery does not list them.
         streaming:
           type: string
           enum: [sse, chunked]
@@ -16321,7 +18739,9 @@ components:
           type: string
           description: Inference provider key. Omitted only when each target has one eligible provider.
         registry: { type: string }
-        file: { type: string }
+        file:
+          type: string
+          description: Hugging Face weights file or Ollama version tag. An explicit selection overrides a model suffix. The deployment reports the canonical model, including the selected Ollama tag.
         format: { type: string }
         force:
           type: boolean

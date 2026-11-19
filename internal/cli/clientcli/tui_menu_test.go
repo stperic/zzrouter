@@ -206,11 +206,13 @@ func TestMenuWelcomeCollapsesOnActivationAndStaysCompact(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			m := menuFixture(t)
 			m.menuWelcome = true
-			m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			frame := m.View().Content
+			logoTop, _, _ := strings.Cut(ui.BrandMark(m.styles), "\n")
+			require.Contains(t, frame, logoTop)
 			require.Contains(t, frame, "Local + cloud AI")
 			require.Contains(t, frame, "Manage", "the welcome must leave all top-level items visible")
-			require.LessOrEqual(t, lipgloss.Height(frame), 30)
+			require.LessOrEqual(t, lipgloss.Height(frame), 24)
 			require.LessOrEqual(t, lipgloss.Width(frame), 80)
 
 			// Selecting a row keeps mouse targets still until activation.
@@ -230,6 +232,8 @@ func TestMenuWelcomeCollapsesOnActivationAndStaysCompact(t *testing.T) {
 				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 			}
 			require.False(t, m.menuWelcome)
+			_, nextFrame := m.Update(menuLogoTickMsg{})
+			require.Nil(t, nextFrame, "an in-flight tick must stop after activation")
 			if strings.HasPrefix(action, "view") {
 				require.Equal(t, paneRoot, m.pane)
 				m.Update(tui.NavBackMsg{})
@@ -244,6 +248,27 @@ func TestMenuWelcomeCollapsesOnActivationAndStaysCompact(t *testing.T) {
 	}
 }
 
+func TestMenuLogoAnimationKeepsMenuRowsFixed(t *testing.T) {
+	m := menuFixture(t)
+	m.menuWelcome = true
+	m.menuLogoFrame = 1
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	first := m.menuMark()
+	final := ui.BrandMark(m.styles)
+	require.Contains(t, final, lipgloss.NewStyle().Foreground(lipgloss.Color("#d97757")).Render("▗▟▀"))
+	require.NotEqual(t, final, first, "the graphic starts partially drawn")
+	require.Equal(t, lipgloss.Width(final), lipgloss.Width(first))
+	require.Equal(t, lipgloss.Height(final), lipgloss.Height(first))
+	menuRow := strings.Count(m.menuHeader(), "\n")
+	for frame := 2; frame <= menuLogoFrames; frame++ {
+		_, cmd := m.Update(menuLogoTickMsg{})
+		require.Equal(t, frame < menuLogoFrames, cmd != nil)
+		require.Equal(t, menuRow, strings.Count(m.menuHeader(), "\n"))
+		require.Contains(t, m.View().Content, "Manage")
+	}
+	require.Equal(t, final, m.menuMark())
+}
+
 func TestShortMenuStartsCompactAndDoesNotShowWelcomeAfterUse(t *testing.T) {
 	m := menuFixture(t)
 	m.menuWelcome = true
@@ -251,6 +276,12 @@ func TestShortMenuStartsCompactAndDoesNotShowWelcomeAfterUse(t *testing.T) {
 	frame := m.View().Content
 	require.NotContains(t, frame, "Local + cloud AI")
 	require.LessOrEqual(t, lipgloss.Height(frame), 10)
+	require.LessOrEqual(t, lipgloss.Width(frame), 40)
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
+	frame = m.View().Content
+	require.Contains(t, frame, "Local + cloud AI")
+	require.Contains(t, frame, "Manage")
+	require.LessOrEqual(t, lipgloss.Height(frame), 24)
 	require.LessOrEqual(t, lipgloss.Width(frame), 40)
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m.Update(tea.WindowSizeMsg{Width: 100, Height: 36})

@@ -68,6 +68,67 @@ func TestAcceptedRecipeFinalizationFailureRollsBack(t *testing.T) {
 	}
 }
 
+func TestRecipePublishesSettledLifecycleBeforeJobCompletion(t *testing.T) {
+	for _, outcome := range []string{"install", "upgrade", "finalize failure", "panic"} {
+		t.Run(outcome, func(t *testing.T) {
+			isolateProviderRoot(t)
+			coord, fake, reg, cleanup := newAsyncTestCoord(t, "vllm")
+			defer cleanup()
+			action := "install"
+			if outcome == "upgrade" {
+				action = "upgrade"
+				fake.installed.Store(true)
+			}
+			published := make(chan string, 1)
+			coord.catalogChanged = func() {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				unlock, err := coord.acquireProvider(ctx, "vllm")
+				if err != nil {
+					published <- "published while provider was locked"
+					return
+				}
+				unlock()
+				published <- coord.Progress("vllm").Status
+			}
+			var rolledBack atomic.Bool
+			plan := &install.Plan{Provider: "vllm", Action: action, Version: "1", PlanID: "settled", Recipe: &install.RecipeSnapshot{},
+				Steps:    []install.Step{{Number: 1, PostExec: func(context.Context) error { return nil }}},
+				Rollback: func() error { rolledBack.Store(true); return nil }}
+			finalize := func() error {
+				switch outcome {
+				case "finalize failure":
+					return errors.New("save rejected")
+				case "panic":
+					panic("finalization panic")
+				default:
+					return nil
+				}
+			}
+			id, err := coord.ExecuteResolvedAsync(t.Context(), "vllm", plan, install.PlanOptions{Force: true}, -1, finalize)
+			require.NoError(t, err)
+			sub, err := reg.Subscribe(id, jobs.SubscribeOptions{})
+			require.NoError(t, err)
+			defer sub.Unsubscribe()
+			terminal := waitTerminal(t, sub.Events(), 3*time.Second)
+			expected := install.StatusCompleted
+			if outcome == "finalize failure" || outcome == "panic" {
+				expected = install.StatusFailed
+				require.Equal(t, jobs.PhaseFailed, terminal.Phase)
+				require.True(t, rolledBack.Load())
+			} else {
+				require.Equal(t, jobs.PhaseDone, terminal.Phase)
+			}
+			select {
+			case status := <-published:
+				require.Equal(t, expected, status)
+			default:
+				t.Fatal("job became terminal before publishing settled provider state")
+			}
+		})
+	}
+}
+
 type resolvedPlanInstaller struct {
 	*fakeInstaller
 	plan install.Plan

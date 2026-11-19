@@ -10,6 +10,7 @@ export async function providers(p, category = 'local', selectedKey, mode) {
   const categories = [['local', 'Local providers'], ['cloud', 'Cloud providers'], ['registries', 'Model registries']];
   if (!categories.some(([id]) => id === category)) category = 'local';
   let catalog, inventory, drawer;
+  let readVersion = 0;
   const list = el('div', { class: 'node-grid provider-grid', 'aria-label': 'Providers' });
   const listing = el('div', { class: 'entity-list' }, list);
   const workspace = el('div', { class: 'entity-workspace provider-workspace' }, listing);
@@ -29,21 +30,25 @@ export async function providers(p, category = 'local', selectedKey, mode) {
     if (!entry) { drawer.root.append(message('This provider is not defined on the coordinator. Providers reported only by a worker are configured on that node.', 'warning')); return; }
     await showProvider(drawer, entry, inventory, read);
   };
-  const read = async () => {
-    const fresh = await Promise.all([p.api.list('/providers/catalog?kind=all', { signal: p.scope.signal }), category !== 'registries' ? readInventory(p) : null]);
-    if (!p.current()) return;
+  const read = async (owner = p) => {
+    const version = ++readVersion;
+    const fresh = await Promise.all([p.api.list('/providers/catalog?kind=all', { signal: owner.scope.signal }), category === 'local' ? readInventory(owner) : null]);
+    if (!p.current() || !owner.current() || version !== readVersion) return;
     [catalog, inventory] = fresh;
     const entries = catalog.filter(entry => providerCategory(entry) === category);
     list.replaceChildren(...entries.map(entry => {
       const item = leaveButton('', () => p.go('providers', `${category}/${entry.key}`), p.api, 'network-item');
       item.setAttribute('data-selection', entry.key);
       item.dataset.provider = entry.key;
-      item.append(el('span', { class: 'network-item-title' }, providerName(entry.key, entry.name), badge(category === 'cloud' ? entry.available ? 'Configured' : 'Set up' : category === 'registries' ? 'Registry' : 'Local', category === 'cloud' && entry.available ? 'good' : '')),
-        text(providerObservationSummary(entry, inventory), 'muted'));
+      item.append(el('span', { class: 'network-item-title' }, providerName(entry.key, entry.name),
+        category === 'cloud' ? badge(entry.available ? 'Configured' : 'Set up', entry.available ? 'good' : '') : null));
+      const summary = providerObservationSummary(entry, inventory);
+      if (summary) item.append(text(summary, 'muted'));
       return item;
     }));
     if (!entries.length) list.append(message('No provider definitions in this category. Add provider configuration on the coordinator, then refresh.'));
     markSelection(list, selectedKey);
+    return inventory;
   };
   const refresh = async () => {
     if (!(p.canLeave?.() ?? p.api.canLeave())) return;
@@ -67,12 +72,16 @@ export async function providers(p, category = 'local', selectedKey, mode) {
 
 // Used by both the map and provider list; credentials remain coordinator-scoped.
 export async function showProvider(p, entry, inventory, onSaved) {
+  const refreshLocal = async owner => {
+    const fresh = await (onSaved ? onSaved(owner) : readInventory(owner));
+    if (owner.current() && fresh) inventory = fresh;
+  };
   const load = async (notice, tone) => {
     const revision = p.panel.revision;
     const current = () => p.panel.current() && p.panel.revision === revision && p.api.canLeave();
     const status = entry.connection_supported ? await p.api.data(`/providers/${encodeURIComponent(entry.key)}/connection`, { signal: p.panel.signal }) : null;
     if (!current()) return;
-    if (notice && onSaved) await onSaved(status);
+    if (notice && onSaved) await onSaved({ ...p, current, scope: { signal: p.panel.signal } });
     if (!current()) return;
     const reload = owner => async (notice, tone) => {
       if (inventory) inventory = await readInventory(owner);
@@ -87,28 +96,29 @@ export async function showProvider(p, entry, inventory, onSaved) {
         text('Configuration status does not verify access to the provider.', 'muted')) : null;
       if (status) reader.root.append(actions(badge(status.configured ? 'Configured' : 'Not configured', status.configured ? 'good' : ''), entry.is_cloud && status.configured ? badge(status.enabled ? 'Enabled' : 'Disabled') : null),
         facts(status.fields.map(spec => [spec.label, spec.secret ? status.present?.includes(spec.id) ? status.mode === 'managed' ? 'Saved' : 'Provided by installation' : 'Not set' : status.values?.[spec.id] || spec.default || 'Not set'])));
-      if (entry.is_cloud && status?.configured) {
-        const enabling = !status.enabled;
-        const enable = button(enabling ? 'Enable provider' : 'Disable provider', async () => {
-          if (enable.disabled || !reader.current() || !p.api.canChange()) return;
-          enable.disabled = true;
-          try {
-            await p.api.data(`/providers/${encodeURIComponent(entry.key)}`, { method: 'PATCH', body: { enabled: enabling }, signal: reader.scope.signal });
-            if (reader.current()) await readAfterWrite(reader, reload(reader), enabling ? 'Provider enabled.' : 'Provider disabled.');
-          } catch (error) {
-            if (reader.current()) await readAfterWrite(reader, reload(reader), problem(error), 'warning');
-          }
-        }, 'primary');
-        enable.setAttribute('data-protected-actions', '');
-        reader.root.append(actions(enable));
+      if (status?.configured) {
+        const diagnostic = el('div', { role: 'status', 'aria-live': 'polite' });
+        const controls = actions(storedConnectionTest(reader, entry, diagnostic));
+        if (entry.is_cloud) {
+          const enabling = !status.enabled;
+          const enable = button(enabling ? 'Enable provider' : 'Disable provider', async () => {
+            if (enable.disabled || !reader.current() || !p.api.canChange()) return;
+            enable.disabled = true;
+            try {
+              await p.api.data(`/providers/${encodeURIComponent(entry.key)}`, { method: 'PATCH', body: { enabled: enabling }, signal: reader.scope.signal });
+              if (reader.current()) await readAfterWrite(reader, reload(reader), enabling ? 'Provider enabled.' : 'Provider disabled.');
+            } catch (error) {
+              if (reader.current()) await readAfterWrite(reader, reload(reader), problem(error), 'warning');
+            }
+          }, enabling ? 'primary' : 'secondary');
+          enable.setAttribute('data-protected-actions', '');
+          controls.append(enable);
+        }
+        reader.root.append(controls, diagnostic);
       }
       if (!status && entry.is_cloud) reader.root.append(actions(badge(entry.available ? 'Configured' : 'Not configured')));
-      if (inventory && providerCategory(entry) === 'cloud') {
-        const locations = new Set([...(inventory[1].value || []).filter(row => row.name === entry.key && row.enabled).map(row => row.node), ...(inventory[0].value || []).filter(node => node.providers?.some(provider => provider.key === entry.key)).map(node => node.name)]);
-        (connectionDetails || reader.root).append(facts([['Enabled on', [...locations].join(', ') || (inventory.some(result => result.status === 'rejected') ? 'Node enablement unavailable' : 'No enabled nodes')]]));
-      }
       if (connectionDetails) reader.root.append(connectionDetails);
-      if (inventory && providerCategory(entry) === 'local') reader.root.append(providerControls(reader, entry, inventory, show), el('section', { class: 'access-section' }, el('h3', {}, 'Compute nodes'), nodeInventory(reader, inventory, entry)));
+      if (inventory && providerCategory(entry) === 'local') reader.root.append(providerControls(reader, entry, inventory, show, refreshLocal), el('section', { class: 'access-section' }, el('h3', {}, 'Compute nodes'), nodeInventory(reader, inventory, entry)));
       if (providerCategory(entry) === 'cloud') reader.root.append(leaveButton('Provider defaults', () => parameterSettings(reader.panel.view('Provider parameters'), { provider: entry.key, back: show }), p.api));
       if (!status && providerCategory(entry) !== 'local') reader.root.append(message('No editable connection fields are declared. Configure this connection on the coordinator.'));
     };
@@ -123,7 +133,46 @@ export async function showProvider(p, entry, inventory, onSaved) {
   };
   p.root.append(message('Loading provider details…'));
   try { await load(); }
-  catch (error) { if (p.current()) p.root.replaceChildren(providerName(entry.key, entry.name, 'h2'), problem(error), leaveButton('Reload details', () => showProvider(p, entry, inventory, onSaved), p.api), ...(inventory && providerCategory(entry) === 'local' ? [providerControls(p, entry, inventory, () => showProvider(p, entry, inventory, onSaved)), nodeInventory(p, inventory, entry)] : [])); }
+  catch (error) { if (p.current()) p.root.replaceChildren(providerName(entry.key, entry.name, 'h2'), problem(error), leaveButton('Reload details', () => showProvider(p, entry, inventory, onSaved), p.api), ...(inventory && providerCategory(entry) === 'local' ? [providerControls(p, entry, inventory, () => showProvider(p, entry, inventory, onSaved), refreshLocal), nodeInventory(p, inventory, entry)] : [])); }
+}
+
+function storedConnectionTest(p, entry, diagnostic) {
+  const test = button('Test connection', async () => {
+    if (test.disabled || !p.current() || !p.api.canChange()) return;
+    test.disabled = true;
+    test.setAttribute('aria-busy', 'true');
+    try { await testConnection(p, entry, diagnostic, { stored: true }); }
+    finally {
+      if (p.current()) { test.disabled = false; test.setAttribute('aria-busy', 'false'); }
+    }
+  });
+  test.setAttribute('data-protected-actions', '');
+  return test;
+}
+
+async function testConnection(p, entry, diagnostic, body) {
+  const unchanged = body.stored ? 'No settings were changed.' : 'Nothing was saved.';
+  diagnostic.replaceChildren(message('Testing connection…'));
+  try {
+    const result = await p.api.data(`/providers/${encodeURIComponent(entry.key)}/connection/test`, { method: 'POST', body, signal: p.scope.signal, effectful: false });
+    if (!p.current()) return false;
+    const success = result.status === 'ok';
+    const failures = {
+      probe_unavailable: body.stored ? 'This provider has no connection-test endpoint. Verify access with a model request.' : 'This provider has no connection-test endpoint. You can save the credentials, then verify them with a model request.',
+      authentication_failed: 'The provider rejected these credentials. Check that the key is complete, active, and belongs to this provider account.',
+      unreachable: 'Could not reach the provider. Check the address and the coordinator’s network connection.',
+      invalid_endpoint: 'Check the provider address and try again.',
+      rate_limited: 'The provider is limiting requests. Wait a moment and test again.',
+      redirect_refused: 'The provider redirected the request. Check its API address; credentials were not sent to the new address.',
+    };
+    const failure = result.http_status === 403 ? 'The provider denied access. Check the key’s permissions and your account’s access to this service.' : failures[result.code] || 'The provider did not accept the test. Check its settings and try again.';
+    diagnostic.replaceChildren(message(success ? body.stored ? 'Coordinator connection verified.' : 'Connection verified. Save to apply these credentials.' : `${failure}${result.http_status ? ` (HTTP ${result.http_status})` : ''} ${unchanged}`, success || result.status === 'unknown' ? '' : 'warning'));
+    if (entry.key === 'huggingface') diagnostic.append(text('A valid token may still need approval for a gated model. Public models do not require a token.', 'muted'));
+    return true;
+  } catch (error) {
+    if (p.current()) diagnostic.replaceChildren(message(`Could not complete the test. ${unchanged} ${error.status ? `HTTP ${error.status}.` : 'Check connectivity and try again.'}`, 'error'));
+    return false;
+  }
 }
 
 function connectionForm(p, entry, status, reload, cancel) {
@@ -131,7 +180,7 @@ function connectionForm(p, entry, status, reload, cancel) {
   const draft = p.trackDraft?.(form);
   const controls = el('fieldset', { 'data-protected-actions': true });
   const feedback = el('div', { 'aria-live': 'polite' });
-  const diagnostic = el('div', { 'aria-live': 'polite' });
+  const diagnostic = el('div', { role: 'status', 'aria-live': 'polite' });
   const values = new Map();
   const validation = formFeedback(form, feedback, key => values.get(key) || values.get(String(key).replace(/^values\./, '')));
   let tested = false;
@@ -180,25 +229,8 @@ function connectionForm(p, entry, status, reload, cancel) {
     controls.disabled = true;
     save.disabled = true;
     form.setAttribute('aria-busy', 'true');
-    diagnostic.replaceChildren(message('Testing connection…'));
-    try {
-      const result = await p.api.data(`/providers/${encodeURIComponent(entry.key)}/connection/test`, { method: 'POST', body: { values: candidate() }, signal: p.scope.signal, effectful: false });
-      if (!p.current()) return;
-      tested = true;
-      const success = result.status === 'ok';
-      const failures = {
-        authentication_failed: 'The provider rejected these credentials. Check that the key is complete, active, and belongs to this provider account.',
-        unreachable: 'Could not reach the provider. Check the address and the coordinator’s network connection.',
-        invalid_endpoint: 'Check the provider address and try again.',
-        rate_limited: 'The provider is limiting requests. Wait a moment and test again.',
-        redirect_refused: 'The provider redirected the request. Check its API address; credentials were not sent to the new address.',
-      };
-      const failure = result.http_status === 403 ? 'The provider denied access. Check the key’s permissions and your account’s access to this service.' : failures[result.code] || 'The provider did not accept the test. Check its settings and try again.';
-      diagnostic.replaceChildren(message(success ? 'Connection verified. Save to apply these credentials.' : `${failure}${result.http_status ? ` (HTTP ${result.http_status})` : ''} Nothing was saved.`, success ? '' : 'warning'));
-      if (entry.key === 'huggingface') diagnostic.append(text('A valid token may still need approval for a gated model. Public models do not require a token.', 'muted'));
-    } catch (error) {
-      if (p.current()) diagnostic.replaceChildren(message(`Could not complete the test. Nothing was saved. ${error.status ? `HTTP ${error.status}.` : 'Check connectivity and try again.'}`, 'error'));
-    } finally { if (p.current()) resetBusy(); }
+    try { tested = await testConnection(p, entry, diagnostic, { values: candidate() }); }
+    finally { if (p.current()) resetBusy(); }
   };
   const change = async (operation, activate = false) => {
     if (submission.blocked || !status.managed_available || controls.disabled || !p.current() || !p.api.canChange()) return;
@@ -237,8 +269,8 @@ function connectionForm(p, entry, status, reload, cancel) {
   writeButtons.push(save, remove, external);
   const advanced = el('details', { class: 'provider-advanced' }, el('summary', {}, 'Advanced settings'));
   if (!status.managed_available) {
-    controls.append(message('Saving is unavailable until secure credential storage is set up on the coordinator. You can still test a connection.', 'warning'));
-    advanced.append(text('Set security.credentials.key_file on the coordinator to a private encryption-key file, then restart it.', 'muted'));
+    controls.append(message('Protected credential storage is unavailable. Ask your administrator to inspect coordinator startup. You can still test a connection.', 'warning'));
+    advanced.append(text('Current installations prepare protected storage automatically. If an explicit security.credentials.key_file is configured, the administrator must provide that key.', 'muted'));
   }
   if (enable) {
     const saveOnly = button('Save without enabling', () => change('save'));

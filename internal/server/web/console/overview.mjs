@@ -10,11 +10,12 @@ import { providerName } from './provider-icons.mjs';
 import { showProvider } from './providers.mjs';
 import { memorySummary } from './observations.mjs';
 import { liveReads } from './live-reads.mjs';
+import { onboarding } from './onboarding.mjs';
 
 export async function overview(p, selection) {
   let snapshot, model, graph, drawer;
   let selected = selection;
-  let listMode = globalThis.matchMedia?.('(max-width: 650px)').matches || false;
+  let listMode = false;
   const branches = new Map();
   let graphFailed = false;
   let graphVersion = 0;
@@ -24,12 +25,7 @@ export async function overview(p, selection) {
   const graphStatus = el('div', { class: 'topology-status', role: 'status' }, 'Arranging your network…');
   const canvas = el('div', { class: 'topology-canvas', tabindex: '0', role: 'img', 'aria-label': 'Network topology. Use List view to select clients, nodes and providers with the keyboard.' });
   const list = el('div', { class: 'topology-list', hidden: true });
-  const zoomOut = button('−', () => graph?.zoom(0.8));
-  zoomOut.setAttribute('aria-label', 'Zoom out');
-  const zoomIn = button('+', () => graph?.zoom(1.25));
-  zoomIn.setAttribute('aria-label', 'Zoom in');
-  const fit = button('Fit', () => graph?.fit());
-  fit.setAttribute('aria-label', 'Fit network to view');
+  const center = button('Center map', () => graph?.center());
   const view = button('List view', () => setListMode(!listMode));
   const branch = button('', () => {
     const name = selected?.startsWith('node/') ? selected.slice(5) : undefined;
@@ -54,14 +50,16 @@ export async function overview(p, selection) {
   search.addEventListener('keydown', event => {
     if (event.key === 'Enter') { event.preventDefault(); matches.querySelector?.('button')?.focus(); }
   });
+  const viewHint = text('');
   const stage = el('section', { class: 'topology-stage entity-list', 'aria-label': 'Network map' },
     el('div', { class: 'topology-toolbar' }, search, actions(
-      leaveButton('+ Connect client', () => p.go('overview', 'connect'), p.api, 'link'), leaveButton('+ Cloud provider', () => p.go('providers', 'cloud'), p.api, 'link'), zoomOut, zoomIn, fit, view)),
+      leaveButton('+ Connect client', () => p.go('overview', 'connect'), p.api, 'link'), leaveButton('+ Cloud provider', () => p.go('providers', 'cloud'), p.api, 'link'), center, view)),
     el('div', { class: 'network-branch' }, branch), matches,
     graphStatus, canvas, list,
-    el('div', { class: 'topology-legend' }, el('span', {}, '● Healthy / active'), el('span', { class: 'legend-down' }, '● Down'), el('span', { class: 'legend-degraded' }, '● Degraded'), el('span', {}, '● Unknown / last observed'), text('Select a node to see its providers. Drag to pan.')));
+    el('div', { class: 'topology-legend' }, el('span', {}, '● Healthy / active'), el('span', { class: 'legend-down' }, '● Down'), el('span', { class: 'legend-degraded' }, '● Degraded'), el('span', {}, '● Unknown / last observed'), viewHint));
   const workspace = el('div', { class: 'network-workspace entity-workspace' }, stage);
   const body = el('div', { class: 'network-overview' }, counts, workspace);
+  const setup = el('div');
   const refreshButton = leaveButton('Refresh', async () => {
     if (!(p.canLeave?.() ?? p.api.canLeave())) return;
     if (graphFailed && graph) { graphFailed = false; view.disabled = false; }
@@ -70,10 +68,11 @@ export async function overview(p, selection) {
   }, p.api);
   const pause = button('Pause updates', () => live.toggle());
   p.root.append(heading('Overview', 'Your clients, coordinator and compute nodes.',
-    refreshButton, pause, leaveButton('+ Add node', () => p.go('overview', 'add'), p.api, 'primary')), feedback, body,
+    refreshButton, pause, leaveButton('+ Add compute node', () => p.go('overview', 'add'), p.api, 'primary')), feedback, setup, body,
     el('div', { class: 'network-footer' }, freshness,
       el('details', { class: 'network-caption network-help' }, el('summary', {}, 'About this view'),
         text('Memory shows used / total GiB. * marks last reported readings. A pulse means observed work. Health is the coordinator’s latest observation; configuration and authorization do not establish a live connection.'))));
+  void onboarding({ ...p, root: setup });
   const live = liveReads(p, readSnapshot, { interval: 15000, eligible: () => idle(), changed: () => {
     pause.textContent = live.paused ? 'Resume updates' : 'Pause updates';
     pause.setAttribute('aria-pressed', String(live.paused));
@@ -88,7 +87,10 @@ export async function overview(p, selection) {
     canvas.hidden = value;
     view.textContent = value ? 'Map view' : 'List view';
     view.setAttribute('aria-pressed', String(value));
-    for (const control of [zoomOut, zoomIn, fit]) { control.disabled = value || !graph; control.hidden = value; }
+    viewHint.textContent = value ? '' : 'Drag or swipe to pan. Select a node to see its providers.';
+    viewHint.hidden = value;
+    center.disabled = value || !graph;
+    center.hidden = value;
     updateGraph();
   }
 
@@ -111,10 +113,10 @@ export async function overview(p, selection) {
       if (before) (listMode ? [...list.querySelectorAll('[data-selection]')].find(item => item.getAttribute('data-selection') === before) : canvas)?.focus({ preventScroll: true });
       return;
     }
-    const title = next === 'add' ? 'Add node' : next === 'connect' ? 'Connect client' : next.startsWith('client/') ? 'Client details' : next.startsWith('cloud/') ? 'Cloud provider' : next.startsWith('local/') ? 'Local provider' : 'Node details';
+    const title = next === 'add' ? 'Add compute node' : next === 'connect' ? 'Connect client' : next.startsWith('client/') ? 'Client details' : next.startsWith('cloud/') ? 'Cloud provider' : next.startsWith('local/') ? 'Local provider' : 'Node details';
     const owner = details({ ...p, root: workspace, reloadNode: async name => {
       const revision = owner.panel.revision;
-      if (await read() && owner.panel.current() && owner.panel.revision === revision && p.api.canLeave()) { const selection = next.startsWith('local/') ? next : nodeKey(name); p.selectSection?.(selection); select(selection, true); }
+      if (await read() && owner.panel.current() && owner.panel.revision === revision && p.api.canLeave()) { const selection = name ? next.startsWith('local/') ? next : nodeKey(name) : undefined; p.selectSection?.(selection); select(selection, true); }
     } }, title, () => p.go('overview'));
     drawer = owner;
     if (next === 'add') addNode(owner);
@@ -152,13 +154,14 @@ export async function overview(p, selection) {
 
   function updateModel() {
     model = topologyData(snapshot, p.state.node_name);
-    for (const node of model.nodes) if (!branches.has(node.name)) branches.set(node.name, model.nodes.length <= 6 && canvas.clientHeight >= 560);
+    for (const node of model.nodes) if (!branches.has(node.name)) branches.set(node.name, false);
     const summary = nodeSummary(snapshot.inventory);
     counts.replaceChildren(...(summary ? [el('span', {}, el('strong', {}, `${summary.healthy} / ${summary.total}`), ' compute nodes healthy'),
       summary.down ? badge(`${summary.down} down`, 'bad') : null, summary.degraded ? badge(`${summary.degraded} degraded`, 'warn') : null,
       summary.unknown ? badge(`${summary.unknown} unknown`) : null] : [message('Node counts unavailable.', 'warning')]).filter(Boolean));
     const active = new Set(model.clients.filter(row => row.active_requests > 0).map(row => JSON.stringify([row.source, row.key_id]))).size;
-    counts.append(text(snapshot.clientResults[0].status === 'rejected' ? 'Client activity unavailable' : `${active} ${active === 1 ? 'key' : 'keys'} with active requests · ${model.clients.length} observed clients`, 'network-caption'));
+    const identityLabel = model.clients.some(row => row.source === 'person') ? active === 1 ? 'identity' : 'identities' : active === 1 ? 'key' : 'keys';
+    counts.append(text(snapshot.clientResults[0].status === 'rejected' ? 'Client activity unavailable' : `${active} ${identityLabel} with active requests · ${model.clients.length} observed clients`, 'network-caption'));
     list.replaceChildren(...['client', 'coordinator', 'compute', 'cloud'].map(kind => {
       const entries = model.elements.filter(element => element.data.kind === kind);
       if (!entries.length) return null;

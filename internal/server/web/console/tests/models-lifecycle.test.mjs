@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { details } from '../details.mjs';
 import { models, deleteModel } from '../models.mjs';
-import { deploymentForm, discoverModels } from '../model-discovery.mjs';
+import { deploymentForm, discoverModels, discoveryDetails } from '../model-discovery.mjs';
 import { modelKey, modelIdentity, modelQuery, modelInferenceTarget, discoveryKey, discoveryIdentity, nextSearchPage, searchPath, searchSelection, discoveryRows } from '../model-data.mjs';
 import { inspectDeployment } from '../deployments.mjs';
 import { acceptedInstallOptions, installReview, installProvider } from '../provider-install.mjs';
@@ -43,9 +43,21 @@ test('model identity retains the exact node/provider/registry/source, and opaque
 test('declared client filtering and sorting stay out of upstream query parameters', () => {
   const selection = searchSelection({ name: 'cloud', client_filter: true, client_sorts: ['price'] }, { query: 'model', sort: 'price' });
   assert.equal(selection.query, ''); assert.equal(selection.sort, '');
-  const results = ['missing', '2', '0'].map(price => ({ discovery: { api_id: 'model', price_prompt: price === 'missing' ? undefined : price } }));
+  const results = ['missing', '2', '0'].map((price, index) => ({ discovery: { provider: 'cloud', api_id: `model-${index}`, price_prompt: price === 'missing' ? undefined : price } }));
   assert.deepEqual(discoveryRows(results, selection).map(item => item.discovery.price_prompt), ['0', '2', undefined]);
   assert.equal(searchSelection({ name: 'registry' }, { sort: 'newest' }).sort, 'lastModified');
+});
+
+test('cloud discovery queries and sorts the full catalog despite legacy page hints', () => {
+  const source = { name: 'openai', is_cloud: true, client_filter: true, client_sorts: ['name', 'newest', 'price'] };
+  const name = searchSelection(source, { query: 'mini', sort: 'name' });
+  assert.equal(name.query, 'mini');
+  assert.equal(name.viewQuery, '');
+  assert.equal(name.viewSort, '');
+  assert.equal(name.sort, 'name');
+  assert.equal(name.order, 'asc');
+  assert.equal(searchSelection(source, { sort: 'newest' }).sort, 'date');
+  assert.equal(searchSelection(source, { sort: 'price' }).viewSort, 'price');
 });
 
 test('discovery pagination uses the server cursor and stale provider reads cannot replace newer results', async t => {
@@ -71,7 +83,47 @@ test('available selection opens exact details and preserves the local node when 
   const f = fixture(t, { list: async () => [model], data: async () => ({ model_info: { architecture: 'example' } }) });
   await models(f.p, modelKey(model));
   assert.match(f.root.textContent, /org\/model:Q4.*worker one/s);
+  assert.match(find(f.root, item => item.tag === 'dialog').textContent, /Model information.*architectureexample.*Storage.*Delete model/s);
   await click(f.root, 'Chat'); assert.deepEqual(f.routes.at(-1), ['chat', 'engine/' + model.name, model.node]);
+});
+
+test('cloud model details use catalog declarations without unsupported local detail requests or storage facts', async t => {
+  const cloud = { ...model, assigned_app: 'cloud-provider', node: 'coordinator', is_cloud: true,
+    details: { wire_endpoints: ['chat_completions', 'messages'], context_length: 8192 } };
+  const f = fixture(t, { list: async () => [cloud], data: async (path, options) => {
+    f.calls.push({ path, ...options }); throw new Error('Cloud model detail is unavailable');
+  } });
+  await models(f.p, modelKey(cloud));
+  assert.equal(f.calls.length, 0, 'cloud registration details need no local model-detail request');
+  const panel = find(f.root, item => item.tag === 'dialog');
+  assert.match(panel.textContent, /Providercloud-providerRegistration nodecoordinatorSourceorg\/modelSupported APIschat_completions, messages/s);
+  assert.ok(panel.textContent.includes('Context length' + (8192).toLocaleString()));
+  assert.match(panel.textContent, /configured cloud connection/);
+  assert.doesNotMatch(panel.textContent, /Size|Quantization|Format|Storage|Model information|unavailable|Not reported/);
+  await click(f.root, 'Try in Chat');
+  assert.deepEqual(f.routes.at(-1), ['chat', 'cloud-provider/' + cloud.name, cloud.node]);
+});
+
+test('cloud details omit absent capabilities instead of inventing local placeholders', async t => {
+  const cloud = { name: 'registered-model', assigned_app: 'cloud-provider', node: 'cloud', is_cloud: true };
+  const f = fixture(t, { list: async () => [cloud] });
+  await models(f.p, modelKey(cloud));
+  const panel = find(f.root, item => item.tag === 'dialog');
+  assert.doesNotMatch(panel.textContent, /Supported APIs|Context length|Source|Size|Quantization|Format|Not reported/);
+  assert.equal(f.calls.length, 0);
+});
+
+test('local model details still request the exact copy and show native diagnostic errors', async t => {
+  const f = fixture(t, { list: async () => [model], data: async (path, options) => {
+    f.calls.push({ path, ...options }); throw new Error('Local daemon is unavailable');
+  } });
+  await models(f.p, modelKey(model));
+  assert.equal(f.calls.length, 1);
+  const query = new URL(f.calls[0].path, 'https://router.example');
+  assert.equal(query.pathname, '/models/show');
+  assert.deepEqual(Object.fromEntries(query.searchParams), { ...Object.fromEntries(modelQuery(model)), verbose: 'true' });
+  const panel = find(f.root, item => item.tag === 'dialog');
+  assert.match(panel.textContent, /Size.*Format.*Quantization.*Local daemon is unavailable.*Storage.*Delete model/s);
 });
 
 test('inference target qualifies the selected provider and only omits the cloud sentinel node', () => {
@@ -85,11 +137,14 @@ test('same-name worker cloud model Chat and Test both target the selected provid
     f.calls.push({ url, ...options });
     return new Response('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
   } });
-  await models(f.p, modelKey(second)); await click(f.root, 'Chat');
+  await models(f.p, modelKey(second)); await click(f.root, 'Try in Chat');
   assert.deepEqual(f.routes.at(-1), ['chat', 'provider-b/shared', 'worker-cloud']);
   await click(f.root, 'Test model'); await click(f.root, 'Send test'); await drain();
   assert.equal(JSON.parse(f.calls[0].body).model, 'provider-b/shared');
   assert.equal(new Headers(f.calls[0].headers).get('X-Node'), 'worker-cloud');
+  const body = JSON.parse(f.calls[0].body);
+  for (const key of ['max_tokens', 'max_completion_tokens', 'temperature', 'top_p']) assert.equal(key in body, false, key);
+  assert.match(f.root.textContent, /OK/);
 });
 
 test('worker cloud model parameters retain the selected node-model scope', async t => {
@@ -178,24 +233,125 @@ test('late available model details cannot replace another panel view', async t =
   assert.doesNotMatch(f.root.textContent, /OLD PANEL/); assert.match(f.root.textContent, /Send test/);
 });
 
+const cloudDiscovery = { provider: 'cloud-fixture', api_id: 'remote-model', display_name: 'Remote model', is_cloud: true };
+const cloudRegistration = { name: cloudDiscovery.api_id, assigned_app: cloudDiscovery.provider, source_repo: cloudDiscovery.provider, node: 'coordinator', is_cloud: true };
+const cloudDeployment = { id: 'registration-1', model: cloudDiscovery.api_id, registry: cloudDiscovery.provider, status: 'completed', nodes: [{ node: cloudRegistration.node, status: 'completed' }] };
+
+test('cloud discovery adds directly, reads back the exact registration and opens Available with Try in Chat', async t => {
+  const f = fixture(t, { data: async (path, options = {}) => {
+    f.calls.push({ path, ...options });
+    if (path.startsWith('/models/card/')) return { discovery: cloudDiscovery };
+    if (path === '/deployments') return cloudDeployment;
+    return {};
+  }, list: async (path, options = {}) => {
+    f.calls.push({ path, ...options });
+    return [{ ...cloudRegistration, assigned_app: 'other-provider' }, { ...cloudRegistration, node: 'worker' }, cloudRegistration];
+  } });
+  f.p.computeNode = 'worker'; f.p.computeProvider = 'local-engine';
+  await discoveryDetails(f.owner(), { provider: cloudDiscovery.provider, api_id: cloudDiscovery.api_id });
+  await click(f.root, 'Add cloud model');
+  assert.doesNotMatch(f.root.textContent, /Review download|Target nodes|Local provider|Weights variant|Restart affected/);
+  assert.equal(button(f.root, 'Add cloud model').getAttribute('hidden'), undefined);
+  assert.equal(walk(f.root).filter(item => ['input', 'select'].includes(item.tag)).length, 0);
+  await submit(f.root);
+  const write = f.calls.find(call => call.method === 'POST');
+  assert.equal(write.path, '/deployments');
+  assert.deepEqual(write.body, { model: cloudDiscovery.api_id, registry: cloudDiscovery.provider });
+  assert.ok(write.idempotencyKey); assert.ok(write.signal);
+  const read = f.calls.find(call => call.path.startsWith('/models?'));
+  assert.deepEqual(Object.fromEntries(new URL(read.path, 'https://router.example').searchParams), { model: cloudDiscovery.api_id, provider: cloudDiscovery.provider, registry: cloudDiscovery.provider, node: 'coordinator' });
+  assert.deepEqual(f.routes.at(-1), ['models', modelKey(cloudRegistration), 'available', '', '']);
+  f.root.replaceChildren();
+  delete f.p.computeNode; delete f.p.computeProvider;
+  await models(f.p, f.routes.at(-1)[1], 'available');
+  await click(f.root, 'Try in Chat');
+  assert.deepEqual(f.routes.at(-1), ['chat', cloudDiscovery.provider + '/' + cloudDiscovery.api_id, 'coordinator']);
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
+});
+
+test('cloud Add respects protected permissions without issuing a deployment', async t => {
+  const f = fixture(t, { canChange: () => false });
+  await deploymentForm(f.owner(), cloudDiscovery, () => {});
+  await submit(f.root);
+  assert.equal(f.calls.length, 0); assert.equal(f.routes.length, 0);
+});
+
+test('pending and interrupted cloud Add cannot be submitted twice or shown as a download', async t => {
+  let reject;
+  const f = fixture(t, { data: async (path, options) => {
+    f.calls.push({ path, ...options });
+    return new Promise((_, fail) => { reject = fail; });
+  } });
+  await deploymentForm(f.owner(), cloudDiscovery, () => {});
+  const form = find(f.root, item => item.tag === 'form');
+  await submit(f.root); await submit(f.root);
+  assert.equal(f.calls.length, 1);
+  reject(Object.assign(new Error('Outcome unknown'), { uncertain: true })); await drain();
+  assert.match(f.root.textContent, /Outcome unknown.*Do not resubmit automatically/s);
+  assert.doesNotMatch(f.root.textContent, /[Dd]ownload|[Vv]ariant|[Tt]arget nodes/);
+  form.dispatchEvent(new Event('submit', { cancelable: true })); await drain();
+  assert.equal(f.calls.length, 1);
+  assert.equal(walk(f.root).some(item => item.tag === 'form'), false);
+  await click(f.root, 'Inspect Available models');
+  assert.deepEqual(f.routes.at(-1), ['models', undefined, 'available', '', '']);
+});
+
+test('cloud Add never substitutes a different provider or node after completed registration', async t => {
+  const f = fixture(t, { data: async () => cloudDeployment, list: async () => [{ ...cloudRegistration, node: 'worker' }, { ...cloudRegistration, assigned_app: 'other-provider' }] });
+  await deploymentForm(f.owner(), cloudDiscovery, () => {}); await submit(f.root);
+  assert.match(f.root.textContent, /model was added.*exact cloud model registration was not returned/s);
+  assert.equal(f.routes.length, 0);
+  assert.equal(walk(f.root).some(item => item.textContent === 'Try in Chat'), false);
+});
+
+test('failed cloud registration reports server failure without catalog success or a repeated write', async t => {
+  const f = fixture(t, { data: async (path, options) => { f.calls.push({ path, ...options }); return { ...cloudDeployment, status: 'failed', message: 'Registration failed', nodes: [{ node: 'coordinator', status: 'failed', error: 'Provider is disabled' }] }; } });
+  await deploymentForm(f.owner(), cloudDiscovery, () => {}); await submit(f.root);
+  assert.match(f.root.textContent, /Registration failed.*Provider is disabled/s);
+  assert.equal(f.calls.length, 1); assert.equal(f.routes.length, 0);
+});
+
 function downloadFixture(t, mutation) {
   const f = fixture(t, {
-    list: async path => path.startsWith('/providers/catalog') ? [{ key: 'engine', name: 'Engine', kind: 'on-demand' }] : [{ name: 'worker one', health_status: 'healthy' }, { name: 'unknown', health_status: 'down' }],
+    list: async path => path.startsWith('/providers/catalog') ? [
+      { key: 'engine', name: 'Engine', kind: 'on-demand' }, { key: 'unused', name: 'Unused engine', kind: 'on-demand' },
+    ] : ['worker one', 'unknown', 'offline', 'disabled', 'incompatible'].map(name => ({
+      name, health_status: name === 'offline' ? 'down' : 'healthy',
+      providers: [{ key: 'engine', state: name === 'disabled' ? 'dormant' : 'live' }],
+    })),
     data: async (path, options = {}) => {
       f.calls.push({ path, ...options });
       if (options.method === 'POST') return mutation(path, options);
-      if (path.startsWith('/registries/')) return { variants: [{ file: 'weights-Q4-00001-of-00002.gguf', quantization: 'Q4', shards: 2, size_human: '2 GiB' }], features: [{ feature: 'vision', file: 'projector.gguf', size_human: '1 GiB' }] };
+      if (path.startsWith('/registries/')) return { architecture: 'qwen2', variants: [{ file: 'weights-Q4-00001-of-00002.gguf', quantization: 'Q4', shards: 2, size_human: '2 GiB' }], features: [{ feature: 'vision', file: 'projector.gguf', size_human: '1 GiB' }] };
       if (path.startsWith('/deployments/')) return { id: 'download-1', model: discovery.api_id, status: 'completed', nodes: [{ node: 'unknown', status: 'completed' }] };
       return {};
     },
-    request: async path => ({ data: [], metadata: { assessments: [{ node: 'worker one', provider: 'engine', status: 'no_fit', reason: 'insufficient memory' }] } }),
+    request: async path => {
+      f.calls.push({ path });
+      return { data: [], metadata: { assessments: [
+        { node: 'worker one', provider: 'engine', status: 'no_fit', reason: 'insufficient memory' },
+        { node: 'unknown', provider: 'engine', status: 'unknown' },
+        { node: 'offline', provider: 'engine', status: 'fit' },
+        { node: 'disabled', provider: 'engine', status: 'fit' },
+        { node: 'incompatible', provider: 'engine', status: 'unknown', unknown_cause: 'provider_not_eligible' },
+      ] } };
+    },
   });
   return f;
 }
 async function chooseDownload(f) {
   await deploymentForm(f.owner(), discovery, () => {});
-  const provider = named(f.root, 'download_provider'); provider.value = 'engine'; provider.dispatchEvent(new Event('change')); await drain();
-  named(f.root, 'download_file').value = 'weights-Q4-00001-of-00002.gguf';
+  const provider = named(f.root, 'download_provider');
+  assert.deepEqual(provider.children.map(option => option.value), ['', 'engine']);
+  provider.value = 'engine'; provider.dispatchEvent(new Event('change')); await drain();
+  const nodeChoices = () => walk(f.root).filter(item => item.getAttribute('name')?.startsWith('node_')).map(item => item.getAttribute('name'));
+  assert.deepEqual(nodeChoices(), []);
+  const file = named(f.root, 'download_file');
+  file.value = 'weights-Q4-00001-of-00002.gguf'; file.dispatchEvent(new Event('change')); await drain();
+  assert.deepEqual(nodeChoices(), ['node_unknown']);
+  const query = new URL(f.calls.find(call => call.path.includes('/nodes/compatible')).path, 'http://fixture').searchParams;
+  assert.equal(query.get('format'), 'gguf');
+  assert.equal(query.get('architecture'), 'qwen2');
   named(f.root, 'node_unknown').checked = true;
   named(f.root, 'feature_vision').checked = true;
   await click(f.root, 'Review download');
@@ -204,11 +360,11 @@ async function chooseDownload(f) {
 test('download preserves explicit unknown-capacity node, grouped variant and optional feature selection', async t => {
   const f = downloadFixture(t, async () => ({ id: 'download-1', model: discovery.api_id, status: 'downloading', nodes: [{ node: 'unknown', status: 'downloading' }] }));
   await chooseDownload(f);
-  assert.match(f.root.textContent, /unknown.*capacity unknown/s);
+  assert.match(f.root.textContent, /unknown.*Memory fit has not been measured/s);
   assert.match(f.root.textContent, /2 shards/);
   await submit(f.root);
   const write = f.calls.find(call => call.method === 'POST');
-  assert.deepEqual(write.body, { model: 'org/model', registry: 'huggingface', provider: 'engine', nodes: ['unknown'], file: 'weights-Q4-00001-of-00002.gguf', features: ['vision'] });
+  assert.deepEqual(write.body, { model: 'org/model', registry: 'huggingface', provider: 'engine', nodes: ['unknown'], file: 'weights-Q4-00001-of-00002.gguf', format: 'gguf', features: ['vision'] });
   assert.match(f.root.textContent, /download-1/); assert.match(f.root.textContent, /completed/);
 });
 

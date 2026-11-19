@@ -59,7 +59,7 @@ func (ctrl *RegistriesController) ListHuggingFaceVariants(c *gin.Context) {
 		return
 	}
 
-	files, err := reg.ListHuggingFaceRepoFiles(c.Request.Context(), modelID)
+	listing, err := reg.ListHuggingFaceRepoFiles(c.Request.Context(), modelID)
 	if err != nil {
 		RespondToError(c, newProblemError(http.StatusBadGateway, "Bad Gateway",
 			fmt.Sprintf("fetch %s: %s", modelID, err)))
@@ -71,7 +71,8 @@ func (ctrl *RegistriesController) ListHuggingFaceVariants(c *gin.Context) {
 		BadRequest(c, fmt.Sprintf("provider %q is not configured; list providers with GET /zzrouter/v1/providers", c.Query("provider")))
 		return
 	}
-	resp := buildVariantsResponse(modelID, files, features)
+	resp := buildVariantsResponse(modelID, listing.Files, features)
+	resp.Architecture = listing.Architecture
 	respondSuccess(c, "HuggingFace variants retrieved", resp)
 }
 

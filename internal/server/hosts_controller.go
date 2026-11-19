@@ -66,9 +66,11 @@ func (ctrl *NodesController) ListCompatibleNodes(c *gin.Context) {
 	}
 
 	resp, err := ctrl.service.ListCompatibleNodes(c.Request.Context(), &ListCompatibleNodesRequest{
-		Model:    model,
-		Registry: QueryRegistry(c),
-		Provider: QueryProvider(c),
+		Model:        model,
+		Registry:     QueryRegistry(c),
+		Provider:     QueryProvider(c),
+		Format:       c.Query("format"),
+		Architecture: c.Query("architecture"),
 	})
 	if err != nil {
 		RespondToError(c, err)

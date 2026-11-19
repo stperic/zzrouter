@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	commonmcp "github.com/stperic/common/mcp"
+	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/observability"
 	"github.com/stretchr/testify/require"
@@ -62,6 +65,19 @@ func TestDispatchRemoteAddr(t *testing.T) {
 	require.Equal(t, "unauthorized", failure.problem.Code)
 }
 
+func TestDispatchPreservesIngressOriginForMetadata(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "coordinator.example:9443", r.Host)
+		require.Equal(t, "coordinator.example:9443", r.URL.Host)
+		require.Equal(t, "https", r.URL.Scheme)
+		writeFixture(t, w, []byte(`{}`))
+	})
+	d.outer.host, d.outer.scheme = "coordinator.example:9443", "https"
+	d.requestInfo.Header.Set("X-Forwarded-Host", "ignored.invalid")
+	var out any
+	require.NoError(t, d.call(t.Context(), request{method: http.MethodGet, path: requestPath{"/zzrouter/v1/connections"}}, &out))
+}
+
 func TestDispatchHeaderAllowlist(t *testing.T) {
 	dHeaderForwarded := []string{"203.0.113.1, 198.51.100.3", "198.51.100.4"}
 	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
@@ -75,9 +91,10 @@ func TestDispatchHeaderAllowlist(t *testing.T) {
 		require.Equal(t, "retry-1", r.Header.Get("Idempotency-Key"))
 		require.Equal(t, "revision-1", r.Header.Get("If-Match"))
 		require.Equal(t, "outer.1", r.Header.Get("X-Request-ID"))
+		require.ElementsMatch(t, []string{"X-Api-Key", "Authorization", "X-Forwarded-For", "X-Real-Ip", "Content-Type", "Idempotency-Key", "If-Match", "X-Request-Id"}, slices.Collect(maps.Keys(r.Header)), "the local proof and every other caller header stay outside")
 		writeFixture(t, w, []byte(`{}`))
 	})
-	d.requestInfo.Header = http.Header{"X-Api-Key": {testKey}, "Authorization": {"Bearer " + testKey}, "X-Cluster-Api-Key": {testKey}, "Cookie": {"secret=1"}, "X-Forwarded-For": dHeaderForwarded, "X-Real-Ip": {"203.0.113.2"}, "Content-Type": {"text/plain"}, "Idempotency-Key": {"outer-only"}, "If-Match": {"outer-only"}}
+	d.requestInfo.Header = http.Header{"X-Api-Key": {testKey}, "Authorization": {"Bearer " + testKey}, "X-Cluster-Api-Key": {testKey}, "Cookie": {"secret=1"}, "X-Forwarded-For": dHeaderForwarded, "X-Real-Ip": {"203.0.113.2"}, "Content-Type": {"text/plain"}, "Idempotency-Key": {"outer-only"}, "If-Match": {"outer-only"}, localproof.Header: {"local-proof-from-the-caller"}}
 	var out any
 	require.NoError(t, d.call(context.Background(), request{method: "PATCH", path: routePrefix("/test").path(), contentType: "application/merge-patch+json", idempotencyKey: "retry-1", ifMatch: "revision-1"}, &out))
 	// Caller headers alone cannot install concurrency or retry conditions.

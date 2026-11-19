@@ -7,6 +7,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/protocol/realtime"
 )
@@ -49,21 +51,8 @@ func (s *Server) registerRealtimeRoutes(openai *gin.RouterGroup) {
 }
 
 func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
-	backendKey := s.config.OpenAICompat.RealtimeBackend
-	if backendKey == "" {
-		s.responders.openai.Unavailable(c,
-			"/v1/realtime requires a backend to be configured. Set openai_compat.realtime_backend in node.yaml to a provider key that implements the Realtime WebSocket protocol.")
-		return
-	}
-
-	resolved, ok := s.backend.Resolve(backendKey)
+	backendKey, resolved, ok := s.realtimeTarget(c)
 	if !ok {
-		s.responders.openai.Unavailable(c,
-			"Configured realtime backend is not available. Check that the provider is enabled and exposes a running endpoint.")
-		return
-	}
-
-	if !s.admitOpaqueForward(c, "/v1/realtime", backendKey, resolved.Cloud) {
 		return
 	}
 	_, release, ok := s.enforceAndAttribute(c, "realtime /v1/realtime", nil, nil)
@@ -72,7 +61,7 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 	}
 	defer release()
 
-	upstreamURL, err := realtime.BuildUpstreamURL(resolved.Endpoint, c.Request)
+	upstreamURL, err := realtime.BuildUpstreamURL(resolved.InferenceTarget(c.Request.URL.Path, c.Request.URL.RawQuery))
 	if err != nil {
 		s.responders.openai.Internal(c, "realtime: build upstream url: "+err.Error())
 		return
@@ -123,6 +112,25 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 	defer func() { _ = clientConn.Close() }()
 
 	proxyRealtimeFrames(clientConn, upstream)
+}
+
+// realtimeTarget applies the same provider admission to sockets and session credentials.
+func (s *Server) realtimeTarget(c *gin.Context) (string, *backend.Resolved, bool) {
+	backendKey := s.config.OpenAICompat.RealtimeBackend
+	if backendKey == "" {
+		s.responders.openai.Unavailable(c,
+			"/v1/realtime requires a backend to be configured. Set openai_compat.realtime_backend in node.yaml to a provider key that implements the Realtime WebSocket protocol.")
+		return "", nil, false
+	}
+
+	resolved, ok := s.backend.Resolve(backendKey)
+	if !ok {
+		s.responders.openai.Unavailable(c,
+			"Configured realtime backend is not available. Check that the provider is enabled and exposes a running endpoint.")
+		return "", nil, false
+	}
+
+	return backendKey, resolved, s.admitOpaqueForward(c, "realtime "+c.Request.URL.Path, backendKey, resolved.Cloud)
 }
 
 // proxyRealtimeFrames pipes WebSocket messages in both directions
@@ -197,19 +205,25 @@ func (s *Server) writeRealtimeDialError(c *gin.Context, _ error, upstreamResp *h
 
 // handleRealtimeSession handles the HTTP POST helpers under /v1/realtime
 // (sessions / transcription_sessions / client_secrets). They are
-// ordinary JSON bodies carrying a model field, so the shared
-// model-field routing path handles them end-to-end.
+// native requests to the configured backend, including GA session.model.
 func (s *Server) handleRealtimeSession(c *gin.Context) {
-	var req OpenAIModelRoutingRequest
-	body, ok := readOpenAIBody(c, &req)
+	backendKey, resolved, ok := s.realtimeTarget(c)
 	if !ok {
 		return
 	}
-	if req.Model == "" {
-		param := "model"
-		OpenAIInvalidRequest(c, "Model field is required for routing", &param)
+	_, release, ok := s.enforceAndAttribute(c, "realtime "+c.Request.URL.Path, nil, nil)
+	defer release()
+	if !ok {
 		return
 	}
-	stashInferenceContext(c, req.Model, body)
-	s.resolveAndDispatchSimple(c, req.Model, body, "chat")
+	body, ok := s.readPassthroughBody(c)
+	if !ok {
+		return
+	}
+	if !json.Valid(body) {
+		OpenAIInvalidRequest(c, "Request body must be valid JSON", nil)
+		return
+	}
+	target := resolved.InferenceTarget(c.Request.URL.Path, c.Request.URL.RawQuery)
+	s.proxy.ForwardToBackend(c.Writer, c.Request, backendKey, target, resolved.Upstream, body)
 }

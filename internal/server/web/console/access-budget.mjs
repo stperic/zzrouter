@@ -15,7 +15,7 @@ export function budgetFields(record) {
   return {
     fields: { spend_limit: amount, reset_period: period },
     root: el('section', { class: 'access-section' }, el('h3', {}, 'Budget'), field('Spending', mode), values,
-      text('Shared by all keys in this team. Applies to priced requests across allowed providers. Free local requests can continue after a budget is used.', 'muted')),
+      text('Shared by all people and app keys in this team. Applies to priced requests across allowed providers. Free local requests can continue after a budget is used.', 'muted')),
     read: () => {
       if (mode.value === 'limited' && !(Number(amount.value) > 0)) throw invalidField('Enter a budget greater than $0, or choose No limit.', amount);
       return { spend_limit: mode.value === 'limited' ? Number(amount.value) : 0, reset_period: period.value };

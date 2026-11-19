@@ -581,12 +581,13 @@ func TestCatalogMutationOllamaPathsPublishBeforeSuccess(t *testing.T) {
 			})}
 			daemon := &backend.Resolved{Endpoint: "http://ollama.test", Upstream: backend.Engine()}
 			c, rec := mutationContext(t, http.MethodPost, path, OllamaManagementRequest{Model: "weights"})
+			setAccessContext(c, adminResponseOwner())
 			target.httpStreamingClient = client
 			if path == "/api/pull" {
 				s := &OllamaServiceImpl{ollamaDaemon: func() (*backend.Resolved, error) { return daemon, nil }, httpStreamingClient: client, publishCatalog: target.publishCatalog}
-				require.NoError(t, s.pullLocalProxy(c, "fresh", false, new(false)))
+				require.NoError(t, s.pullProxy(c, "", "fresh", false, new(false)))
 			} else {
-				s := &OllamaServiceImpl{ollamaDaemon: func() (*backend.Resolved, error) { return daemon, nil }, proxyToOllamaProvider: target.proxyToOllamaProvider, publishCatalog: target.publishCatalog}
+				s := &OllamaServiceImpl{ollamaDaemon: func() (*backend.Resolved, error) { return daemon, nil }, httpStreamingClient: client, proxyToOllamaProvider: target.proxyToOllamaProvider, publishCatalog: target.publishCatalog}
 				require.NoError(t, s.ManagementCommand(c, path, false))
 			}
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -620,12 +621,17 @@ func TestCatalogMutationOllamaCommandSelection(t *testing.T) {
 			s := &OllamaServiceImpl{
 				ollamaDaemon:   func() (*backend.Resolved, error) { return &backend.Resolved{}, nil },
 				publishCatalog: func() error { return nil },
+				httpStreamingClient: &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) {
+					called = true
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"status":"success"}`))}, nil
+				})},
 				proxyToOllamaProvider: func(_ *gin.Context, _ *backend.Resolved, _ string, _ []byte, publish func() error) {
 					called = true
 					require.Equal(t, command == "create" || command == "copy" || command == "delete", publish != nil)
 				},
 			}
 			c, _ := mutationContext(t, http.MethodPost, "/api/"+command, OllamaManagementRequest{Model: "weights"})
+			setAccessContext(c, adminResponseOwner())
 			require.NoError(t, s.ManagementCommand(c, "/api/"+command, false))
 			require.True(t, called)
 		})

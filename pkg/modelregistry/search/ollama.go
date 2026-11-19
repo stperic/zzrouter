@@ -13,21 +13,28 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // OllamaModelInfo represents information about an Ollama model
 type OllamaModelInfo struct {
-	Name       string        `json:"name"`
-	Model      string        `json:"model"`
-	ModifiedAt string        `json:"modified_at"` // Relative date string (e.g., "1 month ago")
-	DaysAgo    int           `json:"days_ago"`    // Days since last update (for sorting)
-	Size       int64         `json:"size"`
-	Digest     string        `json:"digest"`
-	Details    OllamaDetails `json:"details"`
-	Tags       int           `json:"tags"`      // Number of available versions/tags
-	Pulls      int           `json:"pulls"`     // Number of pulls/downloads
-	URL        string        `json:"url"`       // URL to model page for lazy loading details
-	HasCloud   bool          `json:"has_cloud"` // True if model has cloud-served variants
+	Capabilities   []string      `json:"capabilities,omitempty"`
+	ParameterSizes []string      `json:"parameter_sizes,omitempty"`
+	Description    string        `json:"description,omitempty"`
+	Name           string        `json:"name"`
+	Model          string        `json:"model"`
+	ModifiedAt     string        `json:"modified_at"` // Relative date string (e.g., "1 month ago")
+	UpdatedAt      time.Time     `json:"updated_at,omitzero"`
+	DaysAgo        int           `json:"days_ago"` // Days since last update (for sorting)
+	Size           int64         `json:"size"`
+	Digest         string        `json:"digest"`
+	Details        OllamaDetails `json:"details"`
+	Tags           int           `json:"tags"`      // Number of available versions/tags
+	Pulls          int           `json:"pulls"`     // Number of pulls/downloads
+	URL            string        `json:"url"`       // URL to model page for lazy loading details
+	HasCloud       bool          `json:"has_cloud"` // True if model has cloud-served variants
 }
 
 // OllamaDetails contains additional model details
@@ -118,12 +125,16 @@ func sortOllamaModels(models []OllamaModelInfo, sortBy string, direction int) []
 			return models[i].Pulls < models[j].Pulls // ascending
 		})
 	case "modified", "date", "updated", "newest":
-		sort.Slice(models, func(i, j int) bool {
-			// Use DaysAgo for proper sorting (lower = more recent)
-			if direction < 0 { // descending (newest first)
-				return models[i].DaysAgo < models[j].DaysAgo
+		now := utils.NowUTC()
+		sort.SliceStable(models, func(i, j int) bool {
+			left, right := ollamaUpdateTime(models[i], now), ollamaUpdateTime(models[j], now)
+			if left.IsZero() || right.IsZero() {
+				return !left.IsZero()
 			}
-			return models[i].DaysAgo > models[j].DaysAgo // ascending (oldest first)
+			if direction < 0 {
+				return left.After(right)
+			}
+			return left.Before(right)
 		})
 	case "size":
 		sort.Slice(models, func(i, j int) bool {
@@ -134,6 +145,16 @@ func sortOllamaModels(models []OllamaModelInfo, sortBy string, direction int) []
 		})
 	}
 	return models
+}
+
+func ollamaUpdateTime(model OllamaModelInfo, now time.Time) time.Time {
+	if !model.UpdatedAt.IsZero() {
+		return model.UpdatedAt
+	}
+	if model.DaysAgo == unknownOllamaAge {
+		return time.Time{}
+	}
+	return now.AddDate(0, 0, -model.DaysAgo)
 }
 
 // paginateOllamaModels applies pagination to Ollama models

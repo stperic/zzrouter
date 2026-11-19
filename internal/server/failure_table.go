@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -13,8 +15,17 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
+
+// accessStoreBusyRetryAfter suggests a retry once another lock holder has had
+// as long again as the store already waited for it.
+const accessStoreBusyRetryAfter = 5 * time.Second
+
+// accessStoreClosedRetryAfter covers a coordinator that closed its store to
+// stop, until its service manager has started it again.
+const accessStoreClosedRetryAfter = 5 * time.Second
 
 // failureRow is one decided answer; an empty code leaves each surface its generic one.
 type failureRow struct {
@@ -76,6 +87,16 @@ var failureTable = []failureRow{
 	// The daemon dropped the model: the next request loads it again.
 	{sentinel: prov_apps.ErrModelDropped, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrShutdown, status: http.StatusServiceUnavailable, code: ""},
+	// The node exits on this through its fatal path; the supervisor restarts it.
+	{sentinel: sqlstore.ErrFailed, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreFailed), message: "Access records are unavailable while this coordinator restarts. Retry once it answers again."},
+	{sentinel: sqlstore.ErrBusy, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreBusy), message: "Another process holds the access database, so the change was not made. Retry shortly.", retryAfter: accessStoreBusyRetryAfter},
+	{sentinel: access.ErrClosed, status: http.StatusServiceUnavailable, message: "This coordinator is stopping, so the request was not served. Retry once it answers again.", retryAfter: accessStoreClosedRetryAfter},
+	{sentinel: recovery.ErrBackupNotFound, status: http.StatusNotFound, code: string(httperr.CodeStateBackupNotFound), message: "No retained online backup has this ID. List the retained backups with zz_api_get operation listStateBackups and use one of their IDs."},
+	{sentinel: recovery.ErrImageCheck, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "The backup's copy of the access database failed its check, so nothing was kept. Stop the service and run zzrouter-node recovery inventory."},
+	{sentinel: recovery.ErrArchiveRefused, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "This backup's archive failed its check, so it was neither sent nor relied on; the live access database is not involved. Take a new backup and use that one."},
+	{status: http.StatusInsufficientStorage, code: string(httperr.CodeStateBackupCapacityExceeded), resolve: resolveBackupCapacity},
+	{sentinel: errStateRevisionChanged, status: http.StatusConflict, code: string(httperr.CodeStateRevisionChanged), message: "The access records changed after this backup was taken, so nothing was reset. Take a new backup and preview the reset with it. If this reset was already sent, it shows in the access history as store.reset."},
+	{sentinel: errBackupUnprotected, status: http.StatusConflict, code: string(httperr.CodeStateBackupUnprotected), message: "This backup is past its protected_until, so retention could remove it before it undoes the reset; it cannot back a reset. Take a new backup and preview the reset with it."},
 	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrPortUnavailable, status: http.StatusServiceUnavailable, code: ""},
@@ -96,6 +117,25 @@ func resolveCatalogPublication(err error, wire *httperr.Error) bool {
 	wire.Extra = map[string]any{"run_id": publication.RunID, "run_status": publication.Status, "catalog_publication": "failed"}
 	if publication.JobID != "" {
 		wire.Extra["job_id"] = publication.JobID
+	}
+	return true
+}
+
+// resolveBackupCapacity tells the byte cap, with its figures, from a full disk.
+func resolveBackupCapacity(err error, wire *httperr.Error) bool {
+	var full *recovery.CapacityError
+	if !errors.As(err, &full) {
+		return false
+	}
+	wire.Message = "The disk holding the coordinator's configuration has no room for a backup, so nothing was kept. Free space there, then retry."
+	wire.Extra = map[string]any{"capacity": "disk"}
+	if full.LimitBytes > 0 {
+		wire.Message = "Online backups have reached their byte cap, so nothing was kept. Wait for retention to remove older backups (each one's expires_at is in the backup list), or take an offline backup: stop the service and run zzrouter-node recovery backup."
+		// Waiting frees nothing when this archive alone is over the cap.
+		if full.RequiredBytes > full.LimitBytes {
+			wire.Message = "This backup alone is larger than the byte cap for online backups, so nothing was kept. Take an offline backup: stop the service and run zzrouter-node recovery backup."
+		}
+		wire.Extra = map[string]any{"capacity": "byte_cap", "limit_bytes": full.LimitBytes, "retained_bytes": full.RetainedBytes, "required_bytes": full.RequiredBytes}
 	}
 	return true
 }

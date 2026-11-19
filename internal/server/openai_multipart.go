@@ -63,7 +63,7 @@ func readOpenAIMultipartBody(c *gin.Context, maxBytes int64) (body []byte, model
 			code := "request_too_large"
 			c.JSON(http.StatusRequestEntityTooLarge, utils.NewOpenAIError(
 				"invalid_request_error",
-				fmt.Sprintf("Request body exceeds maximum upload size of %d bytes", maxBytes),
+				fmt.Sprintf("Request body exceeds maximum upload size of %d bytes", mbe.Limit),
 				nil, &code,
 			))
 			return nil, "", false

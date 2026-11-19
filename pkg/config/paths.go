@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 
 	"github.com/kirsle/configdir"
 )
@@ -35,6 +36,13 @@ const envTestHomeOverride = "ZZROUTER_TEST_HOME"
 // Config only. Data, cache and logs stay account-relative because they
 // are per-run artifacts rather than the identity of the node.
 const envConfigDirOverride = "ZZROUTER_CONFIG_DIR"
+
+// configDirFlag is the config root a command's --dir named (UseConfigDir).
+var configDirFlag atomic.Pointer[string]
+
+// UseConfigDir pins the config root to dir for the rest of the process, over
+// ZZROUTER_CONFIG_DIR, as start --dir does; "" removes the pin.
+func UseConfigDir(dir string) { configDirFlag.Store(&dir) }
 
 // PathResolver is the single source of truth for all zzRouter paths. Paths
 // are resolved lazily on each access so env-var overrides set after
@@ -132,6 +140,9 @@ func (p *PathResolver) buildLayout() pathLayout {
 	// account-relative default, on every platform.
 	if dir := os.Getenv(envConfigDirOverride); dir != "" {
 		layout.config = dir
+	}
+	if dir := configDirFlag.Load(); dir != nil && *dir != "" {
+		layout.config = *dir
 	}
 	return layout
 }

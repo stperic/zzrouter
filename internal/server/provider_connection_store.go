@@ -1,9 +1,8 @@
 package server
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/stperic/common/secrets"
@@ -12,17 +11,7 @@ import (
 
 func openProviderConnectionStore(cfg config.CredentialsConfig, dir string) (*secrets.Store, error) {
 	path := filepath.Join(dir, "credentials.enc")
-	if cfg.KeyFile == "" {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("existing protected connections require security.credentials.key_file")
-		}
-		return nil, nil
-	}
-	keyPath := cfg.KeyFile
-	if !filepath.IsAbs(keyPath) {
-		keyPath = filepath.Join(dir, keyPath)
-	}
-	key, err := secrets.LoadKeyFile(keyPath)
+	key, err := config.PrepareCredentialKey(context.Background(), dir, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load provider connection protection: %w", err)
 	}

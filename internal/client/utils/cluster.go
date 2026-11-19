@@ -1,7 +1,11 @@
 package client
 
 import (
+	"context"
 	"strings"
+
+	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
+	"github.com/stperic/zzrouter/pkg/utils"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
 )
@@ -36,4 +40,17 @@ func (c *Client) RemoveClusterEndpoint(address string) error {
 	addr := strings.TrimPrefix(address, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
 	return c.doJSON("DELETE", apipath.ClusterEndpoint(addr), nil, nil, "remove cluster endpoint")
+}
+
+// AcceptPairingTransfer sends an operator-reviewed document through the existing
+// coordinator enrollment operation. Validation never approves a machine by itself.
+func (c *Client) AcceptPairingTransfer(ctx context.Context, transfer clusternode.PairingTransfer) (*PairAcceptResult, error) {
+	if err := transfer.Validate(utils.NowUTC()); err != nil {
+		return nil, err
+	}
+	var out PairAcceptResult
+	if err := c.doContextJSON(ctx, "POST", apipath.ClusterPairingAccept, map[string]any{"transfer": transfer}, &out, "accept pairing document"); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

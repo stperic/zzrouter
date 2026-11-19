@@ -23,13 +23,17 @@ const health = node => ({ healthy: ['Healthy', 'good'], down: ['Down', 'bad'], d
 const serviceState = provider => provider?.running === false ? 'Service not running' : provider?.running === true ? 'Service running' : '';
 
 export function providerObservationSummary(entry, inventory) {
+  if (providerCategory(entry) === 'cloud') return '';
   if (!inventory) return entry.description || 'Model registry connection';
   const [nodes, providers] = inventory;
   const records = rowsFrom(providers).filter(row => row.name === entry.key);
-  const names = new Set([...records.map(row => row.node), ...rowsFrom(nodes).filter(node => node.providers?.some(row => row.key === entry.key)).map(node => node.name)].filter(Boolean));
+  const installed = new Set(records.filter(row => row.installed).map(row => row.node));
+  const names = new Set([...installed, ...records.filter(row => row.enabled).map(row => row.node),
+    ...rowsFrom(nodes).filter(node => node.providers?.some(row => row.key === entry.key)).map(node => node.name)].filter(Boolean));
   const enabled = new Set(records.filter(row => row.enabled).map(row => row.node)).size;
   const down = rowsFrom(nodes).filter(node => names.has(node.name) && node.health_status === 'down').length;
-  return [names.size ? `${names.size} reported ${names.size === 1 ? 'node' : 'nodes'}` : 'No reported instances',
+  return [names.size ? `${names.size} reported ${names.size === 1 ? 'node' : 'nodes'}` :
+    nodes.status === 'fulfilled' && providers.status === 'fulfilled' ? 'Setup required' : 'No provider instances confirmed',
     providers.status === 'fulfilled' ? `${enabled} enabled` : 'Enablement unavailable', down ? `${down} ${down === 1 ? 'node' : 'nodes'} down` : '',
     nodes.status === 'rejected' ? 'Node inventory incomplete' : ''].filter(Boolean).join(' · ');
 }
@@ -86,38 +90,5 @@ export function nodeInventory(p, [nodes, providers], entry) {
   }
   if (!knownNodes.length && nodes.status === 'fulfilled') root.append(message('No known nodes were returned.'));
   root.append(cards);
-  return root;
-}
-
-export function cloudInventory(p, catalog, [nodes, providers]) {
-  const root = card('Cloud services', text(`Credential configuration on ${p.state.node_name}. Configuration is not an upstream network test.`, 'muted'));
-  if (catalog.status === 'rejected') root.append(problem(catalog.reason));
-  const entries = rowsFrom(catalog).filter(entry => providerCategory(entry) === 'cloud');
-  const records = rowsFrom(providers).filter(row => providerCategory(row) === 'cloud');
-  const routed = rowsFrom(nodes).flatMap(node => (node.providers || []).filter(row => providerCategory(row) === 'cloud').map(row => ({ ...row, node: node.name })));
-  const names = new Set([...entries.filter(entry => entry.available).map(entry => entry.key), ...records.filter(row => row.enabled).map(row => row.name), ...routed.map(row => row.key)]);
-  if (catalog.status === 'fulfilled') {
-    const configured = entries.filter(entry => entry.available).length;
-    root.append(text(`${configured} of ${entries.length} cloud services configured; ${entries.length - configured} not configured on this coordinator.`, 'stat-label'));
-  }
-  for (const name of names) {
-    const entry = entries.find(entry => entry.key === name);
-    const scopes = new Set([...records.filter(row => row.name === name && row.enabled).map(row => row.node), ...routed.filter(row => row.key === name).map(row => row.node)]);
-    const configuration = entry
-      ? (entry.available ? 'Configured on coordinator' : 'Not configured on coordinator')
-      : catalog.status === 'fulfilled' ? 'Not defined on coordinator' : 'Coordinator configuration unavailable';
-    const row = el('div', { class: 'inventory-row' }, el('h3', {}, entry?.name || routed.find(row => row.key === name)?.name || name),
-      badge(configuration, entry?.available ? 'good' : ''));
-    for (const scope of scopes) {
-      const node = rowsFrom(nodes).find(node => node.name === scope);
-      const record = records.find(row => row.name === name && row.node === scope);
-      row.append(text(`${scope || 'Node not reported'}: ${record ? (record.enabled ? 'enabled' : 'disabled') : 'listed by node; enablement unavailable'}${!node || stale(node) ? ' (last reported)' : ''}`, 'muted'));
-    }
-    if (!scopes.size) row.append(text(nodes.status === 'rejected' || providers.status === 'rejected' ? 'Node enablement unavailable.' : 'No node reports this service enabled.', 'muted'));
-    root.append(row);
-  }
-  if (providers.status === 'rejected') root.append(message('Node enablement is unavailable.', 'warning'));
-  if (!names.size) root.append(text([catalog, nodes, providers].some(result => result.status === 'rejected') ? 'Cloud service status unavailable.' : 'No configured or enabled cloud services reported.', 'muted'));
-  root.append(leaveButton('Manage cloud providers', () => p.go('providers', 'cloud'), p.api, 'link'));
   return root;
 }

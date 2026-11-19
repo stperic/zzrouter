@@ -30,6 +30,36 @@ async function choose(f, key, edit = false) {
 }
 async function submit(root) { find(root, node => node.tag === 'form').dispatchEvent(new Event('submit', { cancelable: true })); await drain(); }
 
+test('late runtime inventory cannot replace a newer provider card or Back details', async t => {
+  const f = fixture(t);
+  const list = f.p.api.list;
+  let enabled = false, hold = false, release, oldSignal;
+  f.p.api.list = (path, options) => {
+    if (path !== '/providers') return list(path, options);
+    const rows = [{ name: 'engine-a', node: 'atlas', kind: 'external', installed: true, enabled }];
+    if (!hold) return Promise.resolve(rows);
+    hold = false; oldSignal = options.signal;
+    return new Promise(resolve => { release = () => resolve(rows); });
+  };
+  f.p.api.data = async path => path.endsWith('/connection') ? schema : { installed: true, enabled, state: enabled ? 'live' : 'dormant' };
+  const click = async label => { button(f.root, label).dispatchEvent(new Event('click')); await drain(); };
+  const manage = async () => { named(f.root, 'provider_node').value = 'atlas'; await click('Manage runtime'); };
+  await providers(f.p, 'local'); await choose(f, 'engine-a');
+  hold = true;
+  await manage();
+  assert.ok(release);
+  await click('Back');
+  assert.equal(oldSignal.aborted, true, 'the inventory read belongs to its runtime view');
+  enabled = true;
+  await manage();
+  const card = () => find(f.root, node => node.dataset.provider === 'engine-a');
+  assert.match(card().textContent, /1 enabled/);
+  release(); await drain();
+  assert.match(card().textContent, /1 enabled/, 'older reads cannot overwrite newer card state');
+  await click('Back');
+  assert.match(find(f.root, node => node.tag === 'dialog').textContent, /atlas.*EnabledInstalled/s, 'Back uses the same fresh inventory');
+});
+
 test('provider lists do not automatically select or expose credentials; categories remain separate', async t => {
   const f = fixture(t); await providers(f.p);
   assert.deepEqual(walk(f.root).filter(node => node.dataset.provider).map(node => node.dataset.provider), ['engine-a']);
@@ -226,6 +256,7 @@ test('cloud connection read failures show recovery without unrelated local-node 
 
 for (const [result, expected] of [
   [{ status: 'ok', code: 'accepted' }, /Connection verified\. Save to apply/],
+  [{ status: 'unknown', code: 'probe_unavailable' }, /no connection-test endpoint.*save the credentials.*Nothing was saved/s],
   [{ status: 'failed', code: 'authentication_failed', http_status: 401 }, /key is complete, active.*HTTP 401.*Nothing was saved/s],
   [{ status: 'failed', code: 'authentication_failed', http_status: 403 }, /key’s permissions.*HTTP 403.*Nothing was saved/s],
   [{ status: 'failed', code: 'unreachable' }, /coordinator’s network connection.*Nothing was saved/s],
@@ -295,4 +326,71 @@ test('saving after revealing a key clears it and warns if requested activation i
   assert.equal(token.value, '');
   assert.match(f.root.textContent, /saved, but needs attention.*connection not active/s);
   assert.doesNotMatch(f.root.textContent, /Provider enabled/);
+});
+
+for (const [result, expected] of [
+  [{ status: 'ok', code: 'accepted' }, /Coordinator connection verified/],
+  [{ status: 'unknown', code: 'probe_unavailable' }, /no connection-test endpoint.*Verify access with a model request.*No settings were changed/s],
+  [{ status: 'failed', code: 'authentication_failed', http_status: 401 }, /key is complete, active.*HTTP 401.*No settings were changed/s],
+  [{ status: 'failed', code: 'authentication_failed', http_status: 403 }, /key’s permissions.*HTTP 403.*No settings were changed/s],
+  [{ status: 'failed', code: 'unreachable' }, /coordinator’s network connection.*No settings were changed/s],
+  [{ status: 'failed', code: 'redirect_refused', http_status: 302 }, /credentials were not sent to the new address.*No settings were changed/s],
+]) {
+  test(`saved connection test ${result.http_status || result.code} uses no resubmitted credentials`, async t => {
+    const requests = [], lists = [];
+    let release;
+    const f = fixture(t, { data: async (path, options = {}) => {
+      if (!options.method) return { ...schema, configured: true, present: ['token'] };
+      requests.push({ path, ...options }); return new Promise(resolve => { release = () => resolve(result); });
+    } });
+    const list = f.p.api.list;
+    f.p.api.list = path => { lists.push(path); return list(path); };
+    await providers(f.p, 'cloud', 'cloud-a');
+    assert.deepEqual(lists, ['/providers/catalog?kind=all'], 'cloud setup never reads node inventory');
+    assert.doesNotMatch(f.root.textContent, /reported nodes|Enabled on|Compute nodes|spruce/);
+    assert.doesNotMatch(find(f.root, node => node.dataset.provider === 'cloud-a').textContent, /Coordinator connection/);
+    assert.equal(walk(f.root).some(node => node.tag === 'input' || node.tag === 'select'), false);
+    const test = button(f.root, 'Test connection');
+    test.dispatchEvent(new Event('click')); await drain();
+    assert.equal(test.disabled, true); assert.equal(test.getAttribute('aria-busy'), 'true');
+    assert.match(find(f.root, node => node.getAttribute('role') === 'status').textContent, /Testing connection/);
+    test.dispatchEvent(new Event('click')); await drain();
+    assert.equal(requests.length, 1, 'duplicate clicks cannot start another probe');
+    assert.equal(requests[0].path, '/providers/cloud-a/connection/test');
+    assert.equal(requests[0].effectful, false);
+    assert.deepEqual(requests[0].body, { stored: true });
+    release(); await drain();
+    assert.match(f.root.textContent, expected);
+    assert.equal(test.disabled, false); assert.equal(test.getAttribute('aria-busy'), 'false');
+    assert.ok(button(f.root, 'Enable provider'), 'a probe does not enable the provider');
+    assert.equal(walk(f.root).some(node => node.tag === 'form'), false);
+  });
+}
+
+test('late saved test completion cannot overwrite a replacement credential editor', async t => {
+  let release, signal;
+  const f = fixture(t, { data: async (_path, options = {}) => {
+    if (!options.method) return { ...schema, configured: true };
+    signal = options.signal; return new Promise(resolve => { release = resolve; });
+  } });
+  await providers(f.p, 'cloud', 'cloud-a');
+  button(f.root, 'Test connection').dispatchEvent(new Event('click')); await drain();
+  button(f.root, 'Edit').dispatchEvent(new Event('click'));
+  const token = named(f.root, 'token'); token.value = 'replacement-fixture';
+  assert.equal(signal.aborted, true);
+  release({ status: 'ok', code: 'accepted' }); await drain();
+  assert.equal(token.value, 'replacement-fixture');
+  assert.doesNotMatch(f.root.textContent, /Coordinator connection verified|Testing connection/);
+});
+
+test('saved test errors remain redacted and restore the action', async t => {
+  const f = fixture(t, { data: async (_path, options = {}) => {
+    if (!options.method) return { ...schema, configured: true, mode: 'external' };
+    throw Object.assign(new Error('private upstream and credential detail'), { status: 503 });
+  } });
+  await providers(f.p, 'cloud', 'cloud-a');
+  const test = button(f.root, 'Test connection'); test.dispatchEvent(new Event('click')); await drain();
+  assert.match(f.root.textContent, /Could not complete the test.*No settings were changed.*HTTP 503/s);
+  assert.doesNotMatch(f.root.textContent, /private upstream/);
+  assert.equal(test.disabled, false);
 });

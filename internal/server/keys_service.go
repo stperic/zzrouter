@@ -1,13 +1,12 @@
 package server
 
 import (
+	"cmp"
 	"context"
-	"errors"
 	"fmt"
-	"log/slog"
-	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -15,40 +14,17 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// KeysService provides business logic for virtual key management.
-// Mutation operations go through AccessControl to invalidate caches.
-//
-// Key creation is the driver for personal-team auto-creation: when a caller
-// creates a key without specifying a team, this service asks TeamsService to
-// mint a personal team and uses its ID. KeysService therefore holds a
-// TeamsService pointer, and the two share a mutex on the combined path so
-// two concurrent POST /keys calls can't both try to mint a personal team
-// for the same key name.
+// KeysService provides business logic for virtual key management. A key
+// created without a team gets its personal team from the store, in the same
+// transaction.
 type KeysService struct {
-	mu     sync.Mutex
-	store  *keys.FileKeyStore
-	teams  *TeamsService
+	store  access.Store
 	access *AccessControl
-	audit  audit.Sink
 }
 
 // NewKeysService creates a new keys service.
-func NewKeysService(store *keys.FileKeyStore, teamsService *TeamsService, access *AccessControl) *KeysService {
-	return &KeysService{store: store, teams: teamsService, access: access, audit: audit.Null{}}
-}
-
-// SetAuditSink replaces the audit sink. The zero-value sink is audit.Null,
-// so tests that don't care about audit output can omit this call. Safe
-// to call concurrently with mutation methods — acquires s.mu so an
-// in-flight CreateKey that reads s.audit always sees a consistent value.
-func (s *KeysService) SetAuditSink(sink audit.Sink) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sink == nil {
-		s.audit = audit.Null{}
-		return
-	}
-	s.audit = sink
+func NewKeysService(store access.Store, access *AccessControl) *KeysService {
+	return &KeysService{store: store, access: access}
 }
 
 // CreateKeyRequest is the input for creating a virtual key.
@@ -148,105 +124,44 @@ type KeyResponse struct {
 }
 
 // CreateKey creates a new virtual key and persists it. If req.TeamID is empty,
-// a personal team is auto-created and the new key becomes its owner. If a
-// team_id is provided, the key joins that team as TeamRole (defaulting to
-// "member"). Personal teams can never be joined by a second key — attempting
-// to pass a personal team's ID here is rejected by TeamsService.
-//
-// Every refusal comes before the first write. Write order: team first, then
-// key. Crash window: personal team exists with no key → orphan, swept by
-// ReconcilePersonalTeams on next startup.
-func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy string) (*CreateKeyResponse, error) {
+// the key gets its personal team and becomes its owner. If a team_id is
+// provided, the key joins that shared team as TeamRole (defaulting to
+// "member"); the store refuses a missing or personal team. A malformed
+// request is refused before any record is consulted.
+func (s *KeysService) CreateKey(ctx context.Context, id string, req *CreateKeyRequest, createdBy string) (*CreateKeyResponse, error) {
 	if req.Name == "" {
 		return nil, invalidInputf("name is required")
-	}
-	if err := validateKeyRole(req.Role); err != nil {
-		return nil, err
-	}
-	if err := validateResetPeriod(req.ResetPeriod); err != nil {
-		return nil, err
 	}
 	if reservedKeyIDs[id] {
 		return nil, invalidInputf("%s", reservedNameMessage("key id", id, "/zzrouter/v1/keys/", reservedKeyIDs))
 	}
-	var expiresAt *time.Time
-	if req.ExpiresAt != nil {
-		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
-		if err != nil {
-			return nil, invalidInputf("invalid expires_at: %w", err)
-		}
-		expiresAt = &t
+	role := cmp.Or(req.Role, keys.RoleUser)
+	if err := validateKeyRole(role); err != nil {
+		return nil, err
+	}
+	// A team_role sent without a team_id is ignored, but it is malformed all the same.
+	if req.TeamRole != "" && !teams.MemberRole(req.TeamRole).Valid() {
+		return nil, invalidInputf("invalid team_role %q (expected %q or %q)", req.TeamRole, teams.RoleOwner, teams.RoleMember)
+	}
+	if err := validateResetPeriod(req.ResetPeriod); err != nil {
+		return nil, err
+	}
+	expiresAt, err := parseExpiry(req.ExpiresAt)
+	if err != nil {
+		return nil, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// The id's personal team belongs to the existing key.
-	if s.store.Get(id) != nil {
-		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyExists)
-	}
-
-	role := req.Role
-	if role == "" {
-		role = "user"
-	}
-
-	// Resolve team binding.
-	var (
-		teamID          string
-		teamRole        string
-		createdPersonal bool
-	)
-	// Validate team_role before either branch. The personal-team branch
-	// below assigns owner regardless, so a role sent with no team_id
-	// used to be dropped without a word and answered 201 -- which tells
-	// the caller the value they sent was applied.
-	if req.TeamRole != "" && req.TeamRole != string(teams.RoleOwner) && req.TeamRole != string(teams.RoleMember) {
-		return nil, invalidInputf("invalid team_role %q (expected %q or %q)",
-			req.TeamRole, teams.RoleOwner, teams.RoleMember)
-	}
-
-	switch {
-	case req.TeamID == "":
-		// Auto-create a personal team; the new key is its sole owner.
-		if s.teams == nil {
-			return nil, errors.New("cannot auto-create personal team: teams service not wired")
-		}
-		personalID := personalTeamIDPrefix + id
-		if _, err := s.teams.CreatePersonalTeam(personalID, req.Name, createdBy); err != nil {
-			return nil, fmt.Errorf("auto-create personal team: %w", err)
-		}
-		teamID = personalID
-		teamRole = string(teams.RoleOwner)
-		createdPersonal = true
-	default:
-		// Joining an existing team — verify it exists and is shared.
-		if s.teams == nil {
-			return nil, errors.New("teams service not wired")
-		}
-		team := s.teams.store.Get(req.TeamID)
-		if team == nil {
-			return nil, invalidInputf("team %q: %w", req.TeamID, teams.ErrTeamNotFound)
-		}
-		if team.Kind == teams.KindPersonal {
-			return nil, invalidInputf("team %q is personal and cannot accept additional keys", req.TeamID)
-		}
-		teamID = req.TeamID
-		teamRole = req.TeamRole
-		if teamRole == "" {
-			teamRole = string(teams.RoleMember)
-		}
-	}
-
-	vk := &keys.VirtualKey{
+	vk := keys.VirtualKey{
 		Name:        req.Name,
 		Description: req.Description,
 		Role:        role,
-		TeamID:      teamID,
-		TeamRole:    teamRole,
+		TeamID:      req.TeamID,
 		Metadata:    req.Metadata,
 		CreatedBy:   createdBy,
 		UpdatedBy:   createdBy,
+	}
+	if req.TeamID != "" {
+		vk.TeamRole = cmp.Or(req.TeamRole, string(teams.RoleMember))
 	}
 	vk.MaxParallelRequests = req.MaxParallelRequests
 	vk.RPMLimit = req.RPMLimit
@@ -256,59 +171,24 @@ func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy stri
 	vk.DefaultMaxTokens = req.DefaultMaxTokens
 	vk.ExpiresAt = expiresAt
 
-	rawKey, err := s.store.Create(id, vk)
+	// The store adds the team facts it decides to the event.
+	created, rawKey, err := s.store.CreateKey(ctx, id, vk, audit.Event{
+		Action:   audit.ActionKeyCreated,
+		Actor:    resolveActor(createdBy),
+		Subject:  id,
+		Metadata: map[string]any{"role": vk.Role},
+	})
 	if err != nil {
-		// Roll back the auto-created personal team so we don't leak an
-		// orphan. A failure here is recoverable by the reconciliation
-		// sweep on next startup, but eagerly rolling back keeps the
-		// working directory clean for humans reading the yaml.
-		if createdPersonal {
-			if rollbackErr := s.teams.DeletePersonalTeam(teamID, createdBy); rollbackErr != nil {
-				// Don't mask the original error, but make sure operators
-				// see the orphan — it becomes the reconciliation sweep's
-				// problem otherwise.
-				slog.Warn("failed to roll back personal team after key create failure",
-					"team", teamID, "error", rollbackErr)
-			}
-		}
 		return nil, err
 	}
-
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("key created but failed to persist: %w", err)
-	}
-
-	if s.access != nil {
-		s.access.InvalidateAuthCache()
-	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
-		Action:  audit.ActionKeyCreated,
-		Actor:   resolveActor(createdBy),
-		Subject: id,
-		Metadata: map[string]any{
-			"team_id":          teamID,
-			"team_role":        teamRole,
-			"created_personal": createdPersonal,
-			"role":             role,
-		},
-	})
-
-	return &CreateKeyResponse{
-		ID:       id,
-		Name:     vk.Name,
-		Role:     vk.Role,
-		TeamID:   vk.TeamID,
-		TeamRole: vk.TeamRole,
-		RawKey:   rawKey,
-	}, nil
+	return createKeyResponse(created, rawKey), nil
 }
 
 // GetKey returns a safe representation of a key plus its live usage
 // snapshot inline (agents otherwise need a follow-up /keys/:id/usage
 // call to get the full picture).
 func (s *KeysService) GetKey(id string) (*KeyResponse, error) {
-	vk := s.store.Get(id)
+	vk := s.store.Snapshot().Key(id)
 	if vk == nil {
 		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
 	}
@@ -321,9 +201,8 @@ func (s *KeysService) GetKey(id string) (*KeyResponse, error) {
 
 // ListKeys returns all keys in safe representation.
 func (s *KeysService) ListKeys() []*KeyResponse {
-	all := s.store.List()
-	result := make([]*KeyResponse, 0, len(all))
-	for id, vk := range all {
+	result := []*KeyResponse{}
+	for id, vk := range s.store.Snapshot().Keys() {
 		result = append(result, toKeyResponse(id, vk))
 	}
 	return result
@@ -331,7 +210,7 @@ func (s *KeysService) ListKeys() []*KeyResponse {
 
 // UpdateKey updates mutable fields of a key. TeamID/TeamRole are immutable
 // and not accepted here.
-func (s *KeysService) UpdateKey(id string, req *UpdateKeyRequest, updatedBy string) (*KeyResponse, error) {
+func (s *KeysService) UpdateKey(ctx context.Context, id string, req *UpdateKeyRequest, updatedBy string) (*KeyResponse, error) {
 	if req.Role != nil {
 		if err := validateKeyRole(*req.Role); err != nil {
 			return nil, err
@@ -342,180 +221,107 @@ func (s *KeysService) UpdateKey(id string, req *UpdateKeyRequest, updatedBy stri
 			return nil, err
 		}
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing := s.store.Get(id)
-	if existing == nil {
-		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-
-	updated := *existing
-	if req.Name != nil {
-		updated.Name = *req.Name
-	}
-	if req.Description != nil {
-		updated.Description = *req.Description
-	}
-	if req.Role != nil {
-		updated.Role = *req.Role
-	}
-	if req.Suspended != nil {
-		updated.Suspended = *req.Suspended
-		if *req.Suspended {
-			now := utils.Now()
-			updated.SuspendedAt = &now
-			updated.SuspendedBy = updatedBy
-		} else {
-			updated.SuspendedAt = nil
-			updated.SuspendedBy = ""
-		}
-	}
-	if req.ExpiresAt != nil {
-		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
-		if err != nil {
-			return nil, invalidInputf("invalid expires_at: %w", err)
-		}
-		updated.ExpiresAt = &t
-	}
-	if req.MaxParallelRequests != nil {
-		updated.MaxParallelRequests = *req.MaxParallelRequests
-	}
-	if req.RPMLimit != nil {
-		updated.RPMLimit = *req.RPMLimit
-	}
-	if req.TPMLimit != nil {
-		updated.TPMLimit = *req.TPMLimit
-	}
-	if req.SpendLimit != nil {
-		updated.SpendLimit = *req.SpendLimit
-	}
-	if req.ResetPeriod != nil {
-		updated.ResetPeriod = *req.ResetPeriod
-	}
-	if req.DefaultMaxTokens != nil {
-		updated.DefaultMaxTokens = *req.DefaultMaxTokens
-	}
-	if req.Metadata != nil {
-		updated.Metadata = req.Metadata
-	}
-	updated.UpdatedBy = updatedBy
-
-	if err := s.store.Update(id, &updated); err != nil {
+	expiresAt, err := parseExpiry(req.ExpiresAt)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("key updated but failed to persist: %w", err)
-	}
-
-	if s.access != nil {
-		s.access.InvalidateAuthCache()
-	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
+	updated, err := s.store.UpdateKey(ctx, id, func(updated *keys.VirtualKey) error {
+		if req.Name != nil {
+			updated.Name = *req.Name
+		}
+		if req.Description != nil {
+			updated.Description = *req.Description
+		}
+		if req.Role != nil {
+			updated.Role = *req.Role
+		}
+		if req.Suspended != nil {
+			updated.Suspended = *req.Suspended
+			if *req.Suspended {
+				now := utils.Now()
+				updated.SuspendedAt = &now
+				updated.SuspendedBy = updatedBy
+			} else {
+				updated.SuspendedAt = nil
+				updated.SuspendedBy = ""
+			}
+		}
+		if expiresAt != nil {
+			updated.ExpiresAt = expiresAt
+		}
+		if req.MaxParallelRequests != nil {
+			updated.MaxParallelRequests = *req.MaxParallelRequests
+		}
+		if req.RPMLimit != nil {
+			updated.RPMLimit = *req.RPMLimit
+		}
+		if req.TPMLimit != nil {
+			updated.TPMLimit = *req.TPMLimit
+		}
+		if req.SpendLimit != nil {
+			updated.SpendLimit = *req.SpendLimit
+		}
+		if req.ResetPeriod != nil {
+			updated.ResetPeriod = *req.ResetPeriod
+		}
+		if req.DefaultMaxTokens != nil {
+			updated.DefaultMaxTokens = *req.DefaultMaxTokens
+		}
+		if req.Metadata != nil {
+			updated.Metadata = req.Metadata
+		}
+		updated.UpdatedBy = updatedBy
+		return nil
+	}, audit.Event{
 		Action:   audit.ActionKeyUpdated,
 		Actor:    resolveActor(updatedBy),
 		Subject:  id,
 		Metadata: updateKeyChangedFields(req),
 	})
-
-	return toKeyResponse(id, s.store.Get(id)), nil
-}
-
-// DeleteKey removes a key. If the key was the sole owner of a personal team,
-// the personal team is cascade-deleted too. Shared teams are never auto-deleted.
-//
-// Delete order: key first, then team. Crash window: key deleted, personal
-// team lingers → orphan, swept by ReconcilePersonalTeams on next startup.
-func (s *KeysService) DeleteKey(id, actor string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	existing := s.store.Get(id)
-	if existing == nil {
-		return fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-	teamID := existing.TeamID
-
-	if err := s.store.Delete(id); err != nil {
-		return err
-	}
-
-	if err := s.store.Save(); err != nil {
-		return fmt.Errorf("key deleted but failed to persist: %w", err)
-	}
-
-	if s.access != nil {
-		s.access.OnKeyDeleted(id)
-	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
-		Action:   audit.ActionKeyDeleted,
-		Actor:    resolveActor(actor),
-		Subject:  id,
-		Metadata: map[string]any{"team_id": teamID},
-	})
-
-	// Cascade-delete personal team if this key was its sole member.
-	if teamID != "" && s.teams != nil {
-		if err := s.teams.DeletePersonalTeam(teamID, actor); err != nil && !errors.Is(err, teams.ErrTeamNotFound) {
-			// Not a personal team, or already gone — either is fine.
-			_ = err
-		}
-	}
-	return nil
-}
-
-// RotateKey generates a new raw key value and persists the change.
-func (s *KeysService) RotateKey(id, actor string) (*CreateKeyResponse, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	vk := s.store.Get(id)
-	if vk == nil {
-		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-
-	rawKey, err := s.store.RotateKey(id)
 	if err != nil {
 		return nil, err
 	}
+	return toKeyResponse(id, updated), nil
+}
 
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("key rotated but failed to persist: %w", err)
+// DeleteKey removes a key; the store deletes its personal team with it and
+// records the team the deleted key belonged to. Shared teams are never auto-deleted.
+func (s *KeysService) DeleteKey(ctx context.Context, id, actor string) error {
+	return s.store.DeleteKey(ctx, id, audit.Event{
+		Action:  audit.ActionKeyDeleted,
+		Actor:   resolveActor(actor),
+		Subject: id,
+	})
+}
+
+// parseExpiry reads an RFC 3339 expires_at; none is nil.
+func parseExpiry(value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
 	}
-
-	if s.access != nil {
-		s.access.InvalidateAuthCache()
+	t, err := time.Parse(time.RFC3339, *value)
+	if err != nil {
+		return nil, invalidInputf("invalid expires_at: %w", err)
 	}
+	return &t, nil
+}
 
-	audit.Log(context.Background(), s.audit, audit.Event{
+// RotateKey generates a new raw key value and persists the change.
+func (s *KeysService) RotateKey(ctx context.Context, id, actor string) (*CreateKeyResponse, error) {
+	rotated, rawKey, err := s.store.RotateKey(ctx, id, audit.Event{
 		Action:  audit.ActionKeyRotated,
 		Actor:   resolveActor(actor),
 		Subject: id,
 	})
-
-	return &CreateKeyResponse{
-		ID:       id,
-		Name:     vk.Name,
-		Role:     vk.Role,
-		TeamID:   vk.TeamID,
-		TeamRole: vk.TeamRole,
-		RawKey:   rawKey,
-	}, nil
+	if err != nil {
+		return nil, err
+	}
+	return createKeyResponse(rotated, rawKey), nil
 }
 
-// ReloadKeys re-reads keys from disk and invalidates the cache.
-func (s *KeysService) ReloadKeys() error {
-	if err := s.store.Reload(); err != nil {
-		return err
-	}
-	if s.access != nil {
-		s.access.InvalidateAuthCache()
-	}
-	return nil
+func createKeyResponse(vk *keys.VirtualKey, rawKey string) *CreateKeyResponse {
+	return &CreateKeyResponse{ID: vk.ID, Name: vk.Name, Role: vk.Role, TeamID: vk.TeamID, TeamRole: vk.TeamRole, RawKey: rawKey}
 }
 
 // KeyUsageResponse is the response for GET /keys/:id/usage.
@@ -532,7 +338,7 @@ type SpendReportResponse struct {
 
 // GetKeyUsage returns live usage/spend data for a key.
 func (s *KeysService) GetKeyUsage(id string) (*KeyUsageResponse, error) {
-	vk := s.store.Get(id)
+	vk := s.store.Snapshot().Key(id)
 	if vk == nil {
 		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
 	}
@@ -546,14 +352,14 @@ func (s *KeysService) GetKeyUsage(id string) (*KeyUsageResponse, error) {
 }
 
 // ResetKeyUsage clears the spend/usage ledger for a key.
-func (s *KeysService) ResetKeyUsage(id, actor string) error {
-	if s.store.Get(id) == nil {
+func (s *KeysService) ResetKeyUsage(ctx context.Context, id, actor string) error {
+	if s.store.Snapshot().Key(id) == nil {
 		return fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
 	}
 	if s.access != nil {
 		s.access.ResetKeySpend(id)
 	}
-	audit.Log(context.Background(), s.audit, audit.Event{
+	recordReset(ctx, s.store, audit.Event{
 		Action:  audit.ActionKeyUsageReset,
 		Actor:   resolveActor(actor),
 		Subject: id,
@@ -568,6 +374,7 @@ func (s *KeysService) GetSpendReport() *SpendReportResponse {
 		return resp
 	}
 
+	snap := s.store.Snapshot()
 	states := s.access.GetAllSpendStates()
 	for _, state := range states {
 		if state == nil || state.Kind != quota.ScopeKey {
@@ -575,7 +382,7 @@ func (s *KeysService) GetSpendReport() *SpendReportResponse {
 		}
 
 		var config quota.QuotaConfig
-		if vk := s.store.Get(state.EntityID); vk != nil {
+		if vk := snap.Key(state.EntityID); vk != nil {
 			config = vk.QuotaConfig
 		}
 		item := KeyUsageResponse{KeyID: state.EntityID, Usage: quota.CurrentUsage(config, state)}

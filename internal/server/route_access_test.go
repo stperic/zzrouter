@@ -76,7 +76,7 @@ func TestRouteAccessMissingExpiryNoneAndCachedIdentity(t *testing.T) {
 			case "empty":
 				rig.groups.set("coding")
 			case "none":
-				_, err := NewTeamsService(rig.teams, rig.keys, rig.access).UpdateTeam("team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
+				_, err := NewTeamsService(rig.store, rig.access).UpdateTeam(t.Context(), "team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
 				require.NoError(t, err)
 			}
 			c, _ := rig.makeRequest(raw)
@@ -86,7 +86,7 @@ func TestRouteAccessMissingExpiryNoneAndCachedIdentity(t *testing.T) {
 			require.NotEmpty(t, opaqueForwardLimit(GetAccessContext(c)))
 		})
 	}
-	require.True(t, rig.teams.HasGatedTeam())
+	require.True(t, rig.store.Snapshot().HasGatedTeam())
 }
 
 func TestRouteAccessCatalogKeepsAliasAndCapabilitiesWithoutDirectCollision(t *testing.T) {
@@ -113,25 +113,25 @@ func TestRouteAccessCatalogKeepsAliasAndCapabilitiesWithoutDirectCollision(t *te
 
 func TestRouteAccessTeamAssignmentValidationAndRetainedMissingNames(t *testing.T) {
 	rig, _, _ := routePolicyRig(t)
-	svc := NewTeamsService(rig.teams, rig.keys, rig.access)
-	_, err := svc.UpdateTeam("team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"unknown"}}}, "admin")
+	svc := NewTeamsService(rig.store, rig.access)
+	_, err := svc.UpdateTeam(t.Context(), "team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"unknown"}}}, "admin")
 	require.Error(t, err)
 	delete(rig.groups.groups, "coding")
 	name := "Renamed"
-	updated, err := svc.UpdateTeam("team", &UpdateTeamRequest{Name: &name}, "admin")
+	updated, err := svc.UpdateTeam(t.Context(), "team", &UpdateTeamRequest{Name: &name}, "admin")
 	require.NoError(t, err)
 	require.Equal(t, []string{"coding"}, updated.RouteAccess.Routes)
-	_, err = svc.UpdateTeam("team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "direct"}}, "admin")
+	_, err = svc.UpdateTeam(t.Context(), "team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "direct"}}, "admin")
 	require.NoError(t, err)
-	require.False(t, rig.teams.Get("team").RouteAccess.Restricted())
+	require.False(t, rig.store.Snapshot().Team("team").RouteAccess.Restricted())
 }
 
 func TestRoutePreviewUsesTeamPolicyBudgetAndProviderCooldownWithoutEffects(t *testing.T) {
 	rig, _, s := routePolicyRig(t)
-	team := *rig.teams.Get("team")
-	team.AllowedModels = nil
-	team.QuotaConfig = quota.QuotaConfig{SpendLimit: 1}
-	require.NoError(t, rig.teams.Update("team", &team))
+	rig.updateTeam(t, func(team *teams.Team) {
+		team.AllowedModels = nil
+		team.QuotaConfig = quota.QuotaConfig{SpendLimit: 1}
+	})
 	group := modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "blocked", Model: "paid", App: "groq"}, {Name: "cooling", Model: "local", App: "ollama"}, {Name: "winner", Model: "local", App: "vllm"}}}
 	store := modelgroup.NewGroupStore()
 	require.NoError(t, store.Set("coding", group))
@@ -267,7 +267,7 @@ func TestRouteDeleteRequiresTeamUnassignment(t *testing.T) {
 	}
 	require.Equal(t, 409, remove().Code)
 	require.NotNil(t, store.Get("coding"))
-	_, err := NewTeamsService(rig.teams, rig.keys, rig.access).UpdateTeam("team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "direct"}}, "admin")
+	_, err := NewTeamsService(rig.store, rig.access).UpdateTeam(t.Context(), "team", &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "direct"}}, "admin")
 	require.NoError(t, err)
 	require.Equal(t, 200, remove().Code)
 	require.Nil(t, store.Get("coding"))

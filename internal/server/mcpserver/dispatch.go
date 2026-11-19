@@ -86,6 +86,7 @@ func problemLine(status int, p utils.ProblemDetails) string {
 	return line
 }
 
+//nolint:contextcheck // This REST trust boundary retains caller cancellation/deadlines through valueFree and deliberately strips outer authentication values.
 func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	if input.jsonBody != nil {
 		body, err := jsonBody(input.jsonBody, input.omit)
@@ -99,21 +100,23 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 		return newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("build REST request: %v", err), err)
 	}
 	req.URL.RawQuery = input.query.Encode()
+	req.Host = d.outer.host
+	req.URL.Host, req.URL.Scheme = d.outer.host, d.outer.scheme
 	if d.cfg.Streaming(input.method, req.URL.Path) != "" && (d.cfg.SnapshotAllowed == nil || !d.cfg.SnapshotAllowed(req)) {
 		return newToolError(http.StatusBadRequest, codeStreamingRefused, fmt.Sprintf("streaming route %s is unavailable to tools; use a snapshot endpoint", req.URL.Path), nil)
 	}
 	// A fresh cancellable context strips every outer value, including auth markers.
 	inner, cancel := context.WithCancel(valueFree{ctx})
 	defer cancel()
-	stop := context.AfterFunc(d.outer.ctx, cancel) //nolint:contextcheck // Decision 2 bridges HTTP cancellation without inheriting auth values.
+	stop := context.AfterFunc(d.outer.ctx, cancel) // Decision 2 bridges HTTP cancellation without inheriting auth values.
 	defer stop()
 	if d.outer.ctx.Err() != nil {
 		cancel()
 	}
-	req = req.WithContext(context.WithValue(inner, dispatchKey, true))                       //nolint:contextcheck // Decision 2 permits only the accounting marker in the value-free context.
-	req = req.WithContext(context.WithValue(req.Context(), resourceKey, d.cfg.ResourcePath)) //nolint:contextcheck // The value-free inner context receives only the configured MCP audience.
+	req = req.WithContext(context.WithValue(inner, dispatchKey, true))                       // Decision 2 permits only the accounting marker in the value-free context.
+	req = req.WithContext(context.WithValue(req.Context(), resourceKey, d.cfg.ResourcePath)) // The value-free inner context receives only the configured MCP audience.
 	req.RemoteAddr = d.requestInfo.RemoteAddr
-	observability.InjectTraceContext(d.outer.ctx, req.Header) //nolint:contextcheck // Serialize only the HTTP trace parent into the value-free request.
+	observability.InjectTraceContext(d.outer.ctx, req.Header) // Serialize only the HTTP trace parent into the value-free request.
 	for _, name := range append(append([]string(nil), d.cfg.KeyHeaders...), "X-Forwarded-For", "X-Real-IP") {
 		for _, value := range d.requestInfo.Header.Values(name) {
 			req.Header.Add(name, value)

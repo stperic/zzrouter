@@ -1,12 +1,28 @@
-// Package teams provides team management with shared quotas and model access.
+// Package teams defines teams and access policies without storage.
 // Teams collect virtual keys under a shared identity — quotas and model access
 // are enforced at the team level, keys point at their team via TeamID.
 package teams
 
 import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/utils"
+)
+
+var (
+	ErrTeamNotFound   = errors.New("team not found")
+	ErrTeamExists     = errors.New("team already exists")
+	ErrTeamHasMembers = errors.New("team has member keys")
+	// ErrPersonalTeamImmutable refuses a change to a personal team or a second key in one.
+	ErrPersonalTeamImmutable = errors.New("personal team is immutable")
+	// ErrInvalid marks a team record that breaks a state invariant.
+	ErrInvalid = errors.New("invalid team record")
 )
 
 // MemberRole is the role a key plays within its team.
@@ -19,12 +35,15 @@ const (
 	RoleMember MemberRole = "member"
 )
 
+// Valid reports whether r is one of the roles above.
+func (r MemberRole) Valid() bool { return r == RoleOwner || r == RoleMember }
+
 // TeamKind distinguishes auto-created personal teams (one key, immutable,
 // cascade-deleted with their key) from shared teams (explicitly created,
 // multi-member, manually managed).
 //
 // Kind is set at team creation and never mutates. A personal team can never
-// gain a second member or be converted to shared — the service layer enforces
+// gain a second member or be converted to shared — the access store enforces
 // this so the cascade-delete rule stays trivially correct.
 type TeamKind string
 
@@ -33,40 +52,89 @@ const (
 	KindShared   TeamKind = "shared"
 )
 
+// PersonalPrefix starts the ID of every personal team, and of no other team.
+const PersonalPrefix = "personal-"
+
+// PersonalID names the personal team of the key keyID.
+func PersonalID(keyID string) string { return PersonalPrefix + keyID }
+
+// IsPersonalID reports whether id is reserved for a personal team.
+func IsPersonalID(id string) bool { return strings.HasPrefix(id, PersonalPrefix) }
+
 // Team represents a collection of virtual keys with shared quotas and model access.
 type Team struct {
-	UUID string `yaml:"uuid"`
-	ID   string `yaml:"-"` // from YAML map key
-	Name string `yaml:"name"`
+	UUID string
+	ID   string
+	Name string
 
-	Kind           TeamKind       `yaml:"kind"` // "personal" | "shared" — immutable
-	AllowedModels  []string       `yaml:"allowed_models,omitempty"`
-	RouteAccess    RouteAccess    `yaml:"route_access,omitempty"`
-	ProviderAccess ProviderAccess `yaml:"provider_access,omitempty"`
-	Suspended      bool           `yaml:"suspended,omitempty"`
-	SuspendedAt    *time.Time     `yaml:"suspended_at,omitempty"`
-	SuspendedBy    string         `yaml:"suspended_by,omitempty"`
+	Kind           TeamKind // "personal" | "shared" — immutable
+	AllowedModels  []string
+	RouteAccess    RouteAccess
+	ProviderAccess ProviderAccess
+	Suspended      bool
+	SuspendedAt    *time.Time
+	SuspendedBy    string
 
-	quota.QuotaConfig `yaml:",inline"`
+	quota.QuotaConfig
 
-	CreatedAt time.Time         `yaml:"created_at,omitempty"`
-	UpdatedAt time.Time         `yaml:"updated_at,omitempty"`
-	CreatedBy string            `yaml:"created_by,omitempty"`
-	UpdatedBy string            `yaml:"updated_by,omitempty"`
-	Metadata  map[string]string `yaml:"metadata,omitempty"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	CreatedBy string
+	UpdatedBy string
+	Metadata  map[string]string
 }
 
-// TeamStore provides CRUD operations for teams.
-type TeamStore interface {
-	Get(id string) *Team
-	List() map[string]*Team
-	Create(id string, team *Team) error
-	Update(id string, team *Team) error
-	Delete(id string) error
-	Reload() error
-	Save() error
+// Validate holds the invariants every stored team keeps.
+func (t *Team) Validate() error {
+	if t.Kind != KindPersonal && t.Kind != KindShared {
+		if t.Kind == "" {
+			return fmt.Errorf("%w: missing kind (expected %q or %q)", ErrInvalid, KindPersonal, KindShared)
+		}
+		return fmt.Errorf("%w: invalid kind %q (expected %q or %q)", ErrInvalid, t.Kind, KindPersonal, KindShared)
+	}
+	if IsPersonalID(t.ID) != (t.Kind == KindPersonal) {
+		return fmt.Errorf("%w: the prefix %q is reserved for personal teams", ErrInvalid, PersonalPrefix)
+	}
+	if err := t.RouteAccess.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := t.ProviderAccess.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if !utils.InRFC3339Range(t.SuspendedAt, &t.CreatedAt, &t.UpdatedAt) {
+		return fmt.Errorf("%w: a time is outside the years 0001 to 9999", ErrInvalid)
+	}
+	if !t.ValidSpendLimit() {
+		return fmt.Errorf("%w: spend_limit must be a finite number", ErrInvalid)
+	}
+	// Policies and metadata are stored as JSON.
+	if !utils.ValidUTF8([]any{t.AllowedModels, t.RouteAccess.Routes, t.ProviderAccess.Providers, t.Metadata}) {
+		return fmt.Errorf("%w: models, routes, providers and metadata must be valid UTF-8", ErrInvalid)
+	}
+	return nil
+}
 
-	// HasGatedTeam reports whether any team restricts models or providers.
-	// Read on the anonymous compat hot path — must be lock-free.
-	HasGatedTeam() bool
+// CheckMutable refuses changing a personal team, which lives and dies with its key.
+func (t *Team) CheckMutable() error {
+	if t.Kind == KindPersonal {
+		return fmt.Errorf("team %q: %w", t.ID, ErrPersonalTeamImmutable)
+	}
+	return nil
+}
+
+// Clone copies reference fields too, so a holder cannot edit another's record.
+func (t *Team) Clone() *Team {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	c.AllowedModels = slices.Clone(t.AllowedModels)
+	c.RouteAccess = t.RouteAccess.Clone()
+	c.ProviderAccess = t.ProviderAccess.Clone()
+	c.Metadata = maps.Clone(t.Metadata)
+	if t.SuspendedAt != nil {
+		suspended := *t.SuspendedAt
+		c.SuspendedAt = &suspended
+	}
+	return &c
 }

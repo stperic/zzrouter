@@ -3,12 +3,13 @@ package control
 import (
 	"log/slog"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 )
 
 // RecordSpendByKey settles the specific reservation stash identified
-// by reservationID and records token consumption. Called post-response
-// by the inference log bridge. A reservationID of NoReservation means
+// by reservationID and records token consumption for legacy key-only callers.
+// Inference uses RecordSpend with request-time attribution. NoReservation means
 // this request had no budget cap (or enforcement didn't reach the
 // reservation step); tokens are still recorded for TPM, but nothing is
 // settled against the spend ledger.
@@ -16,7 +17,17 @@ import (
 // If the key belongs to a team, TPM tokens are recorded on the team
 // scope too.
 func (c *Core) RecordSpendByKey(keyID string, reservationID ReservationID, costMicro, tokensIn, tokensOut int64) {
-	if keyID == "" {
+	subject := Subject{Kind: KindKey, ID: keyID}
+	if key := access.SnapshotOf(c.state).Key(keyID); key != nil {
+		subject.TeamID = key.TeamID
+	}
+	c.RecordSpend(subject, reservationID, costMicro, tokensIn, tokensOut)
+}
+
+// RecordSpend settles against request-time identity and team attribution. A person
+// moved to another team while inference runs must still charge the admitted team.
+func (c *Core) RecordSpend(subject Subject, reservationID ReservationID, costMicro, tokensIn, tokensOut int64) {
+	if subject.ID == "" || c.enforcer == nil {
 		return
 	}
 
@@ -24,7 +35,7 @@ func (c *Core) RecordSpendByKey(keyID string, reservationID ReservationID, costM
 	// means the reaper already cancelled it or the bridge fired twice
 	// for the same request — either is safe to ignore.
 	if reservationID != NoReservation {
-		reservations := c.popPendingReservation(keyID, reservationID)
+		reservations := c.popPendingReservation(subject.ReservationKey(), reservationID)
 		if len(reservations) > 0 {
 			c.enforcer.SettleReservations(reservations, costMicro, tokensIn, tokensOut)
 		} else {
@@ -33,22 +44,27 @@ func (c *Core) RecordSpendByKey(keyID string, reservationID ReservationID, costM
 			// held the reservation longer than pendingReservationTTL).
 			// Tokens still flow to TPM so rate-limit math stays honest.
 			slog.Warn("audit-spend settle found no stash; reaper likely cancelled first",
-				"key_id", keyID,
+				"subject_id", subject.ID,
 				"reservation_id", uint64(reservationID))
 		}
 	}
 
 	// Record TPM tokens for rate limiting (key scope).
-	keyScope := quota.ThrottleScope{Kind: quota.ScopeKey, EntityID: keyID}
+	keyScope := quota.ThrottleScope{Kind: subject.ScopeKind(), EntityID: subject.ID}
 	c.enforcer.RecordTokens(keyScope, tokensIn+tokensOut)
 
-	// Team-scope tokens: read TeamID directly off the stored key.
-	if c.keys != nil {
-		if vk := c.keys.Get(keyID); vk != nil && vk.TeamID != "" {
-			teamScope := quota.ThrottleScope{Kind: quota.ScopeTeam, EntityID: vk.TeamID}
-			c.enforcer.RecordTokens(teamScope, tokensIn+tokensOut)
-		}
+	if subject.TeamID != "" {
+		teamScope := quota.ThrottleScope{Kind: quota.ScopeTeam, EntityID: subject.TeamID}
+		c.enforcer.RecordTokens(teamScope, tokensIn+tokensOut)
 	}
+}
+
+// GetPersonSpend returns the current human identity's spend snapshot.
+func (c *Core) GetPersonSpend(id string) *quota.SpendState {
+	if c.enforcer == nil || id == "" {
+		return nil
+	}
+	return c.enforcer.GetSpendState(quota.SpendScope{Kind: quota.ScopePerson, EntityID: id})
 }
 
 // GetKeySpend returns the current-period spend state for a virtual key,
@@ -95,28 +111,44 @@ func (c *Core) GetAllSpendStates() map[string]*quota.SpendState {
 	return c.enforcer.GetAllSpendStates()
 }
 
-// OnKeyDeleted purges the key's spend ledger rows and invalidates the
-// authenticator cache. Cascade-delete of a personal team is handled by
-// the server-side keys service, not here.
-func (c *Core) OnKeyDeleted(keyID string) {
-	if c.enforcer != nil {
-		c.enforcer.ForgetEntity(quota.ScopeKey, keyID)
+// forgetRemoved purges the spend rows of the keys and teams a commit removed and
+// writes the purge at once: an ID recreated before the periodic flush would
+// otherwise inherit the old row after a crash. A failed write is logged and retried
+// by the next flush; the removal itself has already committed.
+func (c *Core) forgetRemoved(commit access.Commit) {
+	for _, id := range commit.RemovedKeys {
+		c.enforcer.ForgetEntity(quota.ScopeKey, id)
 	}
-	c.authenticator.InvalidateAll()
-}
-
-// OnTeamDeleted purges a team's spend ledger. Called post-delete so
-// team-scope SpendState rows don't linger.
-func (c *Core) OnTeamDeleted(teamID string) {
-	if c.enforcer != nil {
-		c.enforcer.ForgetEntity(quota.ScopeTeam, teamID)
+	for _, id := range commit.RemovedTeams {
+		c.enforcer.ForgetEntity(quota.ScopeTeam, id)
+	}
+	if len(commit.RemovedKeys)+len(commit.RemovedTeams) > 0 {
+		c.enforcer.FlushSpend()
 	}
 }
 
-// InvalidateAuthCache clears the authenticator cache. Call after key
-// rotation, reload, or bulk mutations.
-func (c *Core) InvalidateAuthCache() {
-	c.authenticator.InvalidateAll()
+// forgetAbsent purges the spend rows of keys and teams the store lacks, left by a
+// delete that died before the spend flush or by a database from another time.
+// Person rows stay, as in forgetRemoved; static keys never hold one.
+func (c *Core) forgetAbsent() {
+	snap := access.SnapshotOf(c.state)
+	if snap.KeysVersion() == 0 { // no store, or a failed one: absence proves nothing
+		return
+	}
+	var absent access.Commit
+	for _, st := range c.enforcer.GetAllSpendStates() {
+		switch {
+		case st.Kind == quota.ScopeKey && snap.Key(st.EntityID) == nil:
+			absent.RemovedKeys = append(absent.RemovedKeys, st.EntityID)
+		case st.Kind == quota.ScopeTeam && snap.Team(st.EntityID) == nil:
+			absent.RemovedTeams = append(absent.RemovedTeams, st.EntityID)
+		}
+	}
+	if len(absent.RemovedKeys)+len(absent.RemovedTeams) > 0 {
+		c.forgetRemoved(absent)
+		slog.Info("Forgot the spend of keys and teams absent from the access store",
+			"keys", len(absent.RemovedKeys), "teams", len(absent.RemovedTeams))
+	}
 }
 
 // FlushSpend persists dirty spend state to disk without stopping the
@@ -128,11 +160,5 @@ func (c *Core) FlushSpend() {
 	}
 }
 
-// HasGatedTeam exposes the underlying team store's gated-team flag for
-// the anonymous-compat guard.
-func (c *Core) HasGatedTeam() bool {
-	if c.teams == nil {
-		return false
-	}
-	return c.teams.HasGatedTeam()
-}
+// HasGatedTeam exposes the published gated-team flag for the anonymous-compat guard.
+func (c *Core) HasGatedTeam() bool { return access.SnapshotOf(c.state).HasGatedTeam() }

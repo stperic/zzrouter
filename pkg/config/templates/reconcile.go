@@ -34,7 +34,7 @@ import (
 // Owning them means a fix to a launch argument or a readiness probe reaches
 // existing installs on the next start. Without that, every engine-level fix
 // would need a bespoke migration, and installs would drift apart silently.
-var managedSpineKeys = []string{"execution", "exclude_parameters", "failure_patterns", "health_check", "activity_probe", "max_concurrent_requests", "queue_timeout", "data_dir", "data_subdirs", "model_store", "browser"}
+var managedSpineKeys = []string{"execution", "exclude_parameters", "failure_patterns", "health_check", "activity_probe", "max_concurrent_requests", "queue_timeout", "data_dir", "data_subdirs", "model_store", "browser", "listener"}
 
 // managedTopLevelKeys are managed sections that sit outside any section.
 //
@@ -221,6 +221,31 @@ func reconcileFeatures(live, template map[string]any) bool {
 	return changed
 }
 
+// seedOperations preserves operator descriptors; an explicit empty map opts out.
+func seedOperations(live, template map[string]any) bool {
+	shipped, ok := template["operations"].(map[string]any)
+	if !ok {
+		return false
+	}
+	current, exists := live["operations"]
+	if !exists {
+		live["operations"] = shipped
+		return true
+	}
+	operations, ok := current.(map[string]any)
+	if !ok || len(operations) == 0 {
+		return false
+	}
+	changed := false
+	for key, definition := range shipped {
+		if _, exists := operations[key]; !exists {
+			operations[key] = definition
+			changed = true
+		}
+	}
+	return changed
+}
+
 // mergeManagedSpine copies the managed keys from tmpl into live,
 // reporting whether anything actually differed.
 func mergeManagedSpine(live, tmpl []byte, history [][]string) (merged []byte, updated bool, err error) {
@@ -251,18 +276,21 @@ func mergeManagedSpine(live, tmpl []byte, history [][]string) (merged []byte, up
 		}
 		updated = mergeKeys(parent, nil, path[len(path)-1:]) || updated
 	}
-	// Newly declared connection auth is seeded only when absent. Operator
-	// endpoint/auth overrides remain declarations; secret values never go here.
+	// Seed connection defaults once; explicit operator declarations remain intact.
 	if _, declared := tmplDoc["connection"]; declared {
 		runtime, _ := liveDoc["runtime"].(map[string]any)
 		shipped, _ := tmplDoc["runtime"].(map[string]any)
-		if auth, ok := shipped["api"]; ok && runtime != nil {
-			if _, exists := runtime["api"]; !exists {
-				runtime["api"] = auth
+		for _, key := range []string{"api", "openai_path", "models_path"} {
+			if value, ok := shipped[key]; ok && runtime != nil {
+				if _, exists := runtime[key]; exists {
+					continue
+				}
+				runtime[key] = value
 				updated = true
 			}
 		}
 	}
+	updated = seedOperations(liveDoc, tmplDoc) || updated
 	updated = reconcileFeatures(liveDoc, tmplDoc) || updated
 	for _, section := range managedKeySections(tmplDoc) {
 		liveSection, tmplSection := liveDoc, tmplDoc

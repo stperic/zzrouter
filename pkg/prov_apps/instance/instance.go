@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"maps"
@@ -843,6 +844,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 
 	activity := i.activitySnapshotLocked(utils.Now())
 	info := InstanceInfo{
+		TargetRevision:    fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano())))),
 		Activity:          &activity,
 		BaseURL:           i.BaseURL,
 		EngineBusy:        i.activityHold,
@@ -874,6 +876,13 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Parameters:            copyStringMap(i.Config.Parameters),
 		ResolvedParameters:    copyStringMap(i.resolved.Parameters),
 		Environment:           copyStringMap(i.Config.EnvVars),
+	}
+	if i.resolved.Listener != nil {
+		listener := *i.resolved.Listener
+		info.Listener = &listener
+		if listener.URL != "" {
+			info.BaseURL = listener.URL
+		}
 	}
 	if i.resolved.Runtime != "" {
 		info.Runtime = i.resolved.Runtime

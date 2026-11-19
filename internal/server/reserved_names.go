@@ -23,10 +23,8 @@ import (
 // names that already exist (upsert grandfathering), so a pre-existing
 // group is never locked out of updates by a later route addition.
 //
-// Deliberate bypasses: POST /state/restore rewrites the stores
-// wholesale for round-trip fidelity, and provider config.yaml trees
-// hand-authored on disk load without this check. Both are operator
-// surfaces, not the API create path.
+// Provider config.yaml trees hand-authored on disk load without this
+// check: they are an operator surface, not the API create path.
 //
 // TestReservedNames_CoverEveryShadowableCollection derives these sets
 // from the live routing table; an entry here that the engine does not

@@ -12,9 +12,7 @@ import (
 // time — one gate per route group, not per request decision.
 //
 // Role is read fresh on every request via rm.Current(), so a live
-// promote/demote flips the gate behavior without an engine rebuild.
-// This is the runtime-route counterpart to the compile-time routing
-// swap handled by cluster.routerSwap (server_cluster.go).
+// role change flips the gate behavior without an engine rebuild.
 //
 // The gate uses the request's attached responder so the 503 body
 // matches the dialect of the route group (Problem Details for

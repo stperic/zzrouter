@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +34,35 @@ const (
 	TestUserKey    = "mx-zzr-it-reader-Hw5nQ8yVcPj3LsBtXk"
 	TestClusterKey = "mx-zzr-it-peer-Fg7rZxMb6kDpC2NvHw"
 )
+
+// testStoreTemplate names a closed, empty access store that this package's
+// TestMain makes once; it stays empty for other callers.
+var testStoreTemplate string
+
+// seedTestStore copies the template store into a coordinator's config dir,
+// which then opens it instead of creating one: creating a database syncs it
+// durably, copying it does not. It does nothing without a template or when
+// dir already holds any of the template's files, a store the test prepared.
+// Every seeded coordinator shares one store ID and generation, so a test about
+// references or cursors crossing stores opens a fresh store of its own.
+func seedTestStore(dir string) error {
+	if testStoreTemplate == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(testStoreTemplate)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		switch _, err := os.Lstat(filepath.Join(dir, entry.Name())); {
+		case err == nil:
+			return nil // the test prepared its own store
+		case !errors.Is(err, fs.ErrNotExist):
+			return err
+		}
+	}
+	return os.CopyFS(dir, os.DirFS(testStoreTemplate))
+}
 
 // testNodePort tracks the next available port for test servers.
 // Uses atomic operations for thread-safe access in parallel tests.
@@ -135,6 +166,13 @@ func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 		}
 	}
 
+	if cfg.ClusterMode != pkgConfig.ClusterModeWorker {
+		if err := seedTestStore(pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir()); err != nil {
+			restorePaths()
+			return nil, nil, fmt.Errorf("seed access store: %w", err)
+		}
+	}
+
 	name := cfg.NodeName
 	if name == "" {
 		name = "test-host"
@@ -159,6 +197,8 @@ func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 			ClusterNetworkKey: cfg.ClusterKey,
 		},
 		Providers: pkgConfig.ProvidersConfig{InstallDir: filepath.Join(testHome, "installed-providers")},
+		// Pricing is on by default and fetches its table over the network; tests that need it build a store.
+		Models: pkgConfig.ModelsConfig{Pricing: pkgConfig.PricingConfig{Enabled: new(false)}},
 		Security: pkgConfig.SecurityConfig{Credentials: pkgConfig.CredentialsConfig{
 			KeyFile: cfg.CredentialsKeyFile,
 		}},
@@ -210,12 +250,16 @@ func cleanupTestNode(server *Server) {
 	}
 
 	// Stop subsystems (nil-receiver safe).
+	if server.cluster.coordinator != nil {
+		server.cluster.coordinator.Stop() // its health monitor probes peers until stopped
+	}
 	_ = server.providers.appMgr.Stop(context.Background())
 	server.providers.cooldowns.Stop()
 	server.access.Stop(context.Background())
 	if server.access != nil && server.access.oauth != nil {
 		_ = server.access.oauth.Close()
 	}
+	_ = server.closeAccess()
 	if server.providers.connectionStore != nil {
 		_ = server.providers.connectionStore.Close()
 	}

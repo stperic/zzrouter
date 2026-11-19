@@ -29,7 +29,6 @@ func newWorkerCache(t *testing.T) *Cache {
 		Registry:                  func() *modelregistry.Registry { return nil },
 		AppsConfig:                func() *pkgConfig.AppsConfig { return nil },
 		ClusterClient:             func() mesh.ClusterClient { return nil },
-		NodeCache:                 NewNodeResourceCache(),
 		NodeConfig:                cfg,
 		ResolveEndpointToNodename: func(s string) string { return s },
 	})

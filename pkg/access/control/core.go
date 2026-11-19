@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
@@ -56,8 +56,7 @@ type Core struct {
 	authorizer    *Authorizer
 	enforcer      *quota.Enforcer
 
-	keys   keys.KeyStore
-	teams  teams.TeamStore
+	state  accessState
 	groups modelgroup.GroupReader
 
 	// pendingReservations tracks in-flight budget reservations by
@@ -102,29 +101,38 @@ type pendingReservationEntry struct {
 	createdAt    time.Time
 }
 
-// NewCore wires the collaborators. Caller must call Start() to begin
+// accessState is the part of access.Store that Core reads.
+type accessState interface {
+	Snapshot() *access.Snapshot
+	OnCommit(func(access.Commit))
+}
+
+// NewCore wires the collaborators and forgets loaded spend rows of keys and
+// teams absent from state. Caller must call Start() to begin
 // background goroutines (auth cache cleanup, reservation reaper,
 // rate-limiter cleanup, spend persistence).
 func NewCore(
 	staticKeys StaticKeySet,
-	keyStore keys.KeyStore,
-	teamStore teams.TeamStore,
+	state accessState,
 	groups modelgroup.GroupReader,
 	enforcer *quota.Enforcer,
 	identity ModelIdentity,
 ) *Core {
 	c := &Core{
-		authenticator:       NewAuthenticator(staticKeys, keyStore),
+		authenticator:       NewAuthenticator(staticKeys, state),
 		authorizer:          NewAuthorizer(groups, identity),
 		enforcer:            enforcer,
-		keys:                keyStore,
-		teams:               teamStore,
+		state:               state,
 		groups:              groups,
 		pendingReservations: make(map[string]map[ReservationID]pendingReservationEntry),
 		pendingReaperStop:   make(chan struct{}),
 	}
-	if teamStore == nil {
-		slog.Info("control.Core constructed without a team store; team features disabled")
+	if state == nil {
+		slog.Info("control.Core constructed without an access store; virtual keys and teams disabled")
+	} else if enforcer != nil {
+		// Defensive order: nothing commits before the node serves.
+		state.OnCommit(c.forgetRemoved)
+		c.forgetAbsent()
 	}
 	return c
 }
@@ -178,22 +186,20 @@ func (c *Core) Authenticate(rawKey string) (*AccessContext, error) {
 	if err != nil {
 		return nil, err
 	}
-	return c.buildAccessContext(p), nil
+	return c.buildAccessContext(p)
 }
 
-// buildAccessContext resolves the key's team and constructs the
-// AccessContext. Every virtual key carries a TeamID at creation; the
-// role comes from the key itself, not a team-side membership map.
-func (c *Core) buildAccessContext(p *KeyPrincipal) *AccessContext {
+// buildAccessContext resolves team-bound identities and refuses missing policy.
+// Roles belong to identities, not to a team-side membership map.
+func (c *Core) buildAccessContext(p *KeyPrincipal) (*AccessContext, error) {
 	ac := &AccessContext{Key: p}
 
-	if !p.IsVirtual || c.teams == nil || p.TeamID == "" {
-		return ac
+	if !p.TeamBound() {
+		return ac, nil
 	}
-
-	team := c.teams.Get(p.TeamID)
+	team := access.SnapshotOf(c.state).Team(p.TeamID)
 	if team == nil {
-		return ac
+		return nil, ErrInvalidKey
 	}
 
 	ac.Team = &TeamPrincipal{
@@ -208,7 +214,7 @@ func (c *Core) buildAccessContext(p *KeyPrincipal) *AccessContext {
 		SuspendedAt:    team.SuspendedAt,
 		SuspendedBy:    team.SuspendedBy,
 	}
-	return ac
+	return ac, nil
 }
 
 // EnforceQuotas runs metered checks only after authorization and target preparation.
@@ -257,7 +263,7 @@ func (c *Core) EnforceQuotas(ac *AccessContext, quotes []pricing.Quote) (Decisio
 	// inference-log bridge settles the exact stash this request
 	// created, even when multiple concurrent requests on the same
 	// key are in flight.
-	id := c.stashReservations(ac.Key.ID, reservations)
+	id := c.stashReservations(ac.Key.ReservationKey(), reservations)
 
 	return Decision{
 		Allowed:          true,
@@ -268,6 +274,9 @@ func (c *Core) EnforceQuotas(ac *AccessContext, quotes []pricing.Quote) (Decisio
 // Authorize runs the admission checks that cost the caller nothing:
 // suspension, expiry and model access. Token counting owes no metered checks.
 func (c *Core) Authorize(ac *AccessContext, modelName string) Decision {
+	if ac == nil || ac.Key == nil || ac.Key.TeamBound() && ac.Team == nil {
+		return Decision{Reason: DenyModelAccess, Message: "The account's team is unavailable"}
+	}
 	// 1. Suspended check.
 	if ac.Key.Suspended {
 		return Decision{
@@ -290,9 +299,8 @@ func (c *Core) Authorize(ac *AccessContext, modelName string) Decision {
 		}
 	}
 
-	// 3. Model access — team is the sole source of allowed models. A
-	// virtual key with no team is not model-gated. Static keys never
-	// reach Core; the adapter admits them first.
+	// 3. Teams own model policy for both human accounts and application keys.
+	// Static keys are admitted by the adapter before this metered pipeline.
 	if ac.Team != nil && ac.Team.RouteAccess.Restricted() {
 		if !c.authorizer.RouteAllowed(modelName, ac.Team.RouteAccess) {
 			return Decision{Reason: DenyModelAccess, Message: "The team allows only its assigned routes"}
@@ -346,7 +354,7 @@ func (c *Core) CancelPending(keyID string, id ReservationID) {
 // Key scope is always first, team scope (if any) is second.
 func buildQuotaChain(ac *AccessContext) []quota.QuotaScope {
 	chain := []quota.QuotaScope{{
-		Scope:    quota.ScopeKey,
+		Scope:    ac.Key.Subject().ScopeKind(),
 		EntityID: ac.Key.ID,
 		Quotas:   ac.Key.Quotas,
 	}}
@@ -405,7 +413,7 @@ func humanQuotaMessage(d quota.Decision) string {
 
 // HasSpendLimit shares the quota chain's scope and zero-limit semantics.
 func HasSpendLimit(ac *AccessContext) bool {
-	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+	if ac == nil || ac.Key == nil || !ac.Key.TeamBound() {
 		return false
 	}
 	for _, scope := range buildQuotaChain(ac) {

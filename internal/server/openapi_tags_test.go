@@ -19,14 +19,16 @@ import (
 // and is gone.
 //
 // tagBySegment is the taxonomy. It deliberately covers LIVE segments
-// that are not yet documented (config, server, state, ...): when their
+// that are not yet documented (config, server, ...): when their
 // operations land in the spec, the tag is already decided, and the
 // live-coverage check below fails on any new segment nobody placed.
 var tagBySegment = map[string]string{
+	"access":         "Access",
 	"cache":          "Cache",
 	"clients":        "Clients",
 	"cluster":        "Cluster",
 	"config":         "Config",
+	"connections":    "Connections",
 	"deployments":    "Deployments",
 	"discover":       "Discovery",
 	"health":         "Health",
@@ -38,6 +40,7 @@ var tagBySegment = map[string]string{
 	"model-groups":   "ModelGroups",
 	"models":         "Models",
 	"nodes":          "Nodes",
+	"operations":     "Operations",
 	"pricing":        "Pricing",
 	"providers":      "Providers",
 	"registries":     "Registries",
@@ -49,7 +52,6 @@ var tagBySegment = map[string]string{
 	"teams":          "Teams",
 	"update":         "Update",
 	"usage":          "Usage",
-	"state":          "State",
 	"system":         "System",
 
 	// C3 resolved (arc 1.4): the former duplicate segments moved under
@@ -78,6 +80,10 @@ func expectedTagForPath(path string) (string, bool) {
 		return "OAuth", true
 	case strings.HasPrefix(path, apipath.Base+"/"):
 		seg := strings.SplitN(strings.TrimPrefix(path, apipath.Base+"/"), "/", 2)[0]
+		tag, ok := tagBySegment[seg]
+		return tag, ok
+	case strings.HasPrefix(path, "/inference/v1/"):
+		seg := strings.SplitN(strings.TrimPrefix(path, "/inference/v1/"), "/", 2)[0]
 		tag, ok := tagBySegment[seg]
 		return tag, ok
 	case path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/"):
@@ -124,7 +130,7 @@ func TestOpenAPITags_FollowTheSegmentTaxonomy(t *testing.T) {
 // honest in both directions: a declared-but-unused tag is dead weight
 // an agent will chase, and a used-but-undeclared tag renders untitled
 // in every spec viewer. Taxonomy entries for still-undocumented
-// segments (Config, State) are deliberately NOT declared here; they
+// segments (Config) are deliberately NOT declared here; they
 // enter the spec with their first documented operation.
 func TestOpenAPITags_DeclaredMatchesUsed(t *testing.T) {
 	spec := loadOpenAPI(t)

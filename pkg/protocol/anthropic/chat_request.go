@@ -2,14 +2,17 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/protocol"
 )
 
-// A Messages request as the compat translation reads it. Fields it does
-// not read (cache_control, thinking, service_tier, ...) are not carried:
-// Chat Completions has no place for them.
+// A Messages request as the compat translation reads it. Controls without
+// an equivalent are refused before the request reaches an engine.
 type messagesRequest struct {
 	Model         string          `json:"model"`
 	MaxTokens     *int            `json:"max_tokens"`
@@ -25,6 +28,7 @@ type messagesRequest struct {
 	Metadata      *struct {
 		UserID string `json:"user_id"`
 	} `json:"metadata"`
+	ExtraParams json.RawMessage `json:"extra_params"`
 }
 
 type message struct {
@@ -34,15 +38,16 @@ type message struct {
 
 // block is any content block; Type says which fields it uses.
 type block struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text"`
-	Source    *imageSource    `json:"source"`
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Input     json.RawMessage `json:"input"`
-	ToolUseID string          `json:"tool_use_id"`
-	Content   json.RawMessage `json:"content"`
-	IsError   bool            `json:"is_error"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text"`
+	Source       *imageSource    `json:"source"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Input        json.RawMessage `json:"input"`
+	ToolUseID    string          `json:"tool_use_id"`
+	Content      json.RawMessage `json:"content"`
+	IsError      bool            `json:"is_error"`
+	CacheControl json.RawMessage `json:"cache_control"`
 }
 
 type imageSource struct {
@@ -53,10 +58,12 @@ type imageSource struct {
 }
 
 type tool struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Type         string          `json:"type"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	CacheControl json.RawMessage `json:"cache_control"`
+	Strict       *bool           `json:"strict"`
 }
 
 type toolChoice struct {
@@ -111,11 +118,24 @@ func ToChatRequest(body []byte) (ChatRequest, error) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ChatRequest{}, refuse("body", "not a Messages request: %v", err)
 	}
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(body, &fields)
+	if err := validateMessagesControls(req, fields); err != nil {
+		return ChatRequest{}, err
+	}
 	messages, err := chatMessages(req)
 	if err != nil {
 		return ChatRequest{}, err
 	}
 	chat := map[string]any{"model": req.Model, "messages": messages}
+	for key, value := range fields {
+		switch key {
+		case "model", "messages", "max_tokens", "system", "stop_sequences", "stream", "temperature", "top_p", "top_k", "tools", "tool_choice", "metadata", "extra_params",
+			"thinking", "cache_control", "service_tier", "container", "context_management", "output_config", "inference_geo", "stream_options":
+			continue
+		}
+		chat[key] = value
+	}
 	if req.MaxTokens != nil {
 		chat["max_tokens"] = *req.MaxTokens
 	}
@@ -156,11 +176,39 @@ func ToChatRequest(body []byte) (ChatRequest, error) {
 		// turn would settle no tokens.
 		chat["stream_options"] = map[string]any{"include_usage": true}
 	}
+	if err := protocol.MergeChatExtensions(chat, req.ExtraParams); err != nil {
+		var ext *protocol.ChatExtensionError
+		if errors.As(err, &ext) {
+			return ChatRequest{}, refuse(ext.Param, "%s", ext.Message)
+		}
+		return ChatRequest{}, refuse("extra_params", "%s", err.Error())
+	}
 	out, mErr := json.Marshal(chat)
 	if mErr != nil {
 		return ChatRequest{}, refuse("body", "cannot encode the translated request: %v", mErr)
 	}
 	return ChatRequest{Body: out, Model: req.Model, Stream: req.Stream}, nil
+}
+
+func validateMessagesControls(req messagesRequest, fields map[string]json.RawMessage) error {
+	if req.MaxTokens != nil {
+		for key, raw := range fields {
+			if strings.EqualFold(key, "max_completion_tokens") && string(raw) != "null" {
+				return refuse(key, "use max_tokens to set the translated Messages completion limit")
+			}
+		}
+	}
+	for _, key := range []string{"thinking", "cache_control", "service_tier", "container", "context_management", "output_config", "inference_geo", "stream_options"} {
+		if raw := fields[key]; len(raw) > 0 && string(raw) != "null" {
+			return refuse(key, "has no lossless Chat Completions translation; use a provider that natively serves Messages")
+		}
+	}
+	for i, t := range req.Tools {
+		if len(t.CacheControl) > 0 && string(t.CacheControl) != "null" {
+			return refuse(fmt.Sprintf("tools.%d.cache_control", i), "explicit cache control requires native Messages support")
+		}
+	}
+	return nil
 }
 
 // chatMessages renders the system prompt and every turn.
@@ -224,6 +272,11 @@ func contentBlocks(raw json.RawMessage, param string) ([]block, error) {
 	var blocks []block
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return nil, refuse(param, "must be a string or a list of content blocks")
+	}
+	for i, b := range blocks {
+		if len(b.CacheControl) > 0 && string(b.CacheControl) != "null" {
+			return nil, refuse(fmt.Sprintf("%s.%d.cache_control", param, i), "explicit cache control requires native Messages support")
+		}
 	}
 	return blocks, nil
 }
@@ -369,6 +422,9 @@ func chatTools(tools []tool) []map[string]any {
 		if t.Description != "" {
 			fn["description"] = t.Description
 		}
+		if t.Strict != nil {
+			fn["strict"] = *t.Strict
+		}
 		out = append(out, map[string]any{"type": "function", "function": fn})
 	}
 	return out
@@ -412,20 +468,20 @@ const countTokensMaxTokens = 1
 // engines do have differ in shape, so prompt usage is the one count
 // every engine reports.
 func ToCountTokensRequest(body []byte) (ChatRequest, error) {
-	req, err := ToChatRequest(body)
-	if err != nil {
-		return ChatRequest{}, err
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(body, &source); err != nil || source == nil {
+		return ChatRequest{}, refuse("body", "must be a Messages request object")
 	}
-	var chat map[string]any
-	if err := json.Unmarshal(req.Body, &chat); err != nil {
-		return ChatRequest{}, refuse("body", "cannot re-read the translated request: %v", err)
+	for key := range source {
+		switch strings.ToLower(key) {
+		case "max_tokens", "max_completion_tokens", "stream", "stream_options":
+			delete(source, key)
+		}
 	}
-	chat["max_tokens"] = countTokensMaxTokens
-	delete(chat, "stream")
-	delete(chat, "stream_options")
-	out, mErr := json.Marshal(chat)
+	source["max_tokens"] = json.RawMessage(strconv.Itoa(countTokensMaxTokens))
+	out, mErr := json.Marshal(source)
 	if mErr != nil {
 		return ChatRequest{}, refuse("body", "cannot encode the translated request: %v", mErr)
 	}
-	return ChatRequest{Body: out, Model: req.Model}, nil
+	return ToChatRequest(out)
 }

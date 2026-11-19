@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -38,9 +39,13 @@ func TestConsoleCommandPrintsURLAndOpensOnlyInteractiveMode(t *testing.T) {
 			const consoleURL = "https://router.example/console/#overview"
 			var stdout, stderr bytes.Buffer
 			opened := 0
+			handoffs := 0
 			root := &cobra.Command{SilenceUsage: true, SilenceErrors: true}
 			root.PersistentFlags().StringP("output", "o", "", "format")
-			root.AddCommand(newConsoleCmd(func(context.Context) (string, error) { return consoleURL, nil }, func(got string) error { opened++; require.Equal(t, consoleURL, got); return test.openErr }, func() bool { return test.desktop }))
+			root.AddCommand(newConsoleCmd(func(context.Context) (string, error) { return consoleURL, nil }, func(context.Context) (*pkgClient.ConsoleGrant, error) {
+				handoffs++
+				return &pkgClient.ConsoleGrant{URL: consoleURL, Token: "temporary-test-code"}, nil
+			}, func(got string) error { opened++; require.Equal(t, consoleURL, got); return test.openErr }, func() bool { return test.desktop }))
 			root.SetOut(&stdout)
 			root.SetErr(&stderr)
 			root.SetArgs(append([]string{"console"}, test.args...))
@@ -51,6 +56,13 @@ func TestConsoleCommandPrintsURLAndOpensOnlyInteractiveMode(t *testing.T) {
 				require.ErrorContains(t, err, "printed URL")
 			}
 			require.Equal(t, test.opens, opened)
+			if len(test.args) > 0 {
+				require.Zero(t, handoffs, "URL-only discovery must not issue a grant")
+				require.NotContains(t, stdout.String(), "temporary-test-code")
+			} else {
+				require.Equal(t, 1, handoffs)
+				require.Contains(t, stdout.String(), "temporary-test-code")
+			}
 			require.Contains(t, stdout.String(), consoleURL)
 			if test.name == "json" {
 				require.JSONEq(t, `{"url":"`+consoleURL+`"}`, stdout.String())

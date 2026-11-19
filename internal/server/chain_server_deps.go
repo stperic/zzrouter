@@ -12,7 +12,6 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
@@ -44,17 +43,6 @@ func (d *chainServerDeps) IsLocalNode(node string) bool {
 
 func (d *chainServerDeps) ClusterURL(node string) string {
 	return d.s.resolveNodeToClusterURL(node)
-}
-
-func (d *chainServerDeps) NodeMetrics(node string) *mesh.ResourceMetrics {
-	if d.s.model.NodeCache == nil {
-		return nil
-	}
-	return d.s.model.NodeCache.Get(node)
-}
-
-func (d *chainServerDeps) NodeCacheReady() bool {
-	return d.s.model.NodeCache != nil
 }
 
 // ===== ProviderConfig =====

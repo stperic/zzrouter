@@ -13,13 +13,13 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/dispatch/steering"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	pfallback "github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
-	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
@@ -146,10 +146,8 @@ func (p *Proxy) ProxyWithFallback(
 		},
 	)
 
-	// Filter: remove candidates that don't have enough memory for the model.
-	filtered = p.filterByMemory(filtered, endpoint)
-
-	// Apply routing strategy.
+	// The serving node owns memory admission and can reuse a run that has
+	// already allocated its memory.
 	strategy := p.strategies.Get(resolved.Strategy)
 	if strategy == nil {
 		strategy = p.strategies.Get(string(modelgroup.StrategyPriority)) // default
@@ -390,7 +388,7 @@ func (p *Proxy) tryOnce(
 	c.Request = original.WithContext(ctx)
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
-	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
+	targetURL, up, inst, err := p.resolveDeploymentTarget(c.Request.Context(), dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
 	if err != nil {
 		attempt.SetError("unavailable", err)
 		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
@@ -415,12 +413,16 @@ func (p *Proxy) tryOnce(
 	}
 	recorder.SetUpstreamRequestData(body)
 
+	requestCtx := c.Request.Context()
+	if lease != nil {
+		requestCtx = lease.Context()
+	}
 	var attemptCtx context.Context
 	var cancel context.CancelFunc
 	if dep.Timeout > 0 {
-		attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
+		attemptCtx, cancel = context.WithTimeout(requestCtx, dep.Timeout)
 	} else {
-		attemptCtx, cancel = context.WithCancel(c.Request.Context())
+		attemptCtx, cancel = context.WithCancel(requestCtx)
 	}
 	defer cancel()
 	var wrap func(io.ReadCloser) io.ReadCloser
@@ -591,11 +593,12 @@ func (p *Proxy) writeSteeringError(c *gin.Context, perr *steering.ParseError) {
 
 // resolveDeploymentTarget returns the URL a deployment attempt goes to
 // and what of the caller's request travels there.
-func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQuery, endpoint string) (string, backend.Upstream, *instance.Instance, error) {
+func (p *Proxy) resolveDeploymentTarget(ctx context.Context, dep pfallback.Candidate, urlPath, rawQuery, endpoint string) (string, backend.Upstream, *instance.Instance, error) {
 	// 1. Cloud providers — always go to their API endpoint.
 	resolved, hasEndpoint := p.deps.Backend(dep.App)
 	if hasEndpoint && resolved.Cloud {
-		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, ConnectionRevision: resolved.Revision, Model: dep.Model})
+		return resolved.InferenceTarget(urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
 
 	// 2. Remote node — its cluster port, over mTLS.
@@ -604,6 +607,7 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 		if base == "" {
 			return "", backend.Upstream{}, nil, fmt.Errorf("node %q advertises no cluster port", dep.Node)
 		}
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, Node: dep.Node, Model: dep.Model})
 		return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Cluster(), nil, nil
 	}
 
@@ -625,12 +629,14 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 	}
 	// 4. A provider without runs is its own endpoint.
 	if inst == nil {
-		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
+		affinity.Observe(ctx, affinity.Origin{ProviderKey: dep.App, ConnectionRevision: resolved.Revision, Model: dep.Model})
+		return resolved.InferenceTarget(urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
 	base, up, err := p.deps.RunUpstream(inst)
 	if err != nil {
 		return "", backend.Upstream{}, nil, err
 	}
+	affinity.Observe(ctx, affinity.Origin{ProviderKey: inst.Provider, RunID: inst.ID, Endpoint: base, Model: dep.Model})
 	return backend.PassthroughTarget(base, urlPath, rawQuery), up, inst, nil
 }
 
@@ -650,72 +656,6 @@ func attemptHeaders(h http.Header, up backend.Upstream, dep pfallback.Candidate)
 func (p *Proxy) isModelRunning(model, provider, endpoint string) bool {
 	inst, found := p.deps.AppInstance(model, provider, endpoint)
 	return found && inst.GetStatus() == instance.StatusRunning
-}
-
-// filterByMemory removes candidates on nodes that don't have enough
-// memory for the model. Uses the node resource cache (refreshed
-// alongside the model cache) — no per-request calls. Only checks
-// on-demand models that aren't already running (running models have
-// memory allocated). Rough first-pass: estimates model memory from
-// parameter count, compares against cached node metrics.
-func (p *Proxy) filterByMemory(candidates []pfallback.Candidate, endpoint string) []pfallback.Candidate {
-	if !p.deps.NodeCacheReady() || len(candidates) <= 1 {
-		return candidates
-	}
-
-	localHostname := p.deps.NodeName()
-
-	result := make([]pfallback.Candidate, 0, len(candidates))
-	for _, c := range candidates {
-		// Already-running models have memory allocated — pass through.
-		if c.Node == "" && p.isModelRunning(c.Model, c.App, endpoint) {
-			result = append(result, c)
-			continue
-		}
-
-		// Replicas of one group may serve different models, so each is sized by its own.
-		estimate := modelregistry.EstimateModelMemory(c.Model, "", "")
-		if estimate == nil || estimate.MinMemoryMB <= 0 {
-			result = append(result, c) // Can't estimate — pass through.
-			continue
-		}
-
-		// Resolve node name for cache lookup.
-		nodeName := c.Node
-		if nodeName == "" {
-			nodeName = localHostname
-		}
-
-		metrics := p.deps.NodeMetrics(nodeName)
-		if metrics == nil {
-			result = append(result, c) // No metrics for this node — don't filter.
-			continue
-		}
-
-		// Check available memory: prefer GPU VRAM if available, fall
-		// back to RAM.
-		availableMB := metrics.RAMAvailableMB
-		if metrics.GPUMemoryFreeMB > 0 {
-			availableMB = metrics.GPUMemoryFreeMB
-		}
-
-		if availableMB < estimate.MinMemoryMB {
-			slog.Info("[Fallback] Skipping deployment: insufficient memory",
-				"deployment", c.Name, "node", nodeName, "model", c.Model,
-				"required_mb", estimate.MinMemoryMB, "available_mb", availableMB)
-			continue
-		}
-
-		result = append(result, c)
-	}
-
-	// Never filter ALL candidates — keep at least one to try (let it
-	// fail naturally).
-	if len(result) == 0 && len(candidates) > 0 {
-		return candidates[:1]
-	}
-
-	return result
 }
 
 // recordFallbackMetrics updates the inference recorder with fallback

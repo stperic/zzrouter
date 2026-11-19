@@ -148,10 +148,14 @@ func TestFeatureEvidencePublicSurfaces(t *testing.T) {
 	assert.Contains(t, result["content"].([]any)[0].(map[string]any)["text"], "model_feature_evidence_invalid")
 	compat := httptest.NewServer(buildWorkerCompatEngine(worker))
 	t.Cleanup(compat.Close)
-	for _, path := range []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"} {
-		t.Run(path, func(t *testing.T) {
-			body := []byte(`{"model":"vendor/model","messages":[{"role":"user","content":"hi"}],"input":"hi","max_tokens":1,"stream":false}`)
-			req := routedRequest(httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/chat/completions", `{"model":"vendor/model","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`},
+		{"/v1/messages", `{"model":"vendor/model","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`},
+		{"/v1/responses", `{"model":"vendor/model","input":"hi","max_output_tokens":1,"stream":false}`},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			body := []byte(tc.body)
+			req := routedRequest(httptest.NewRequest(http.MethodPost, tc.path, bytes.NewReader(body)))
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = req

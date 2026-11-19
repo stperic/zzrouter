@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +17,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/security"
 )
 
 type browserBindingKey struct{}
@@ -30,6 +33,7 @@ type browserSessionState struct {
 	oauth.SessionInfo
 	Issuer   string `json:"issuer"`
 	NodeName string `json:"node_name"`
+	Sharing  string `json:"sharing"`
 }
 
 type browserLimits struct {
@@ -56,19 +60,45 @@ type browserTeam struct {
 }
 
 type browserIdentity struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Role      UserRole          `json:"role"`
-	TeamID    string            `json:"team_id,omitempty"`
-	IsVirtual bool              `json:"is_virtual"`
-	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
-	Limits    browserLimits     `json:"limits"`
-	Team      *browserTeam      `json:"team"`
-	Usage     *KeyUsageResponse `json:"usage"`
+	Kind      string        `json:"kind"`
+	Username  string        `json:"username,omitempty"`
+	Owner     bool          `json:"owner,omitempty"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Role      UserRole      `json:"role"`
+	TeamID    string        `json:"team_id,omitempty"`
+	IsVirtual bool          `json:"is_virtual"`
+	ExpiresAt *time.Time    `json:"expires_at,omitempty"`
+	Limits    browserLimits `json:"limits"`
+	Team      *browserTeam  `json:"team"`
+	Usage     *browserUsage `json:"usage"`
+}
+
+type browserUsage struct {
+	KeyID    string `json:"key_id,omitempty"`
+	PersonID string `json:"person_id,omitempty"`
+	quota.Usage
 }
 
 func (s *Server) browserState(info oauth.SessionInfo) browserSessionState {
-	return browserSessionState{SessionInfo: info, Issuer: s.access.oauth.Issuer(), NodeName: s.GetNodename()}
+	issuer := s.access.oauth.Issuer()
+	return browserSessionState{SessionInfo: info, Issuer: issuer, NodeName: s.GetNodename(), Sharing: issuerSharing(issuer)}
+}
+
+// Describe configuration only. DNS, proxy and remote reachability are not probed.
+func issuerSharing(issuer string) string {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Hostname() == "" || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "unavailable"
+	}
+	// This is display guidance, never an authorization or transport exemption.
+	if strings.EqualFold(parsed.Hostname(), "localhost") || security.IsLoopbackHost(parsed.Hostname()) {
+		return "local_only"
+	}
+	if parsed.Scheme == "https" {
+		return "configured"
+	}
+	return "unavailable"
 }
 
 // requestAccess resolves credentials once before the existing role gate. Browser
@@ -168,18 +198,18 @@ func (s *Server) browserOriginOnly(c *gin.Context) {
 	c.Next()
 }
 
-// browserAuthMiddleware uses the same identity/role pipeline as API keys, with
+// browserAdminAuthMiddleware uses the same identity/role pipeline as API keys, with
 // cookie authentication enabled only for the management routes that opt in.
-func (a *AuthHandlers) browserAuthMiddleware(role UserRole) gin.HandlerFunc {
+func (a *AuthHandlers) browserAdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if a.access.authenticate(c, role, true) {
+		if a.access.authenticate(c, RoleAdmin, true) {
 			a.observeClient(c)
 		}
 	}
 }
 
 func (s *Server) registerBrowserSessionRoutes() {
-	session := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.browserCoordinatorOnly, browserResponseHeaders)
+	session := s.engine.Group("/zzrouter/v1", s.browserCoordinatorOnly, browserResponseHeaders)
 	session.GET("/session", s.browserOriginOnly, s.handleBrowserBootstrap)
 	session.POST("/session", s.handleBrowserLogin)
 	session.DELETE("/session", s.handleBrowserLogout)
@@ -193,8 +223,8 @@ func (s *Server) registerBrowserSessionRoutes() {
 	self.DELETE("/connections/:id", s.handleBrowserRevoke)
 }
 
-// Mounted routes retain their handlers across live role transitions. Gate them
-// on the current role rather than destroying durable authority on demotion.
+// A node leaving the coordinator role keeps its routes until it exits. Gate them
+// on the live role so that window refuses coordinator requests.
 func (s *Server) browserCoordinatorOnly(c *gin.Context) {
 	if s.role.Current().IsCoordinator() {
 		c.Next()
@@ -263,13 +293,23 @@ func (s *Server) handleBrowserMe(c *gin.Context) {
 	ac := GetAccessContext(c)
 	info := browserIdentity{ID: ac.Key.ID, Name: ac.Key.Name, Role: ac.Key.Role,
 		IsVirtual: ac.Key.IsVirtual, ExpiresAt: ac.Key.ExpiresAt, Limits: browserQuota(ac.Key.Quotas)}
+	info.Kind = "key"
+	if ac.Key.Kind == control.KindPerson {
+		info.Kind = "person"
+		if person := s.accessSnapshot().Person(ac.Key.ID); person != nil {
+			info.Username, info.Owner = person.Username, person.Owner
+		}
+		info.Usage = &browserUsage{PersonID: ac.Key.ID, Usage: quota.CurrentUsage(ac.Key.Quotas, s.access.core.GetPersonSpend(ac.Key.ID))}
+	}
 	if ac.Team != nil {
 		info.TeamID = ac.Team.ID
 		info.Team = &browserTeam{ID: ac.Team.ID, Name: ac.Team.Name,
 			AllowedModels: append([]string{}, ac.Team.AllowedModels...), ProviderAccess: ac.Team.ProviderAccess.Clone(), RouteAccess: ac.Team.RouteAccess.Clone(), Limits: browserQuota(ac.Team.Quotas)}
 	}
 	if ac.Key.IsVirtual && s.services.Keys != nil {
-		info.Usage, _ = s.services.Keys.GetKeyUsage(ac.Key.ID)
+		if usage, err := s.services.Keys.GetKeyUsage(ac.Key.ID); err == nil {
+			info.Usage = &browserUsage{KeyID: usage.KeyID, Usage: usage.Usage}
+		}
 	}
 	respondRetrievalSuccess(c, "Current identity", info)
 }

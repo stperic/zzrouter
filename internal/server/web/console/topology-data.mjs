@@ -67,7 +67,7 @@ export function layoutInput(elements, bounds = new Map()) {
   for (const { data } of nodes) (data.parent ? boxes.get(data.parent).children : children).push(boxes.get(data.id));
   return { id: 'root', children, edges: elements.filter(element => element.data.source).map(({ data }) => ({ id: data.id, sources: [data.source], targets: [data.target] })),
     layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'DOWN', 'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
-      'elk.spacing.nodeNode': '20', 'elk.layered.spacing.nodeNodeBetweenLayers': '32', 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES' } };
+      'elk.spacing.nodeNode': '20', 'elk.layered.spacing.nodeNodeBetweenLayers': '16', 'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES' } };
 }
 
 export function layoutPositions(graph, origin = { x: 0, y: 0 }, positions = new Map()) {

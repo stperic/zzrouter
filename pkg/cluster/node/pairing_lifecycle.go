@@ -106,6 +106,7 @@ type BeginPairingOptions struct {
 
 // PairingWindowInfo carries the operator inputs needed by coordinator acceptance.
 type PairingWindowInfo struct {
+	NodeName    string
 	Code        string
 	Deadline    time.Time
 	WorkerURL   string
@@ -119,6 +120,7 @@ type pairingWindow struct {
 	server   *http.Server
 	request  pairingRequestBody
 	options  BeginPairingOptions
+	host     string
 
 	code     string
 	deadline time.Time
@@ -146,6 +148,11 @@ func (n *Node) BeginPairing(ctx context.Context, opts BeginPairingOptions) (Pair
 	if opts.CoordinatorURL == "" {
 		return PairingWindowInfo{}, fmt.Errorf("%w: coordinator_url empty", ErrPairingURLMissing)
 	}
+	coordinatorURL, err := NormalizeCoordinatorURL(opts.CoordinatorURL)
+	if err != nil {
+		return PairingWindowInfo{}, fmt.Errorf("%w: %w", ErrPairingURLMissing, err)
+	}
+	opts.CoordinatorURL = coordinatorURL
 	// CAFingerprint is optional (empty → TOFU). Only validate format
 	// when the operator supplied one; surface malformed values via
 	// ErrPairingCAFingerprintMalformed so the handler can distinguish
@@ -155,6 +162,8 @@ func (n *Node) BeginPairing(ctx context.Context, opts BeginPairingOptions) (Pair
 			return PairingWindowInfo{}, err
 		}
 	}
+	ips := n.cfg.advertiseIPs()
+	host := n.cfg.enrollmentHost(ctx, opts.CoordinatorURL, ips)
 
 	n.pairingMu.Lock()
 	defer n.pairingMu.Unlock()
@@ -185,7 +194,7 @@ func (n *Node) BeginPairing(ctx context.Context, opts BeginPairingOptions) (Pair
 		return PairingWindowInfo{}, fmt.Errorf("persist pairing code: %w", err)
 	}
 
-	csr, err := n.identity.CSR(n.cfg.NodeName, n.cfg.advertiseDNSNames(), n.cfg.advertiseIPs())
+	csr, err := n.identity.CSR(n.cfg.NodeName, n.cfg.advertiseDNSNames(), ips)
 	if err != nil {
 		_ = os.Remove(n.cfg.PairingPath)
 		return PairingWindowInfo{}, fmt.Errorf("generate CSR: %w", err)
@@ -204,6 +213,7 @@ func (n *Node) BeginPairing(ctx context.Context, opts BeginPairingOptions) (Pair
 	doneCh := make(chan struct{})
 
 	w := &pairingWindow{
+		host:     host,
 		code:     code,
 		deadline: deadline,
 		ctx:      loopCtx,

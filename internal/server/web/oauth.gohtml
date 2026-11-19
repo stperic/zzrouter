@@ -1,4 +1,82 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{.Title}} | zzRouter</title><style>
-:root{color-scheme:dark}body{margin:0;background:#101725;color:#edf2fa;font:16px system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}main{box-sizing:border-box;width:min(520px,94vw);margin:2rem;padding:2rem;background:#1c2941;border:1px solid #34435b;border-radius:16px}h1{font-size:1.6rem}p{line-height:1.6;color:#c1ccdf}small{overflow-wrap:anywhere;color:#a6b6cf}label{display:block;margin:1rem 0}input{box-sizing:border-box;width:100%;padding:.8rem;margin-top:.5rem;background:#101725;border:1px solid #65748b;border-radius:7px;color:white;font:inherit}button{font:inherit;padding:.75rem 1rem;border:0;border-radius:7px;background:#79b6ff;color:#10223b;cursor:pointer;margin:.5rem .4rem .5rem 0}.secondary{background:#33435b;color:white}a{color:#9dcaff}.error{color:#ffbaad}.connection{border-top:1px solid #34435b;padding:1rem 0}</style><main><small>zzRouter</small><h1>{{.Title}}</h1>{{if .Message}}<p class="error">{{.Message}}</p>{{end}}
-{{if .Pending}}<p>Client name (unverified): <strong>{{.Client}}</strong></p><p>Requests <strong>{{.Scope}}</strong> access to <small>{{.Resource}}</small>.</p><p>Callback address<br><small>{{.Callback}}</small></p><p><small>Verify this address belongs to the application you want to connect.</small></p><form method="post" action="/oauth/authorize"><input type="hidden" name="pending" value="{{.Pending}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{if .SignedIn}}<p>Signed in as {{.Identity}}. This client will receive its own revocable connection.</p>{{else}}<label>Your zzRouter API key<input type="password" name="key" autocomplete="off" required autofocus></label><p>Your key stays with zzRouter. The client receives a separate authorization.</p>{{end}}<button name="action" value="allow">{{if .SignedIn}}Allow connection{{else}}Sign in and connect{{end}}</button><button class="secondary" name="action" value="deny" formnovalidate>Cancel</button></form>
-{{else}}{{if .SignedIn}}<p>Signed in as {{.Identity}}.</p>{{range .Connections}}<div class="connection"><strong>{{.Client}}</strong><p>{{.Scope}} · Connected {{.CreatedAt.Format "2006-01-02"}}</p><form method="post" action="/oauth/connections"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="grant" value="{{.ID}}"><button class="secondary">Revoke access</button></form></div>{{else}}<p>No active connections.</p>{{end}}<form method="post" action="/oauth/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="secondary">Sign out</button></form>{{else}}<form method="post" action="/oauth/connections"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Your zzRouter API key<input type="password" name="key" autocomplete="off" required autofocus></label><button>Sign in</button></form>{{end}}{{end}}<p><a href="/oauth/connections">Manage connected clients</a></p></main></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}} | zzRouter</title>
+  <style>
+    :root{color-scheme:light;font:15px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#141413;background:#faf9f5}
+    *{box-sizing:border-box}body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:2rem 1.25rem}main{width:min(100%,30rem)}
+    .brand{display:flex;align-items:center;gap:.65rem;font-size:1.35rem;font-weight:700;margin-bottom:2.5rem}.brand svg{width:2.4rem;height:2.4rem}
+    h1{font-size:1.8rem;letter-spacing:-.045em;line-height:1.2;margin:0 0 1rem}p{margin:.8rem 0;color:#66635c}a{color:#98472e;text-underline-offset:3px}
+    .request{border:1px solid #dedbd2;background:#fff;border-radius:12px;padding:1.15rem;margin:1.35rem 0}.request p{margin:0}.request strong{display:block;color:#141413;font-size:1.1rem}
+    dl{margin:1rem 0 0}dt{font-size:.8rem;color:#66635c;margin-top:.8rem}dd{margin:.15rem 0 0;overflow-wrap:anywhere}label{display:block;font-weight:600;margin:1rem 0}
+    input{display:block;width:100%;padding:.75rem;margin-top:.4rem;background:#fff;border:1px solid #aaa69b;border-radius:7px;color:inherit;font:inherit}
+    button,.button{display:inline-flex;justify-content:center;align-items:center;min-height:44px;font:inherit;font-weight:600;padding:.7rem 1rem;border:1px solid #292723;border-radius:8px;background:#292723;color:#faf9f5;text-decoration:none;cursor:pointer}
+    button:hover,.button:hover{background:#44413a}.primary{width:100%;margin:.6rem 0}.secondary{background:transparent;color:#292723;border-color:#aaa69b}.secondary:hover{background:#eeece4}
+    .actions{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:1.25rem}.actions button{flex:1}.help{font-size:.85rem}.error{padding:.8rem;border:1px solid #d8a49c;border-radius:8px;background:#fcefeb;color:#a3352b}
+    details{border-top:1px solid #dedbd2;margin-top:1.5rem;padding-top:1rem}summary{cursor:pointer;color:#66635c;font-weight:600;min-height:32px}.connection{border-top:1px solid #dedbd2;padding:1rem 0}.connection p{font-size:.85rem}
+    :focus-visible{outline:3px solid #98472e;outline-offset:3px}@media(max-width:480px){body{place-items:start center;padding:1.5rem 1.25rem}.brand{margin-bottom:2rem}}
+  </style>
+</head>
+<body>
+<main id="content">
+  <div class="brand" role="img" aria-label="zzRouter">
+    <svg viewBox="0 0 256 256" aria-hidden="true">
+      <path fill="#242420" d="M56 24H204c22 0 35 24 21 42l-56 73c-3 4-6 6-12 6h-18l68-88c4-5 1-11-6-11H56a11 11 0 0 1 0-22Z"/>
+      <path fill="#242420" d="M87 104h20L40 192c-5 7-1 18 9 18h150a11 11 0 0 1 0 22H43c-24 0-35-25-20-45l55-74c3-4 5-9 9-9Z"/>
+      <path fill="#d97757" d="M26 62H162c12 0 18 12 11 22l-70 87h121a11 11 0 0 1 0 22H87c-12 0-18-13-11-23l71-86H26a11 11 0 0 1 0-22Z"/>
+    </svg><span aria-hidden="true">Router</span>
+  </div>
+  <h1>{{.Title}}</h1>
+  {{if .Message}}<p class="error" role="alert">{{.Message}}</p>{{end}}
+  {{if .Pending}}
+    <p>Only continue if you recognize this application and its callback address.</p>
+    <section class="request" aria-label="Connection request">
+      <p class="help">Application name (unverified)</p><strong>{{.Client}}</strong>
+      <dl><dt>Requested access</dt><dd>{{.Scope}}</dd><dt>Router endpoint</dt><dd>{{.Resource}}</dd><dt>Callback address</dt><dd>{{.Callback}}</dd></dl>
+    </section>
+    {{if .SignedIn}}
+      <p>Signed in as <strong>{{.Identity}}</strong>. This application will receive its own revocable connection.</p>
+      <form method="post" action="/oauth/authorize">
+        <input type="hidden" name="pending" value="{{.Pending}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div class="actions"><button name="action" value="allow">Allow connection</button><button class="secondary" name="action" value="deny" formnovalidate>Cancel</button></div>
+      </form>
+    {{else}}
+      <p>Sign in to your router to review and allow this connection.</p>
+      <a class="button primary" href="/console/#authorize?request={{.AuthorizationURL | urlquery}}">Sign in to Router</a>
+      <form method="post" action="/oauth/authorize">
+        <input type="hidden" name="pending" value="{{.Pending}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button class="secondary" name="action" value="deny" formnovalidate>Cancel connection</button>
+      </form>
+      <details><summary>Advanced access</summary>
+        <p class="help">You can also use an existing router API key. It stays with your router; the application receives a separate authorization.</p>
+        <form method="post" action="/oauth/authorize">
+          <input type="hidden" name="pending" value="{{.Pending}}"><input type="hidden" name="csrf" value="{{.CSRF}}">
+          <label>Router API key<input type="password" name="key" autocomplete="off" required></label>
+          <button name="action" value="allow">Sign in and connect</button>
+        </form>
+      </details>
+    {{end}}
+    <p class="help"><a href="/console/#connections">Manage connected applications</a></p>
+  {{else}}
+    {{if .SignedIn}}
+      <p>Signed in as <strong>{{.Identity}}</strong>.</p>
+      <a class="button primary" href="/console/#connections">Manage connections in console</a>
+      {{range .Connections}}
+        <section class="connection"><strong>{{.Client}}</strong><p>{{.Scope}} · Connected {{.CreatedAt.Format "2006-01-02"}}</p>
+          <form method="post" action="/oauth/connections"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="grant" value="{{.ID}}"><button class="secondary">Revoke access</button></form>
+        </section>
+      {{else}}<p>No active connections.</p>{{end}}
+      <form method="post" action="/oauth/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="secondary">Sign out</button></form>
+    {{else}}
+      <p>Sign in to review the applications connected to your router and revoke access when you need to.</p>
+      <a class="button primary" href="/console/#connections">Sign in to Router</a>
+      <details><summary>Advanced access</summary>
+        <form method="post" action="/oauth/connections"><input type="hidden" name="csrf" value="{{.CSRF}}"><label>Router API key<input type="password" name="key" autocomplete="off" required></label><button>Sign in with key</button></form>
+      </details>
+    {{end}}
+  {{end}}
+</main>
+</body>
+</html>

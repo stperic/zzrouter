@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -187,9 +189,9 @@ func (h *OpenAIInferenceHandlers) handleCompletions(c *gin.Context) {
 		OpenAIInvalidRequest(c, "Model field is required", &param)
 		return
 	}
-	if req.Prompt == "" {
+	if !validCompletionPrompt(req.Prompt) {
 		param := "prompt"
-		OpenAIInvalidRequest(c, "Prompt field is required", &param)
+		OpenAIInvalidRequest(c, "Prompt must be a string, a nonempty array of strings or token IDs, or a nonempty array of token arrays", &param)
 		return
 	}
 
@@ -198,6 +200,55 @@ func (h *OpenAIInferenceHandlers) handleCompletions(c *gin.Context) {
 	stashInferenceContext(c, req.Model, body)
 	recorder := newCompletionRecorder(c, req.Model, body)
 	h.dispatchWithRecorder(c, req.Model, body, recorder, span, "chat")
+}
+
+// validCompletionPrompt admits native text/token batches without decoding token IDs as floats.
+func validCompletionPrompt(raw json.RawMessage) bool {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return true
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return true
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || len(items) == 0 {
+		return false
+	}
+	validTokens := func(tokens []json.RawMessage) bool {
+		if len(tokens) == 0 {
+			return false
+		}
+		for _, token := range tokens {
+			if _, err := strconv.ParseUint(string(token), 10, 64); err != nil {
+				return false
+			}
+		}
+		return true
+	}
+	switch items[0][0] {
+	case '"':
+		var texts []string
+		if json.Unmarshal(raw, &texts) != nil {
+			return false
+		}
+		for _, item := range items {
+			if item[0] != '"' {
+				return false
+			}
+		}
+		return true
+	case '[':
+		for _, item := range items {
+			var tokens []json.RawMessage
+			if json.Unmarshal(item, &tokens) != nil || !validTokens(tokens) {
+				return false
+			}
+		}
+		return true
+	default:
+		return validTokens(items)
+	}
 }
 
 // handleEmbeddings handles POST /v1/embeddings.
@@ -935,6 +986,7 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 		proxyReq.Header.Set(constants.HeaderServingProvider, provider)
 	}
 
+	affinity.Observe(c.Request.Context(), affinity.Origin{ProviderKey: provider, Node: host, Model: wire.ModelFromBody(body)})
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		attempt.SetError("transport_failure", err)
@@ -953,6 +1005,7 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 		if provider = resp.Header.Get(constants.HeaderServingProvider); provider != "" {
 			recorder.SetProvider(provider)
 			s.stashServingProvider(c, provider)
+			affinity.Observe(c.Request.Context(), affinity.Origin{ProviderKey: provider, Node: host, Model: wire.ModelFromBody(body)})
 		}
 	}
 

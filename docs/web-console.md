@@ -7,11 +7,24 @@ links to the configured origin when the current address differs.
 For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)
 before signing in.
 
-Sign in with a zzRouter key. Administrator keys open Overview, Chat, Models,
-Nodes, Workloads, Logs, Clients, Providers, Routes, Keys & teams and System.
-User keys open Chat and My Access, with their
-own model policy, limits, recorded usage and MCP grants. Keys remain the identity
-model; the console does not introduce a separate account or role database.
+For a new installation, run `zzrouter console`, enter the temporary setup code
+and create your owner account. Afterward, sign in with your username and password.
+Administrators can invite people, manage teams and issue named app keys. Existing
+keys remain available through advanced sign-in. People and applications inherit
+their team’s provider access, routes and budgets; the API owns these rules.
+
+If you lose the owner's password, choose **Get help signing in**. Run
+`zzrouter access recover-owner` on the coordinator computer, then enter its
+temporary recovery code and choose a new password. This preserves providers,
+models, teams and app keys. A system installation requires the installation
+account or administrative privileges; see [installation](install.md).
+
+Administrators open Overview, Chat, Models, Nodes, Workloads, Logs, Clients,
+Providers, Routes, Keys & teams, People and System. People use My account to
+review access, change their password and manage their own authorizations. User
+API-key sessions use My Access. The guided setup prepares a provider and model
+and verifies a response in Chat. Additional workers and app connections are
+optional; add them later from Nodes or Clients. See the [first-use guide](install.md).
 
 ## Appearance
 
@@ -63,11 +76,7 @@ or map. Forms share readable control sizes and a consistent action footer.
 
 ## Models, runtime management and downloads
 
-Discover renders model descriptions and README files with clickable links and
-shows available provider metadata. For OpenRouter excerpts, Read full description
-loads the public model page’s description on demand.
-
-Models separates available inventory from discovery. Available models have exact
+Available and Discover share the same filter layout and model rows. Available models have exact
 node/provider identities, details, an explicit inference test, Chat, run creation,
 parameters and deletion. Deletion reports partial errors; a successful HTTP
 response alone does not imply every requested copy was removed. Model-to-Chat
@@ -75,9 +84,28 @@ handoff retains the selected compute node.
 
 Discover uses declared registry/provider search capabilities, cards, variant and
 feature choices. Download review shows the exact provider, file and target nodes.
-Capacity is advisory; unknown capacity does not silently remove a target. Accepted
-downloads remain inspectable under Workloads > Downloads, including per-node jobs
+Model cards render provider descriptions and README files as Markdown, with
+clickable links. Details include reported dates, input and output types, pricing,
+and repository files when the source provides them. Providers that need
+credentials or lack a model catalog show their status before search.
+For OpenRouter excerpts, Read full description loads the public model page's
+description on demand and links to OpenRouter if the full text is unavailable.
+Ollama searches and sorts the full catalog before pagination.
+Local downloads offer healthy nodes with the selected provider ready to receive the
+model. The compatibility check uses the chosen format and reported model
+architecture. Known incompatibilities and memory shortfalls are excluded.
+Unmeasured memory fit is labeled on eligible nodes. Ollama also requires a
+running service and shows each tag's reported size, inputs, context, and MLX
+badge. Hosted variants appear under Ollama Cloud. Accepted downloads remain
+inspectable under Workloads > Downloads, including per-node jobs
 and cancellation. Job acceptance or disappearance never establishes completion.
+
+Cloud discovery uses Add cloud model directly, without download review or local
+node selection. Registration uses the existing deployment API on the coordinator.
+After confirmed completion and an inventory read, Available details offer Try in
+Chat. Failed or uncertain registration does not automatically submit again.
+Cloud details show registration metadata without local weight inspection or
+storage placeholders.
 
 Providers > Manage runtime offers prerequisites, optional runtime components,
 reviewed install plans, per-step or full execution, verification, copied reported
@@ -111,7 +139,11 @@ an explicit live feed and deliberate payload reveal. Inline prompts are excluded
 from retained list buffers. Live reset/dropped-event evidence remains visible;
 disconnecting is not completion. Payloads stay only in the current panel.
 
-System groups observed setup guidance, software and pricing. Software shows each
+System groups general settings, guided setup, software, pricing, access history
+and recovery. Access history shows committed access changes in bounded pages,
+filtered by exact actor, subject and action and by a time range.
+Recovery shows the node’s recorded scope and local offline commands, with
+separate key custody and staging before activation; see [recovery](recovery.md). Software shows each
 node's version and partial failures, history, explicit release/target rollouts,
 per-node scheduled-update settings and coordinator rollback. Interrupted updates
 are reconciled through status/history without replaying writes. Pricing separates
@@ -142,7 +174,7 @@ clicking a different item replaces that panel without rebuilding the map or
 resetting zoom. When the panel narrows the map, it pans just enough to retain the
 clicked icon and label. Close or Escape returns focus to the map or selected list item.
 On narrow screens the panel replaces the map workspace and keeps its Close control visible.
-Zoom controls, drag to pan and Fit adjust the viewport. List view provides the
+The map opens on desktop and mobile at a locked scale. Drag or swipe to pan, or use Center map to return to the network. List view provides the
 same entities and actions for keyboard and screen-reader use, and remains usable
 if the graph package or layout fails.
 
@@ -232,13 +264,15 @@ limits. The browser does not implement a second policy engine.
 Settings opens the shared right-side panel. Apply a system prompt, temperature,
 top-p, output-token limit and optional node for the next request. Blank numeric
 values use model defaults. Display controls show returned reasoning and response
-statistics. Chat reads token counts and available timing metrics from the
-existing Chat Completions stream. It accepts llama.cpp-style timings, Groq usage
-timings and vLLM's optional per-request metrics. vLLM reports first-token latency
-and generation time when `enable-per-request-metrics` is enabled on its server.
-An asterisk marks browser measurements and calculations, including total elapsed
-time. When provider timings are unavailable, Chat shows browser-measured time to
-first token and output stream time as available. Stop cancels the request. New chat
+statistics. Replies through a configured route show the serving node and provider
+when zzRouter reports them. Chat reads token counts and available timing metrics
+from the existing Chat Completions stream. It accepts llama.cpp-style timings,
+Groq usage timings and vLLM's optional per-request metrics. vLLM reports
+first-token latency and generation time when `enable-per-request-metrics` is
+enabled on its server. The chat footer explains the asterisk used for browser
+measurements and calculations, including total elapsed time. When provider timings
+are unavailable, Chat shows browser-measured time to first token and output stream
+time as available. Stop cancels the request. New chat
 clears the conversation, draft and settings after confirmation. Regenerate explicitly requests a new
 response. No inference request is automatically retried. Partial output remains
 visible on stream failure, with a distinct stopped/error outcome.
@@ -329,6 +363,8 @@ installation and enablement on each node. Choose a compute node and open Manage
 runtime for installation, service controls, parameters and versions. An editable
 cloud or registry connection still belongs to
 the coordinator; it does not change a worker's credentials.
+Cloud cards show the provider name and configuration status. Coordinator details
+appear once in the selected provider's panel.
 Enablement and installation flags describe the node's effective provider state.
 They do not distinguish every installation phase or say whether a model is
 running. Inspect the returned job for installation progress.
@@ -342,7 +378,11 @@ secrets cannot be read back or borrowed when changing a destination. Show/Hide
 reveals only the value currently being entered; it is still cleared on saving,
 navigation and session invalidation.
 
-Test connection checks the current form without saving or enabling anything.
+Test connection and Enable/Disable share one action row in provider details.
+Test connection checks the saved coordinator connection
+without retrieving its secret. In an editor it checks the complete current form.
+Neither test saves or enables anything. Unavailable probes are reported as
+unverified; a successful connection test does not establish access to every model.
 Editing any field invalidates its result. Save and enable stores credentials and
 requests normal onboarding for a disabled cloud provider. Save changes updates
 an enabled provider without enabling it again. Advanced settings includes Save
@@ -363,7 +403,8 @@ coordinator's declared environment or credential cache.
 A Hugging Face token is optional for public models. Its diagnostic may reject an
 empty token even though anonymous public browsing works. A successful token
 check does not establish access to every gated repository; approval may also be
-needed. Managed saving requires `security.credentials.key_file` at startup.
+needed. Managed saving uses protected storage prepared automatically at startup.
+`security.credentials.key_file` optionally selects an operator-managed key.
 
 ## Manage routes
 
@@ -427,11 +468,13 @@ as described in [cluster compatibility](protocol_versioning.md).
 
 Keys and Teams have searchable lists with friendly names, access, budgets and
 status. Selecting a row opens details; Edit opens the same panel’s editor. Key details show the inherited team
-policy, shared budget and usage limits; team details link to member keys. Existing
+policy, shared budget and usage limits. Team details show authoritative counts
+of people, app keys and pending enrollment, and link to their management views. Existing
 individual key limits remain visible read-only when configured. A narrow screen
 shows the panel at full width with a Close control to return to the list.
 
-Create a named key for each person or client. Enter its name first; the console
+Invite people through People. Create a named key for each API application or
+automation. Enter its name first; the console
 generates an editable stable ID. Select a shared team, or create one without
 leaving or losing the key draft. Teams own provider access, model permissions,
 budgets and usage limits. Keys inherit these rules and show a read-only preview
@@ -502,8 +545,9 @@ the value only in transient memory. Changed access or expiry discards it. If
 that was your own replacement key, recovery guidance remains available without
 starting another refresh or retrying the rotation.
 
-Administrator keys authorize management MCP. Inference MCP requires a separate
-user key. MCP connections shows issuer-derived URLs and owned grants. Signing
+Administrator identities authorize management MCP. Inference MCP requires a User
+account or user app key. My account → Your authorizations shows issuer-derived
+URLs and owned grants for people; user API-key sessions use My Access. Signing
 out ends browser access; it does not revoke existing MCP grants.
 
 ## Architecture and boundaries
@@ -573,8 +617,9 @@ Pagehide scrubs transient secrets; a full reload does not preserve values or
 in-memory outcome notices.
 
 System also shows the effective public URL and authentication facts. Listener, issuer,
-TLS and protection-key configuration remains a local installation concern and
-requires restart. See [configuration](configuration.md#mcp-browser-login),
+and TLS changes remain local installation concerns and require a restart.
+Provider credential protection is prepared automatically under the node account;
+an explicit key file retains its separately managed custody. See [configuration](configuration.md#mcp-browser-login),
 [security](security.md#mcp-browser-authorization), and
 [client architecture](client-architecture.md).
 

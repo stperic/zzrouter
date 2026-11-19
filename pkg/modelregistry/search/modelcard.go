@@ -25,29 +25,30 @@ const huggingFaceAPIBase = "https://huggingface.co/api/models/"
 
 // ModelCard represents a model's card/information.
 type ModelCard struct {
-	Provider     Provider       `json:"provider"`
-	ModelID      string         `json:"model_id"`
-	Name         string         `json:"name"`
-	Description  string         `json:"description,omitempty"`
-	README       string         `json:"readme,omitempty"`
-	Tags         []string       `json:"tags,omitempty"`
-	License      string         `json:"license,omitempty"`
-	Author       string         `json:"author,omitempty"`
-	Size         int64          `json:"size,omitempty"` // Size in bytes
-	PipelineTag  string         `json:"pipeline_tag,omitempty"`
-	Downloads    int            `json:"downloads,omitempty"`
-	Likes        int            `json:"likes,omitempty"`
-	CreatedAt    string         `json:"created_at,omitempty"`
-	UpdatedAt    string         `json:"updated_at,omitempty"`
-	URL          string         `json:"url,omitempty"`      // Model page URL
-	Siblings     []hfSibling    `json:"siblings,omitempty"` // Files in the repository
-	LibraryName  string         `json:"library_name,omitempty"`
-	CardData     map[string]any `json:"card_data,omitempty"`
-	GGUF         any            `json:"gguf,omitempty"`
-	Safetensors  any            `json:"safetensors,omitempty"`
-	InputTypes   []string       `json:"input_types,omitempty"`
-	VariantCount int            `json:"variant_count,omitempty"`
-	HasCloud     bool           `json:"has_cloud,omitempty"`
+	Provider       Provider       `json:"provider"`
+	ModelID        string         `json:"model_id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	README         string         `json:"readme,omitempty"`
+	Tags           []string       `json:"tags,omitempty"`
+	License        string         `json:"license,omitempty"`
+	Author         string         `json:"author,omitempty"`
+	Size           int64          `json:"size,omitempty"` // Size in bytes
+	PipelineTag    string         `json:"pipeline_tag,omitempty"`
+	Downloads      int            `json:"downloads,omitempty"`
+	Likes          int            `json:"likes,omitempty"`
+	CreatedAt      string         `json:"created_at,omitempty"`
+	UpdatedAt      string         `json:"updated_at,omitempty"`
+	URL            string         `json:"url,omitempty"`      // Model page URL
+	Siblings       []hfSibling    `json:"siblings,omitempty"` // Files in the repository
+	LibraryName    string         `json:"library_name,omitempty"`
+	CardData       map[string]any `json:"card_data,omitempty"`
+	GGUF           any            `json:"gguf,omitempty"`
+	Safetensors    any            `json:"safetensors,omitempty"`
+	InputTypes     []string       `json:"input_types,omitempty"`
+	ParameterSizes []string       `json:"parameter_sizes,omitempty"`
+	VariantCount   int            `json:"variant_count,omitempty"`
+	HasCloud       bool           `json:"has_cloud,omitempty"`
 }
 
 // GetCloudModelRaw returns the raw provider response for a cloud model as a
@@ -260,23 +261,34 @@ func getOllamaModelCard(ctx context.Context, modelName string) (*ModelCard, erro
 	}
 
 	description, capabilities, inputTypes, modelURL := scrapeOllamaModelPage(ctx, baseName)
+	if description == "" {
+		description = foundModel.Description
+	}
 	if modelURL == "" {
 		modelURL = foundModel.URL
 	}
+	updatedAt := foundModel.ModifiedAt
+	if !foundModel.UpdatedAt.IsZero() {
+		updatedAt = foundModel.UpdatedAt.Format(time.RFC3339)
+	}
+	if len(capabilities) == 0 {
+		capabilities = foundModel.Capabilities
+	}
 
 	return &ModelCard{
-		Provider:     ProviderOllama,
-		ModelID:      modelName,
-		Name:         foundModel.Name,
-		Description:  description,
-		Size:         foundModel.Size,
-		Downloads:    foundModel.Pulls,
-		Tags:         capabilities,
-		URL:          modelURL,
-		UpdatedAt:    foundModel.ModifiedAt,
-		InputTypes:   inputTypes,
-		VariantCount: foundModel.Tags,
-		HasCloud:     foundModel.HasCloud,
+		Provider:       ProviderOllama,
+		ModelID:        modelName,
+		Name:           foundModel.Name,
+		Description:    description,
+		Size:           foundModel.Size,
+		Downloads:      foundModel.Pulls,
+		Tags:           capabilities,
+		URL:            modelURL,
+		UpdatedAt:      updatedAt,
+		InputTypes:     inputTypes,
+		ParameterSizes: foundModel.ParameterSizes,
+		VariantCount:   foundModel.Tags,
+		HasCloud:       foundModel.HasCloud,
 	}, nil
 }
 
@@ -321,15 +333,7 @@ func scrapeOllamaModelPage(ctx context.Context, modelName string) (description s
 		modelURL = fmt.Sprintf("https://ollama.com/library/%s", modelName)
 	}
 
-	matches := regexp.MustCompile(`<span[^>]*>tools</span>|<span[^>]*>thinking</span>`).FindAllString(htmlContent, -1)
-	for _, match := range matches {
-		if strings.Contains(match, "tools") {
-			capabilities = append(capabilities, "tools")
-		}
-		if strings.Contains(match, "thinking") {
-			capabilities = append(capabilities, "thinking")
-		}
-	}
+	capabilities = extractOllamaBadges(htmlContent, ollamaCapabilityRegex)
 
 	content := strings.ToLower(description)
 	inputTypes = append(inputTypes, "text")

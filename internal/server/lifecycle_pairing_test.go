@@ -13,9 +13,9 @@ import (
 // TestLifecycle_StartStopPairing enforces plan Principle #2: every
 // subsystem Start call in a start*Subsystems group has a matching
 // Stop call in the paired stop*Subsystems group. Prevents silent
-// drift where future Start calls land without a matching Stop —
-// critical for the role-aware mode switch, where a demote invokes
-// stopCoordinatorSubsystems and any orphan Start leaks a goroutine.
+// drift where future Start calls land without a matching Stop: stop
+// runs stopCoordinatorSubsystems on a node that booted as a
+// coordinator, and any orphan Start leaks a goroutine.
 //
 // Exemptions cover deliberate design choices, documented at the call
 // site. Additions require updating the exemption map with a reason.

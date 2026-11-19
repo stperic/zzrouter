@@ -2,11 +2,149 @@
 
 ## Unreleased
 
+- Keep running worker models eligible for route selection when their GPUs
+  have little free memory. The serving node handles memory admission for new runs.
+
 - Enable model pricing by default. An explicit `models.pricing.enabled: false`
   in `node.yaml` still disables it.
 
-- Render model-card links and provider metadata in Discover. Expand shortened
-  OpenRouter descriptions on demand from the public model page.
+- Remove `POST /zzrouter/v1/state/snapshot` and `POST /zzrouter/v1/state/restore`; retire `POST /zzrouter/v1/keys/reload` with `410 Gone`.
+- A key or team request cancelled before its write changes nothing, and a change that would leave a record the node cannot load (such as a key with an empty name) is refused with `400`. Rotating a key now updates its `updated_at`. Key descriptions are now saved.
+- A worker opens no access store: only static installation keys (node.yaml or environment) authenticate on a worker. A node whose role crosses the coordinator boundary while it runs now exits, so its service manager restarts it in the new role.
+- Access records and the access history now live in one SQLite database on the coordinator, `access/access.sqlite`, beside the store marker `access-store.json`. A change and its audit event commit together. `keys.yaml`, `teams.yaml`, `access/people.json` and `audit.jsonl` are no longer read and are not imported, so an existing development installation starts at owner setup. Those files, with `access/people.json.lock`, still hold key and password hashes, and `keys.yaml`, `teams.yaml` and `audit.jsonl` still travel in offline backups: delete them.
+- An `expires_at` sent with a UTC offset is returned in UTC (the same instant).
+- A key, team or people change answers `503 access_store_busy` with `Retry-After` when another process holds the access database past the busy timeout; nothing is changed.
+- The node refuses to start when its access database is missing while the marker exists (`missing`), cannot be read (`unreadable`), was written by a newer release (`schema_newer`) or fails its checks (`integrity_failed`), which include holding exactly the schema objects the release creates (an index another tool added, or the statistics `ANALYZE` adds, refuse the start); the final log line names the reason and the next action. A store that can no longer vouch for its records after startup answers `503 access_store_failed`, finishes the requests already in flight, up to the normal shutdown drain time, and then exits so its service manager restarts it.
+- Remove env-backed app keys (`key_env`). Browser sessions and delegated OAuth access bound to an app key before this release stop resolving; sign in again.
+- `GET /zzrouter/v1/access/audit` reads the database: `data.skipped` is removed, and a cursor survives restarts.
+- `GET /zzrouter/v1/access/audit` filters by `actor`, `subject`, `action`, `since` and `until`, and System → Access history offers them; an unknown, repeated, empty or over-long parameter is refused with `400`, and a cursor sent with other filters with `409`. Pages run newest first by event time.
+- Offline backups (`zzrouter-node recovery backup`) carry a consistent, checked image of the access database instead of its files: after a crash the image holds exactly the committed changes, and nothing under `access/` travels as a file (`access/people.json` no longer does either). A store that will not open stops the backup with its reason and writes nothing. A failed or interrupted backup leaves neither the archive nor the exported key: temporaries live in `.tmp` directories beside the outputs, which move into place last, and Ctrl-C or a service stop cancels any recovery command and removes its temporaries; a second Ctrl-C ends it at once. An interrupt during the check that follows a backup says the archive was written but not checked. Bundles name a `profile` (`installation`, or `database` for the image alone) and describe the image in `store`; `recovery check` checks the image's integrity, every access record and its schema objects (an extra trigger, view or index is refused), extracting it into the system's temporary directory, and reports a refused image with advice about the archive, never about the installed store. `recovery restore` prepares the staged image, so a staged restore signs everyone out: sessions, delegated tokens and app-key references issued before it stop resolving once it is in place, while passwords and app keys keep working. The commands print the profile and the store's identity.
+- `zzrouter-node recovery backup --profile handoff` (experimental) writes a third bundle profile, `handoff`, from a stopped coordinator: what a new coordinator needs from the old one and nothing of the old machine. It carries exactly the access database image, the provider tree's settings, ownership receipt, definitions, schemas and assets, model groups, spend, pricing overrides and the encrypted provider connections, with the key exported separately; never `node.yaml`, dotenv files, OAuth state, cluster trust or identity, private keys, update or node state, provider installs or models. A file added to the configuration directory later does not travel, and the allow-list alone decides: a provider or asset named like a temporary, lock or PID file travels. Its manifest names the old coordinator's `source` and a `separate` list of what to move or recreate by hand (the destination's `node.yaml`, every environment variable including static keys and provider credentials, the external services provider definitions use, TLS material, provider runtimes and models, worker pairing), and has no `inventory`. A worker writes no handoff (`no access store`), and a link, or on a case-insensitive filesystem a case variant of a carried file, where the node would read provider state stops the backup instead of being left behind. `recovery check` refuses a handoff carrying any other entry, no provider definition (it has lost its provider tree), or a `source`, `separate` or entry name that is not short plain text, and `recovery restore` stages it with a prepared image. `--profile database` is refused: database bundles come from the running coordinator's backup API. Backup now applies the archive check's profile rules before it writes, so it refuses what `recovery check` would refuse instead of writing it.
+- Creating a key with its personal team, deleting a key with its personal team, and issuing the owner setup grant with its workspace team each commit as one change: a crash or a failed write leaves neither half, so the startup sweep for orphaned personal teams is gone. `PATCH /zzrouter/v1/keys/{id}` with an empty `role` is refused with `400` instead of saving a key without a role.
+- `POST /zzrouter/v1/access/recovery/local` takes the local proof in the `X-Zzrouter-Local-Proof` header and an empty JSON object as its body; a `proof` body field is refused with `400`. The route is unreleased, so the change is deliberate: use `zzrouter access recover-owner` from this release. Every refusal (wrong or missing proof, a peer address not assigned to the host, or an `Origin`, `Cookie`, `X-CSRF-Token`, `Sec-Fetch-*`, `Forwarded`, `Via`, `X-Forwarded-*` or `X-Real-IP` header) answers the same `403`, and the header is never forwarded to a provider or worker. Every coordinator now creates its local proof at start, including one with browser sign-in disabled. The route catalog reports such routes as `auth: local`; `zz_api` refuses them and the discovery document does not list them.
+- A key or team request that is malformed in itself (an unknown `role` or `team_role`, a `reset_period` outside its values, an `expires_at` that is not RFC 3339, a team ID with the reserved `personal-` prefix, or a malformed route or provider policy) answers `400` before any check of existing records, never `404` or `409`.
+- At start, a coordinator forgets the recorded spend (`spend.json`) of keys and teams its access database does not hold, such as a delete made just before the process died or a database from another time, so a key or team created later under the same ID starts at zero. Deleting a key or team now writes its spend purge to `spend.json` at once instead of within 60 seconds.
+- `GET /zzrouter/v1/system/state` reports the coordinator's access store to administrators: its identity, revision and sequence, `ready` or `setup_required`, file and free-page sizes in bytes, and the integrity check run at startup, without querying the database or waiting for an access write.
+- `zzrouter-node recovery inventory` prints `{"inventory": ..., "store": ...}`: the `store` section reports the access store as the check a backup runs finds it (`ready`, `setup_required`, `absent`, `in_use` while a node runs, `refused` with the reason, its evidence and next action, or `unknown` with the error when the store cannot be judged), its identity, and the online backups in `access/backups` with whether their manifests name a database this release reads (a listing failure is reported in `archives_error` beside the store's verdict), without migrating the database, following a link or touching a running node's store. The store section is printed even when the installation section cannot be read (`"inventory": null`), and the command then exits with an error. A lock file the account cannot open or write now reads as such, no longer as "installation is in use".
+- A coordinator backs up its access database online: `POST /zzrouter/v1/system/state/backups` (an administrator, or the local proof in `X-Zzrouter-Local-Proof` from the installed host; empty JSON object; `Idempotency-Key` replays the original `201`) copies it at one committed revision while the node serves, checks the copy with SQLite's full integrity check, writes a `database` archive into the owner-only `access/backups` directory, records a `store.backup_created` access-history event and only then lists it. `GET /zzrouter/v1/system/state/backups` and `GET .../backups/{id}` (with the archive's SHA-256, `protected_until` and `expires_at`) read them, and `GET /zzrouter/v1/system/state` reports them in `backup_bytes` and `retained_copies`. Each backup is kept for 24 hours, then the three newest up to seven days, within 1 GiB; a failed or interrupted backup lists nothing and leaves no file, and the next start removes the temporary files a crash left and nothing else. New codes: `404 state_backup_not_found`, `507 state_backup_capacity_exceeded` (`capacity`: `byte_cap` with its figures, or `disk`) and `500 state_image_check_failed`. `recovery inventory` lists the same archives as the coordinator reads them: a file not named after a backup is no longer listed.
+- Request principals of different kinds no longer collide. One function names the caller for idempotent replays, the access history, job creators and route claims: an app key by its ID, every other caller by kind, `static:<id>` for an installation key (as the access history already showed), `person:<id>` for a signed-in person, `local:operator` for the local proof. `POST /zzrouter/v1/keys` refuses an `id` containing `:` with `400`, and a database holding such a key refuses to open (`integrity_failed`). On the wire: the access history's `actor` (and the value its `actor` filter matches), a key's or team's `created_by` and `updated_by`, and a pricing override's `updated_by` read `person:<id>` for what a person did (was `<id>`); a route's `auto_owner` reads `static:admin` when claimed through the installation administrator key (was `admin`) and `person:<id>` when claimed by a person. Values stored before this release keep their old form. A key whose ID is `admin`, or a person's ID, no longer replays that caller's idempotent answers or appears as that caller in the access history.
+- A request to an access store that is closing because the coordinator stops answers `503 service_unavailable` with `Retry-After`, no longer an unmapped `500` with raw text.
+- `zzrouter access state export --output FILE [--backup-id ID]` copies an online backup of the access database off the running coordinator, as the installation account on its host (it takes a new backup when no ID is given): it refuses an output that exists or lies inside the installation, writes `FILE.partial` owner-only, checks the announced SHA-256, renames it, and removes the partial on a mismatch or an interrupt. It uses `GET /zzrouter/v1/system/state/backups/{id}/content`, which answers the local proof only (an API key or session alone is `403`; the route catalog marks it `local`, so `zz_api` cannot reach it), checks the archive on the file it sends from (`500 state_image_check_failed`, nothing sent: take a new backup and export that one), records one `store.backup_exported` access-history event before the first byte (`503` and nothing sent when it cannot), and sends the whole archive with `Content-Length` and `Repr-Digest`; `Range` is ignored. `zzrouter access recover-owner` shares the command's way of reaching the node, and both now say that the coordinator does not seem to be running on this machine when its local proof is absent.
+- `zzrouter access state reset [--backup-id ID] [--yes]` returns a running coordinator's access records to the owner alone, as the installation account on its host: it takes an online backup unless one is named, previews the reset, prints what goes and what stays, asks for confirmation unless `--yes`, resets and prints what it did and how to undo it. One transaction removes every app key, every team but the owner's, every person but the owner, every grant and the onboarding progress, and records one `store.reset` access-history event; the owner keeps their ID and password under a new credential revision (their sessions end; sign in again), their team keeps its policy and spend, the access history is kept, removed keys stop authenticating at once and the spend of removed keys and teams is purged. Without an owner, everything goes and owner setup stays open. It uses `POST /zzrouter/v1/system/state/reset/preview` and `POST /zzrouter/v1/system/state/reset` (both `{backup_id}`), for the local proof only (route catalog tier `local`, so `zz_api` and MCP cannot reach them). The backup must be retained, inside its `protected_until`, and hold the current revision, at the preview and again when the reset commits; a reset sent twice is applied once. New codes: `409 state_revision_changed` (take a new backup and preview again; a reset already sent shows as `store.reset`) and `409 state_backup_unprotected` (the backup is past its protected window); an unknown backup is `404 state_backup_not_found`. To undo a reset, restore and activate the backup it names; the purged spend does not come back. The access history filter accepts `action=store.reset`.
+- `zzrouter-node recovery activate STAGING [--dry-run] [--rollback]` publishes a staged `database` bundle as a stopped installation's access store. `recovery restore --to` refuses a directory inside, equal to or holding the installation. It checks the staging directory (outside the installation) against its staging manifest, the image as a start would, the store identity (an installation with a store marker or a database takes only its own store ID; a fresh one takes any), and that the staged generation is neither the live store's nor one whose rollback directory still exists, refusing with a closed reason and the next action and publishing, replacing and creating nothing; `--dry-run` runs the checks alone. The database published is the copy whose SHA-256 is the one checked. On Unix, `recovery inventory`, `backup`, `restore` and `activate` refuse unless they run as the owner of the installation's configuration directory, or when `--dir` names a link (`not_owner`, naming the command to repeat under `sudo -u`): the service account controls that directory, so a privileged process acting there could be steered outside it. Windows checks no owner. The replaced database and store marker are kept in `rollback/<generation>/` in the configuration directory until the operator deletes them, never backed up, and listed in `GET /zzrouter/v1/system/state` `retained_copies` as `activation_rollback` (with `pending` for an activation that did not finish, and `retained_copies_error` when they cannot be listed, the store's state still answered) and in `recovery inventory`'s store section under `rollbacks`; the staging directory is removed. A crash or an interrupt during an activation leaves `recovery-activation.json`: the node, `recovery backup` (every profile), a privileged update run (before it installs anything) and a rerun that cannot finish refuse with `activation_incomplete`; running the command again finishes it, and `--rollback` restores the replaced files byte for byte (refusing, with nothing changed, if its rollback directory was deleted after the replacement; finishing then says the previous store was not kept), removing the `access/` and `rollback/` directories the activation left empty; `recovery inventory` reports `activation_incomplete` above every verdict on the store, which keeps its reason. Neither the marker nor a rollback directory travels in an installation bundle.
+- `zzrouter-node recovery activate STAGING --source-stopped [--replace] [--dry-run] [--rollback]` (experimental) activates a staged `handoff` bundle on a stopped destination: the source coordinator's access database, then, in name order, every configuration file the handoff carries, every file the destination holds where a handoff carries one (removed when the handoff lacks it), and the exported key at the default key location, through the same activation marker, rollback record and rollback directory (`rollback/<generation>/files/`) as a database activation; a rerun finishes it as first planned and `--rollback` restores the installation byte for byte while the marker exists, refusing before it moves anything when something it must put back is gone. Published files and directories get the mode the node's own writers give them. Nothing else in the provider tree is touched, and `node.yaml`, the dotenv files, CA, identity and OAuth state never are. It refuses, with nothing written: without `--source-stopped` (`source_not_stopped`; zzRouter never probes the source), on a destination that would not start as a coordinator or is still paired (`not_coordinator`), when it would replace or remove anything the destination holds without `--replace` (`replace_required`, naming each item), when an explicit credential `key_file` is not the handoff's key (`key_mismatch`), when a link or a file in the way lies on a path it would write (`unsafe_path`), and when the staging directory lacks the exported key or an entry differs from its manifest (`staging_invalid`). The activation and its dry run report, never rewrite, route replicas with no node or pinned to the source's name, and providers the source had enabled for itself (`nodes.<source>.enabled`, which a node with another name does not inherit), each with the `zz_*` call that fixes it once the node runs; provider `nodes.<name>` entries are left as they are. A start, an activation and a rollback refuse a corrupted activation marker (a generation that is not a canonical UUID, a target name that leaves the installation) with `activation_incomplete` before anything moves. `recovery restore` of a handoff names the activation command. `zzrouter-node config init`, `config reset`, `config providers` and `providers enable|disable` refuse with `activation_incomplete` while an activation is incomplete.
+
+- Expand shortened OpenRouter descriptions on demand from the public model page.
+- Render model-card Markdown and safe links across Discover, and show the
+  provider's model metadata, pricing, capabilities, and repository files.
+
+- Give the Overview map more space on desktop and mobile, lock its zoom, and
+  remove the completed onboarding card.
+- Confirm provider and model eligibility before offering download targets. Label
+  unavailable runtimes and keep route, run and update choices tied to live node
+  observations.
+- Group Discover catalogs by availability. An unavailable cloud catalog or
+  bookmarked model links to setup and can refresh provider status in place.
+- Show Ollama tag inputs and MLX badges in Discover. Check the selected tag
+  against running Ollama providers on healthy nodes before download review.
+- Group discovery search and sort above compact model rows with descriptions,
+  registry dates, version counts, and color-coded capability tags.
+- Keep short Chat exchanges fully visible with a smaller composer and tighter
+  message spacing. Preserve independent transcript scrolling, and use an inline
+  send control on short screens so replies stay readable.
+- Send explicit console Chat output limits as `max_completion_tokens` and let
+  model tests inherit generation defaults, avoiding rejected legacy token limits
+  and forced 32-token truncation on reasoning models.
+- Simplify cloud model registration into Add cloud model and Try in Chat, using
+  the existing deployment and model APIs. Show coordinator connections instead
+  of worker counts on cloud provider cards, and let administrators test saved
+  credentials without entering or exposing them again.
+- Remove console Origin, Referer and fetch metadata from browser-authorized
+  upstream requests, preventing cloud providers from treating routed Chat as
+  direct browser access. Keep ingress session, origin and CSRF enforcement.
+
+- Expose owner password recovery through `zzrouter access recover-owner` and
+  align console help with the user-facing CLI. Preserve local recovery authority
+  and the existing API without invoking the internal node executable.
+- Serve console assets from the embedded inventory, preventing missing modules
+  from leaving the browser on the opening screen. Keep exact routes and existing
+  coordinator and browser security boundaries.
+- Report oversized streamed uploads as 413 with the actual configured limit.
+  Reject declared oversized bodies before forwarding, preserve CORS on refusals,
+  and share request IDs and API-version headers at each server's entry point.
+
+- Correct cloud inference paths through shared backend resolution, including
+  Gemini and Bedrock, and preserve routing overrides during configuration upgrades.
+  Declare Gemini embeddings and report unavailable model catalogs and connection
+  probes without issuing unsupported requests or claiming verified credentials.
+- Preserve supported native options through Responses and Messages translation,
+  map equivalent reasoning and output controls, and refuse unsupported behavior.
+  Accept text and token batches on Completions. Keep token-count probes bounded
+  and apply the existing realtime access policy to session-token helpers.
+- Keep Ollama blob checks, uploads, pulls and model creation on the selected
+  worker through streaming mTLS forwarding. Reject conflicting or invalid node
+  selectors before mutation.
+
+- Add definition-driven provider operation discovery and exact-run JSON
+  diagnostics through shared REST and MCP interfaces. Publish native and routed
+  connection metadata with existing visibility rules, listener scope and no
+  credentials. Preserve rich JSON inference inputs in user MCP tools.
+- Require administrator authority for native Ollama mutations and bind stored
+  Responses to the originating caller, provider connection and run. Refuse stale
+  origins instead of selecting a replacement. Provider metadata and worker
+  ownership require cluster protocol 25 on all peers.
+- Include known local upstream URLs for live process providers without listener
+  declarations, while preserving unknown binding and authentication evidence.
+  Recognize worker-only Ollama enablement on the native API. Keep inference
+  provider and download registry selection separate in the CLI, and preserve
+  canonical worker names when following model launch jobs.
+
+- Prepare protected provider credential storage automatically under the node account,
+  preserving explicit key custody and refusing missing-key recovery shortcuts.
+  Show authoritative team impact across people, app keys and pending enrollment,
+  and serialize shared-key creation with team deletion.
+- Separate MCP browser sign-in from API-key client setup and show local-only sharing
+  readiness before invitations. Add administrator access history backed by committed
+  account events and bounded audit pages.
+- Add local installation recovery inventory, offline backup/check and restore into
+  new private staging directories. Keep protection keys separate, validate authority
+  snapshots through their owners and preserve explicit external-data requirements.
+  Use one configuration root for `start --dir` and fence startup against backup.
+
+- Publish settled provider installation state before completing its job, including
+  rollback and panic recovery. Preserve console editors across ordinary coordinator
+  restarts and permission refusals, while still clearing changed browser authority.
+  Collapse completed onboarding into a compact confirmation. Activate Linux bundle
+  upgrades in one installer run and verify the running version on every platform.
+  Keep activity labels from remaining active when an observation expires during rendering.
+  Refresh provider cards and details from the same inventory, cancelling obsolete
+  reads so switching panels cannot restore an older enablement count.
+
+- Make additional compute nodes optional and guide their setup from the console
+  with OS-specific installation and pinned pairing commands. Preserve the chosen
+  computer through provider setup, model downloads and Chat. Use cluster listener
+  addresses independently of console access; distinguish expired pairing from
+  uncertain certificate delivery and support native worker role/port selection.
+  Select automatic worker pairing addresses from the route to the coordinator,
+  preserving explicit network settings on machines with multiple IP addresses.
+  Discover supported macOS Python installations without relying on a shell PATH.
+  Include model catalogs for providers enabled only on workers and keep pairing
+  completion usable while the first node observation is pending.
+  Apply selected Ollama version tags before download planning, presence checks
+  and worker admission, keeping console and TUI selections consistent.
+
+- Add local owner and invited-person accounts with password sign-in, recovery,
+  session revocation and inherited team access. Reuse the existing OAuth session
+  engine and policy enforcement for human accounts, including inference quotas
+  and usage attribution. Keep app keys and existing API-key sign-in compatible.
+- Add trusted console entry from the CLI and TUI using a temporary code, a focused
+  account setup flow, People side panels and a resumable getting-started checklist.
+  Continue application OAuth connections through account sign-in and explicit
+  consent. Add reviewed pairing documents for connecting another computer.
+- Unify installation credential ownership and release staging across platforms.
+  Preserve existing configuration, credentials and service definitions; validate
+  artifacts and supported installation layouts before changes. Add native macOS
+  and Windows packaging recipes and a persistent Windows console shortcut.
 
 - Simplify TUI parameter editing around scoped overrides and changed-leaf
   patches. Protect drafts and pending writes, reject obsolete replies, and
@@ -15,8 +153,9 @@
   hide disabled providers by default, and confirm provider removal.
 
 - Carry the double-Z brand into CLI help, the TUI and the project README.
-  Share the five-line ASCII logo between CLI help and the first TUI menu, then
-  use a quiet single-line wordmark during navigation and in small terminals.
+  Use the ASCII logo in CLI help and animate the double-Z symbol in the TUI
+  welcome. The TUI uses a single-line wordmark during navigation and in small
+  terminals.
 - Add the double-Z console logo, matching color and monochrome assets, and a
   browser icon. Pair the symbol with Router without repeating the ZZ lettering.
 - Add browser-local Claude Web and Claude Code light/dark console themes, with

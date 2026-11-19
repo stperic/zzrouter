@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
+	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -27,9 +28,10 @@ import (
 // success prints the node's short-form fingerprint so the operator can
 // visually cross-check against the pairing-code display on the worker.
 func newClusterAcceptCmd() *cobra.Command {
-	var workerURL, workerFingerprint string
+	var workerURL, workerFingerprint, transferFile string
+	var confirm bool
 	cmd := &cobra.Command{
-		Use:   "accept <code>",
+		Use:   "accept [code]",
 		Short: "Accept a worker's pairing request",
 		Long: `Accept a pending worker pairing request.
 
@@ -38,15 +40,42 @@ The code is printed by the worker when it enters pairing mode
 complete the handshake. Supply the node URL and fingerprint printed on the
 worker with --worker-url and --worker-fingerprint. The coordinator connects
 to the worker, signs its CSR and delivers its certificate.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if transferFile != "" {
+				if len(args) != 0 || workerURL != "" || workerFingerprint != "" {
+					return fmt.Errorf("--file cannot be combined with a code or worker flags")
+				}
+				reader := cmd.InOrStdin()
+				if transferFile != "-" {
+					f, err := os.Open(transferFile)
+					if err != nil {
+						return fmt.Errorf("open pairing document: %w", err)
+					}
+					defer func() { _ = f.Close() }()
+					reader = f
+				}
+				transfer, err := clusternode.ReadPairingTransfer(reader, utils.NowUTC())
+				if err != nil {
+					return err
+				}
+				cmd.Printf("Computer: %s\nEndpoint: %s\nFingerprint: %s\nExpires: %s\n", transfer.NodeName, transfer.WorkerURL, transfer.WorkerFingerprint, transfer.ExpiresAt.Format(time.RFC3339))
+				if !confirm {
+					cmd.Println("Review this identity, then repeat with --confirm to approve the computer.")
+					return nil
+				}
+				return runClusterAccept(transfer.Code, transfer.WorkerURL, transfer.WorkerFingerprint)
+			}
+			if len(args) != 1 || workerURL == "" || workerFingerprint == "" {
+				return fmt.Errorf("supply --file, or a code with --worker-url and --worker-fingerprint")
+			}
 			return runClusterAccept(args[0], workerURL, workerFingerprint)
 		},
 	}
 	cmd.Flags().StringVar(&workerURL, "worker-url", "", "Armed worker HTTPS cluster endpoint")
 	cmd.Flags().StringVar(&workerFingerprint, "worker-fingerprint", "", "Worker SPKI fingerprint verified from its local display")
-	_ = cmd.MarkFlagRequired("worker-url")
-	_ = cmd.MarkFlagRequired("worker-fingerprint")
+	cmd.Flags().StringVar(&transferFile, "file", "", "Review a pairing document from a file, or - for stdin")
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "Approve the computer described by the pairing document")
 	return cmd
 }
 

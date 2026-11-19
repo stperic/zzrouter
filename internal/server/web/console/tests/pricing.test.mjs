@@ -29,6 +29,19 @@ const editor = root => find(root, item => item.tag === 'form' && item.className 
 const submit = root => editor(root).listeners.get('submit')({ preventDefault() {} });
 const click = async (root, label) => { button(root, label).dispatchEvent(new Event('click')); await drain(); };
 
+test('unavailable pricing replaces the loading state and offers a read retry', async t => {
+  const f = fixture(t, async path => {
+    if (path === '/pricing/status') throw new APIError('Pricing is disabled.', { status: 503 });
+  });
+  let reloaded = false;
+  f.p.reload = () => { reloaded = true; };
+  await pricing(f.p);
+  assert.doesNotMatch(f.root.textContent, /Loading pricing/);
+  assert.match(f.root.textContent, /Pricing is disabled/);
+  await click(f.root, 'Retry pricing');
+  assert.equal(reloaded, true);
+});
+
 test('price editable projection preserves cache-read and excludes response-only fields', () => {
   assert.deepEqual(priceOverrideValues(record), { provider: 'engine', model: 'org/model', input_cost_per_1m: 1.25, output_cost_per_1m: 2.5, cache_read_cost_per_1m: 0.125, note: 'Contract' });
   assert.equal(priceOverrideChanged(record, { ...record, updated_at: 'later' }), false);

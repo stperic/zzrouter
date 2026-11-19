@@ -275,19 +275,20 @@ func connectionTarget(svc *config.ServiceConfig, record secrets.Record, values m
 		testPath = svc.Connection.TestPath
 	}
 	if testPath == "" {
-		testPath = "/v1/models"
+		testPath = (&Resolved{OpenAIPath: svc.Runtime.OpenAIPath, ModelsPath: svc.Runtime.ModelsPath}).ModelListPath()
 	}
 	header := upstream.Header()
 	encoded, _ := json.Marshal(struct {
 		Endpoint          string
+		OpenAIPath        string
 		ModelsPath        *string
 		ModelsResponseKey string
 		Header            http.Header
 		Revision          uint64
 		Mode              secrets.Mode
-	}{endpoint, svc.Runtime.ModelsPath, svc.Runtime.ModelsResponseKey, header, record.Revision, record.Mode})
+	}{endpoint, svc.Runtime.OpenAIPath, svc.Runtime.ModelsPath, svc.Runtime.ModelsResponseKey, header, record.Revision, record.Mode})
 	digest := sha256.Sum256(encoded)
-	return &Resolved{Endpoint: endpoint, Upstream: upstream, Cloud: svc.IsCloudProvider(), Configured: configured, Revision: hex.EncodeToString(digest[:]), ModelsPath: svc.Runtime.ModelsPath, ModelsResponseKey: svc.Runtime.ModelsResponseKey, TestPath: testPath}
+	return &Resolved{Endpoint: endpoint, OpenAIPath: svc.Runtime.OpenAIPath, Upstream: upstream, Cloud: svc.IsCloudProvider(), Configured: configured, Revision: hex.EncodeToString(digest[:]), ModelsPath: svc.Runtime.ModelsPath, ModelsResponseKey: svc.Runtime.ModelsResponseKey, TestPath: testPath}
 }
 
 // A managed form cannot silently ignore its candidate because an operator's

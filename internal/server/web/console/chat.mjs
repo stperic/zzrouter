@@ -43,7 +43,7 @@ export async function chat(p, session, initialModel, initialNode) {
   const refresh = button('Refresh models', () => loadModels());
   const newChat = button('New chat', () => {
     if (!p.current() || !session.view || (session.view.hasMessages || session.view.hasDraft) && !confirm('Clear this conversation, draft and settings?') || !closePanel()) return;
-    session.view.reset(); session.settings = defaultSettings(); p.selectSection?.(); sync();
+    session.view.reset(); session.settings = { ...defaultSettings(), node: p.computeNode || '' }; p.selectSection?.(); sync();
   });
   p.root.append(heading('Chat', 'Your models. Your prompts. One place to try them.', refresh, newChat), workspace);
   const modelContext = model => model?.owned_by === 'zzrouter-route' ? 'Route' : [model?.zzrouter?.provider, model?.zzrouter?.node].filter(Boolean).join(' · ');
@@ -53,7 +53,7 @@ export async function chat(p, session, initialModel, initialNode) {
     context.textContent = modelContext(models.find(item => item.id === settings.model));
     selection.setAttribute('title', selection.textContent); context.setAttribute('title', context.textContent);
     change.textContent = settings.model ? 'Change' : 'Choose model';
-    summary.textContent = [settings.system ? 'Custom system prompt' : 'No system prompt',
+    summary.textContent = [settings.system ? 'Custom system prompt' : '',
       settings.temperature === undefined ? '' : `Temperature ${settings.temperature}`,
       settings.topP === undefined ? '' : `Top-p ${settings.topP}`,
       settings.maxTokens ? `Up to ${settings.maxTokens.toLocaleString()} output tokens` : '',
@@ -62,10 +62,19 @@ export async function chat(p, session, initialModel, initialNode) {
     session.view?.configure(settings);
     p.syncActivity?.();
   };
+  // Entering a computer's setup Chat with a different target starts its own conversation.
+  function setTarget(model, node) {
+    if (session.settings.model && session.settings.model !== model) {
+      session.view?.reset();
+      session.settings = defaultSettings();
+    }
+    session.settings = { ...session.settings, model, node };
+  }
   function choose(value, node = '') {
-    if (!p.current() || !value || !closePanel()) return;
-    session.settings = { ...session.settings, model: value.trim(), node };
-    p.selectSection?.(value.trim(), node || undefined); sync();
+    const model = value.trim();
+    if (!p.current() || !model || !closePanel()) return;
+    session.settings = { ...session.settings, model, node: p.computeNode || node };
+    p.selectSection?.(model, node || undefined); sync();
   }
   p.handleSelection?.((value, node = '') => { if (value && (value !== session.settings.model || node !== session.settings.node)) choose(value, node); });
   p.scope.signal.addEventListener('abort', () => { session.view?.cancel(); }, { once: true });
@@ -76,9 +85,9 @@ export async function chat(p, session, initialModel, initialNode) {
     try {
       const result = await p.api.request('/v1/models', { signal: p.scope.signal });
       if (!p.current() || version !== readVersion) return;
-      models = chatModels(result);
+      models = chatModels(result).filter(model => !p.computeNode || model.zzrouter?.node === p.computeNode);
       discovery = 'ready';
-      feedback.replaceChildren(...(models.length ? [] : [message('No chat models are listed for your key.'),
+      feedback.replaceChildren(...(models.length ? [] : [message('No chat models are available for your account.'),
         leaveButton(p.identity.role === 'admin' ? 'Manage providers' : 'Review my access', () => p.go(p.identity.role === 'admin' ? 'providers' : 'connections'), p.api)]));
       sync(); updatePicker?.();
     } catch (error) { if (p.current() && version === readVersion) { discovery = 'failed'; feedback.replaceChildren(problem(error)); updatePicker?.(); } }
@@ -106,7 +115,7 @@ export async function chat(p, session, initialModel, initialNode) {
     };
     search.addEventListener('input', updatePicker);
     search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); results.querySelector?.('button')?.focus(); } });
-    drawer.root.append(field('Find a model or route', search), text('Choose a listed model, or enter an exact ID. Your access rules still apply.', 'muted'), results, exact);
+    drawer.root.append(field('Find a model or route', search), text('Choose a listed model or enter an exact ID.', 'muted'), results, exact);
     updatePicker(); search.focus({ preventScroll: true });
   }
   function openSettings() {
@@ -123,7 +132,8 @@ export async function chat(p, session, initialModel, initialNode) {
     ].map(([key, label, min, max, step]) => ({ key, control: input(key, settings[key] ?? '', { type: 'number', min, max, step, placeholder: 'Model default' }), label }));
     const nodeNames = [...new Set(models.map(item => item.zzrouter?.node).filter(Boolean))].sort();
     if (settings.node && !nodeNames.includes(settings.node)) nodeNames.push(settings.node);
-    const node = select('node', [['', 'Automatic routing'], ...nodeNames.map(name => [name, name])], settings.node);
+    const node = select('node', p.computeNode ? [[p.computeNode, p.computeNode]] : [['', 'Automatic routing'], ...nodeNames.map(name => [name, name])], p.computeNode || settings.node);
+    node.disabled = Boolean(p.computeNode);
     const reasoning = input('reasoning', '', { type: 'checkbox', checked: settings.showReasoning });
     const stats = input('stats', '', { type: 'checkbox', checked: settings.showStats });
     const apply = el('button', { type: 'submit', class: 'primary' }, 'Apply settings');
@@ -132,7 +142,7 @@ export async function chat(p, session, initialModel, initialNode) {
       field('System prompt', system, 'Sent with each message in this conversation.'),
       el('h3', {}, 'Generation'), text('Leave values blank to use the model’s defaults. Changes apply to your next request.', 'muted'),
       el('div', { class: 'form-grid' }, numbers.map(item => field(item.label, item.control))),
-      field('Compute node', node, 'Optional node name. Model IDs may already select a node. Routes remain subject to your team’s access rules.'),
+      field('Compute node', node, p.computeNode ? 'Testing on this computer. Use Show all computers to leave this setup.' : 'Optional node name. Model IDs may already select a node. Routes remain subject to your team’s access rules.'),
       el('h3', {}, 'Display'), field('Show returned reasoning', reasoning), field('Show response statistics', stats));
     formFeedback(form, formStatus);
     const draft = owner.trackDraft(form);
@@ -140,14 +150,18 @@ export async function chat(p, session, initialModel, initialNode) {
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity() || !owner.current()) return;
-      session.settings = { ...settings, system: system.value, node: node.value, showReasoning: reasoning.checked, showStats: stats.checked,
+      session.settings = { ...settings, system: system.value, node: p.computeNode || node.value, showReasoning: reasoning.checked, showStats: stats.checked,
         ...Object.fromEntries(numbers.map(({ key, control }) => [key, control.value === '' ? undefined : Number(control.value)])) };
       draft.clean(); sync(); closePanel();
     });
     owner.root.append(form);
     system.focus({ preventScroll: true });
   }
-  if (initialModel && (initialModel !== session.settings.model || initialNode !== undefined)) session.settings = { ...session.settings, model: initialModel, node: initialNode || '' };
+  if (p.computeNode) {
+    setTarget(initialModel || (session.settings.node === p.computeNode ? session.settings.model : ''), p.computeNode);
+  } else if (initialModel && (initialModel !== session.settings.model || initialNode !== undefined)) {
+    session.settings = { ...session.settings, model: initialModel, node: initialNode || '' };
+  }
   sync();
   const loading = loadModels();
   await session.ready;

@@ -15,8 +15,8 @@ import (
 // the user-facing ServiceConfig view into the typed Provider that
 // c.providers stores.
 func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
-	if sc.Mode != constants.AppModeOnDemand && sc.Runtime != nil && (sc.Runtime.DataDir != "" || len(sc.Runtime.DataSubdirs) > 0 || sc.Runtime.ModelStore != nil) {
-		return nil, fmt.Errorf("provider %q: data_dir, data_subdirs and model_store require on-demand ownership", name)
+	if sc.Mode != constants.AppModeOnDemand && sc.Runtime != nil && (sc.Runtime.DataDir != "" || len(sc.Runtime.DataSubdirs) > 0 || sc.Runtime.ModelStore != nil || sc.Runtime.Listener != nil) {
+		return nil, fmt.Errorf("provider %q: data_dir, data_subdirs, model_store and listener require on-demand ownership", name)
 	}
 	switch sc.Mode {
 	case constants.AppModeOnDemand:
@@ -24,6 +24,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 			Schema:          sc.Schema,
 			Install:         sc.Install,
 			Features:        sc.Features,
+			Operations:      cloneOperations(sc.Operations),
 			Name:            name,
 			Description:     sc.Description,
 			RunScope:        sc.RunScope,
@@ -52,6 +53,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 		return &ExternalProvider{
 			Schema:          sc.Schema,
 			Features:        sc.Features,
+			Operations:      cloneOperations(sc.Operations),
 			Name:            name,
 			Description:     sc.Description,
 			Protocol:        sc.Protocol,
@@ -74,6 +76,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 		return &CloudProvider{
 			Connection:   sc.Connection,
 			Features:     sc.Features,
+			Operations:   cloneOperations(sc.Operations),
 			Name:         name,
 			Description:  sc.Description,
 			Enabled:      sc.Enabled,
@@ -85,6 +88,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 	case constants.AppModeRegistry:
 		return &SearchRegistry{
 			Connection:  sc.Connection,
+			Operations:  cloneOperations(sc.Operations),
 			Name:        name,
 			Description: sc.Description,
 			Enabled:     sc.Enabled,
@@ -107,6 +111,7 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		ModelStore:            rt.ModelStore,
 		ActivityProbe:         rt.ActivityProbe,
 		Browser:               rt.Browser,
+		Listener:              rt.Listener,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,
 		KeepAlive:             rt.KeepAlive,
@@ -141,6 +146,7 @@ func runtimeToCloud(rt *AppRuntimeConfig) CloudRuntime {
 	}
 	out := CloudRuntime{
 		Endpoint:          rt.Endpoint,
+		OpenAIPath:        rt.OpenAIPath,
 		ModelURL:          rt.ModelURLFmt,
 		ModelsResponseKey: rt.ModelsResponseKey,
 		HealthCheck:       rt.HealthCheck,

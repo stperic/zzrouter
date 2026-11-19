@@ -15,6 +15,7 @@ function Markdown() {
   return <MarkdownTextPrimitive className="chat-markdown" components={{
     a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
     img: ({ alt }) => <span>{alt ? `[Image: ${alt}]` : '[Image]'}</span>,
+    pre: ({ children }) => <pre tabIndex={0} aria-label="Code block">{children}</pre>,
   }} />;
 }
 
@@ -29,8 +30,10 @@ function MessageFooter() {
   const { showStats, enabled } = useContext(Settings);
   const status = useAuiState(state => state.message.status);
   const stats = useAuiState(state => state.message.metadata.custom);
-  const { promptMs, generationMs, tokensPerSecond, providerFirstTokenMs, firstTokenMs, durationMs, outputTokens } = stats;
+  const { route, node, provider, promptMs, generationMs, tokensPerSecond, providerFirstTokenMs, firstTokenMs, durationMs, outputTokens } = stats;
   const entries = showStats && typeof durationMs === 'number' ? [
+    route && typeof node === 'string' && node && `Node: ${node}`,
+    route && typeof provider === 'string' && provider && `Provider: ${provider}`,
     typeof stats.inputTokens === 'number' && `${stats.inputTokens.toLocaleString()} input tokens`,
     typeof outputTokens === 'number' && `${outputTokens.toLocaleString()} output tokens`,
     typeof promptMs === 'number' ? `Prompt processing ${seconds(promptMs)}`
@@ -51,7 +54,7 @@ function MessageFooter() {
         other: 'The model ended the response without reporting completion.',
       }[status.reason]}
     </p>}
-    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')} · * Measured or calculated in the browser</p>}
+    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')}</p>}
     <ActionBarPrimitive.Root className="chat-message-actions">
       <ActionBarPrimitive.Copy copiedDuration={1500}>
         <AuiIf condition={state => state.message.isCopied}>Copied</AuiIf>
@@ -86,13 +89,19 @@ function Conversation({ status }: { status: string }) {
     <div className="chat-composer-area">
       <ThreadPrimitive.ScrollToBottom className="chat-scroll">Latest message ↓</ThreadPrimitive.ScrollToBottom>
       <ComposerPrimitive.Root className="chat-composer">
-        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={2} disabled={!settings.model || !settings.enabled} /></div>
+        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={1} disabled={!settings.model || !settings.enabled} /></div>
         <div className="chat-composer-footer"><span>Enter to send · Shift+Enter for a new line</span>
           <span data-protected-actions><AuiIf condition={state => !state.thread.isRunning}><ComposerPrimitive.Send className="primary" disabled={!settings.model || !settings.enabled}>Send ↑</ComposerPrimitive.Send></AuiIf></span>
           <AuiIf condition={state => state.thread.isRunning}><ComposerPrimitive.Cancel>Stop ■</ComposerPrimitive.Cancel></AuiIf>
         </div>
       </ComposerPrimitive.Root>
-      <p className="chat-privacy">Kept in this tab until you start a new chat, reload or sign out.</p>
+      <div className="chat-footer">
+        <span>Kept in this tab until you start a new chat, reload or sign out.</span>
+        {settings.showStats && <AuiIf condition={state => state.thread.messages.some(message =>
+          message.role === 'assistant' && typeof message.metadata.custom.durationMs === 'number')}>
+          <span>* Measured or calculated in the browser</span>
+        </AuiIf>}
+      </div>
     </div>
   </ThreadPrimitive.Root>;
 }

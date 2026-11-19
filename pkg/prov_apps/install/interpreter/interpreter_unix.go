@@ -4,6 +4,9 @@ package interpreter
 
 import (
 	"fmt"
+	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
 )
@@ -16,10 +19,16 @@ import (
 //
 // "python3" stays at the end as a fallback for minimal Docker images
 // and stripped Linux distros where only the unversioned name exists.
-func versionProbeArgs() []string { return []string{"--version"} }
+func versionProbeArgs() []string {
+	if runtime.GOOS == "darwin" {
+		arch := map[string]string{"amd64": "x86_64", "arm64": "arm64"}[runtime.GOARCH]
+		return []string{"-I", "-S", "-c", "import platform,sys;sys.exit(1) if platform.machine()!=sys.argv[1] else print('Python '+sys.version.split()[0])", arch}
+	}
+	return []string{"--version"}
+}
 
 func defaultCandidates() []string {
-	return []string{
+	names := []string{
 		"python3.13",
 		"python3.12",
 		"python3.11",
@@ -27,6 +36,19 @@ func defaultCandidates() []string {
 		"python3.9",
 		"python3",
 	}
+	if runtime.GOOS != "darwin" {
+		return names
+	}
+	// launchd does not inherit shell PATH; prefer stable installed aliases.
+	var candidates []string
+	for _, name := range names[:len(names)-1] {
+		version := strings.TrimPrefix(name, "python")
+		for _, prefix := range []string{"/opt/homebrew", "/usr/local"} {
+			candidates = append(candidates, filepath.Join(prefix, "opt", "python@"+version, "bin", name))
+		}
+		candidates = append(candidates, filepath.Join("/Library/Frameworks/Python.framework/Versions", version, "bin", name))
+	}
+	return append(candidates, names...)
 }
 
 // preferredInstallTarget returns the minor we'd suggest the user install
