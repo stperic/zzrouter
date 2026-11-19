@@ -55,11 +55,13 @@ type Store interface {
 	IssueSetup(ctx context.Context, issuer people.Issuer) (*people.IssuedGrant, error)
 	// Record appends ev for a change whose state lives outside the store, best effort.
 	Record(ctx context.Context, ev audit.Event)
-	// AuditPage returns up to limit recorded events older than cursor, newest
-	// first and never nil, with the opaque cursor of the next page, empty after
-	// the oldest. A cursor the store did not issue for its current generation
-	// is audit.ErrCursor.
-	AuditPage(ctx context.Context, cursor string, limit int) ([]audit.Event, string, error)
+	// AuditPage returns up to limit (at most audit.MaxPage) recorded events f
+	// selects after cursor, newest first by Time and ties in recording order,
+	// never nil, with the opaque cursor of the next page, empty after the last.
+	// A filter value matches literally. Each event's Time is the store's clock
+	// when it recorded the event. A cursor the store did not issue for its
+	// current generation and an equal f is audit.ErrCursor.
+	AuditPage(ctx context.Context, f audit.Filter, cursor string, limit int) ([]audit.Event, string, error)
 
 	People() People // nil when this node has no people store
 	Close() error

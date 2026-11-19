@@ -115,10 +115,12 @@ CREATE TABLE audit_events (
   request_id TEXT NOT NULL,
   metadata TEXT CHECK (metadata IS NULL OR json_type(metadata) = 'object')
 ) STRICT;
+-- Pages run newest first by (time, seq): each index ends in that pair, so a page with one
+-- equality filter, a time range or both walks one index in page order.
 CREATE INDEX audit_time ON audit_events(time, seq);
-CREATE INDEX audit_actor ON audit_events(actor, seq);
-CREATE INDEX audit_subject ON audit_events(subject, seq);
-CREATE INDEX audit_action ON audit_events(action, seq);
+CREATE INDEX audit_actor ON audit_events(actor, time, seq);
+CREATE INDEX audit_subject ON audit_events(subject, time, seq);
+CREATE INDEX audit_action ON audit_events(action, time, seq);
 -- REPLACE fires no DELETE trigger, so an insert must also land after every row.
 CREATE TRIGGER audit_append_only BEFORE INSERT ON audit_events
 WHEN NEW.seq <= (SELECT max(seq) FROM audit_events)

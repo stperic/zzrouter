@@ -256,7 +256,7 @@ func TestUncertainCommit(t *testing.T) {
 			_, err = s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
 			require.ErrorIs(t, err, ErrFailed, "every later write is refused")
 			s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"})
-			_, _, err = s.AuditPage(t.Context(), "", 1)
+			_, _, err = s.AuditPage(t.Context(), audit.Filter{}, "", 1)
 			require.ErrorIs(t, err, ErrFailed)
 			require.Len(t, fatal, 1, "Fatal is called once")
 			require.ErrorIs(t, fatal[0], ErrFailed)

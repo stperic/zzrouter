@@ -35,6 +35,17 @@ type Harness struct {
 
 // Run checks every rule that holds for any access.Store.
 func Run(t *testing.T, newHarness func(*testing.T) Harness) {
+	// These set the process clock (utils.SetClock), so each runs alone while the parallel cases wait.
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T, Harness)
+	}{
+		{"AuditTimeIsTheStoresClock", testAuditTime},
+		{"AuditEventsOfOneMicrosecondPageInRecordingOrder", testAuditTies},
+		{"AuditFiltersSelectExactlyTheirEvents", testAuditFilters},
+	} {
+		t.Run(tc.name, func(t *testing.T) { tc.run(t, newHarness(t)) })
+	}
 	for _, tc := range []struct {
 		name string
 		run  func(*testing.T, Harness)
@@ -64,6 +75,8 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"Membership", testMembership},
 		{"KeyCreationRacesTeamDeletion", testKeyCreationRacesTeamDeletion},
 		{"AuditRowsOfOneCommitPageInOrder", testAuditRowsOfOneCommit},
+		{"AuditFilterValuesAreLiteral", testAuditFilterValuesAreLiteral},
+		{"AuditCursorIsBoundToItsFilter", testAuditCursorBoundToFilter},
 		{"ReopenRoundTrip", testReopenRoundTrip},
 		{"PeopleOwnerSetup", testPeopleOwnerSetup},
 		{"PeopleInvitation", testPeopleInvitation},
@@ -92,17 +105,9 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 // auditEvents reads every event s recorded through AuditPage, oldest first.
 func auditEvents(t *testing.T, s access.Store) []audit.Event {
 	t.Helper()
-	var events []audit.Event
-	for cursor := ""; ; {
-		page, next, err := s.AuditPage(t.Context(), cursor, 100)
-		require.NoError(t, err)
-		events = append(events, page...)
-		if next == "" {
-			slices.Reverse(events)
-			return events
-		}
-		cursor = next
-	}
+	events, _ := filtered(t, s, audit.Filter{}, audit.MaxPage)
+	slices.Reverse(events)
+	return events
 }
 
 type recorder struct {
@@ -908,7 +913,7 @@ func testClosedStore(t *testing.T, h Harness) {
 		require.ErrorIs(t, run(), access.ErrClosed, name)
 	}
 	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
-	_, _, err = s.AuditPage(t.Context(), "", 1)
+	_, _, err = s.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.ErrorIs(t, err, access.ErrClosed, "a closed store reads no history")
 	assert.Same(t, last, s.Snapshot(), "a closed store keeps its last published snapshot")
 	assert.True(t, s.Snapshot().Initialized(), "the snapshot keeps its people")

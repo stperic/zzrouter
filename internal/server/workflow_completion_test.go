@@ -60,9 +60,9 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	require.Equal(t, owner.ID, response.Data.Events[0].Actor)
 	require.NotEmpty(t, response.Data.Events[0].RequestID)
 	require.NotEmpty(t, response.Data.Next)
-	for _, cursor := range []string{"malformed", strings.Repeat("x", 4096)} {
+	for cursor, code := range map[string]int{"malformed": http.StatusConflict, strings.Repeat("x", 4096): http.StatusBadRequest} {
 		stale := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?cursor="+cursor, TestAdminKey, nil)
-		require.Equal(t, http.StatusConflict, stale.Code)
+		require.Equal(t, code, stale.Code, "a cursor no store issues is refused; one longer than any it issues is a bad parameter")
 	}
 	for _, limit := range []string{"0", "101", "invalid"} {
 		result := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?limit="+limit, TestAdminKey, nil)

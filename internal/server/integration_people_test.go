@@ -223,7 +223,7 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 	status, body := postProof(proof.Proof, "", "{}")
 	require.Equal(t, http.StatusOK, status, string(body))
 	require.NotContains(t, string(body), proof.Proof)
-	events, _, err := s.accessStore.AuditPage(t.Context(), "", 1)
+	events, _, err := s.accessStore.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.NoError(t, err)
 	require.Equal(t, audit.ActorLocalOperator, events[0].Actor, "the gate's principal is the audit actor")
 	grant := peopleResponse[people.IssuedGrant](t, body)

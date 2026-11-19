@@ -284,18 +284,7 @@ func testAuditRowsOfOneCommit(t *testing.T, h Harness) {
 	personal := teams.PersonalID("solo")
 	want := []string{"after", personal, "solo", "solo", personal, "before"}
 	for _, limit := range []int{1, 2, 4, 100} {
-		var got []string
-		for cursor := ""; ; {
-			page, next, err := s.AuditPage(t.Context(), cursor, limit)
-			require.NoError(t, err)
-			for _, ev := range page {
-				got = append(got, ev.Subject)
-			}
-			if next == "" {
-				break
-			}
-			cursor = next
-		}
-		assert.Equal(t, want, got, "pages of %d", limit)
+		got, _ := filtered(t, s, audit.Filter{}, limit)
+		assert.Equal(t, want, subjectsOf(got), "pages of %d", limit)
 	}
 }

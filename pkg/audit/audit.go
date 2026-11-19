@@ -11,14 +11,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ErrCursor refuses a page cursor the history did not issue for its current
-// generation: the reader starts again without one.
-var ErrCursor = errors.New("audit history changed; refresh to start a new page")
+// generation and filter: the reader starts again without one.
+var ErrCursor = errors.New("audit history or filter changed; refresh to start a new page")
+
+// MaxPage is the most events one history page holds.
+const MaxPage = 100
 
 // Action is the identifier for an audited mutation. Kept as a typed
 // string so consumers can switch on known values without importing an
@@ -50,11 +54,33 @@ const (
 	ActionRestorePrepared Action = "store.restore_prepared"
 )
 
+// Actions lists every Action constant: the closed set an event records and a
+// Filter names. A test fails when a declared constant is missing here.
+func Actions() []Action {
+	return []Action{
+		ActionKeyCreated, ActionKeyUpdated, ActionKeyRotated, ActionKeyDeleted, ActionKeyUsageReset,
+		ActionTeamCreated, ActionTeamUpdated, ActionTeamDeleted, ActionTeamUsageReset,
+		ActionPersonCreated, ActionPersonUpdated, ActionPasswordChanged, ActionPersonRecovered, ActionSessionsRevoked,
+		ActionGrantIssued, ActionGrantRevoked,
+		ActionRestorePrepared,
+	}
+}
+
+// Filter selects the events a history page reads; the zero Filter selects all.
+// A set Actor, Subject or Action matches exactly. Since is an inclusive and
+// Until an exclusive bound on Time; a nil bound is open.
+type Filter struct {
+	Actor, Subject string
+	Action         Action
+	Since, Until   *time.Time
+}
+
 // Event is a single audit record. Fields are stable on the wire — once
 // a release has shipped with a field, it cannot be renamed or removed.
 // New fields must be additive and JSON-optional.
 type Event struct {
-	// Time is the UTC wall clock at which the mutation completed.
+	// Time is the store's UTC clock when it recorded the event; it steps
+	// back when the clock does. A caller's value is ignored.
 	Time time.Time `json:"time"`
 	// Action names the mutation. One of the Action constants above.
 	Action Action `json:"action"`
@@ -83,8 +109,8 @@ const ActorStaticAdmin = "static:admin"
 // event would pollute the audit log with records a compliance review
 // cannot trust.
 func (ev Event) Validate() error {
-	if ev.Action == "" {
-		return fmt.Errorf("audit: Action is required")
+	if !slices.Contains(Actions(), ev.Action) {
+		return fmt.Errorf("audit: unknown action %q", ev.Action)
 	}
 	if ev.Actor == "" {
 		return fmt.Errorf("audit: Actor is required")

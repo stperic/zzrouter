@@ -12514,7 +12514,13 @@ paths:
       tags: [Access]
       operationId: readAccessAudit
       summary: Read recent committed access changes
-      description: Administrator only, coordinator only. Reads the access history held in the coordinator's access store, newest first. A cursor stays valid across new events and restarts; a malformed cursor, or one another store issued, answers 409. Protocol-level OAuth sign-in history is not included.
+      description: >-
+        Administrator only, coordinator only. Reads the access history held in the coordinator's access store, newest
+        first. The optional filters combine: actor, subject and action match exactly, since and until bound the event
+        time. Pages run newest first by event time, ties in recorded order; an event's time is the coordinator's clock
+        when it was recorded. A cursor stays valid across new events and
+        restarts, under the filter that issued it. Every parameter takes
+        one nonempty value of at most 256 bytes. Protocol-level OAuth sign-in history is not included.
       security:
         - AdminKey: []
         - BrowserSession: []
@@ -12524,7 +12530,31 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
         - in: query
           name: cursor
-          schema: { type: string, maxLength: 2048 }
+          description: The previous page's `next`, sent with the same filter parameters.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: actor
+          description: Exact actor, such as a person ID, an app key UUID or `static:admin`.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: subject
+          description: Exact subject, such as a key, team or person ID.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+        - in: query
+          name: action
+          schema:
+            type: string
+            enum: [key.created, key.updated, key.rotated, key.deleted, key.usage_reset, team.created, team.updated, team.deleted,
+              team.usage_reset, person.created, person.updated, person.password_changed, person.recovered,
+              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared]
+        - in: query
+          name: since
+          description: Inclusive lower bound on the event time, an RFC 3339 date-time.
+          schema: { type: string, format: date-time }
+        - in: query
+          name: until
+          description: Exclusive upper bound on the event time, an RFC 3339 date-time not before since.
+          schema: { type: string, format: date-time }
       responses:
         '200':
           description: A bounded page of access history
@@ -12534,10 +12564,22 @@ paths:
                 type: object
                 properties:
                   data: { $ref: '#/components/schemas/AuditPage' }
-        '400': { $ref: '#/components/responses/Access400' }
+        '400':
+          description: >-
+            A refused parameter, with one `errors` entry per key: `unknown_field` for a parameter this route does not
+            define, `invalid_value` for a repeated or empty parameter, an unknown action, a malformed time, a since
+            after until or an unparsable query string, `out_of_range` for a value over 256 bytes or a limit outside
+            1 to 100, `wrong_type` for a limit that is not an integer. `want` names what is accepted.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/Access401' }
         '403': { $ref: '#/components/responses/Access403' }
-        '409': { $ref: '#/components/responses/Access409' }
+        '409':
+          description: The cursor is malformed, another store issued it, or it was issued under different filters; read again without it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503': { $ref: '#/components/responses/Access503' }
 
   /zzrouter/v1/system/recovery:

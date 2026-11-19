@@ -288,8 +288,19 @@ client to recalculate. Counts include suspended people and suspended/expired key
 
 `GET /zzrouter/v1/access/audit?limit=50&cursor=...` is coordinator administrator-only
 and returns `data.events`, never null, and `data.next`, absent on the last page.
-Pages are newest first, at most 100 events (default 50). A malformed cursor, or
-one another store issued, returns 409; refresh without one. A history that cannot
+Pages are newest first, at most 100 events (default 50). Optional filters combine:
+`actor`, `subject` and `action` match the stored value exactly (`action` is one of
+the recorded action names), `since` is an inclusive and `until` an exclusive RFC 3339
+bound on the event time. Pages run newest first by event time, events sharing a
+time in recorded order; an event's time is the coordinator's clock when it was
+recorded. A filter that matches nothing returns an empty page, so a
+mistake is refused rather than read as no events: an unknown parameter, a repeated
+or empty one, a value over 256 bytes, an unknown action, a malformed time or a
+`since` after `until` is refused with 400 and one `errors` entry per key
+(`unknown_field`, `invalid_value`, `out_of_range`, `wrong_type`) whose `want`
+names what is accepted. A cursor reads on only with the
+filters it was issued under; a malformed cursor, one another store issued, or one
+sent with other filters returns 409; read again without it. A history that cannot
 be read returns 503. People mutation events describe committed authority changes,
 not every OAuth login or logout.
 
