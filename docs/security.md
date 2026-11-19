@@ -235,8 +235,9 @@ mutations, password changes, authority revocations and app-key/team/quota change
 An event for a change to access records commits in the same transaction as the
 change, so a change is never kept without its record. Usage and spend resets,
 whose state lives outside the database, are recorded after their own commit,
-best effort. Actors identify accounts or keys, static installation authority,
-or a verified local operator. Events contain identifiers and safe change
+best effort. Actors identify a person as `person:<id>`, an app key by its ID
+(which never contains `:`), static installation authority as `static:<id>`, or a
+verified local operator as `local:operator`. Events contain identifiers and safe change
 metadata, not passwords, grant tokens, credential references or local recovery
 proof. History is append-only: the database refuses updates and deletions of
 recorded events.
@@ -275,6 +276,23 @@ with a message saying so, not a damage reason. If the coordinator cannot even
 tell whether a change was committed, it answers `503 access_store_failed` and
 exits so its service manager restarts it.
 
+Online backups (`POST /zzrouter/v1/system/state/backups`, for an administrator or
+the local operator's proof) are full copies of the access database: password
+and app-key hashes, teams, invitations and the access history. They live in the
+configuration's `access/backups` directory, owner-only (restricted ACL on
+Windows), under names the coordinator derives from an opaque ID; no request
+names a path, a file or a destination, and no answer carries a path or archive
+content. Retention removes them: each is kept for the 24-hour replay window,
+then only the three newest, and none past seven days, within 1 GiB. The
+status (`GET /zzrouter/v1/system/state`) lists every retained copy by kind,
+creation time and size. They never travel in an installation bundle. Only the
+local operator, with the installation's local proof on its host, can download
+one (`zzrouter access state export`); no API key, session or MCP tool can, and
+each download is recorded (`store.backup_exported`) before its first byte. A
+copy an operator takes elsewhere holds the same credential hashes outside
+retention: protect it as the installation bundle is protected. An older backup restored later can bring back
+access revoked since.
+
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.
 It prepares the staged access database image so that sessions, delegated tokens
@@ -294,3 +312,22 @@ no backup carries it; delete it once the restored node is qualified.
 `GET /zzrouter/v1/system/state` lists each one as a retained copy.
 See [recovery](recovery.md) for included data, separate dependencies and required
 post-activation checks. Restoring an old valid backup can resurrect revoked access.
+
+A `handoff` archive (experimental) moves a coordinator to another machine. It holds
+the access database image, with password verifiers, app-key hashes, grants and
+the access history, and the encrypted provider connections, whose key is exported
+separately as for an installation archive. It also holds routes, spend, pricing
+overrides and the provider definitions and assets, byte for byte: a secret an
+operator wrote into a provider definition travels with it. Protect it like an
+installation archive.
+It holds no private key and no node-local trust: not `node.yaml`, not the OAuth
+authority state, the cluster CA and its deny list, the node identity or
+`private/`, and no environment. Environment variables the dotenv files or the
+service environment set (the static installation keys `ZZROUTER_ADMIN_API_KEY`
+and `ZZROUTER_API_KEY`, provider credentials such as `OPENAI_API_KEY` or
+`HF_TOKEN`, and every variable a provider definition reads) stay behind: set them
+on the destination, where a connection that reads its key from the environment
+fails without it. Workers pair again with the new coordinator, and browsers and
+delegated clients sign in again. `recovery check` refuses a handoff carrying any
+entry beyond its fixed list, a source, `separate` list or entry name that is not
+short plain text, or no provider definition; a refusal quotes the entry name.

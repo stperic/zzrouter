@@ -187,7 +187,7 @@ func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
 	require.Len(t, copies, 2)
 	for _, entry := range copies {
 		entry := entry.(map[string]any)
-		assert.Equal(t, entry["id"] == "pending", entry["pending"], "%v", entry)
+		assert.Equal(t, entry["id"] == "pending", entry["pending"] == true, "%v", entry)
 	}
 	require.NoError(t, os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0))
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0o700) })

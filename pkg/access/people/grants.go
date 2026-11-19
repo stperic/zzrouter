@@ -298,7 +298,7 @@ func (s *Store) enroll(ctx context.Context, token, proof string, input CreatePer
 			state.progress.Step = "provider"
 			state.progress.UpdatedAt = now
 		}
-		event = audit.Event{Action: audit.ActionPersonCreated, Actor: result.ID, Subject: result.ID, Metadata: map[string]any{"purpose": purpose, "team_id": result.TeamID, "role": result.Role, "grant_id": grant.ID}}
+		event = audit.Event{Action: audit.ActionPersonCreated, Actor: actor(result.ID), Subject: result.ID, Metadata: map[string]any{"purpose": purpose, "team_id": result.TeamID, "role": result.Role, "grant_id": grant.ID}}
 		return event, nil
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func (s *Store) Recover(ctx context.Context, token, proof, password string) (*Pe
 		state.people[record.ID] = record
 		invalidatePersonGrants(state, record.ID)
 		result = record.Person
-		event = audit.Event{Action: audit.ActionPersonRecovered, Actor: record.ID, Subject: record.ID, Metadata: map[string]any{"grant_id": grant.ID, "authority_invalidated": true}}
+		event = audit.Event{Action: audit.ActionPersonRecovered, Actor: actor(record.ID), Subject: record.ID, Metadata: map[string]any{"grant_id": grant.ID, "authority_invalidated": true}}
 		return event, nil
 	})
 	if err != nil {

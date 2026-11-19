@@ -32,12 +32,12 @@ func TestAuditPage(t *testing.T) {
 	assert.Empty(t, events)
 	assert.Empty(t, next, "an empty history has no next page")
 	for i := range 5 {
-		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: fmt.Sprint("event-", i)})
+		require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: fmt.Sprint("event-", i)}))
 	}
 	// A commit without an event writes no row, and seq stays gapless.
 	_, err = s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
 	require.NoError(t, err)
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "event-5"})
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "event-5"}))
 
 	var pages [][]string
 	cursor := ""
@@ -64,8 +64,8 @@ func TestAuditPage(t *testing.T) {
 	require.Error(t, err)
 
 	other := openStore(t, t.TempDir(), Options{})
-	other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "elsewhere"})
-	other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "elsewhere"})
+	require.NoError(t, other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "elsewhere"}))
+	require.NoError(t, other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "elsewhere"}))
 	_, foreign, err := other.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.NoError(t, err)
 	require.NotEmpty(t, foreign)
@@ -94,8 +94,8 @@ func TestAuditTableIsAppendOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "first"})
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "second"})
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "first"}))
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "second"}))
 	require.NoError(t, s.Close())
 	db := rawDB(t, dir)
 	for name, query := range map[string]string{
@@ -118,7 +118,7 @@ func TestAuditPageWhileAnotherProgramHoldsTheDatabase(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "operator", Subject: "reader"})
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "operator", Subject: "reader"}))
 	_, err := s.db.SQL().ExecContext(t.Context(), "PRAGMA busy_timeout = 50") // the store's one connection keeps it
 	require.NoError(t, err)
 	other := rawDB(t, dir)
@@ -144,7 +144,7 @@ func TestAuditFilterQueryPlans(t *testing.T) {
 	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	record := func(at time.Time, ev audit.Event) {
 		defer utils.SetClock(utils.FixedClock(at))()
-		s.Record(t.Context(), ev)
+		require.NoError(t, s.Record(t.Context(), ev))
 	}
 	record(base, audit.Event{Action: audit.ActionPasswordChanged, Actor: "rare", Subject: "rare"})
 	for i := range 100 {

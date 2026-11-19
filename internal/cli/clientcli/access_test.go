@@ -56,7 +56,7 @@ func TestLocalOwnerRecoveryUsesOnlySelectedInstallation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "synthetic-once-only-code", grant.Token)
 	_, err = recoverLocalOwner(t.Context(), t.TempDir())
-	require.ErrorContains(t, err, "read local recovery authority")
+	require.ErrorContains(t, err, "the coordinator does not seem to be running on this machine")
 }
 
 func TestOwnerRecoveryCommandUsesSelectedInstallation(t *testing.T) {

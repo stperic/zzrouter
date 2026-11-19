@@ -33,6 +33,7 @@ import (
 	route_events "github.com/stperic/zzrouter/pkg/observability/route_events"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/update"
 )
@@ -100,9 +101,10 @@ type Server struct {
 	spendEvents *SpendEventBus      // Quota breach event bus → /spend/events SSE
 	accessStore access.Store        // Keys, teams, people and the audit history; nil unless the node booted as a coordinator
 	stateStore  *sqlstore.Store     // accessStore's concrete store, for its maintenance routes
+	backups     *recovery.Backups   // stateStore's online backups; closed before it
 	configDir   string              // Installation configuration directory: local proof, OAuth state, recovery inventory
 	localProof  *localproof.Proof   // This process's local proof; nil unless the node booted as a coordinator
-	localRoutes map[string]struct{} // "METHOD /path" of every route localRoute mounted behind the local proof
+	localRoutes map[string]struct{} // "METHOD /path" of every route localRoute mounted behind the local proof alone
 
 	// === Infrastructure ===
 

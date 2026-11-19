@@ -117,6 +117,43 @@ func TestRecoveryCommandsNameTheProfileAndStore(t *testing.T) {
 	require.Contains(t, out, "No access store")
 }
 
+// TestRecoveryCommandsHandoffProfile: backup, check and restore of a handoff
+// name its source, list what it carries and what moves separately, and
+// restore says activation arrives later; a worker writes no handoff, and the
+// offline backup writes no database bundle.
+func TestRecoveryCommandsHandoffProfile(t *testing.T) {
+	dir, meta := recoveryInstallation(t)
+	archive := filepath.Join(t.TempDir(), "handoff.tar.gz")
+	out, err := runRecovery(t, dir, "backup", "--profile", "handoff", "--output", archive)
+	require.NoError(t, err)
+	require.Contains(t, out, "Saved and checked")
+	require.Contains(t, out, "profile handoff, from recovery-cli (")
+	require.Contains(t, out, "Access store "+meta.StoreID)
+	require.NotContains(t, out, "Run recovery inventory")
+	for _, command := range [][]string{{"check", archive}, {"restore", archive, "--to", filepath.Join(t.TempDir(), "staged")}} {
+		printed, err := runRecovery(t, dir, command...)
+		require.NoError(t, err)
+		out += printed
+	}
+	for _, want := range []string{"It carries:\n  config/providers/.managed-ownership.json\n", "  config/providers/settings.yaml\n", "  store/image.sqlite\n", "Move or recreate by hand on the destination:\n  - The destination's own node.yaml", "Prepared the staged access database as generation ", "activating it on a new coordinator arrives in a later release"} {
+		require.Contains(t, out, want)
+	}
+	require.NotContains(t, out, "config/node.yaml", "no node configuration travels")
+	require.NotContains(t, out, "—")
+	require.NotContains(t, out, dir, "no installation path is printed")
+
+	database := filepath.Join(t.TempDir(), "database.tar.gz")
+	_, err = runRecovery(t, dir, "backup", "--profile", "database", "--output", database)
+	require.ErrorContains(t, err, "take a database bundle from the running coordinator's backup API")
+	require.NoFileExists(t, database)
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, "access")))
+	require.NoError(t, os.Remove(filepath.Join(dir, sqlstore.MarkerName)))
+	worker := filepath.Join(t.TempDir(), "worker.tar.gz")
+	_, err = runRecovery(t, dir, "backup", "--profile", "handoff", "--output", worker)
+	require.ErrorIs(t, err, sqlstore.ErrNoStore)
+	require.NoFileExists(t, worker)
+}
+
 // inventoryOutput is what recovery inventory printed.
 type inventoryOutput struct {
 	Inventory *recovery.Inventory `json:"inventory"`

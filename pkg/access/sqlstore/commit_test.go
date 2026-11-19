@@ -103,7 +103,9 @@ func TestRevisionAndSequence(t *testing.T) {
 		invitation, err = s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: "workspace", Role: "user", Issuer: installationIssuer})
 		ok(err)
 	})
-	step("audit record", false, func() { s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"}) })
+	step("audit record", false, func() {
+		require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"}))
+	})
 	var session *people.IssuedGrant
 	step("session issue", false, func() {
 		var err error
@@ -140,7 +142,7 @@ func TestRevisionAndSequence(t *testing.T) {
 	assert.Equal(t, revision+1, gotRevision)
 	assert.Equal(t, sequence+1, gotSequence, "a no-op commit advances neither")
 	assert.Equal(t, rows+1, auditCount(t, s), "a no-op commit writes no row")
-	s.Record(t.Context(), audit.Event{})
+	require.NoError(t, s.Record(t.Context(), audit.Event{}))
 	assert.Equal(t, rows+1, auditCount(t, s), "a zero event writes nothing")
 	_, gotSequence = versions(s)
 	assert.Equal(t, sequence+1, gotSequence)
@@ -255,7 +257,7 @@ func TestUncertainCommit(t *testing.T) {
 			require.ErrorIs(t, err, people.ErrInvalidCredentials)
 			_, err = s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
 			require.ErrorIs(t, err, ErrFailed, "every later write is refused")
-			s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"})
+			require.ErrorIs(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader"}), ErrFailed)
 			_, _, err = s.AuditPage(t.Context(), audit.Filter{}, "", 1)
 			require.ErrorIs(t, err, ErrFailed)
 			require.Len(t, fatal, 1, "Fatal is called once")
@@ -482,7 +484,7 @@ func TestRefusedEventChangesNothing(t *testing.T) {
 		require.Error(t, err, name)
 		assert.NotContains(t, err.Error(), "sql:", "%s: refused by validation, not inside a transaction", name)
 		assert.Equal(t, "Reader", s.Snapshot().Key("reader").Name, name)
-		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader", Metadata: metadata})
+		require.Error(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader", Metadata: metadata}), name)
 	}
 	sequence := s.Meta().Sequence
 	assert.EqualValues(t, 1, sequence, "a refused event commits nothing")

@@ -53,8 +53,10 @@ type Store interface {
 	// IssueSetup issues the owner's setup grant into the owner's workspace
 	// team, creating that team in the same transaction when none is usable.
 	IssueSetup(ctx context.Context, issuer people.Issuer) (*people.IssuedGrant, error)
-	// Record appends ev for a change whose state lives outside the store, best effort.
-	Record(ctx context.Context, ev audit.Event)
+	// Record commits ev alone, for a change whose state lives outside the
+	// store, ignoring cancellation, and returns why it could not. A zero ev
+	// records nothing.
+	Record(ctx context.Context, ev audit.Event) error
 	// AuditPage returns up to limit (at most audit.MaxPage) recorded events f
 	// selects after cursor, newest first by Time and ties in recording order,
 	// never nil, with the opaque cursor of the next page, empty after the last.

@@ -2,10 +2,11 @@ package server
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/stperic/zzrouter/pkg/access/control"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
@@ -21,25 +22,25 @@ func resolveActor(callerKeyID string) string {
 	return callerKeyID
 }
 
-// auditActor is the controller-side helper: extract the calling key's ID
-// from gin and convert to an audit-actor string. Controllers call this
-// directly so the service layer receives an already-resolved actor.
+// auditActor is the caller's principal as an audit actor, "unknown" when
+// anonymous. Controllers call it so services receive a resolved actor.
 func auditActor(c *gin.Context) string {
-	if isLocalOperator(c) {
-		return audit.ActorLocalOperator
+	if principal := PrincipalFromContext(c); principal != "" {
+		return principal
 	}
-	ac := GetAccessContext(c)
-	if ac == nil || ac.Key == nil {
-		return "unknown"
-	}
-	if ac.Key.IdentityKind() == control.KindStatic {
-		return "static:" + ac.Key.ID
-	}
-	return ac.Key.ID
+	return "unknown"
 }
 
 func auditContext(c *gin.Context) context.Context {
 	return audit.WithIdentity(c.Request.Context(), auditActor(c), c.GetString("request_id"))
+}
+
+// recordReset records a usage reset after the reset, whose state lives outside
+// the access store: best effort, so a failure is logged, not returned.
+func recordReset(ctx context.Context, store access.Store, ev audit.Event) {
+	if err := store.Record(ctx, ev); err != nil {
+		slog.WarnContext(ctx, "Audit record failed", "action", ev.Action, "subject", ev.Subject, "error", err)
+	}
 }
 
 // updateKeyChangedFields returns the fields a caller actually set on an

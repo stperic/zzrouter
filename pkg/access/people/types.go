@@ -10,6 +10,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
+// Kind names people among callers: a person acts as audit.KindActor(Kind, id).
+const Kind = "person"
+
+// actor names the person with this ID as an audit actor.
+func actor(id string) string { return audit.KindActor(Kind, id) }
+
 // Domain refusals do not contain submitted passwords or bearer tokens.
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access/accesstest"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -57,7 +58,7 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	require.NoError(t, json.Unmarshal(pageResponse.Body, &response))
 	require.Len(t, response.Data.Events, 1)
 	require.Equal(t, audit.ActionPersonCreated, response.Data.Events[0].Action)
-	require.Equal(t, owner.ID, response.Data.Events[0].Actor)
+	require.Equal(t, audit.KindActor(people.Kind, owner.ID), response.Data.Events[0].Actor)
 	require.NotEmpty(t, response.Data.Events[0].RequestID)
 	require.NotEmpty(t, response.Data.Next)
 	for cursor, code := range map[string]int{"malformed": http.StatusConflict, strings.Repeat("x", 4096): http.StatusBadRequest} {

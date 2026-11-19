@@ -35,6 +35,10 @@ var knownKinds = map[string]Kind{
 	"registries": KindRegistry,
 }
 
+// IsProviderKindDir reports whether name is a providers/ subdirectory that
+// holds one kind of provider.
+func IsProviderKindDir(name string) bool { _, ok := knownKinds[name]; return ok }
+
 // kindDirOrder controls the iteration order for deterministic loading
 // + duplicate-name diagnostics. Matches the order in marshal/save paths.
 var kindDirOrder = []string{"on-demand", "external", "cloud", "registries"}

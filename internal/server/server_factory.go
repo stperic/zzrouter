@@ -464,6 +464,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 				return nil, err
 			}
 			s.accessStore, s.stateStore = store, store
+			if s.backups, err = recovery.OpenBackups(context.Background(), configDir, store); err != nil {
+				return nil, err
+			}
 			if err := s.initLocalProof(context.Background(), issuer); err != nil {
 				return nil, err
 			}

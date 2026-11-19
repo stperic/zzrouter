@@ -275,12 +275,12 @@ func testKeyCreationRacesTeamDeletion(t *testing.T, h Harness) {
 // no rows: newest first, a commit's rows in the order it lists them.
 func testAuditRowsOfOneCommit(t *testing.T, h Harness) {
 	s := h.Store
-	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "before"))
+	require.NoError(t, s.Record(t.Context(), event(audit.ActionKeyUsageReset, "before")))
 	_, _, err := s.CreateKey(t.Context(), "solo", newKey(""), event(audit.ActionKeyCreated, "solo"))
 	require.NoError(t, err)
 	createTeam(t, s, "silent", sharedTeam())
 	require.NoError(t, s.DeleteKey(t.Context(), "solo", event(audit.ActionKeyDeleted, "solo")))
-	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "after"))
+	require.NoError(t, s.Record(t.Context(), event(audit.ActionKeyUsageReset, "after")))
 	personal := teams.PersonalID("solo")
 	want := []string{"after", personal, "solo", "solo", personal, "before"}
 	for _, limit := range []int{1, 2, 4, 100} {

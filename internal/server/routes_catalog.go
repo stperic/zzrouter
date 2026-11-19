@@ -150,10 +150,12 @@ func surfaceForPath(p string) string {
 	return "other"
 }
 
-// authLocal is the tier of routes behind localOperator, which zz_api and discovery never offer.
+// authLocal is the tier of routes behind localOperator alone, which zz_api and discovery
+// never offer.
 const authLocal = "local"
 
-// authTier reads the routes localRoute recorded, so a gated route never reports another tier.
+// authTier reads the routes localRoute recorded, so a route behind the proof alone never
+// reports another tier; one that also takes the admin gate keeps the admin tier.
 func (s *Server) authTier(method, p string) string {
 	if _, local := s.localRoutes[method+" "+p]; local {
 		return authLocal

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"time"
@@ -22,9 +24,6 @@ func NewAccessCmd() *cobra.Command {
 	var dir string
 	root := &cobra.Command{Use: "access", Short: "Recover access to this installation", Long: "Recover the owner account on the installed coordinator computer.\nRun as the installation account or an administrator. Choose the new password in the console."}
 	recover := &cobra.Command{Use: "recover-owner", Short: "Create a temporary owner password recovery code", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		if dir == "" {
-			dir = config.NewConfigManager("zzrouter").GetNodeConfigDir()
-		}
 		grant, err := recoverLocalOwner(cmd.Context(), dir)
 		if err != nil {
 			return err
@@ -33,7 +32,7 @@ func NewAccessCmd() *cobra.Command {
 		return err
 	}}
 	recover.Flags().StringVar(&dir, "dir", "", "Installed configuration directory")
-	root.AddCommand(recover)
+	root.AddCommand(recover, newAccessStateCmd())
 	return root
 }
 
@@ -79,13 +78,21 @@ func recoverLocalOwner(ctx context.Context, dir string) (*localRecoveryGrant, er
 // Its client has no total deadline, so a long download can finish: every caller bounds
 // its own request with a context deadline, as recoverLocalOwner does.
 type localSession struct {
+	dir    string // the installation's configuration directory
 	file   *localproof.File
 	client *http.Client // The only client that may send the proof: no proxy, no other origin.
 }
 
-// openLocal reads the installation's local proof and accepts only its node's literal local endpoint.
+// openLocal reads the local proof of the installation in dir, the default one when dir is
+// empty, and accepts only its node's literal local endpoint.
 func openLocal(ctx context.Context, dir string) (*localSession, error) {
+	if dir == "" {
+		dir = config.NewConfigManager("zzrouter").GetNodeConfigDir()
+	}
 	file, err := localproof.Read(ctx, dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("the coordinator does not seem to be running on this machine for %s: start it, or name its configuration directory with --dir", dir)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +108,7 @@ func openLocal(ctx context.Context, dir string) (*localSession, error) {
 		}
 		transport.TLSClientConfig.ServerName = file.TLSName
 	}
-	return &localSession{file: file, client: httpclient.SameOrigin(&http.Client{Transport: transport})}, nil
+	return &localSession{dir: dir, file: file, client: httpclient.SameOrigin(&http.Client{Transport: transport})}, nil
 }
 
 // request builds a request to the installation's node that carries the local proof; send it with s.client.

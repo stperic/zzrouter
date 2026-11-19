@@ -183,7 +183,7 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 		record.UpdatedAt = utils.NowUTC()
 		state.people[id] = record
 		invalidatePersonGrants(state, id)
-		return audit.Event{Action: audit.ActionPasswordChanged, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
+		return audit.Event{Action: audit.ActionPasswordChanged, Actor: actor(id), Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Perso
 		record.UpdatedAt = utils.NowUTC()
 		state.people[id] = record
 		invalidatePersonGrants(state, id)
-		return audit.Event{Action: audit.ActionSessionsRevoked, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
+		return audit.Event{Action: audit.ActionSessionsRevoked, Actor: actor(id), Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err

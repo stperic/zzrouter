@@ -13,6 +13,11 @@ func WithIdentity(ctx context.Context, actor, requestID string) context.Context 
 // ActorLocalOperator identifies a verified local installation operator.
 const ActorLocalOperator = "local:operator"
 
+// KindActor names a caller that is not an app key by its kind and ID, as
+// request principals and audit actors do ("static:admin", "person:<id>"). An
+// app key's ID never holds ':', so no app key takes such a name.
+func KindActor(kind, id string) string { return kind + ":" + id }
+
 // Attribute fills an event's missing actor and request ID from ctx; an actor
 // still unknown is recorded as "unknown".
 func Attribute(ctx context.Context, event Event) Event {

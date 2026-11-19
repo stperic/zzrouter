@@ -116,12 +116,17 @@ a node down. Restore connectivity or pairing and observe REST/MCP health;
 `last_seen_at` remains the last successful probe and `last_error` reports sanitized
 probe or dispatch failures. Node health is separate from provider cooldowns.
 
-### Access store (keys, teams, people and access history)
+### Access store (keys, teams, people, access history and online backups)
 
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
 | `access_store_busy` | 503 | Another process held the coordinator's access database past the busy timeout, on a change or an access-history read. Nothing was changed. | Honor `Retry-After` and retry the same request; if it persists, an operator tool holds the live file. |
 | `access_store_failed` | 503 | The coordinator's access store can no longer vouch for its records. The change may or may not have been made, and the node is exiting so its service manager restarts it. | Wait until the node answers `/health` again, then read the record before retrying the change. |
+| `state_backup_not_found` | 404 | No retained online backup has this ID: it never existed or retention removed it. | List the retained backups (`zz_api_get` operation `listStateBackups`) and use one of their IDs, or create a new backup. |
+| `state_backup_capacity_exceeded` | 507 | The online backup was refused and nothing was kept. `capacity` is `byte_cap` when the retained backups, counting only what retention keeps, fill the 1 GiB cap or leave no room for the written archive (`limit_bytes`, `retained_bytes`, `required_bytes`, 0 when refused before the copy), or `disk` when the coordinator's disk had no room. | `byte_cap`: wait until retention removes older backups (each one's `expires_at` in the backup list), or ask the operator for an offline backup (`zzrouter-node recovery backup` with the node stopped); when `required_bytes` is over `limit_bytes` the archive alone exceeds the cap and only the offline backup helps. `disk`: ask the operator to free space on the coordinator, then retry. |
+| `state_image_check_failed` | 500 | On a backup create: the copy of the access database failed its integrity or record check, so nothing was kept, and the live database may be damaged. On an export: that backup's archive failed its check, or is not the one the backup list describes, so nothing was sent; the live database is not involved. | Create: do not retry in a loop; tell the operator to stop the service and run `zzrouter-node recovery inventory`, which reports the store's state and next action. Export: take a new backup and export that one. |
+
+A coordinator that is stopping answers any access-store request with 503 `service_unavailable` and `Retry-After`: nothing was changed; retry once it answers `/health` again.
 
 ### Install preflight (`POST /providers/:n/install`)
 

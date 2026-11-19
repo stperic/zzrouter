@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -25,7 +27,7 @@ type IdentityKind string
 
 const (
 	// KindPerson denotes a local human account.
-	KindPerson IdentityKind = "person"
+	KindPerson IdentityKind = people.Kind
 	// KindKey denotes a managed application key.
 	KindKey IdentityKind = "key"
 	// KindStatic denotes an installation credential.
@@ -137,7 +139,7 @@ func (s Subject) ScopeKind() quota.ScopeKind {
 // ReservationKey keeps human reservations separate from legacy key identifiers.
 func (s Subject) ReservationKey() string {
 	if s.Kind == KindPerson {
-		return "person:" + s.ID
+		return audit.KindActor(people.Kind, s.ID)
 	}
 	return s.ID
 }

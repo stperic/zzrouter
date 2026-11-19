@@ -74,16 +74,21 @@ writes to the installation in one case: when a crash left a journal beside a
 stopped database, copying it first recovers that journal into the live file,
 exactly as the next start would.
 
-`archives` lists the online backups in the configuration's `access/backups`
-directory, newest first and then by `id`: each archive's `id` (its file is
-`<id>.tar.gz`), `created_at`, `size_bytes`, the store identity its manifest
-names, and `readable`. `readable` says only what the manifest states: a
-`database` bundle at the schema version this release writes. It is not a check,
-since the inventory reads nothing but the manifest; `recovery check` checks an
-archive, so run it before you restore one. A regular file that is not such an
-archive is listed as `readable: false` and aged by its modification time;
-`.tmp` leftovers, links, directories and other special files are not listed,
-and the inventory never follows a link. While the lock is held (`in_use`) the
+`archives` lists the [online backups](#online-backups-of-the-access-database)
+in the configuration's `access/backups` directory, newest first and then by
+`id`: each archive's `id` (its file is `<id>.tar.gz`, the ID a UUID),
+`created_at`, `size_bytes`, the store identity its manifest names, and
+`readable`. It reads that directory exactly as a starting coordinator does.
+`readable` says only what the manifest states: a `database` bundle at the
+schema version this release writes. It is not a check, since the inventory
+reads nothing but the manifest; `recovery check` checks an archive, so run it
+before you restore one. A file named like an archive that is not one is listed
+as `readable: false` and aged by its modification time. Other files (the
+temporary files of an interrupted backup, files under other names), links,
+directories and other special files are not listed, and the inventory never
+follows a link and deletes nothing. A coordinator lists only the database
+archives among them, and when it starts deletes only the temporary files an
+interrupted backup left there. While the lock is held (`in_use`) the
 list is empty, because a running node owns that directory and its status lists
 them. Archives that cannot be listed, for example because a link stands on the
 way to `access/backups`, leave the store's state as it is: `archives` is empty,
@@ -147,10 +152,17 @@ coordinator, has no access store, and its bundle carries no image and no `store`
 Archives are limited to 20,000 files and 4 GiB; they are recovery state bundles,
 not model-library or complete operating-system images.
 
-Every archive has a `profile`. `recovery backup` writes `installation` bundles:
-the scope above. A `database` bundle holds the access database image alone, with
-no configuration and no key; `recovery check` and `recovery restore` handle it
-the same way. A profile this release does not know is refused.
+## Bundle profiles
+
+Every archive names a `profile` in its manifest. The three profiles share one
+manifest format, one check and one staged restore. A profile this release does not
+know is refused.
+
+| Profile | What it carries | What it is for |
+| --- | --- | --- |
+| `installation` | The scope above, with an `inventory` of the installation's recorded roots. | Recovering this installation. `recovery backup` writes it by default. |
+| `database` | The access database image alone: no configuration, no key, no inventory. | Restoring the access database into the installation it came from. `recovery backup` does not write it. |
+| `handoff` (experimental) | The access database image, the provider tree's definitions and assets, routes, spend, pricing overrides and encrypted provider connections, with the old coordinator's `source` and a `separate` list. Nothing that belongs to the old machine. | Moving the coordinator to another machine. `recovery backup --profile handoff` writes it. See [Coordinator handoff](#coordinator-handoff-experimental). |
 
 ## Back up and verify
 
@@ -211,6 +223,84 @@ grants or turn corrupt spend into zero usage. Other configuration and provider
 assets are preserved byte for byte; the matching release validates their
 operational compatibility when the recovered node starts.
 
+## Online backups of the access database
+
+A running coordinator backs up its access database on request:
+`POST /zzrouter/v1/system/state/backups` with an empty JSON object, as an
+administrator (the API or `zz_api`) or, from the installed host, with the local
+proof in the `X-Zzrouter-Local-Proof` header. It copies the database at one
+committed revision with SQLite's `VACUUM INTO` while the node serves, checks the
+copy as a start would, with SQLite's full integrity check, writes it as a
+`database` bundle (the image and a manifest naming its store ID, generation,
+schema version, revision, sequence and creation time), records one
+`store.backup_created` event in the access history and only then lists it.
+`GET /zzrouter/v1/system/state/backups` lists the retained backups and
+`GET /zzrouter/v1/system/state/backups/{id}` reads one, with the SHA-256 of its
+archive, `protected_until` and `expires_at`; `GET /zzrouter/v1/system/state`
+counts them in `backup_bytes` and `retained_copies`. No answer names a path.
+
+An online backup is the access database alone: people and password hashes,
+app keys and their hashes, teams, invitations and the access history. It is not
+an installation backup. It holds no configuration, routes, spend, provider
+connections, OAuth authority or cluster trust, so moving a coordinator to
+another machine needs the installation bundle that `recovery backup` writes. It
+is also not a copy elsewhere: the archives live in the configuration's
+`access/backups` directory, owner-only, beside the database, and retention
+deletes them. They never travel in an installation bundle.
+
+To take a copy off the running coordinator, run on its host, as the
+installation account:
+
+```sh
+zzrouter access state export --output /secure-backups/access.tar.gz
+zzrouter-node recovery check /secure-backups/access.tar.gz
+```
+
+Without `--backup-id ID`, the export takes a new backup first; with it, it
+copies that retained backup. The command reads the installation's local proof,
+so only an operator on that host can export, and `--dir` selects another
+installation. The node checks the archive on the file it sends from, records
+one `store.backup_exported` event in the access history before the first byte,
+and sends the whole archive. The command refuses an output that exists or lies
+inside the installation, writes `FILE.partial` owner-only, checks the SHA-256
+the node announced, and only then renames it; a mismatch or an interrupt
+(Ctrl-C) removes the partial file. If the node refuses the archive as damaged,
+take a new backup and export that one; the live database is not involved. The copy holds the same credential
+hashes as the backup, outside retention: it is yours to protect and to delete.
+
+A failed or interrupted backup lists nothing and leaves no file. A copy that
+fails its check answers `500 state_image_check_failed`: the live database may be
+damaged, so stop the service and run `recovery inventory`. The same
+`Idempotency-Key` and body replay the original `201` while the coordinator
+process lives; a retry after a restart creates a second backup. The
+`store.backup_created` event is committed before the archive is published, so a
+listed backup always has its event; if the process dies after the event, or
+publishing the archive then fails, the history holds an event for a backup that
+was never listed, and nothing of it remains on disk once the next start has run.
+
+Every backup is kept for at least the 24-hour replay window
+(`protected_until`), so a replayed create never names a backup that is gone.
+Past it, the three newest backups are kept, and none from seven days on. Pruning
+runs at start, after each backup and hourly; on Windows a file another program
+holds open is removed at a later pruning. Retained backups may hold at most
+1 GiB, counting only what retention keeps: a create is refused with
+`507 state_backup_capacity_exceeded` before anything is copied when they already
+fill it, and after the archive is written when it does not fit beside them. Wait
+for retention to remove older backups (each one's `expires_at`), or take an
+offline `recovery backup` with the node stopped. A full disk answers the same
+code with `capacity: disk`.
+
+A backup holds access writes (key, team and people changes, console sign-ins)
+only while it copies the database. On an Apple M5 Max laptop SSD that took
+about 90 ms for a 29 MiB database (100,000 access-history events) and 0.7 s for
+a 297 MiB one (1,000,000 events), and the whole backup 0.6 s and 6.8 s.
+Inference never writes to the access history, so it grows with administration,
+not with traffic.
+
+To restore an online backup, export it, stop the node, stage the copy with
+`recovery restore`, then activate the staging directory as
+[Activate a database bundle](#activate-a-database-bundle) describes.
+
 ## Restore and activate deliberately
 
 ```sh
@@ -242,6 +332,8 @@ A staged `database` bundle holds only `manifest.json` and `store/image.sqlite`;
 when the installation had an access store, and `protection/credentials.key` when
 a key was supplied; it is restored by hand, as the last part of this section
 describes.
+A staged `handoff` bundle is not activated in this release, by command or by
+hand: see [Coordinator handoff](#coordinator-handoff-experimental).
 
 Once the prepared image is in place, browser sessions, delegated OAuth tokens and
 app-key references issued before the restore do not resolve, without any edit of
@@ -387,3 +479,120 @@ existing local recovery command if necessary. Expired worker certificates can
 require pairing again. An older valid backup can restore access that was revoked
 later; review people, keys, grants and budget state after recovery. A successful
 archive check is not a successful activation test.
+
+## Coordinator handoff (experimental)
+
+A `handoff` bundle holds what a new coordinator needs from the old one, and
+nothing that belongs to the old machine. This release writes, checks and stages
+it. Activating a staged handoff on the new coordinator arrives in a later release;
+until then the staging directory shows what would move, and nothing in this
+release, command or manual step, activates it. Treat the profile as experimental
+until that release has been rehearsed on a real two-node cluster.
+
+A handoff carries exactly these entries, and `recovery check` and `recovery
+restore` refuse a handoff that carries any other, naming the entry. They also
+refuse one with no provider definition, which has lost its provider tree, and one
+whose `source`, `separate` list or entry names are not short plain text. The
+list alone decides what a handoff carries: a provider or an asset named like a
+temporary, lock or PID file travels like any other:
+
+| Entry | What it is |
+| --- | --- |
+| `store/image.sqlite` | The access database image: people and their passwords, app keys, teams and their policies, and the access history. Staging prepares it like every image. |
+| `config/providers/settings.yaml` | Global provider settings. |
+| `config/providers/<kind>/<name>/config.yaml` and `schema.yaml` | Each provider's definition and its parameter schema, for the kinds `on-demand`, `external`, `cloud` and `registries`. |
+| `config/providers/<kind>/<name>/assets/<asset>` | Operator assets, such as chat templates. |
+| `config/providers/.managed-ownership.json` | The ownership receipt: which keys of each shipped provider definition the release manages. |
+| `config/model_groups.yaml` | Routes. |
+| `config/spend.json` | Recorded spend. A clean stop flushes it; from a source that crashed, it holds spend only up to its last save, at most 60 seconds old. |
+| `config/pricing_overrides.yaml` | Pricing overrides. |
+| `config/credentials.enc` | Encrypted provider connections. As for an installation bundle, the key is exported separately with `--key-output` and never packed, and the manifest's `key_sha256` names it. |
+
+An entry travels only because this list names it: a file a later release adds to
+the configuration directory does not travel until the list names it too. A
+handoff never carries `node.yaml`, the dotenv files (`.env`, `.env.local`,
+`.env.<environment>`), OAuth authority state (`oauth.json`), the cluster CA and
+its deny list (`ca/`), node identity (`identity/`), cluster and pairing state
+(`cluster/`, `pairing.txt`), private keys (`private/`), the recovery layout, the
+store marker, online backups, the rollback directory, update state, data
+directories, the pricing cache, provider installs or models. Its manifest has no
+`inventory`. It names `source`, the old coordinator's release, node name and
+platform, and `separate`, what the operator moves or recreates by hand:
+
+```json
+{"version": 1, "profile": "handoff", "created": "2026-11-19T10:54:46Z",
+ "store": {"store_id": "4b244e15-…", "generation": "4b244e15-…", "schema_version": 1, "revision": 3, "sequence": 5},
+ "source": {"release": "0.3.0", "node": "coord-1", "platform": "linux"},
+ "key_sha256": "4b94c8b3…",
+ "separate": ["The destination's own node.yaml: node name, listen address, TLS, storage paths, authentication and cluster role.", "…"],
+ "files": [{"name": "config/credentials.enc", "size": 204, "sha256": "3ceac6a1…"}, "…"]}
+```
+
+The flow, up to staging:
+
+1. Install the matching release on the destination.
+2. Stop the source coordinator through its supervisor and keep its supervisor from
+   restarting it. The ordinary stop drains requests and flushes spend.
+3. Take the handoff from the stopped source:
+
+   ```sh
+   zzrouter-node recovery backup --profile handoff --dir /path/to/installation \
+     --output /secure-backups/handoff.tar.gz \
+     --key-output /separate-key-storage/handoff.key
+   ```
+
+   The same rules as an installation backup apply: the installation lock, new
+   output paths, the key in a separate directory, no output after a failure or an
+   interrupt. A worker, or a node that never ran as a coordinator, has no access
+   database and so no handoff: the command stops with `no access store` and writes
+   nothing. A link in place of the provider tree, a kind, a provider, its assets
+   or a carried file, and, on a case-insensitive filesystem, a name that is a
+   carried entry spelled in another case, also stop it, naming the path: the
+   node would read them, so a handoff refuses them rather than leave them behind.
+   On a case-sensitive filesystem such a spelling is a separate file the node
+   ignores, and it is not carried. Links elsewhere, such as a provider install's
+   environment, are not carried either. The command prints what the bundle
+   carries and the `separate` list.
+4. Check it, and stage it on the destination:
+
+   ```sh
+   zzrouter-node recovery check /secure-backups/handoff.tar.gz \
+     --key-file /separate-key-storage/handoff.key
+   zzrouter-node recovery restore /secure-backups/handoff.tar.gz \
+     --key-file /separate-key-storage/handoff.key \
+     --to /new/private/handoff-staging
+   ```
+
+   Staging works as for every profile. The staging directory holds
+   `manifest.json`, `config/` with the entries above, the prepared
+   `store/image.sqlite` and `protection/credentials.key`. Once a later release
+   activates it, sessions, delegated tokens and app-key references the old
+   coordinator issued do not resolve; passwords and app keys keep working.
+
+What the operator moves or recreates by hand, as `separate` lists:
+
+- The destination's own `node.yaml`: node name, listen address, TLS, storage
+  paths, authentication settings and cluster role. A handoff carries none of the
+  source's.
+- Environment variables the dotenv files or the service environment set: the
+  static installation keys (`ZZROUTER_ADMIN_API_KEY`, `ZZROUTER_API_KEY`),
+  provider credentials (such as `OPENAI_API_KEY` or `HF_TOKEN`) and every variable
+  a provider definition reads (`connection.fields[].env`, or `${VARIABLE}` in a
+  value). Set them on the destination: a connection that reads its key from the
+  environment fails without it. A handoff carries the connections saved through
+  zzRouter in `credentials.enc`, never the environment.
+- External services the provider definitions point at, such as an Ollama server
+  or an endpoint on the old machine's network: make sure the destination reaches
+  them.
+- External TLS or proxy trust material that `node.yaml` names: copy it over a
+  secure channel and name it in the destination's `node.yaml`.
+- Provider runtimes and model weights: install and download them on the
+  destination.
+- Workers: pair each one again with the new coordinator. The cluster CA, node
+  identity and worker enrollments stay with the old one. Browsers and delegated
+  OAuth clients sign in or authorize again.
+
+A handoff never rewrites node names. Provider enablement entries (`nodes.<node>`)
+and route replicas pinned to the old coordinator's node keep that name, and a
+replica with no node, which meant the old coordinator, means the new one; review
+them through the running API after activation.

@@ -97,6 +97,7 @@ managed secrets into provider files.
 | `access-store.json` | Store marker: tells a lost access database from a fresh installation |
 | `recovery-activation.json` | Present only while an offline activation is incomplete; the node refuses to start until `zzrouter-node recovery activate` finishes or rolls it back |
 | `rollback/<generation>/` | What an offline activation replaced (the previous access database and store marker, credential hashes included), kept until the operator deletes it and never backed up |
+| `access/backups/` | Online backups of the access database, owner-only: kept 24 hours, then the three newest up to seven days, at most 1 GiB ([recovery](recovery.md#online-backups-of-the-access-database)) |
 | `model_groups.yaml` | Logical model routes |
 
 Only a node that boots as a coordinator opens the access store; a worker

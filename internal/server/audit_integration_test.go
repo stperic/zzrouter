@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
@@ -207,7 +208,7 @@ func TestAccessAuditPagesThroughTheAPI(t *testing.T) {
 		require.Equal(t, audit.ActorStaticAdmin, ev.Actor)
 		require.Empty(t, ev.RequestID, "key, team and usage events record no request ID, as before the store")
 	}
-	require.Equal(t, owner.ID, events[3].Actor, "people events name the person")
+	require.Equal(t, audit.KindActor(people.Kind, owner.ID), events[3].Actor, "people events name the person")
 	require.NotEmpty(t, events[3].RequestID, "and the request")
 	require.Equal(t, audit.ActionGrantIssued, events[len(events)-1].Action, "the setup grant came first")
 
@@ -215,7 +216,7 @@ func TestAccessAuditPagesThroughTheAPI(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = other.Close() })
 	for range 2 {
-		other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "other", Subject: "elsewhere"})
+		require.NoError(t, other.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Actor: "other", Subject: "elsewhere"}))
 	}
 	_, foreign, err := other.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.NoError(t, err)

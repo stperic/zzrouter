@@ -12558,7 +12558,8 @@ paths:
             type: string
             enum: [key.created, key.updated, key.rotated, key.deleted, key.usage_reset, team.created, team.updated, team.deleted,
               team.usage_reset, person.created, person.updated, person.password_changed, person.recovered,
-              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared]
+              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared, store.backup_created,
+              store.backup_exported]
         - in: query
           name: since
           description: Inclusive lower bound on the event time, an RFC 3339 date-time.
@@ -12663,6 +12664,229 @@ paths:
           description: >-
             `access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting. Read
             again once it answers.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups:
+    get:
+      tags: [System]
+      operationId: listStateBackups
+      summary: List the access store's retained online backups
+      description: >-
+        Administrator only, coordinator only. Lists the retained online backups of the access store, newest first, from
+        the coordinator's index: no file is read. The answer carries no filesystem path or archive content. An archive
+        holds credential hashes and access policy, and no route serves its content.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        '200':
+          description: The retained online backups
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, total, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/StateBackup' } }
+                  total: { type: integer, minimum: 0 }
+                  has_more: { type: boolean, enum: [false] }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    post:
+      tags: [System]
+      operationId: createStateBackup
+      summary: Back up the access store online
+      description: >-
+        Coordinator only, for an administrator or, from the installed host, the local operator's proof in the
+        `X-Zzrouter-Local-Proof` header. A request carrying that header, even empty, is judged by the proof alone and
+        never by an API key or session. Copies the access store at one committed revision while the coordinator serves, checks the copy
+        as a start would with SQLite's full integrity check, writes it as a `database` recovery archive, records one
+        `store.backup_created` access-history event and only then lists the archive. Access writes wait only while
+        the database is copied. A failed or interrupted backup lists nothing and leaves no file. The body is an empty
+        JSON object. The same Idempotency-Key and body replay the original `201` while the coordinator process lives;
+        a retry after a restart creates another backup. Every backup is kept for at least the 24-hour replay window;
+        past it the three newest are kept and none beyond seven days, within a 1 GiB cap.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+        - LocalProof: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '201':
+          description: The backup was checked, recorded and listed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateBackup' }
+        '400':
+          description: The body is not an empty JSON object.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the copy of the access database failed its check, so nothing was kept. The live
+            store may be damaged: stop the service and run `zzrouter-node recovery inventory`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_busy`: another process holds the access database; retry after `Retry-After`.
+            `access_store_failed`: the coordinator is restarting. `service_unavailable`: the coordinator is stopping;
+            retry after `Retry-After`. Nothing was kept.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '507':
+          description: >-
+            `state_backup_capacity_exceeded`, nothing kept. `capacity` is `byte_cap` when the retained backups, counting
+            only what retention keeps, reach the 1 GiB cap or leave no room for the written archive, with
+            `limit_bytes`, `retained_bytes` and `required_bytes` (0 when refused before the copy): wait for retention to
+            remove older backups (their `expires_at`), or take an offline backup with `zzrouter-node recovery backup`
+            while the node is stopped. It is `disk` when the disk had no room: free space on the coordinator, then
+            retry.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups/{id}:
+    get:
+      tags: [System]
+      operationId: getStateBackup
+      summary: Read one retained online backup
+      description: >-
+        Administrator only, coordinator only. The backup's metadata, the SHA-256 of its archive and when retention
+        removes it. No filesystem path or archive content.
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The backup
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/StateBackup' }
+              example:
+                success: true
+                message: Online backup retrieved successfully
+                data:
+                  id: 0f6b5f7e-3f0e-4d56-9a43-2f4f5b0f6c11
+                  created_at: '2026-11-19T08:20:01.104Z'
+                  size_bytes: 7208
+                  store_id: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  generation: c6639e2c-4bab-4a75-b147-45aa9862baf3
+                  schema_version: 1
+                  revision: 3
+                  sequence: 5
+                  readable: true
+                  sha256: 3b2c5e0f4b1d8e7a6c9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f
+                  protected_until: '2026-11-20T08:20:01.104Z'
+                  expires_at: '2026-11-26T08:20:01.104Z'
+        '401': { $ref: '#/components/responses/Access401' }
+        '403': { $ref: '#/components/responses/Access403' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or retention removed it. List the retained backups.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups/{id}/content:
+    get:
+      tags: [System]
+      operationId: exportStateBackup
+      summary: Download a retained online backup's archive
+      description: >-
+        Local operator only, coordinator only: the local proof in the `X-Zzrouter-Local-Proof` header, from an address
+        of the node's host; an API key or session alone is refused. Called by `zzrouter access state export`. Before the
+        first byte the coordinator checks the archive on the file it streams from, as `zzrouter-node recovery check`
+        does, and records one `store.backup_exported` access-history event; then it sends the whole archive. A
+        `Range` header is ignored. The archive holds credential hashes and access policy: the copy belongs to the
+        operator, who keeps it protected.
+      security:
+        - LocalProof: []
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The archive, a `database` recovery bundle.
+          headers:
+            Content-Disposition:
+              description: An attachment named `zzrouter-access-<creation time>-<first 8 characters of the id>.tar.gz`.
+              schema: { type: string }
+            Content-Length: { description: The archive's length., schema: { type: integer } }
+            Repr-Digest: { description: "The archive's SHA-256 (RFC 9530), as `sha-256=:<base64>:`.", schema: { type: string } }
+            Accept-Ranges: { description: Always `none`., schema: { type: string } }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or retention removed it.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: this backup's archive failed its check, or is not the archive the backup list
+            describes; nothing was sent and nothing recorded. The live access database is not involved: take a new
+            backup and export that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            The export could not be recorded (`access_store_busy`, `access_store_failed`, or `service_unavailable`
+            while the coordinator stops), so nothing was sent. Retry after `Retry-After`.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13724,7 +13948,7 @@ components:
             database_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the main database file. }
             journal_bytes: { type: integer, minimum: 0, nullable: true, description: Length of the rollback journal, 0 outside a write. }
             free_page_bytes: { type: integer, minimum: 0, nullable: true, description: Reusable space inside the database file, as the latest commit left it. }
-            backup_bytes: { type: integer, minimum: 0, description: Total bytes in retained online backups, separate from the live database. 0 until online backups exist. }
+            backup_bytes: { type: integer, minimum: 0, description: Total bytes in retained online backups, separate from the live database. }
         integrity:
           type: object
           additionalProperties: false
@@ -13737,26 +13961,52 @@ components:
         retained_copies:
           type: array
           description: >-
-            Retained copies of access records outside the database, which hold credential hashes, oldest first. Each
-            stays until the operator removes it.
+            Copies of the access records the coordinator keeps beside the live database, which hold credential hashes:
+            online backups, then the rollback directories offline activations kept, each oldest first.
           items:
             type: object
             additionalProperties: false
-            required: [kind, id, created_at, size_bytes, pending]
+            required: [kind, id, created_at, size_bytes]
             properties:
               kind:
                 type: string
-                enum: [activation_rollback]
-                description: '`activation_rollback`: what an offline activation replaced, kept in its rollback directory.'
-              id: { type: string, description: The generation the activation published. }
+                enum: [online_backup, activation_rollback]
+                description: >-
+                  `online_backup`: a retained online backup. `activation_rollback`: what an offline activation
+                  replaced, kept in its rollback directory until the operator removes it.
+              id: { type: string, description: "The backup's ID, or the generation the activation published." }
               created_at: { type: string, format: date-time }
               size_bytes: { type: integer, minimum: 0 }
               pending:
                 type: boolean
-                description: The activation that kept it did not finish, so the node does not start. Do not remove it; rolling the activation back needs it.
+                description: >-
+                  Present and true on the `activation_rollback` of an activation that did not finish, so the node does
+                  not start. Do not remove that directory; rolling the activation back needs it.
         retained_copies_error:
           type: string
           description: Present, without a path, when retained copies could not be listed; the store's state still stands. `recovery inventory` on the coordinator names the cause.
+    StateBackup:
+      description: >-
+        A retained online backup of the access store: a `database` recovery archive. No filesystem path or content.
+      type: object
+      additionalProperties: false
+      required: [id, created_at, size_bytes, store_id, generation, schema_version, revision, sequence, readable, sha256, protected_until, expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        size_bytes: { type: integer, minimum: 0, description: Length of the archive. }
+        store_id: { type: string, description: "As the manifest names it: a bundle of another store copied in names that store." }
+        generation: { type: string }
+        schema_version: { type: integer, minimum: 1 }
+        revision: { type: integer, minimum: 0, description: The store's revision the backup holds. }
+        sequence: { type: integer, minimum: 0, description: The store's sequence the backup holds; its own access-history event comes after it. }
+        readable: { type: boolean, description: The archive is at the schema version this release checks and restores. }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the archive's bytes. }
+        protected_until: { type: string, format: date-time, description: Creation plus the replay window; never removed before. }
+        expires_at:
+          type: string
+          format: date-time
+          description: When retention removes it; a newer backup can bring it forward, never back.
     TeamMembership:
       type: object
       description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.

@@ -282,7 +282,7 @@ func crashedMidCommit(t *testing.T) (crashed string, committed []byte) {
 	t.Helper()
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
-	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "committed"})
+	require.NoError(t, s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "committed"}))
 	require.NoError(t, s.Close())
 	committed, err := os.ReadFile(dbPath(dir))
 	require.NoError(t, err)

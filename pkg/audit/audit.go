@@ -52,6 +52,8 @@ const (
 	ActionGrantRevoked    Action = "enrollment.revoked"
 
 	ActionRestorePrepared Action = "store.restore_prepared"
+	ActionBackupCreated   Action = "store.backup_created"
+	ActionBackupExported  Action = "store.backup_exported"
 )
 
 // Actions lists every Action constant: the closed set an event records and a
@@ -62,7 +64,7 @@ func Actions() []Action {
 		ActionTeamCreated, ActionTeamUpdated, ActionTeamDeleted, ActionTeamUsageReset,
 		ActionPersonCreated, ActionPersonUpdated, ActionPasswordChanged, ActionPersonRecovered, ActionSessionsRevoked,
 		ActionGrantIssued, ActionGrantRevoked,
-		ActionRestorePrepared,
+		ActionRestorePrepared, ActionBackupCreated, ActionBackupExported,
 	}
 }
 

@@ -4,7 +4,6 @@
 package recovery
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -380,10 +379,9 @@ func unknown(err error) (StoreSection, error) {
 	return StoreSection{State: StoreUnknown, Evidence: err.Error(), NextAction: unknownAction, Archives: []Archive{}, Rollbacks: []Rollback{}}, err
 }
 
-// readArchives lists the online backup archives newest first, then by ID. It
-// never follows a link: a link on the way to the backup directory is an error,
-// and only regular files are listed, temporary ones (.tmp) excepted. A file
-// that is not an archive is listed as unreadable, never an error.
+// readArchives lists the online backup archives as readBackupDir describes
+// them, newest first, then by ID. A file named after a backup that is not an
+// archive is listed as unreadable, never an error, and never deleted.
 func readArchives(dir string) ([]Archive, error) {
 	root, err := os.OpenRoot(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -393,34 +391,14 @@ func readArchives(dir string) ([]Archive, error) {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	backups := filepath.Join("access", "backups")
-	var entries []fs.DirEntry
-	if err = rejectLinks(root, backups); err == nil {
-		entries, err = fs.ReadDir(root.FS(), filepath.ToSlash(backups))
-	}
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-	archives := []Archive{}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".tar.gz") && entry.Type().IsRegular() {
-			archive, err := describeArchive(root, filepath.Join(backups, entry.Name()), entry)
-			if err != nil {
-				return nil, err
-			}
-			archives = append(archives, archive)
-		}
-	}
-	slices.SortFunc(archives, func(a, b Archive) int {
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
-	})
-	return archives, nil
+	archives, _, err := readBackupDir(root)
+	return archives, err
 }
 
 // describeArchive describes the archive at name under root from its manifest;
 // one that does not open as an archive is unreadable, aged by its file.
 func describeArchive(root *os.Root, name string, entry fs.DirEntry) (Archive, error) {
-	archive := Archive{ID: strings.TrimSuffix(entry.Name(), ".tar.gz")}
+	archive := Archive{ID: strings.TrimSuffix(entry.Name(), archiveSuffix)}
 	if info, err := entry.Info(); err == nil {
 		archive.CreatedAt, archive.SizeBytes = info.ModTime().UTC(), info.Size()
 	}

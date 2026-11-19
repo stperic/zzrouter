@@ -692,7 +692,7 @@ func testCommitNotifications(t *testing.T, h Harness) {
 	_, err = s.UpdateTeam(t.Context(), "eng", func(team *teams.Team) error { team.RPMLimit = 1; return nil }, audit.Event{})
 	require.NoError(t, err)
 	keysVersion(false, "a team update")
-	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
+	require.NoError(t, s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader")))
 	keysVersion(false, "an audit record")
 	_, err = s.UpdateKey(t.Context(), "reader", func(*keys.VirtualKey) error { return nil }, audit.Event{})
 	require.NoError(t, err)
@@ -777,12 +777,16 @@ func testAuditEvents(t *testing.T, h Harness) {
 	assert.Equal(t, len(steps), events, "a zero event records nothing")
 	assert.Equal(t, len(steps)+1, commits)
 
-	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
+	require.NoError(t, s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader")))
 	ev := rec.lastEvent()
 	assert.Equal(t, audit.ActionKeyUsageReset, ev.Action)
-	s.Record(t.Context(), audit.Event{})
+	require.NoError(t, s.Record(t.Context(), audit.Event{}))
+	require.Error(t, s.Record(t.Context(), event("store.unknown", "reader")), "an event the store refuses is reported")
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.NoError(t, s.Record(canceled, event(audit.ActionKeyUsageReset, "reader")), "cancellation does not stop a record")
 	events, commits = rec.counts()
-	assert.Equal(t, len(steps)+1, events)
+	assert.Equal(t, len(steps)+2, events)
 	assert.Equal(t, len(steps)+1, commits, "an event recorded alone changes no record and notifies nobody")
 }
 
@@ -825,6 +829,7 @@ func testPersistFailure(t *testing.T, h Harness) {
 			return err
 		},
 		"delete team": func() error { return s.DeleteTeam(t.Context(), "eng", event(audit.ActionTeamDeleted, "eng")) },
+		"record":      func() error { return s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader")) },
 	} {
 		h.FailNextCommit()
 		require.Error(t, run(), name)
@@ -912,7 +917,7 @@ func testClosedStore(t *testing.T, h Harness) {
 	} {
 		require.ErrorIs(t, run(), access.ErrClosed, name)
 	}
-	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
+	require.ErrorIs(t, s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader")), access.ErrClosed)
 	_, _, err = s.AuditPage(t.Context(), audit.Filter{}, "", 1)
 	require.ErrorIs(t, err, access.ErrClosed, "a closed store reads no history")
 	assert.Same(t, last, s.Snapshot(), "a closed store keeps its last published snapshot")
