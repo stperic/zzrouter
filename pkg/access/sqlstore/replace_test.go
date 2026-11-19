@@ -1,36 +1,50 @@
 package sqlstore
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/sqlitedb"
 )
 
-// installed is a closed store in a directory of its own, and an image of it
-// captured before its last change: what Replace publishes over it.
-type installed struct {
-	dir, image string
-	meta       Meta
+// fixture is a closed store in a directory of its own, and an image of it
+// captured before its last change and prepared as a restore prepares it: what
+// Replace publishes over it, with its digest.
+type fixture struct {
+	dir, image, sha string
+	meta            Meta
 }
 
-func installStore(t *testing.T) installed {
+func installStore(t *testing.T) fixture {
 	t.Helper()
-	i := installed{dir: t.TempDir(), image: filepath.Join(t.TempDir(), "image.sqlite")}
+	i := fixture{dir: t.TempDir(), image: filepath.Join(t.TempDir(), "image.sqlite")}
 	s, err := Open(t.Context(), i.dir, Options{})
 	require.NoError(t, err)
-	i.meta, err = s.Capture(t.Context(), i.image)
+	_, err = s.Capture(t.Context(), i.image)
 	require.NoError(t, err)
 	_, err = s.CreateTeam(t.Context(), "after-capture", engineering(), audit.Event{})
 	require.NoError(t, err)
 	require.NoError(t, s.Close())
+	prepared, err := PrepareImage(t.Context(), i.image)
+	require.NoError(t, err)
+	i.meta, i.sha = prepared.Meta, digestOf(t, i.image)
 	return i
+}
+
+func digestOf(t *testing.T, path string) string {
+	t.Helper()
+	sum := sha256.Sum256(readFile(t, path))
+	return hex.EncodeToString(sum[:])
 }
 
 // storeFiles reads dir's database, journal and marker, nil for an absent one.
@@ -58,7 +72,7 @@ func TestReplaceAndRevert(t *testing.T) {
 	before := storeFiles(t, i.dir)
 	keep := keepIn(t)
 	for range 2 {
-		img, err := Replace(t.Context(), i.dir, i.image, keep, false)
+		img, err := Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
 		require.NoError(t, err)
 		require.Equal(t, i.meta, img.Meta)
 		require.Equal(t, readFile(t, i.image), readFile(t, dbPath(i.dir)), "the image is published byte for byte")
@@ -71,7 +85,7 @@ func TestReplaceAndRevert(t *testing.T) {
 	require.NoError(t, s.Close())
 	require.Equal(t, before[2], readFile(t, filepath.Join(i.dir, MarkerName)), "an open of the published image keeps the marker")
 	for range 2 {
-		require.NoError(t, Revert(t.Context(), i.dir, keep))
+		require.NoError(t, Revert(t.Context(), i.dir, keep, i.meta.Generation))
 		require.Equal(t, before, storeFiles(t, i.dir), "the database and marker are as they were")
 	}
 }
@@ -98,22 +112,23 @@ func TestReplaceSettlesAHotJournal(t *testing.T) {
 	require.NotEqual(t, committed, inFlight, "the crash left uncommitted pages in the file")
 
 	keep := keepIn(t)
-	_, err = Replace(t.Context(), i.dir, i.image, keep, false)
+	_, err = Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
 	require.NoError(t, err)
 	require.NoFileExists(t, dbPath(i.dir)+"-journal", "no journal beside the new database")
 	require.Equal(t, readFile(t, i.image), readFile(t, dbPath(i.dir)))
 	require.Equal(t, committed, readFile(t, filepath.Join(keep, fileName)), "the kept database is the settled one")
 	require.NoFileExists(t, filepath.Join(keep, fileName+"-journal"))
-	require.NoError(t, Revert(t.Context(), i.dir, keep))
+	require.NoError(t, Revert(t.Context(), i.dir, keep, i.meta.Generation))
 	require.Equal(t, committed, readFile(t, dbPath(i.dir)))
 	require.NoFileExists(t, dbPath(i.dir)+"-journal")
 }
 
 // TestReplaceKeepsAnUnreadableDatabase: an unreadable database is replaced,
 // and it and the journal SQLite left beside it are kept, the journal gone from
-// beside the new database, and both restored byte for byte. SQLite settles or
-// deletes a hot journal while it probes, even beside an unreadable database,
-// so the journal left is one it does not read: its first byte is zero.
+// beside the new database, and both restored byte for byte. A hot journal
+// takes another path even beside an unreadable database: SQLite plays it into
+// the file, or deletes it, while it probes, before anything is copied. The
+// journal left is one it does not read, whose first byte is zero.
 func TestReplaceKeepsAnUnreadableDatabase(t *testing.T) {
 	t.Parallel()
 	i := installStore(t)
@@ -121,13 +136,13 @@ func TestReplaceKeepsAnUnreadableDatabase(t *testing.T) {
 	require.NoError(t, os.WriteFile(dbPath(i.dir)+"-journal", []byte("\x00a journal SQLite does not read"), 0o600))
 	before := storeFiles(t, i.dir)
 	keep := keepIn(t)
-	_, err := Replace(t.Context(), i.dir, i.image, keep, false)
+	_, err := Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
 	require.NoError(t, err)
 	require.Equal(t, readFile(t, i.image), readFile(t, dbPath(i.dir)))
 	require.NoFileExists(t, dbPath(i.dir)+"-journal")
 	require.Equal(t, before[0], readFile(t, filepath.Join(keep, fileName)))
 	require.Equal(t, before[1], readFile(t, filepath.Join(keep, fileName+"-journal")))
-	require.NoError(t, Revert(t.Context(), i.dir, keep))
+	require.NoError(t, Revert(t.Context(), i.dir, keep, i.meta.Generation))
 	require.Equal(t, before, storeFiles(t, i.dir))
 }
 
@@ -154,7 +169,7 @@ func TestReplaceAdmitsOnlyTheInstallationsStore(t *testing.T) {
 			keep := keepIn(t)
 			_, err := AdmitStoreID(t.Context(), i.dir, other.meta.StoreID, false)
 			require.ErrorIs(t, err, ErrStoreIdentity)
-			_, err = Replace(t.Context(), i.dir, other.image, keep, false)
+			_, err = Replace(t.Context(), i.dir, other.image, other.sha, keep, false)
 			require.ErrorIs(t, err, ErrStoreIdentity)
 			require.Equal(t, before, storeFiles(t, i.dir))
 			require.NoFileExists(t, dbPath(i.dir)+".staged")
@@ -163,29 +178,29 @@ func TestReplaceAdmitsOnlyTheInstallationsStore(t *testing.T) {
 	}
 	t.Run("a fresh installation", func(t *testing.T) {
 		dir, keep := t.TempDir(), keepIn(t)
-		installedID, err := AdmitStoreID(t.Context(), dir, other.meta.StoreID, false)
+		inst, err := AdmitStoreID(t.Context(), dir, other.meta.StoreID, false)
 		require.NoError(t, err)
-		require.Empty(t, installedID)
+		require.Equal(t, Installed{}, inst)
 		for range 2 { // the second is a rerun after a crash at the end: nothing existed still
-			_, err = Replace(t.Context(), dir, other.image, keep, false)
+			_, err = Replace(t.Context(), dir, other.image, other.sha, keep, false)
 			require.NoError(t, err)
 		}
 		id, err := MarkerStoreID(readFile(t, filepath.Join(dir, MarkerName)))
 		require.NoError(t, err)
 		require.Equal(t, other.meta.StoreID, id)
-		require.NoError(t, Revert(t.Context(), dir, keep))
+		require.NoError(t, Revert(t.Context(), dir, keep, other.meta.Generation))
 		require.Equal(t, [3][]byte{}, storeFiles(t, dir), "neither a database nor a marker")
 	})
 	t.Run("foreign", func(t *testing.T) {
 		i := installStore(t)
 		before := storeFiles(t, i.dir)
 		keep := keepIn(t)
-		_, err := Replace(t.Context(), i.dir, other.image, keep, true)
+		_, err := Replace(t.Context(), i.dir, other.image, other.sha, keep, true)
 		require.NoError(t, err)
 		id, err := MarkerStoreID(readFile(t, filepath.Join(i.dir, MarkerName)))
 		require.NoError(t, err)
 		require.Equal(t, other.meta.StoreID, id)
-		require.NoError(t, Revert(t.Context(), i.dir, keep))
+		require.NoError(t, Revert(t.Context(), i.dir, keep, other.meta.Generation))
 		require.Equal(t, before, storeFiles(t, i.dir))
 	})
 }
@@ -197,7 +212,66 @@ func TestRevertBeforeReplaceRecorded(t *testing.T) {
 	i := installStore(t)
 	before := storeFiles(t, i.dir)
 	require.NoError(t, os.WriteFile(dbPath(i.dir)+".staged", readFile(t, i.image), 0o600))
-	require.NoError(t, Revert(t.Context(), i.dir, keepIn(t)))
+	require.NoError(t, Revert(t.Context(), i.dir, keepIn(t), i.meta.Generation))
 	require.Equal(t, before, storeFiles(t, i.dir))
 	require.NoFileExists(t, dbPath(i.dir)+".staged")
+}
+
+// TestReplaceRefusesAnImageNotTheOneChecked: a copy whose digest is not the
+// one the caller checked is refused before anything of the installation
+// changes.
+func TestReplaceRefusesAnImageNotTheOneChecked(t *testing.T) {
+	t.Parallel()
+	i := installStore(t)
+	before := storeFiles(t, i.dir)
+	keep := keepIn(t)
+	_, err := Replace(t.Context(), i.dir, i.image, digestOf(t, dbPath(i.dir)), keep, false)
+	require.ErrorContains(t, err, "the image is not the one checked")
+	require.Equal(t, before, storeFiles(t, i.dir))
+	require.NoFileExists(t, dbPath(i.dir)+".staged")
+	require.NoDirExists(t, keep, "nothing was kept")
+}
+
+// TestRevertRefusesWhenWhatWasKeptIsLost: once the database is the published
+// image, a keep that lost its record or a file it recorded refuses the revert
+// with nothing changed.
+func TestRevertRefusesWhenWhatWasKeptIsLost(t *testing.T) {
+	t.Parallel()
+	for name, lose := range map[string]func(keep string) error{
+		"the whole keep":    os.RemoveAll,
+		"the kept database": func(keep string) error { return os.Remove(filepath.Join(keep, fileName)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := installStore(t)
+			keep := keepIn(t)
+			_, err := Replace(t.Context(), i.dir, i.image, i.sha, keep, false)
+			require.NoError(t, err)
+			require.NoError(t, lose(keep))
+			published := storeFiles(t, i.dir)
+			require.ErrorIs(t, Revert(t.Context(), i.dir, keep, i.meta.Generation), ErrKeptLost)
+			require.Equal(t, published, storeFiles(t, i.dir), "nothing changed")
+		})
+	}
+}
+
+// TestReplaceGivesTheInstallationsOwner: Replace gives every file and
+// directory it wrote the owner of the installation directory, Revert every
+// file it restored, each in one step the observer sees.
+func TestReplaceGivesTheInstallationsOwner(t *testing.T) {
+	t.Parallel()
+	i := installStore(t)
+	keep := filepath.Join(i.dir, "rollback", "g", "store")
+	var steps []string
+	ctx := sqlitedb.WithStep(t.Context(), func(step string) {
+		if strings.HasPrefix(step, "owned ") {
+			steps = append(steps, step)
+		}
+	})
+	_, err := Replace(ctx, i.dir, i.image, i.sha, keep, false)
+	require.NoError(t, err)
+	require.NoError(t, Revert(ctx, i.dir, keep, i.meta.Generation))
+	require.Equal(t, []string{
+		"owned access, access/access.sqlite, access-store.json, rollback/g/store, rollback/g/store/kept.json, rollback/g/store/access.sqlite, rollback/g/store/access-store.json",
+		"owned access/access.sqlite, access-store.json",
+	}, steps)
 }

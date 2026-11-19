@@ -153,6 +153,7 @@ func requireActivated(t *testing.T, dir, staging string, manifest Manifest, befo
 // app-key references issued before do not resolve, the history holds the
 // restore, and the spend of a key the image lacks is forgotten.
 func TestActivationPublishesTheStagedDatabase(t *testing.T) {
+	t.Parallel()
 	dir, _, _ := recoveryFixture(t)
 	before := issue(t, dir)
 	staging, manifest := stageDatabase(t, dir)
@@ -165,11 +166,28 @@ func TestActivationPublishesTheStagedDatabase(t *testing.T) {
 	spend.States[probeScope.String()] = &quota.SpendState{Kind: quota.ScopeKey, EntityID: "probe", SpendMicro: 7}
 	require.NoError(t, quota.SaveSpend(spendPath, spend))
 	previous := storeFiles(t, dir)
+	unchanged := tree(t, dir)
+	owned := map[string]bool{}
+	ctx := sqlitedb.WithStep(t.Context(), func(step string) {
+		if given, ok := strings.CutPrefix(step, "owned "); ok {
+			for _, rel := range strings.Split(given, ", ") {
+				owned[rel] = true
+			}
+		}
+	})
 
-	a, err := Activate(t.Context(), dir, staging, ActivateOptions{})
+	a, err := Activate(ctx, dir, staging, ActivateOptions{})
 	require.NoError(t, err)
 	gen := manifest.Staged.Generation
-	require.Equal(t, Activation{Profile: ProfileDatabase, Store: a.Store, RollbackID: gen, Replaced: []string{"store"}}, a)
+	require.Equal(t, Activation{Profile: ProfileDatabase, Store: a.Store, RollbackID: gen, RollbackDir: filepath.Join(dir, rollbackDir, gen), Replaced: []string{"store"}}, a)
+	for path, content := range tree(t, dir) {
+		if unchanged[path] != content {
+			rel, err := filepath.Rel(dir, path)
+			require.NoError(t, err)
+			require.True(t, owned[filepath.ToSlash(rel)], "%s was written without being given the installation's owner", rel)
+		}
+	}
+	require.True(t, owned[activationFile], "the activation marker was given the installation's owner")
 	require.Equal(t, gen, a.Store.Generation)
 	require.NoDirExists(t, staging, "D4: the staging directory is removed")
 	rollbacks, err := Rollbacks(dir)
@@ -218,6 +236,7 @@ func TestActivationPublishesTheStagedDatabase(t *testing.T) {
 // and next action, and leaves the installation and the staging directory
 // byte-identical, as does every dry run.
 func TestActivationRefusalsWriteNothing(t *testing.T) {
+	t.Parallel()
 	editManifest := func(edit func(*Manifest)) func(t *testing.T, dir, staging string) {
 		return func(t *testing.T, _, staging string) {
 			path := filepath.Join(staging, "manifest.json")
@@ -234,6 +253,7 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 		reason  Reason
 		store   sqlstore.Reason // a refusal of the image
 		detail  string
+		next    string
 	}{
 		"INCOMPLETE": {prepare: func(t *testing.T, _, staging string) {
 			require.NoError(t, os.WriteFile(filepath.Join(staging, incompleteName), nil, 0o600))
@@ -244,7 +264,9 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 		"no staging manifest": {prepare: func(t *testing.T, _, staging string) {
 			require.NoError(t, os.Remove(filepath.Join(staging, "manifest.json")))
 		}, reason: StagingInvalid, detail: "no staging manifest"},
-		"another profile":       {prepare: editManifest(func(m *Manifest) { m.Profile = "handoff" }), reason: StagingInvalid, detail: `profile "handoff"`},
+		"another profile": {prepare: editManifest(func(m *Manifest) { m.Profile = "handoff" }), reason: StagingInvalid, detail: `profile "handoff"`},
+		"an installation bundle": {prepare: editManifest(func(m *Manifest) { m.Profile = ProfileInstallation }), reason: StagingInvalid, detail: "installation bundle",
+			next: "Restore an installation bundle by hand"},
 		"an unstaged manifest":  {prepare: editManifest(func(m *Manifest) { m.Staged = nil }), reason: StagingInvalid, detail: "not a staged database bundle"},
 		"an image digest":       {prepare: editManifest(func(m *Manifest) { m.Staged.ImageSHA256 = digest([]byte("another")) }), reason: StagingInvalid, detail: "SHA-256"},
 		"a generation mismatch": {prepare: editManifest(func(m *Manifest) { m.Staged.Generation = "another" }), reason: StagingInvalid, detail: "generation"},
@@ -270,6 +292,7 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 		}, reason: AlreadyActivated},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			dir, staging, _ := activationFixture(t)
 			tc.prepare(t, dir, staging)
 			installation, staged := tree(t, dir), tree(t, staging)
@@ -278,7 +301,9 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 				if tc.store != "" {
 					requireArchiveRefusal(t, err, tc.store)
 				} else {
-					require.Contains(t, requireRefusal(t, err, tc.reason).Detail, tc.detail)
+					refusal := requireRefusal(t, err, tc.reason)
+					require.Contains(t, refusal.Detail, tc.detail)
+					require.Contains(t, refusal.NextAction, tc.next)
 				}
 				require.Equal(t, installation, tree(t, dir), "the installation is unchanged")
 				require.Equal(t, staged, tree(t, staging), "the staging directory is unchanged")
@@ -316,6 +341,7 @@ func TestActivationRefusalsWriteNothing(t *testing.T) {
 // TestActivationDryRunReports: a dry run reports what the activation would
 // replace and changes nothing; a fresh installation admits another store.
 func TestActivationDryRunReports(t *testing.T) {
+	t.Parallel()
 	dir, staging, manifest := activationFixture(t)
 	installation, staged := tree(t, dir), tree(t, staging)
 	a, err := Activate(t.Context(), dir, staging, ActivateOptions{DryRun: true})
@@ -408,12 +434,21 @@ func stepsOf(t *testing.T, dir, staging string, rollback bool) []string {
 // step of an activation. Until the activation marker is removed, a start
 // refuses with activation_incomplete; a rollback then restores the database
 // and marker byte for byte, and a rerun instead completes the activation.
-// Killed at each step of that rollback, a rerun of the rollback completes it.
+// Killed at each step of that rollback, a rerun of the rollback completes it,
+// and so does an activation run instead.
+//
+// Neither it nor its subtests run in parallel: a child forked while another
+// test holds an installation lock inherits that flock until it execs, and the
+// other test would find its own installation in use.
 func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 	dir, staging, manifest := activationFixture(t)
 	before := storeFiles(t, dir)
 	steps := stepsOf(t, dir, copyTree(t, staging), false)
-	require.Equal(t, []string{"activation marker", "rollback record", "staged", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker", "activation marker removed"}, steps)
+	r := rollbackDir + "/" + manifest.Staged.Generation
+	require.Equal(t, []string{"activation marker", "owned " + activationFile, "rollback record", "owned " + rollbackDir + ", " + r + ", " + r + "/" + rollbackFile,
+		"staged", "kept record", "kept access.sqlite", "kept access-store.json", "renamed", "store marker",
+		"owned access, access/access.sqlite, access-store.json, " + r + "/store, " + r + "/store/kept.json, " + r + "/store/access.sqlite, " + r + "/store/access-store.json",
+		"activation marker removed"}, steps)
 	for k, step := range steps {
 		t.Run(step, func(t *testing.T) {
 			killed, staged := copyTree(t, dir), copyTree(t, staging)
@@ -440,26 +475,32 @@ func TestActivationSurvivesAKillAtEveryStep(t *testing.T) {
 		})
 	}
 
-	// Every target replaced, the marker still there: the deepest rollback.
+	// Every target replaced, the marker still there: the deepest rollback,
+	// killed at each of its steps, then rolled back again or activated again.
 	replaced := copyTree(t, dir)
-	require.Equal(t, "store marker", killAt(t, replaced, staging, len(steps)-1, false))
+	require.Equal(t, steps[len(steps)-2], killAt(t, replaced, staging, len(steps)-1, false))
 	undo := stepsOf(t, replaced, staging, true)
-	require.Equal(t, []string{"restored access.sqlite", "restored access.sqlite-journal", "restored access-store.json", "rollback directory removed", "activation marker removed"}, undo)
+	require.Equal(t, []string{"restored access.sqlite", "restored access.sqlite-journal", "restored access-store.json", "owned access/access.sqlite, access-store.json", "rollback directory removed", "activation marker removed"}, undo)
 	for j, step := range undo {
 		t.Run("rollback/"+step, func(t *testing.T) {
-			killed := copyTree(t, replaced)
-			require.Equal(t, step, killAt(t, killed, staging, j+1, true))
+			killed, staged := copyTree(t, dir), copyTree(t, staging)
+			killAt(t, killed, staged, len(steps)-1, false)
+			require.Equal(t, step, killAt(t, killed, staged, j+1, true))
 			if j < len(undo)-1 {
 				requireRefusal(t, PendingActivation(killed), ActivationIncomplete)
 			}
-			_, err := Activate(t.Context(), killed, staging, ActivateOptions{Rollback: true})
+			undone := copyTree(t, killed)
+			_, err := Activate(t.Context(), undone, staged, ActivateOptions{Rollback: true})
 			if j == len(undo)-1 {
 				requireRefusal(t, err, NoActivation)
 			} else {
 				require.NoError(t, err)
 			}
-			require.Equal(t, before, storeFiles(t, killed))
-			require.NoError(t, PendingActivation(killed))
+			require.Equal(t, before, storeFiles(t, undone))
+			require.NoError(t, PendingActivation(undone))
+			_, err = Activate(t.Context(), killed, staged, ActivateOptions{})
+			require.NoError(t, err, "an activation run instead completes")
+			requireActivated(t, killed, staged, manifest, before)
 		})
 	}
 }
@@ -479,9 +520,11 @@ func interruptAt(t *testing.T, dir, staging, step string) {
 }
 
 // TestInventoryReportsActivations: an incomplete activation outranks every
-// state but a refusal, the absent one included, and names its next action;
-// once finished, the store reports the new generation and its rollback.
+// verdict on the store, which keeps its reason as evidence, the absent one
+// included, names its next action and marks its rollback as pending; once
+// finished, the store reports the new generation and its rollback.
 func TestInventoryReportsActivations(t *testing.T) {
+	t.Parallel()
 	dir, staging, manifest := activationFixture(t)
 	interruptAt(t, dir, staging, "rollback record")
 	section, err := InspectStore(t.Context(), dir)
@@ -490,13 +533,22 @@ func TestInventoryReportsActivations(t *testing.T) {
 	require.Contains(t, section.Evidence, "did not finish")
 	require.Contains(t, section.NextAction, "zzrouter-node recovery activate "+staging)
 	require.NotNil(t, section.StoreMeta, "the store's identity is still reported")
-	require.Equal(t, []string{manifest.Staged.Generation}, rollbackIDs(section.Rollbacks))
+	require.Equal(t, []Rollback{{ID: manifest.Staged.Generation, Pending: true}}, comparable(section.Rollbacks))
 
-	missing := copyTree(t, dir)
-	require.NoError(t, os.Remove(filepath.Join(missing, "access", "access.sqlite")))
-	section, err = InspectStore(t.Context(), missing)
-	require.NoError(t, err)
-	require.Equal(t, [2]any{StoreRefused, sqlstore.Missing}, [2]any{section.State, section.Reason}, "a refusal outranks the activation")
+	for name, damage := range map[sqlstore.Reason]func(dir string){
+		sqlstore.Missing: func(dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "access", "access.sqlite"))) },
+		sqlstore.Unreadable: func(dir string) {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
+		},
+	} {
+		damaged := copyTree(t, dir)
+		damage(damaged)
+		section, err = InspectStore(t.Context(), damaged)
+		require.NoError(t, err)
+		require.Equal(t, [2]any{StoreActivationIncomplete, name}, [2]any{section.State, section.Reason}, "the activation outranks %s, which stays the reason", name)
+		require.Contains(t, section.Evidence, "did not finish; the store: "+string(name))
+		require.Contains(t, section.NextAction, "--rollback to undo it")
+	}
 
 	fresh := t.TempDir()
 	lock, err := config.LockInstallation(fresh)
@@ -514,25 +566,33 @@ func TestInventoryReportsActivations(t *testing.T) {
 	require.Equal(t, StoreSetupRequired, section.State)
 	require.Equal(t, manifest.Staged.Generation, section.Generation)
 	require.Empty(t, section.NextAction)
-	require.Equal(t, []string{manifest.Staged.Generation}, rollbackIDs(section.Rollbacks))
+	require.Equal(t, []Rollback{{ID: manifest.Staged.Generation}}, comparable(section.Rollbacks))
 }
 
-func rollbackIDs(rollbacks []Rollback) []string {
-	ids := []string{}
+// comparable drops the time and size of rollbacks, which tests do not predict.
+func comparable(rollbacks []Rollback) []Rollback {
+	out := []Rollback{}
 	for _, r := range rollbacks {
-		ids = append(ids, r.ID)
+		out = append(out, Rollback{ID: r.ID, Pending: r.Pending})
 	}
-	return ids
+	return out
 }
 
-// TestNoBundleCarriesAnActivation: an installation backup taken while an
-// activation is incomplete carries neither its marker nor its rollback
-// directory, and check refuses an archive that does.
+// TestNoBundleCarriesAnActivation: a backup refuses while an activation is
+// incomplete and, once it finished, carries neither the marker nor the
+// rollback directory; check refuses an archive that does.
 func TestNoBundleCarriesAnActivation(t *testing.T) {
+	t.Parallel()
 	dir, output, keyOutput := recoveryFixture(t)
 	staging, _ := stageDatabase(t, dir)
 	interruptAt(t, dir, staging, "kept record")
-	require.FileExists(t, filepath.Join(dir, activationFile))
+	_, err := Backup(t.Context(), dir, output, keyOutput)
+	requireRefusal(t, err, ActivationIncomplete)
+	require.NoFileExists(t, output)
+	require.NoFileExists(t, keyOutput)
+	_, err = Activate(t.Context(), dir, staging, ActivateOptions{})
+	require.NoError(t, err)
+	require.DirExists(t, filepath.Join(dir, rollbackDir))
 	manifest, err := Backup(t.Context(), dir, output, keyOutput)
 	require.NoError(t, err)
 	for _, file := range manifest.Files {
@@ -543,4 +603,152 @@ func TestNoBundleCarriesAnActivation(t *testing.T) {
 		_, err := Check(t.Context(), archive, "")
 		require.ErrorContains(t, err, "unsafe or duplicate recovery entry", name)
 	}
+}
+
+// unprepared captures dir's store as it is: the same store, never prepared,
+// so sessions issued before would resolve against it.
+func unprepared(t *testing.T, dir string) string {
+	t.Helper()
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
+	require.NoError(t, err)
+	image := filepath.Join(t.TempDir(), "image.sqlite")
+	_, err = store.Capture(t.Context(), image)
+	require.NoError(t, errors.Join(err, store.Close()))
+	return image
+}
+
+// TestActivationPublishesTheCheckedBytes: a staged image swapped for an
+// unprepared copy of the store after the checks is refused before anything of
+// the store changes, and a rollback restores the marker's state; one swapped
+// after the copy into the installation changes nothing published, which is
+// the copy that was checked.
+func TestActivationPublishesTheCheckedBytes(t *testing.T) {
+	t.Parallel()
+	// swap replaces the staged image with an unprepared capture of dir's store
+	// at step.
+	swap := func(t *testing.T, dir, staging, at string) context.Context {
+		image := unprepared(t, dir)
+		return sqlitedb.WithStep(t.Context(), func(step string) {
+			if step == at {
+				require.NoError(t, os.WriteFile(stagedImage(staging), readBytes(t, image), 0o600))
+			}
+		})
+	}
+	t.Run("before the copy", func(t *testing.T) {
+		t.Parallel()
+		dir, staging, _ := activationFixture(t)
+		before := storeFiles(t, dir)
+		_, err := Activate(swap(t, dir, staging, "rollback record"), dir, staging, ActivateOptions{})
+		require.ErrorContains(t, err, "the image is not the one checked")
+		requireRefusal(t, err, ActivationIncomplete)
+		require.Equal(t, before, storeFiles(t, dir), "nothing of the store changed")
+		_, err = Activate(t.Context(), dir, staging, ActivateOptions{})
+		refusal := requireRefusal(t, err, ActivationIncomplete)
+		require.Contains(t, refusal.Detail, "staging_invalid", "the rerun finds the swapped image")
+		require.NotContains(t, refusal.NextAction, "to finish it")
+		_, err = Activate(t.Context(), dir, staging, ActivateOptions{Rollback: true})
+		require.NoError(t, err)
+		require.Equal(t, before, storeFiles(t, dir))
+	})
+	t.Run("after the copy", func(t *testing.T) {
+		t.Parallel()
+		dir, staging, manifest := activationFixture(t)
+		before := storeFiles(t, dir)
+		_, err := Activate(swap(t, dir, staging, "staged"), dir, staging, ActivateOptions{})
+		require.NoError(t, err, "the copy, not the swapped source, is checked and published")
+		requireActivated(t, dir, staging, manifest, before)
+	})
+}
+
+// TestActivationResumeThatCannotFinish: while the marker exists, a rerun whose
+// staging directory is gone or no longer valid refuses with
+// activation_incomplete and offers only the rollback; so does a start once the
+// staging directory is gone.
+func TestActivationResumeThatCannotFinish(t *testing.T) {
+	t.Parallel()
+	for name, spoil := range map[string]func(staging string){
+		"staging gone":    func(staging string) { require.NoError(t, os.RemoveAll(staging)) },
+		"staging altered": func(staging string) { require.NoError(t, os.WriteFile(filepath.Join(staging, "extra"), nil, 0o600)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, staging, _ := activationFixture(t)
+			before := storeFiles(t, dir)
+			interruptAt(t, dir, staging, "rollback record")
+			spoil(staging)
+			refusals := []error{second(Activate(t.Context(), dir, staging, ActivateOptions{}))}
+			if name == "staging gone" {
+				refusals = append(refusals, PendingActivation(dir))
+			}
+			for _, err := range refusals {
+				refusal := requireRefusal(t, err, ActivationIncomplete)
+				require.NotContains(t, refusal.NextAction, "to finish it")
+				require.Contains(t, refusal.NextAction, "Stop the service, then run zzrouter-node recovery activate "+staging+" --dir "+dir+" --rollback")
+			}
+			_, err := Activate(t.Context(), dir, staging, ActivateOptions{Rollback: true})
+			require.NoError(t, err)
+			require.Equal(t, before, storeFiles(t, dir))
+		})
+	}
+}
+
+// TestActivationRefusesAGenerationActivatedBefore: a copy of an activated
+// staging directory is refused by the live store's generation, even once the
+// rollback directory is deleted.
+func TestActivationRefusesAGenerationActivatedBefore(t *testing.T) {
+	t.Parallel()
+	dir, staging, _ := activationFixture(t)
+	again := copyTree(t, staging)
+	_, err := Activate(t.Context(), dir, staging, ActivateOptions{})
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, rollbackDir)))
+	installation := tree(t, dir)
+	_, err = Activate(t.Context(), dir, again, ActivateOptions{})
+	require.Contains(t, requireRefusal(t, err, AlreadyActivated).Detail, "already is generation")
+	require.Equal(t, installation, tree(t, dir))
+}
+
+// TestRollbackRefusesWithoutItsDirectory: during an incomplete activation the
+// rollback directory is listed as pending; deleted after the replacement, the
+// rollback refuses with nothing changed and points at finishing instead.
+// It forks a child, so it does not run in parallel (see
+// TestActivationSurvivesAKillAtEveryStep).
+func TestRollbackRefusesWithoutItsDirectory(t *testing.T) {
+	dir, staging, manifest := activationFixture(t)
+	require.Equal(t, "renamed", killAt(t, dir, staging, 9, false))
+	rollbacks, err := Rollbacks(dir)
+	require.NoError(t, err)
+	require.Equal(t, []Rollback{{ID: manifest.Staged.Generation, Pending: true}}, comparable(rollbacks))
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, rollbackDir, manifest.Staged.Generation)))
+	installation := tree(t, dir)
+	_, err = Activate(t.Context(), dir, staging, ActivateOptions{Rollback: true})
+	refusal := requireRefusal(t, err, ActivationIncomplete)
+	require.Contains(t, refusal.Detail, "cannot be rolled back")
+	require.Contains(t, refusal.NextAction, "to finish it")
+	require.Equal(t, installation, tree(t, dir), "nothing changed")
+}
+
+// TestActivationRefusesOverlappingDirectories: a staging directory inside the
+// installation, or one holding it, is refused with nothing written.
+func TestActivationRefusesOverlappingDirectories(t *testing.T) {
+	t.Parallel()
+	dir, staging, _ := activationFixture(t)
+	inside := filepath.Join(dir, "staged")
+	require.NoError(t, os.Rename(staging, inside))
+	installation := tree(t, dir)
+	for _, candidate := range []string{inside, dir, filepath.Dir(dir)} {
+		_, err := Activate(t.Context(), dir, candidate, ActivateOptions{})
+		require.Contains(t, requireRefusal(t, err, StagingInvalid).Detail, "overlap", candidate)
+		require.Equal(t, installation, tree(t, dir))
+	}
+}
+
+// TestActivationNamesAbsolutePaths: given a relative installation directory,
+// the commands a refusal names carry it absolute, like the staging directory.
+func TestActivationNamesAbsolutePaths(t *testing.T) {
+	dir, staging, _ := activationFixture(t)
+	interruptAt(t, dir, staging, "rollback record")
+	t.Chdir(filepath.Dir(dir))
+	refusal := requireRefusal(t, PendingActivation(filepath.Base(dir)), ActivationIncomplete)
+	require.Contains(t, refusal.NextAction, "zzrouter-node recovery activate "+staging+" --dir "+dir+" to finish it")
 }

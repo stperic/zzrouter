@@ -320,7 +320,10 @@ could not take), `integrity` (the `quick_check` run when the store opened, with
 access records outside the database, which holds credential hashes, by `kind`,
 `id`, `created_at` and `size_bytes`. Today the only kind is `activation_rollback`,
 the rollback directory an offline activation keeps until the operator removes it
-(see [recovery](recovery.md)). `backup_bytes` is 0 until online backups exist.
+(see [recovery](recovery.md)); `pending` marks the one an activation that did not
+finish still needs. When the copies cannot be listed, `retained_copies_error`
+says so without a path and the store's state is still answered. `backup_bytes` is
+0 until online backups exist.
 The read runs no database query and never waits for an access write; it names no
 path and carries no secret.
 A worker answers 421, and a store that can no longer vouch for its records answers

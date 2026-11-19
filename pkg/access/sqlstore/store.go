@@ -24,7 +24,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
-	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -240,7 +239,7 @@ func teamCheck(records map[string]*teams.Team) people.TeamCheck {
 // ensureFile restricts the access directory and returns the database path,
 // publishing an empty database on first start.
 func ensureFile(ctx context.Context, dir string) (string, error) {
-	if err := makePrivateDir(filepath.Join(dir, "access")); err != nil {
+	if err := sqlitedb.MakeDir(filepath.Join(dir, "access")); err != nil {
 		return "", err
 	}
 	path := databasePath(dir)
@@ -269,14 +268,6 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 }
 
 func databasePath(dir string) string { return filepath.Join(dir, "access", fileName) }
-
-// makePrivateDir creates the directory at path, with its parents, owner-only.
-func makePrivateDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return err
-	}
-	return security.RestrictDirectoryPermissions(path)
-}
 
 // noStore reports whether dir holds neither a database nor a store marker. A
 // marker without its database is Missing: an empty store there would let the

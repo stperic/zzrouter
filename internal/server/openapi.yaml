@@ -13742,7 +13742,7 @@ components:
           items:
             type: object
             additionalProperties: false
-            required: [kind, id, created_at, size_bytes]
+            required: [kind, id, created_at, size_bytes, pending]
             properties:
               kind:
                 type: string
@@ -13751,6 +13751,12 @@ components:
               id: { type: string, description: The generation the activation published. }
               created_at: { type: string, format: date-time }
               size_bytes: { type: integer, minimum: 0 }
+              pending:
+                type: boolean
+                description: The activation that kept it did not finish, so the node does not start. Do not remove it; rolling the activation back needs it.
+        retained_copies_error:
+          type: string
+          description: Present, without a path, when retained copies could not be listed; the store's state still stands. `recovery inventory` on the coordinator names the cause.
     TeamMembership:
       type: object
       description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.

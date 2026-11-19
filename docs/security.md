@@ -280,8 +280,13 @@ stages into a new directory, and never activates state across multiple filesyste
 It prepares the staged access database image so that sessions, delegated tokens
 and app-key references issued before the restore stop resolving. `recovery
 activate` publishes a staged database bundle only into a stopped installation
-whose store marker, or database, names the same store, or into a fresh one; a
-node refuses to start while an activation is incomplete. Activation removes the
+whose store marker, or database, names the same store, or into a fresh one, and
+publishes exactly the bytes it checked, so an image swapped after its checks
+(for example for an unprepared copy, under which old sessions would resolve) is
+refused. A generation is activated once: a live store at the staged generation
+refuses it. Run by an administrator, activation gives what it writes the owner
+of the configuration directory. A node, and a backup, refuse while an activation
+is incomplete. Activation removes the
 staging directory, which holds credential hashes, and keeps what it replaced in
 `rollback/<generation>/` in the configuration directory: the previous database
 and store marker, with every password and app-key hash. Nothing removes it, and

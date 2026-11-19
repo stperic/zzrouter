@@ -11,9 +11,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/recovery"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -79,17 +81,17 @@ func TestRecoveryActivateCommand(t *testing.T) {
 	staging := filepath.Join(t.TempDir(), "staged")
 	out, err := runRecovery(t, dir, "restore", archive, "--to", staging)
 	require.NoError(t, err)
-	require.Contains(t, out, "Staged only. Keep the node stopped and publish it with zzrouter-node recovery activate "+staging+", after a --dry-run.")
+	require.Contains(t, out, "Staged only. Keep the node stopped and publish it with zzrouter-node recovery activate "+staging+" --dir "+dir+", after a --dry-run.")
 	var manifest recovery.Manifest
 	data, err := os.ReadFile(filepath.Join(staging, "manifest.json"))
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal(data, &manifest))
 	generation := manifest.Staged.Generation
-	replaced := "the access store (its database and store marker)"
+	rollback := filepath.Join(dir, "rollback", generation)
 
 	out, err = runRecovery(t, dir, "activate", staging, "--dry-run")
 	require.NoError(t, err)
-	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+meta.StoreID+" and replace "+replaced+", kept in rollback "+generation+". Nothing was changed.")
+	require.Contains(t, out, "Dry run: activating would publish generation "+generation+" of access store "+meta.StoreID+".\nIt would replace this installation's access store, keeping its database and store marker in "+rollback+".\nA dry run publishes nothing, replaces nothing and creates no rollback directory")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -99,6 +101,7 @@ func TestRecoveryActivateCommand(t *testing.T) {
 		}
 	}), dir, staging, recovery.ActivateOptions{})
 	require.ErrorIs(t, err, context.Canceled)
+	require.True(t, strings.HasPrefix(err.Error(), "activation_incomplete: "), "the closed reason comes first: %v", err)
 	var refusal *recovery.Refusal
 	require.ErrorAs(t, err, &refusal, "the interrupted command says the activation is incomplete")
 	require.Equal(t, recovery.ActivationIncomplete, refusal.Reason)
@@ -106,7 +109,7 @@ func TestRecoveryActivateCommand(t *testing.T) {
 	err = runNormalStart(NewStartCmd(), dir, &startServiceManager{})
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, recovery.ActivationIncomplete, refusal.Reason)
-	require.Contains(t, err.Error(), "run zzrouter-node recovery activate "+staging+" --dir "+dir+" to finish it")
+	require.Contains(t, err.Error(), "Stop the service, then run zzrouter-node recovery activate "+staging+" --dir "+dir+" to finish it")
 	require.Equal(t, installation, treeOf(t, dir), "the refused start wrote nothing")
 	out, err = runRecovery(t, dir, "inventory")
 	require.NoError(t, err)
@@ -120,21 +123,52 @@ func TestRecoveryActivateCommand(t *testing.T) {
 
 	out, err = runRecovery(t, dir, "activate", staging, "--rollback", "--dry-run")
 	require.NoError(t, err)
-	require.Contains(t, out, "Dry run: rolling back activation "+generation+" would restore "+replaced+". Nothing was changed.")
+	require.Contains(t, out, "Dry run: rolling back activation "+generation+" would put back the access store's database and store marker kept in "+rollback+". A dry run changes nothing.")
 	out, err = runRecovery(t, dir, "activate", staging, "--rollback")
 	require.NoError(t, err)
-	require.Contains(t, out, "Rolled back activation "+generation+": restored "+replaced+" as it was before. The staging directory is kept.")
+	require.Contains(t, out, "Rolled back activation "+generation+": the access store's database and store marker are as they were before. The staging directory is kept.")
 	require.NoError(t, recovery.PendingActivation(dir))
 
 	out, err = runRecovery(t, dir, "activate", staging)
 	require.NoError(t, err)
-	require.Contains(t, out, "Activated generation "+generation+" of access store "+meta.StoreID+" (schema version 1, revision 0, sequence 1), replacing "+replaced+".")
-	require.Contains(t, out, "Rollback "+generation+" keeps what was replaced, credential hashes included, under rollback/"+generation)
+	require.Contains(t, out, "Activated generation "+generation+" of access store "+meta.StoreID+" (schema version 1, revision 0, sequence 1).")
+	require.Contains(t, out, "The previous database and store marker, credential hashes included, are kept in "+rollback+" until you delete it.")
 	require.Contains(t, out, "Next: start the node. Every session and delegated access issued before this restore is invalid")
-	require.NotContains(t, out, dir, "no installation path is printed")
 	require.NoDirExists(t, staging)
 
 	_, err = runRecovery(t, dir, "activate", staging, "--rollback")
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, recovery.NoActivation, refusal.Reason, "D5: a finished activation is not rolled back")
+}
+
+// TestRecoveryActivateOnAFreshInstallation: with no access store to replace,
+// each message says so in its own words.
+func TestRecoveryActivateOnAFreshInstallation(t *testing.T) {
+	source, meta := recoveryInstallation(t)
+	staging := filepath.Join(t.TempDir(), "staged")
+	_, err := runRecovery(t, source, "restore", databaseArchive(t, source), "--to", staging)
+	require.NoError(t, err)
+	fresh := t.TempDir()
+	lock, err := pkgConfig.LockInstallation(fresh)
+	require.NoError(t, err)
+	require.NoError(t, lock.Close())
+	out, err := runRecovery(t, fresh, "activate", staging, "--dry-run")
+	require.NoError(t, err)
+	require.Contains(t, out, "This installation has no access store, so nothing would be replaced.")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	_, err = recovery.Activate(sqlitedb.WithStep(ctx, func(step string) {
+		if step == "rollback record" {
+			cancel()
+		}
+	}), fresh, staging, recovery.ActivateOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	out, err = runRecovery(t, fresh, "activate", staging, "--rollback")
+	require.NoError(t, err)
+	require.Contains(t, out, "the access store it published is removed, since this installation had none before.")
+	out, err = runRecovery(t, fresh, "activate", staging)
+	require.NoError(t, err)
+	require.Contains(t, out, "of access store "+meta.StoreID+" (")
+	require.Contains(t, out, "This installation had no access store, so nothing was replaced; "+filepath.Join(fresh, "rollback")+string(filepath.Separator))
+	require.NotContains(t, out, "credential hashes")
 }

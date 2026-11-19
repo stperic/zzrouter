@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,9 @@ type storeState struct {
 	Size           storeSize      `json:"size"`
 	Integrity      storeIntegrity `json:"integrity"`
 	RetainedCopies []retainedCopy `json:"retained_copies"`
+	// RetainedCopiesError says, without a path, that retained copies could
+	// not be listed; the store's state still stands.
+	RetainedCopiesError string `json:"retained_copies_error,omitempty"`
 }
 
 // retainedCopy is a copy of access records outside the database: an
@@ -52,18 +56,18 @@ func (s *Server) handleStoreState(c *gin.Context) {
 		RespondToError(c, err)
 		return
 	}
+	copies, copiesErr := []retainedCopy{}, ""
 	rollbacks, err := recovery.Rollbacks(s.configDir)
 	if err != nil {
-		RespondToError(c, err)
-		return
+		slog.WarnContext(c.Request.Context(), "Activation rollback directories could not be listed", "error", err)
+		copiesErr = "the activation rollback directories could not be listed; recovery inventory on this host names the cause"
 	}
-	copies := make([]retainedCopy, 0, len(rollbacks))
 	for _, rollback := range rollbacks {
 		copies = append(copies, retainedCopy{Kind: "activation_rollback", Rollback: rollback})
 	}
 	respondRetrievalSuccess(c, "Access store state", storeState{
 		StoreID: st.StoreID, Generation: st.Generation, SchemaVersion: st.SchemaVersion, Revision: st.Revision, Sequence: st.Sequence,
-		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: copies,
+		Status: string(st.Readiness()), ObservedAt: observed, RetainedCopies: copies, RetainedCopiesError: copiesErr,
 		Size:      storeSize{DatabaseBytes: st.DatabaseBytes, JournalBytes: st.JournalBytes, FreePageBytes: st.FreePageBytes},
 		Integrity: storeIntegrity{CheckedAt: st.Integrity.CheckedAt, Check: st.Integrity.Check, Outcome: "ok"},
 	})

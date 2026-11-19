@@ -14,7 +14,6 @@ import (
 
 	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
-	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -65,13 +64,14 @@ func (r *Refusal) Error() string { return string(r.Reason) + ": " + r.Detail + "
 type ActivateOptions struct{ Rollback, DryRun bool }
 
 // Activation describes an activation: the staged image it publishes, its
-// rollback directory's ID, which is the image's generation, and the targets
-// whose previous content that directory keeps.
+// rollback directory's ID, which is the image's generation, and absolute path,
+// and the targets whose previous content that directory keeps.
 type Activation struct {
-	Profile    Profile
-	Store      sqlstore.Image
-	RollbackID string
-	Replaced   []string
+	Profile     Profile
+	Store       sqlstore.Image
+	RollbackID  string
+	RollbackDir string
+	Replaced    []string
 }
 
 // activation is an activation's record: its marker while it runs, and
@@ -87,15 +87,17 @@ type activation struct {
 
 // Activate publishes the staged database bundle in staging as the access store
 // of the stopped installation in dir, holding its installation lock. Its checks
-// run first, in order and read-only: no INCOMPLETE mark, a staging manifest of
-// a staged database bundle, exactly its entries, the image's digest, check and
-// generation as staged, and the installation's store identity
-// (sqlstore.AdmitStoreID). A refusal changes nothing. It then writes the
-// activation marker and the rollback directory, replaces the store
-// (sqlstore.Replace), and removes the marker and the staging directory. A crash
-// in between leaves the marker, which stops the node (PendingActivation): a
-// rerun completes the activation, and Rollback instead restores what the
-// rollback directory keeps. DryRun stops after the checks.
+// run first, in order and read-only: a staging directory outside the
+// installation, no INCOMPLETE mark, a staging manifest of a staged database
+// bundle, exactly its entries, the image's digest, check and generation as
+// staged, the installation's store identity (sqlstore.AdmitStoreID), and a
+// generation never activated here. A refusal changes nothing. It then writes
+// the activation marker and the rollback directory, replaces the store
+// (sqlstore.Replace) with the bytes it checked, gives what it wrote the
+// installation's owner, and removes the marker and the staging directory. A
+// crash in between leaves the marker, which stops the node
+// (PendingActivation): a rerun completes the activation, and Rollback instead
+// restores what the rollback directory keeps. DryRun stops after the checks.
 func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Activation, error) {
 	lock, err := lockInstallation(dir)
 	switch {
@@ -107,7 +109,10 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 		return Activation{}, err
 	}
 	defer func() { _ = lock.Close() }()
-	if staging, err = filepath.Abs(staging); err != nil {
+	if dir, err = filepath.Abs(dir); err == nil {
+		staging, err = filepath.Abs(staging)
+	}
+	if err != nil {
 		return Activation{}, err
 	}
 	pending, err := readActivation(dir)
@@ -115,12 +120,15 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 		return Activation{}, err
 	}
 	if pending != nil && pending.Staging != staging {
-		return Activation{}, incomplete(dir, pending)
+		return Activation{}, incomplete(dir, pending, nil)
 	}
 	if o.Rollback {
 		return rollBack(ctx, dir, pending, o.DryRun)
 	}
-	a, err := checkStaging(ctx, dir, staging, pending)
+	a, sum, err := checkStaging(ctx, dir, staging, pending)
+	if err != nil && pending != nil {
+		return a, incomplete(dir, pending, err)
+	}
 	if err != nil || o.DryRun {
 		return a, err
 	}
@@ -130,8 +138,8 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 	} else if err := writeRecord(ctx, filepath.Join(dir, activationFile), record, "activation marker"); err != nil {
 		return a, err
 	}
-	if err := replaceStore(ctx, dir, staging, record); err != nil {
-		return a, errors.Join(err, incomplete(dir, &record))
+	if err := replaceStore(ctx, dir, staging, sum, record); err != nil {
+		return a, incomplete(dir, &record, err)
 	}
 	if err := os.RemoveAll(staging); err != nil {
 		return a, fmt.Errorf("the activation finished, but its staging directory, which holds credential hashes, could not be removed; delete it: %w", err)
@@ -139,47 +147,62 @@ func Activate(ctx context.Context, dir, staging string, o ActivateOptions) (Acti
 	return a, nil
 }
 
-// replaceStore runs the steps between the activation marker and its removal.
-func replaceStore(ctx context.Context, dir, staging string, record activation) error {
+// replaceStore runs the steps between the activation marker and its removal:
+// the store gets the bytes checked at sum, and everything written gets the
+// installation's owner before the marker goes.
+func replaceStore(ctx context.Context, dir, staging, sum string, record activation) error {
+	marker := filepath.Join(dir, activationFile)
+	if err := sqlitedb.GiveOwner(ctx, dir, marker); err != nil {
+		return err
+	}
 	rollback := filepath.Join(dir, rollbackDir, record.Generation)
-	for _, path := range []string{filepath.Dir(rollback), rollback} {
-		if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
-		if err := errors.Join(security.RestrictDirectoryPermissions(path), sqlitedb.SyncDir(filepath.Dir(path))); err != nil {
-			return err
-		}
+	if err := sqlitedb.MakeDir(rollback); err != nil {
+		return err
 	}
 	if err := writeRecord(ctx, filepath.Join(rollback, rollbackFile), record, "rollback record"); err != nil {
 		return err
 	}
-	if _, err := sqlstore.Replace(ctx, dir, stagedImage(staging), filepath.Join(rollback, "store"), false); err != nil {
+	if err := sqlitedb.GiveOwner(ctx, dir, filepath.Dir(rollback), rollback, filepath.Join(rollback, rollbackFile)); err != nil {
+		return err
+	}
+	img, err := sqlstore.Replace(ctx, dir, stagedImage(staging), sum, filepath.Join(rollback, "store"), false)
+	if err == nil && img.Generation != record.Generation {
+		err = fmt.Errorf("the published image is generation %s, not the staged %s", img.Generation, record.Generation)
+	}
+	if err != nil {
 		return err
 	}
 	return removeMarker(ctx, dir)
 }
 
-// checkStaging runs Activate's checks, in order and read-only.
-func checkStaging(ctx context.Context, dir, staging string, pending *activation) (Activation, error) {
-	invalid := func(detail string) error {
-		return &Refusal{StagingInvalid, detail, "Stage the database bundle again with zzrouter-node recovery restore into a new directory, and activate that one."}
+// checkStaging runs Activate's checks, in order and read-only, and returns the
+// activation and the staged image's SHA-256.
+func checkStaging(ctx context.Context, dir, staging string, pending *activation) (Activation, string, error) {
+	restage := "Stage the database bundle again with zzrouter-node recovery restore into a new directory, and activate that one."
+	invalid := func(detail, next string) (Activation, string, error) {
+		return Activation{}, "", &Refusal{StagingInvalid, detail, next}
+	}
+	if within(dir, staging) || within(staging, dir) {
+		return invalid("the staging directory and the installation overlap", "Move the staging directory outside the installation, then run this again.")
 	}
 	if _, err := os.Lstat(filepath.Join(staging, incompleteName)); !errors.Is(err, fs.ErrNotExist) {
-		if err == nil {
-			err = invalid("the staging directory is marked " + incompleteName)
+		if err != nil {
+			return Activation{}, "", err
 		}
-		return Activation{}, err
+		return invalid("the staging directory is marked "+incompleteName, restage)
 	}
 	data, err := readBounded(filepath.Join(staging, "manifest.json"), maxManifest)
 	var m Manifest
 	if err == nil {
 		m, err = decodeManifest(data)
 	}
-	if err != nil {
-		return Activation{}, invalid("no staging manifest: " + err.Error())
-	}
-	if m.Profile != ProfileDatabase || m.Staged == nil || m.Store == nil {
-		return Activation{}, invalid(fmt.Sprintf("it is not a staged database bundle (profile %q)", m.Profile))
+	switch {
+	case err != nil:
+		return invalid("no staging manifest: "+err.Error(), restage)
+	case m.Profile == ProfileInstallation:
+		return invalid("it holds an installation bundle, which activate does not publish", "Stop the service, then restore it by hand as docs/recovery.md describes under Restore an installation bundle by hand.")
+	case m.Profile != ProfileDatabase || m.Staged == nil || m.Store == nil:
+		return invalid(fmt.Sprintf("it is not a staged database bundle (profile %q)", m.Profile), restage)
 	}
 	var entries []string
 	err = filepath.WalkDir(staging, func(path string, _ fs.DirEntry, err error) error {
@@ -191,80 +214,102 @@ func checkStaging(ctx context.Context, dir, staging string, pending *activation)
 		return err
 	})
 	if err != nil {
-		return Activation{}, err
+		return Activation{}, "", err
 	}
 	if !slices.Equal(entries, []string{"manifest.json", path.Dir(imageName), imageName}) {
-		return Activation{}, invalid("it holds entries other than manifest.json and " + imageName)
+		return invalid("it holds entries other than manifest.json and "+imageName, restage)
 	}
 	_, sum, err := hashFile(ctx, staging, filepath.FromSlash(imageName))
 	if err != nil {
-		return Activation{}, err
+		return Activation{}, "", err
 	}
 	if sum != m.Staged.ImageSHA256 {
-		return Activation{}, invalid("the image's SHA-256 is not staged.image_sha256")
+		return invalid("the image's SHA-256 is not staged.image_sha256", restage)
 	}
 	img, err := sqlstore.CheckImage(ctx, stagedImage(staging))
 	if err != nil {
-		return Activation{}, archiveImage(err)
+		return Activation{}, "", archiveImage(err)
 	}
 	if img.Generation != m.Staged.Generation {
-		return Activation{}, invalid("the image's generation is not staged.generation")
+		return invalid("the image's generation is not staged.generation", restage)
 	}
 	installed, err := sqlstore.AdmitStoreID(ctx, dir, img.StoreID, false)
 	if errors.Is(err, sqlstore.ErrStoreIdentity) {
 		err = &Refusal{ForeignStore, err.Error(), "Activate a backup of this installation's own access store; to replace it with another installation's, move this installation's access directory and store marker aside first."}
 	}
 	if err != nil {
-		return Activation{}, err
+		return Activation{}, "", err
 	}
-	a := Activation{Profile: m.Profile, Store: img, RollbackID: img.Generation}
-	if installed != "" {
+	rollback := filepath.Join(dir, rollbackDir, img.Generation)
+	a := Activation{Profile: m.Profile, Store: img, RollbackID: img.Generation, RollbackDir: rollback}
+	if installed.StoreID != "" {
 		a.Replaced = []string{"store"}
 	}
 	if pending != nil {
 		a.Replaced = pending.Replaced
-	} else if _, err := os.Lstat(filepath.Join(dir, rollbackDir, a.RollbackID)); !errors.Is(err, fs.ErrNotExist) {
-		if err == nil {
-			err = &Refusal{AlreadyActivated, "this staging directory was activated: its rollback " + a.RollbackID + " exists", "Delete the staging directory, which holds credential hashes; to activate this backup again, stage its archive again."}
-		}
-		return a, err
+		return a, sum, nil
 	}
-	return a, nil
+	again := "Delete the staging directory, which holds credential hashes. To activate this backup again, restore its archive into a new staging directory, which gives it a new generation."
+	if installed.Generation == img.Generation {
+		return a, "", &Refusal{AlreadyActivated, "the access store already is generation " + img.Generation, again}
+	}
+	if _, err := os.Lstat(rollback); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = &Refusal{AlreadyActivated, "generation " + img.Generation + " was activated here before: " + rollback + " exists", again}
+		}
+		return a, "", err
+	}
+	return a, sum, nil
 }
 
-// rollBack restores what the incomplete activation pending replaced, then
-// removes its rollback directory and its marker. Without a marker there is
-// nothing it may undo: a finished activation is restored by hand.
+// within reports whether path is root or inside it, links resolved where they
+// exist.
+func within(root, path string) bool {
+	for _, p := range []*string{&root, &path} {
+		if resolved, err := filepath.EvalSymlinks(*p); err == nil {
+			*p = resolved
+		}
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && filepath.IsLocal(rel)
+}
+
+// rollBack restores what the incomplete activation pending replaced and gives
+// it the installation's owner, then removes the rollback directory and the
+// marker. Without a marker there is nothing it may undo: a finished activation
+// is restored by hand.
 func rollBack(ctx context.Context, dir string, pending *activation, dryRun bool) (Activation, error) {
 	if pending == nil {
 		return Activation{}, &Refusal{NoActivation, "no activation is incomplete", "A finished activation's rollback directory keeps what it replaced: restore from it by hand as docs/recovery.md describes."}
 	}
-	a := Activation{Profile: pending.Profile, RollbackID: pending.Generation, Replaced: pending.Replaced}
+	rollback := filepath.Join(dir, rollbackDir, pending.Generation)
+	a := Activation{Profile: pending.Profile, RollbackID: pending.Generation, RollbackDir: rollback, Replaced: pending.Replaced}
 	if dryRun {
 		return a, nil
 	}
-	if err := revertStore(ctx, dir, pending.Generation); err != nil {
-		return a, errors.Join(err, incomplete(dir, pending))
+	err := sqlstore.Revert(ctx, dir, filepath.Join(rollback, "store"), pending.Generation)
+	if errors.Is(err, sqlstore.ErrKeptLost) {
+		finish := "zzrouter-node recovery activate " + pending.Staging + " --dir " + dir
+		return a, &Refusal{ActivationIncomplete, "the activation of " + pending.Staging + " cannot be rolled back: " + rollback + " no longer holds what it replaced, and the access store already is the staged image",
+			"Stop the service, then run " + finish + " to finish it; without that staging directory, delete " + filepath.Join(dir, activationFile) + " to finish it by hand."}
 	}
-	return a, nil
-}
-
-// revertStore restores what the store replaced and removes the rollback
-// directory, then the marker.
-func revertStore(ctx context.Context, dir, generation string) error {
-	rollback := filepath.Join(dir, rollbackDir, generation)
-	if err := sqlstore.Revert(ctx, dir, filepath.Join(rollback, "store")); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(rollback); err != nil {
-		return err
+	if err == nil {
+		err = os.RemoveAll(rollback)
 	}
 	// Without the parent, a crash came before the directory existed.
-	if err := sqlitedb.SyncDir(filepath.Dir(rollback)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+	if err == nil {
+		if err = sqlitedb.SyncDir(filepath.Dir(rollback)); errors.Is(err, fs.ErrNotExist) {
+			err = nil
+		}
 	}
-	sqlitedb.Step(ctx, "rollback directory removed")
-	return removeMarker(ctx, dir)
+	if err == nil {
+		sqlitedb.Step(ctx, "rollback directory removed")
+		err = removeMarker(ctx, dir)
+	}
+	if err != nil {
+		return a, incomplete(dir, pending, err)
+	}
+	return a, nil
 }
 
 // PendingActivation refuses with ActivationIncomplete while dir holds an
@@ -275,13 +320,39 @@ func PendingActivation(dir string) error {
 	if err != nil || pending == nil {
 		return err
 	}
-	return incomplete(dir, pending)
+	return incomplete(dir, pending, nil)
 }
 
-func incomplete(dir string, a *activation) error {
+// incomplete refuses with ActivationIncomplete for the activation a records,
+// after cause, a failure of the activation or its rollback, if any. Finishing
+// needs the staging directory: without one, or when cause is a refusal of it,
+// only the rollback is offered.
+func incomplete(dir string, a *activation, cause error) error {
+	if absolute, err := filepath.Abs(dir); err == nil {
+		dir = absolute
+	}
 	command := "zzrouter-node recovery activate " + a.Staging + " --dir " + dir
-	return &Refusal{ActivationIncomplete, "the activation of " + a.Staging + " (rollback " + a.Generation + ") did not finish",
-		"Keep the node stopped and run " + command + " to finish it, or " + command + " --rollback to undo it."}
+	refused := &Refusal{ActivationIncomplete, "the activation of " + a.Staging + " (rollback " + a.Generation + ") did not finish",
+		"Stop the service, then run " + command + " to finish it, or " + command + " --rollback to undo it."}
+	var staging *Refusal
+	var image *imageRefusal
+	switch _, err := os.Stat(a.Staging); {
+	case errors.As(cause, &staging):
+		refused.Detail += ", and its staging directory cannot finish it: " + string(staging.Reason) + ", " + staging.Detail
+	case errors.As(cause, &image):
+		refused.Detail += ", and its staging directory cannot finish it: " + image.Error()
+	case errors.Is(err, fs.ErrNotExist):
+		refused.Detail += ", and its staging directory is gone"
+	case cause == nil:
+		return refused
+	default:
+		return errors.Join(refused, cause)
+	}
+	refused.NextAction = "Stop the service, then run " + command + " --rollback to undo it."
+	if staging != nil || image != nil || cause == nil {
+		return refused
+	}
+	return errors.Join(refused, cause)
 }
 
 // readActivation reads dir's activation marker: nil without one.
@@ -324,15 +395,22 @@ func stagedImage(staging string) string { return filepath.Join(staging, filepath
 
 // Rollback is an activation's rollback directory, kept until the operator
 // removes it: it holds the access records the activation replaced, credential
-// hashes included.
+// hashes included. Pending is the rollback of an activation that did not
+// finish: rolling it back needs the directory, so it must not be removed.
 type Rollback struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	SizeBytes int64     `json:"size_bytes"`
+	Pending   bool      `json:"pending"`
 }
 
-// Rollbacks lists dir's rollback directories, oldest first.
+// Rollbacks lists dir's rollback directories, oldest first, each dated by its
+// directory.
 func Rollbacks(dir string) ([]Rollback, error) {
+	pending, err := readActivation(dir)
+	if err != nil {
+		return nil, err
+	}
 	root := filepath.Join(dir, rollbackDir)
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -347,12 +425,7 @@ func Rollbacks(dir string) ([]Rollback, error) {
 		if err != nil || !info.IsDir() {
 			continue // removed meanwhile, or not a rollback directory
 		}
-		// A directory whose record is not written yet dates from its creation.
-		r := Rollback{ID: entry.Name(), CreatedAt: info.ModTime().UTC()}
-		var record activation
-		if data, err := readBounded(filepath.Join(root, r.ID, rollbackFile), 1<<20); err == nil && json.Unmarshal(data, &record) == nil {
-			r.CreatedAt = record.Created
-		}
+		r := Rollback{ID: entry.Name(), CreatedAt: info.ModTime().UTC(), Pending: pending != nil && pending.Generation == entry.Name()}
 		err = filepath.WalkDir(filepath.Join(root, r.ID), func(_ string, d fs.DirEntry, err error) error {
 			if err == nil && d.Type().IsRegular() {
 				var info fs.FileInfo

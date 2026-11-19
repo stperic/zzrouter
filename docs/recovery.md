@@ -60,7 +60,7 @@ which are error texts.
 | `absent` | Neither a database nor a store marker: a worker, or a node that never ran as a coordinator. A coordinator start creates an empty store, at owner setup. | Nothing on a worker. |
 | `in_use` | The installation lock is held, by a running node or another recovery command, so the inventory opened neither the database nor its journal. | On a coordinator, read the store's state from `GET /zzrouter/v1/system/state`; a worker has no store. Or stop the service, or let the other command finish, and run the inventory again. |
 | `refused` | The database fails the check a backup runs, for `reason`: `missing` (the store marker exists and the database is gone), `schema_newer` (a newer release wrote it), `integrity_failed` (it opens but fails its checks) or `unreadable` (it cannot be opened). A start refuses for the same reasons, except that it runs SQLite's quick check and can still open a store whose only damage is in an index. `evidence` is the reason with the store's phrase for a cause it tells apart, such as `integrity_failed (its schema objects differ from this release's)` for an index, trigger or `ANALYZE` table another tool added. `next_action` is the text the node logs when it refuses to start. | Follow `next_action`; each one starts with stopping the service. |
-| `activation_incomplete` | An activation did not finish (`recovery-activation.json` exists), so the node refuses to start. It outranks `ready`, `setup_required` and `absent`; `in_use`, `unknown` and `refused` come first. `evidence` names the staging directory and the rollback. | Follow `next_action`: run the same `recovery activate` command again to finish it, or add `--rollback` to undo it. |
+| `activation_incomplete` | An activation did not finish (`recovery-activation.json` exists), so the node refuses to start. It outranks every verdict on the store, which the inventory still reaches: a refused store keeps its `reason`, and `evidence` names the staging directory and the rollback, then the store's own evidence. Only `in_use`, and an `unknown` that keeps the inventory from taking the lock or reading the marker, come first. | Follow `next_action`: stop the service, then run the same `recovery activate` command again to finish it, or add `--rollback` to undo it (the only choice once the staging directory is gone). |
 | `unknown` | The inventory could not judge the store: for example, the account cannot open or write the installation lock (a held lock is `in_use` instead), or the system's temporary directory is not writable or full. `evidence` is the error. The command exits with an error. | Resolve the cause in `evidence` and run the inventory again. |
 
 When it can read the store's identity, the section carries `store_id`,
@@ -91,7 +91,8 @@ way to `access/backups`, leave the store's state as it is: `archives` is empty,
 
 `rollbacks` lists the rollback directories activations kept, oldest first: each
 one's `id` (the generation it published, and its directory
-`rollback/<id>/`), `created_at` and `size_bytes`. They hold credential hashes
+`rollback/<id>/`), `created_at` (the directory's time), `size_bytes` and
+`pending`, true for the one an incomplete activation still needs. They hold credential hashes
 until you delete them; see [Activate a database bundle](#activate-a-database-bundle).
 `rollbacks_error`, like `archives_error`, says why they could not be listed and
 leaves the store's state as it is.
@@ -250,57 +251,86 @@ database and are unaffected.
 
 ### Activate a database bundle
 
-Stop the node and its supervisor's restarts, then activate the staging directory
-into the installation the backup came from:
+Stop the service and its supervisor's restarts, then activate the staging
+directory into the installation the backup came from. The staging directory must
+be outside the installation:
 
 ```sh
 zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation --dry-run
 zzrouter-node recovery activate /new/private/restore-staging --dir /path/to/installation
 ```
 
-Activation holds the installation lock and first runs every check, in order,
-reading only: the lock is free (a running node or another recovery command holds
-it); the staging directory is not marked `INCOMPLETE`; its `manifest.json` is a
-staging manifest of a `database` bundle with its `staged` object (any other
-profile is refused); the directory holds exactly `manifest.json` and
-`store/image.sqlite`; the image's SHA-256 equals `staged.image_sha256`; the image
-passes the checks a coordinator start runs, with SQLite's full integrity check,
-and its generation equals `staged.generation`; and the installation admits its
-store. An installation's store marker, or without one its database, admits only
-its own store ID, so a backup of another installation's store is refused
+Activation holds the installation lock and first runs every check, in order: the
+lock is free (a running node or another recovery command holds it); the staging
+directory and the installation do not overlap; the staging directory is not
+marked `INCOMPLETE`; its `manifest.json` is a staging manifest of a `database`
+bundle with its `staged` object (an `installation` bundle is restored by hand,
+below; any other profile is refused); the directory holds exactly
+`manifest.json` and `store/image.sqlite`; the image's SHA-256 equals
+`staged.image_sha256`; the image passes the checks a coordinator start runs, with
+SQLite's full integrity check, and its generation equals `staged.generation`; the
+installation admits its store; and that generation was never activated here.
+An installation's store marker, or without one its database, admits only its own
+store ID, so a backup of another installation's store is refused
 (`foreign_store`) wherever a marker or a database exists; only a fresh
-installation, with neither, takes another store. A refusal names its reason
-(`in_use`, `staging_invalid`, `foreign_store`, `already_activated`,
-`activation_incomplete`, or the image's own reason such as `schema_newer`) and
-the next action, and changes nothing anywhere. `--dry-run` runs the same checks, prints what would be
-replaced, and changes nothing either.
+installation, with neither, takes another store. A live store already at the
+staged generation, or a rollback directory for it, refuses with
+`already_activated`: restore the archive again, which gives the image a new
+generation. A refusal names its reason (`in_use`, `staging_invalid`,
+`foreign_store`, `already_activated`, `activation_incomplete`, or the image's own
+reason such as `schema_newer`) and the next action, and publishes, replaces and
+creates nothing. `--dry-run` runs the same checks and prints what would be
+replaced. Neither ever publishes, replaces or creates a rollback directory; the
+one thing either may do is what reading the live database involves: SQLite
+finishing its recovery of a journal a crash left beside it, as the next start
+would.
 
 Then activation writes the activation marker `recovery-activation.json` beside
 `node.yaml`, records the activation in `rollback/<generation>/rollback.json` in the
 configuration directory, and replaces the access store: it copies the image
-beside the database as `access/access.sqlite.staged` and checks the copy, lets
-SQLite settle a journal a crash left beside the database, copies the database and
-the store marker into `rollback/<generation>/store/` together with any journal
-SQLite could not settle (an unreadable database is kept as it is), removes that
-journal so it cannot be rolled back into the new database, renames the copy over
-the database in one step and writes the store marker. Each step reaches the disk
-before the next. Last, it removes the activation marker and the staging directory,
-which holds credential hashes. It prints what it replaced, the new generation and
-the rollback ID (the generation), and the next step: start the node.
+beside the database as `access/access.sqlite.staged`, refuses the copy unless its
+SHA-256 is still `staged.image_sha256` (so the bytes published are the bytes
+checked), checks the copy, lets SQLite settle a journal a crash left beside the
+database, copies the database and the store marker into
+`rollback/<generation>/store/` together with any journal SQLite could not settle
+(an unreadable database is kept as it is), removes that journal so it cannot be
+rolled back into the new database, renames the copy over the database in one step
+and writes the store marker. Each step reaches the disk before the next. Last, it
+removes the activation marker and the staging directory, which holds credential
+hashes. It prints what it replaced, the new generation and the rollback
+directory's absolute path, and the next step: start the node.
+
+Recovery commands may run as an administrator. Everything activation or a
+rollback creates or replaces inside the installation (the database, the store
+marker, the rollback directory and its files, the activation marker) gets the
+owner and group of the installation's configuration directory, so a node running
+as its own service account can open them after an administrator activated. Run
+as that owner, nothing changes hands; on Windows, access follows the restricted
+ACL instead. A failure to hand a file over stops the step like any other failure,
+and a rerun repeats it.
 
 A crash or an interrupt (Ctrl-C) between the activation marker and its removal
 leaves the marker, and the node then refuses to start with
-`activation_incomplete`, naming the staging directory and the two commands that
-end it. Run the same `recovery activate` command again to finish the activation:
-each step it already did is skipped or repeated with the same result. Or add
-`--rollback` to undo it: the database, any journal and the store marker that were
-replaced return byte for byte (what did not exist before is removed), then the
-rollback directory and the activation marker are removed, and the staging
-directory is kept. Both are safe to repeat after another crash. `--rollback` works
-only while the activation marker exists, and refuses with `no_activation`
-otherwise: once an activation finished, nothing undoes it automatically. A crash before the activation marker was written changed
-nothing. One after its removal leaves a finished activation and, possibly, the
-staging directory: a rerun refuses with `already_activated`; delete the directory.
+`activation_incomplete`, naming the staging directory and the commands that end
+it, each after stopping the service. Keep the staging directory until the
+activation finished: finishing needs it. Run the same `recovery activate` command
+again to finish the activation: each step it already did is skipped or repeated
+with the same result. While the marker exists, a rerun that cannot finish (the
+staging directory is gone or no longer passes its checks) refuses with
+`activation_incomplete` and offers only `--rollback`. `--rollback` undoes the
+activation: the database, any journal and the store marker that were replaced
+return byte for byte (what did not exist before is removed), then the rollback
+directory and the activation marker are removed, and the staging directory is
+kept. Both are safe to repeat after another crash. `--rollback` works only while
+the activation marker exists, and refuses with `no_activation` otherwise: once an
+activation finished, nothing undoes it automatically. It also refuses, changing
+nothing, when the database already is the staged image but the rollback
+directory no longer holds what it replaced; finish the activation instead. A
+crash before the activation marker was written changed nothing. One after its
+removal leaves a finished activation and, possibly, the staging directory: a
+rerun refuses with `already_activated`; delete the directory. While an
+activation is incomplete, `recovery backup` refuses with `activation_incomplete`
+too, as a start does.
 
 The rollback directory `rollback/<generation>/` in the configuration directory
 (for example `/etc/zzrouter/rollback/<generation>/` on a Linux system
@@ -308,14 +338,15 @@ installation), owner-only, keeps what an activation replaced until you remove it
 `rollback.json` and, in `store/`, the previous `access.sqlite` and
 `access-store.json`, with `kept.json` recording which of them existed. It holds
 password and app-key hashes, so keep it only until the restored node is
-qualified, then delete the directory. To go back to the previous store after a
-finished activation, stop the node and copy those files back over
-`access/access.sqlite` and `access-store.json` (delete one `kept.json` records as
-absent), with no `access/access.sqlite-journal` left beside the database.
-Rollback directories and the activation marker are never part of a recovery
-bundle; `recovery inventory` lists the directories under `rollbacks`, and
+qualified, then delete the directory. Never delete the one of an activation that
+did not finish: the listings mark it `pending`, and rolling back needs it. To go
+back to the previous store after a finished activation, stop the node and copy
+those files back over `access/access.sqlite` and `access-store.json` (delete one
+`kept.json` records as absent), with no `access/access.sqlite-journal` left beside
+the database. Rollback directories and the activation marker are never part of a
+recovery bundle; `recovery inventory` lists the directories under `rollbacks`, and
 `GET /zzrouter/v1/system/state` lists each as a retained copy of kind
-`activation_rollback`, with its ID, creation time and size.
+`activation_rollback`, with its ID, creation time, size and `pending`.
 
 ### Restore an installation bundle by hand
 

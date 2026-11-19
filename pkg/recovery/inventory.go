@@ -255,8 +255,8 @@ const (
 	// StoreUnknown is a store the inspection could not judge; Evidence says why.
 	StoreUnknown StoreState = "unknown"
 	// StoreActivationIncomplete is an activation that did not finish, ahead
-	// of ready, setup_required and absent: the node does not start until it is
-	// finished or rolled back, as Evidence and NextAction say.
+	// of every verdict on the store, which keeps its Reason: the node does not
+	// start until it is finished or rolled back, as Evidence and NextAction say.
 	StoreActivationIncomplete = StoreState(ActivationIncomplete)
 )
 
@@ -304,7 +304,7 @@ const (
 // writes to the installation in one case: a journal a crash left beside a
 // stopped store is recovered into the live file, as the next start would. A
 // store it cannot judge is StoreUnknown; an incomplete activation outranks every
-// state but a refusal. Archives or rollbacks it cannot list keep the store's
+// verdict on the store. Archives or rollbacks it cannot list keep the store's
 // verdict and set ArchivesError or RollbacksError. Either returns its error.
 func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	lock, err := lockInstallation(dir)
@@ -316,6 +316,36 @@ func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return unknown(err)
 	}
+	// As a start does, before the store: an incomplete activation outranks
+	// every verdict on it, and the store's own keeps its reason and evidence.
+	pending := PendingActivation(dir)
+	section, err := judgeStore(ctx, dir)
+	var incomplete *Refusal
+	if errors.As(pending, &incomplete) {
+		evidence := incomplete.Detail
+		if section.Evidence != "" {
+			evidence += "; the store: " + section.Evidence
+		}
+		section.State, section.Evidence, section.NextAction = StoreActivationIncomplete, evidence, incomplete.NextAction
+	} else if pending != nil {
+		return unknown(pending)
+	}
+	if err != nil {
+		return section, err
+	}
+	var listErr error
+	if section.Rollbacks, err = Rollbacks(dir); err != nil {
+		section.Rollbacks, section.RollbacksError, listErr = []Rollback{}, err.Error(), err
+	}
+	if section.Archives, err = readArchives(dir); err != nil {
+		section.Archives, section.ArchivesError = []Archive{}, err.Error()
+	}
+	return section, errors.Join(listErr, err)
+}
+
+// judgeStore is the store's verdict: a copy of the stopped store, checked as a
+// backup checks it, in the system's temporary directory.
+func judgeStore(ctx context.Context, dir string) (StoreSection, error) {
 	temp, err := privateDir(filepath.Join(os.TempDir(), "zzrouter-recovery"))
 	if err != nil {
 		return unknown(err)
@@ -342,22 +372,7 @@ func InspectStore(ctx context.Context, dir string) (StoreSection, error) {
 	case err != nil:
 		return unknown(err)
 	}
-	if section.State != StoreRefused {
-		var pending *Refusal
-		if err := PendingActivation(dir); errors.As(err, &pending) {
-			section.State, section.Evidence, section.NextAction = StoreActivationIncomplete, pending.Detail, pending.NextAction
-		} else if err != nil {
-			return unknown(err)
-		}
-	}
-	var listErr error
-	if section.Rollbacks, err = Rollbacks(dir); err != nil {
-		section.Rollbacks, section.RollbacksError, listErr = []Rollback{}, err.Error(), err
-	}
-	if section.Archives, err = readArchives(dir); err != nil {
-		section.Archives, section.ArchivesError = []Archive{}, err.Error()
-	}
-	return section, errors.Join(listErr, err)
+	return section, nil
 }
 
 // unknown is the section for a store the inspection could not judge.

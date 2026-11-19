@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -150,6 +152,9 @@ func TestSystemStateListsActivationRollbacks(t *testing.T) {
 		require.NoError(t, os.MkdirAll(store, 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "rollback", id, "rollback.json"), []byte(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+at+`"}`), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(store, "access.sqlite"), make([]byte, 4096), 0o600))
+		when, err := time.Parse(time.RFC3339, at)
+		require.NoError(t, err)
+		require.NoError(t, os.Chtimes(filepath.Join(s.configDir, "rollback", id), when, when), "a rollback is dated by its directory")
 	}
 	_, raw := readStoreState(t, s)
 	copies, ok := raw["retained_copies"].([]any)
@@ -163,4 +168,31 @@ func TestSystemStateListsActivationRollbacks(t *testing.T) {
 		size := len(`{"version":1,"profile":"database","generation":"`+id+`","created":"`+created[id]+`"}`) + 4096
 		assert.EqualValues(t, size, entry["size_bytes"])
 	}
+}
+
+// TestSystemStateSurvivesAnUnreadableRollback: a rollback directory the node
+// cannot read leaves the store's state answered, with the listing problem in
+// its own field and no path; a pending rollback is marked.
+func TestSystemStateSurvivesAnUnreadableRollback(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the process cannot read")
+	}
+	s, _ := oauthTestNode(t, config.ClusterModeCoordinator)
+	require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "recovery-activation.json"), []byte(`{"version":1,"generation":"pending"}`), 0o600))
+	for _, id := range []string{"pending", "unreadable"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(s.configDir, "rollback", id, "store"), 0o700))
+	}
+	_, raw := readStoreState(t, s)
+	copies := raw["retained_copies"].([]any)
+	require.Len(t, copies, 2)
+	for _, entry := range copies {
+		entry := entry.(map[string]any)
+		assert.Equal(t, entry["id"] == "pending", entry["pending"], "%v", entry)
+	}
+	require.NoError(t, os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(s.configDir, "rollback", "unreadable"), 0o700) })
+	state, raw := readStoreState(t, s)
+	assert.Equal(t, "setup_required", state.Status, "the store's state is answered")
+	assert.Equal(t, []any{}, raw["retained_copies"])
+	assert.Contains(t, raw["retained_copies_error"], "could not be listed")
 }

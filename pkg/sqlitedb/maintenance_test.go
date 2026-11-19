@@ -3,6 +3,8 @@ package sqlitedb_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -61,25 +63,28 @@ func TestCopyFile(t *testing.T) {
 	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'kept')")
 	require.NoError(t, db.Close())
 	dst := filepath.Join(dir, "copy.sqlite")
-	require.NoError(t, sqlitedb.CopyFile(t.Context(), path, dst))
+	sum, err := sqlitedb.CopyFile(t.Context(), path, dst)
+	require.NoError(t, err)
 	source, err := os.ReadFile(path)
 	require.NoError(t, err)
+	digest := sha256.Sum256(source)
+	require.Equal(t, hex.EncodeToString(digest[:]), sum, "the digest of the bytes written")
 	copied, err := os.ReadFile(dst)
 	require.NoError(t, err)
 	require.Equal(t, source, copied)
 	ownerOnly(t, dst)
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "occupied"), []byte("preserve"), 0o600))
-	require.ErrorIs(t, sqlitedb.CopyFile(t.Context(), path, filepath.Join(dir, "occupied")), os.ErrExist)
+	require.ErrorIs(t, second(sqlitedb.CopyFile(t.Context(), path, filepath.Join(dir, "occupied"))), os.ErrExist)
 	data, err := os.ReadFile(filepath.Join(dir, "occupied"))
 	require.NoError(t, err)
 	require.Equal(t, "preserve", string(data))
 	failed := filepath.Join(dir, "failed.sqlite")
-	require.ErrorIs(t, sqlitedb.CopyFile(t.Context(), filepath.Join(dir, "absent.sqlite"), failed), os.ErrNotExist)
+	require.ErrorIs(t, second(sqlitedb.CopyFile(t.Context(), filepath.Join(dir, "absent.sqlite"), failed)), os.ErrNotExist)
 	require.NoFileExists(t, failed)
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	require.ErrorIs(t, sqlitedb.CopyFile(cancelled, path, failed), context.Canceled)
+	require.ErrorIs(t, second(sqlitedb.CopyFile(cancelled, path, failed)), context.Canceled)
 	require.NoFileExists(t, failed, "a cancelled copy leaves no file")
 
 	// Cancelled after its first read of a file larger than one.
@@ -88,7 +93,7 @@ func TestCopyFile(t *testing.T) {
 	midway := &cancelOnSecondCheck{}
 	midway.Context, midway.cancel = context.WithCancel(t.Context())
 	defer midway.cancel()
-	require.ErrorIs(t, sqlitedb.CopyFile(midway, large, failed), context.Canceled)
+	require.ErrorIs(t, second(sqlitedb.CopyFile(midway, large, failed)), context.Canceled)
 	require.Equal(t, int32(2), midway.checks.Load(), "it read once before the cancellation")
 	require.NoFileExists(t, failed, "a copy cancelled midway leaves no file")
 }
@@ -290,4 +295,20 @@ func TestRenameMovesAClosedFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sqlitedb.Header{AppID: s.AppID, Version: 3}, h)
 	require.ErrorIs(t, sqlitedb.Rename(staged, final), os.ErrNotExist, "a missing source moves nothing")
+}
+
+func second[T any](_ T, err error) error { return err }
+
+// TestGiveOwnerReportsWhatItGave: the paths that exist get the installation's
+// owner and are reported relative to it in one step; absent ones are skipped,
+// and an absent installation directory, whose owner is the one given, fails.
+func TestGiveOwnerReportsWhatItGave(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "file"), nil, 0o600))
+	var steps []string
+	ctx := sqlitedb.WithStep(t.Context(), func(step string) { steps = append(steps, step) })
+	require.NoError(t, sqlitedb.GiveOwner(ctx, dir, filepath.Join(dir, "sub"), filepath.Join(dir, "absent"), filepath.Join(dir, "sub", "file")))
+	require.Equal(t, []string{"owned sub, sub/file"}, steps)
+	require.ErrorIs(t, sqlitedb.GiveOwner(ctx, filepath.Join(dir, "absent"), filepath.Join(dir, "sub")), os.ErrNotExist, "the owner is the installation directory's")
 }
