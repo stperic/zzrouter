@@ -116,9 +116,11 @@ utilization or per-process host memory:
   `memoryInventory` (cached totals).
 - **Node metrics:** `gpu.liveCardMetricsContext` and `gpu.LiveMetricsContext`,
   plus `inventory.GatherMemory` and `GatherGPU` over `hardware.DiscoverMemory`.
-- **Routing input:** `mesh.ResourceTracker`, a 30 s poll that feeds routing
-  and fallback. On Apple Silicon it estimates the pool as 75% of RAM and
-  computes used memory as total minus free.
+- **Node reports:** `mesh.ResourceTracker`, a 30 s poll behind `/health`, the
+  node resources report and the node views. Nothing routes on it since the
+  fallback memory filter and the node resource cache were removed. On Apple
+  Silicon it estimates the pool as 75% of RAM and computes used memory as
+  total minus free.
 - **Duplicates:** a third nvidia-smi call that returns summary text, and a
   second Apple RAM reader inside `memory_snapshot.go`.
 
@@ -152,12 +154,12 @@ pools:
 - **ResourceTracker.** It reads the snapshot, and `ResourceMetrics` keeps its
   JSON fields. Its Apple figure becomes the unified pool's available memory,
   the number the console shows, with no 75% ratio and no total minus free.
-  This changes routing inputs on Macs.
-- **Two existing defects** are fixed on the way:
-  - the inventory cache stamps a GPU sample before its probe returns, so a
-    slow probe looks fresher than it is;
-  - a GPU reporting 0 MiB free reads as "no GPU" in fallback, because unknown
-    and zero share one value.
+  This changes what node views show on Macs; nothing routes on it.
+- **A dead read goes.** Each peer health probe still decodes `resources` into
+  `mesh.Connection.Resources` and `ResourcesObservedAt`, which nothing reads
+  since the node resource cache was removed.
+- **An existing defect is fixed on the way:** the inventory cache stamps a GPU
+  sample before its probe returns, so a slow probe looks fresher than it is.
 - **The console rule stays.** Used memory is never computed as total minus
   available, and a unified pool appears once.
 
@@ -999,6 +1001,11 @@ Automatic searches across settings, server-side latency targets, rate-based
 (Poisson) load, recorded datasets, workload kinds beyond chat and embeddings,
 routing that consumes calibration results, and a terminal client view. The
 terminal client can still read reports through its existing job display.
+
+`routing.ResourceAwareRouter` (`pkg/routing/resource_router.go`, 539 lines) is
+built in `server_factory.go` and never called, and some `coordinator.routing`
+fields exist only for it. Removing them is a separate cleanup: calibration
+neither reads nor changes them.
 
 ## Acceptance
 

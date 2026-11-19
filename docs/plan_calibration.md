@@ -32,22 +32,19 @@ These are the plan's defaults. Change them before the briefs go out.
 
 ## Coordination
 
-- **Uncommitted changes in the main checkout, owner not yet known.** They
-  remove `NodeResourceCache` and the fallback chain's `filterByMemory`, and
-  edit:
-  - `pkg/dispatch/chain/deps.go` and `fallback.go`;
-  - `internal/server/chain_server_deps.go`, `server.go` and
-    `server_factory.go`;
-  - `pkg/model/cache`;
-  - the console's `parameters.mjs` (the node-model PATCH now also sends
-    `models: {<model>: {}}`) and `workload-details.mjs` (a failed-launch
-    "Edit launch parameters" block in the live reader).
+Both changes this plan waited on are on `main` (2026-11-19) and merged into
+`feat/calibration`:
 
-  Packages WP4, WP5 and WP8 overlap them and wait until they land on `main`
-  or are dropped.
-- **`feat/coordinator-state`** (another session, not merged) changes
-  `internal/server/server.go` and `server_factory.go`. WP7 wires services
-  there, so whichever merges second rebases.
+- **The warm-route fix** removed `NodeResourceCache` and the fallback chain's
+  `filterByMemory`, so nothing routes on `ResourceTracker` any more (WP5's
+  Mac risk is now display only). It also touched the chain deps, the console's
+  `parameters.mjs` (the node-model PATCH also sends `models: {<model>: {}}`)
+  and `workload-details.mjs` (an "Edit launch parameters" block after a failed
+  launch). WP4, WP5 and WP8 build on that tree.
+- **`feat/coordinator-state`** opens the SQLite access store
+  (`pkg/access/sqlstore`) in `server.go` and `server_factory.go`, and the
+  shared test node builder disables pricing. WP7 wires its services beside
+  that.
 
 ## Work packages
 
@@ -56,8 +53,8 @@ These are the plan's defaults. Change them before the briefs go out.
 | WP1 One run start | Refactor 1 | none | none | +100 / −330 Go, −85 OpenAPI | net ≤ −150 Go |
 | WP2 Memory admission | Refactors 6, 7 | none | none | +80 / −8 | ≤ +120 |
 | WP3 Engine observation and admitted count | Refactors 3, 5, shipped provider files | none | none | +190 / −90 | net ≤ +150 |
-| WP4 Instance request path | Refactor 4 | main-checkout change resolved | chain files | +75 / −30 | net ≤ +80 |
-| WP5 Resource snapshot | Refactor 2 | main-checkout change resolved | `ResourceTracker` consumers, server wiring | +560 / −570 | net ≤ +50 |
+| WP4 Instance request path | Refactor 4 | none | chain files | +75 / −30 | net ≤ +80 |
+| WP5 Resource snapshot | Refactor 2 | none | `ResourceTracker` consumers, server wiring | +560 / −570 | net ≤ +50 |
 | WP6 Calibration core | `pkg/calibration` | none | none | 1,000 to 1,700 | ≤ 1,200 |
 | WP7 Node runner, API, MCP, protocol | API, Execution, refactor 8 | WP1, WP3, WP4, WP5, WP6 | server wiring | 800 to 1,000 Go, about 250 OpenAPI | ≤ 1,000 Go |
 | WP8 Console | Console | WP1, WP7 | `parameters.mjs`, `workload-details.mjs` | 1,000 to 1,300 | ≤ 1,200 |
@@ -72,7 +69,8 @@ against its base.
 
 - **A, now, in parallel:** WP1, WP2, WP3, WP6. They touch disjoint files, and
   WP6 depends only on interfaces it defines.
-- **B, once the main-checkout change is resolved:** WP4 and WP5.
+- **B:** WP4 and WP5. Their blocker landed on `main`; they wait only for
+  Wave A to merge, so their briefs are written against that tree.
 - **C:** WP7 with the protocol bump, then WP8 and WP9.
 
 ## WP1 One run start
@@ -328,7 +326,9 @@ against its base.
    - Fix the stamp-before-probe defect.
 5. **`ResourceTracker`** reads the snapshot. `ResourceMetrics` keeps its JSON
    fields, the Apple figure becomes unified available memory, and unknown GPU
-   memory stops reading as zero.
+   memory stops reading as zero. Delete the peer health probe's `resources`
+   decode (`mesh.Connection.Resources`, `ResourcesObservedAt`): nothing reads
+   it.
 6. **`health.go`.**
 
 **Preserve:**
@@ -352,8 +352,8 @@ against its base.
   available.
 - `-race -count=20` on the sampling loop.
 
-**Risk:** the Apple figure change shifts routing on Macs. State it in the
-CHANGELOG.
+**Risk:** the Apple figure change shifts what node views show on Macs;
+nothing routes on it. State it in the CHANGELOG.
 
 ## WP6 Calibration core (`pkg/calibration`)
 
