@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -138,7 +139,7 @@ func (s Subject) ScopeKind() quota.ScopeKind {
 // ReservationKey keeps human reservations separate from legacy key identifiers.
 func (s Subject) ReservationKey() string {
 	if s.Kind == KindPerson {
-		return "person:" + s.ID
+		return audit.KindActor(people.Kind, s.ID)
 	}
 	return s.ID
 }

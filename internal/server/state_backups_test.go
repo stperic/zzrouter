@@ -114,7 +114,7 @@ func TestStateBackupsCreateListReadReplay(t *testing.T) {
 	missing := makeAuthRequest(t, s, http.MethodGet, backupsPath+"/0f6b5f7e-3f0e-4d56-9a43-2f4f5b0f6c11", TestAdminKey, nil)
 	require.Equal(t, http.StatusNotFound, missing.Code, string(missing.Body))
 	assert.Equal(t, string(httperr.CodeStateBackupNotFound), problemCode(t, missing.Body))
-	assert.Contains(t, string(missing.Body), "zz_api operation listStateBackups", "the next step names the tool")
+	assert.Contains(t, string(missing.Body), "zz_api_get operation listStateBackups", "the next step names the tool")
 	backupAnswer(t, s, missing.Code, missing.Body, secret)
 
 	state, raw2 := readStoreState(t, s)
@@ -393,6 +393,13 @@ func TestBackupCapacityAnswerCarriesItsFigures(t *testing.T) {
 	assert.Contains(t, wire.Message, "expires_at")
 	assert.Contains(t, wire.Message, "zzrouter-node recovery backup")
 	assert.NotContains(t, strings.ToLower(wire.Message), "retry")
+
+	// An archive over the cap on its own: waiting frees nothing, so only the
+	// offline backup is offered.
+	alone, ok := knownFailure(&recovery.CapacityError{LimitBytes: 100, RetainedBytes: 70, RequiredBytes: 101})
+	require.True(t, ok)
+	assert.NotContains(t, alone.Message, "expires_at")
+	assert.Contains(t, alone.Message, "zzrouter-node recovery backup")
 }
 
 // TestStateBackupExampleMatchesSchema: the published example is a valid answer.
