@@ -134,7 +134,9 @@ func newOutsideInstallation(dir, output string) error {
 	if err != nil {
 		return err
 	}
-	ancestor := cmp.Or(strings.TrimSuffix(output, filepath.Base(output)), ".")
+	// The trailing dot keeps a drive-relative Windows output (C:name) in its
+	// own directory instead of jumping to the drive root.
+	ancestor := strings.TrimSuffix(output, filepath.Base(output)) + "."
 	for previous := os.FileInfo(nil); ; ancestor += string(filepath.Separator) + ".." {
 		info, err := os.Stat(ancestor)
 		switch {
