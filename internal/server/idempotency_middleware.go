@@ -47,6 +47,9 @@ const idempotencyWaitTimeout = 30 * time.Second
 // http.Header — already canonicalized by Go.
 const idempotencyHeader = "Idempotency-Key"
 
+// idempotencyKeyConflictMessage answers a key recorded for another body, here or in a stored receipt.
+const idempotencyKeyConflictMessage = "a different request body has already been recorded under this Idempotency-Key; either change the key or send the original body"
+
 // idemKey scopes idempotency entries to (principal, method, path, canonical
 // query, header value), so one store backs every route and verb without a
 // recorded response replaying for a different request.
@@ -322,7 +325,7 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 				Title:   "Idempotency Key Conflict",
 				Type:    "invalid_request_error",
 				Code:    string(openai.ErrorCodeIdempotencyKeyConflict),
-				Message: "a different request body has already been recorded under this Idempotency-Key; either change the key or send the original body",
+				Message: idempotencyKeyConflictMessage,
 			})
 			c.Abort()
 			return

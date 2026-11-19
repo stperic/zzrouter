@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,13 +18,18 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
-// backupsPath is the running coordinator's online backups of its access store.
-const backupsPath = "/zzrouter/v1/system/state/backups"
+const (
+	// backupsPath is the running coordinator's online backups of its access store.
+	backupsPath = "/zzrouter/v1/system/state/backups"
+	// resetPath resets its access store; resetPath + "/preview" previews that.
+	resetPath = "/zzrouter/v1/system/state/reset"
+)
 
 func newAccessStateCmd() *cobra.Command {
 	var dir, id, output string
@@ -40,9 +46,89 @@ func newAccessStateCmd() *cobra.Command {
 	export.Flags().StringVar(&id, "backup-id", "", "Retained backup to copy; without it, a new backup is taken")
 	export.Flags().StringVar(&output, "output", "", "New file outside the installation")
 	_ = export.MarkFlagRequired("output")
-	state := &cobra.Command{Use: "state", Short: "Copy this installation's access store"}
-	state.AddCommand(export)
+	var yes bool
+	reset := &cobra.Command{Use: "reset", Short: "Remove every app key, team and person but the owner, after a backup", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return resetAccessState(ctx, cmd.OutOrStdout(), dir, id, yes)
+	}}
+	reset.Flags().StringVar(&dir, "dir", "", "Installed configuration directory")
+	reset.Flags().StringVar(&id, "backup-id", "", "Retained backup of the current records; without it, a new backup is taken")
+	reset.Flags().BoolVar(&yes, "yes", false, "Reset without asking for confirmation")
+	state := &cobra.Command{Use: "state", Short: "Copy or reset this installation's access store"}
+	state.AddCommand(export, reset)
 	return state
+}
+
+// resetAccessState backs up the access store unless id names a backup,
+// previews the reset against it, prints what goes and what stays, asks unless
+// yes, then resets under one Idempotency-Key and prints the receipt.
+func resetAccessState(ctx context.Context, out io.Writer, dir, id string, yes bool) error {
+	session, err := openLocal(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer session.client.CloseIdleConnections()
+	if id == "" {
+		if id, err = session.createBackup(ctx); err != nil {
+			return err
+		}
+	}
+	var preview struct {
+		Data struct {
+			Revision uint64 `json:"revision"`
+			Removes  struct {
+				AppKeys int `json:"app_keys"`
+				Teams   int `json:"teams"`
+				People  int `json:"people"`
+				Grants  int `json:"grants"`
+			} `json:"removes"`
+			Keeps *struct {
+				OwnerUsername string `json:"owner_username"`
+				TeamName      string `json:"team_name"`
+			} `json:"keeps"`
+			Token string `json:"confirmation_token"`
+		} `json:"data"`
+	}
+	body, _ := json.Marshal(map[string]string{"backup_id": id}) // a map of strings always encodes
+	if err := session.post(ctx, resetPath+"/preview", body, "", &preview, "reset preview"); err != nil {
+		return resetHint(err)
+	}
+	p := preview.Data
+	_, _ = fmt.Fprintf(out, "Backup %s holds the access records at revision %d.\nThe reset removes %d app keys, %d teams, %d people and %d invitation and sign-in grants, and the onboarding progress.\n",
+		id, p.Revision, p.Removes.AppKeys, p.Removes.Teams, p.Removes.People, p.Removes.Grants)
+	if p.Keeps == nil {
+		_, _ = fmt.Fprintln(out, "No owner has been claimed: nothing stays, and owner setup stays open.")
+	} else {
+		_, _ = fmt.Fprintf(out, "It keeps the owner %s, who must sign in again, and their team %q with its policy and spend.\n", p.Keeps.OwnerUsername, p.Keeps.TeamName)
+	}
+	if !yes && !confirmYN("Reset the access store? [y/N]: ") {
+		return errors.New("not confirmed: nothing was reset")
+	}
+	var receipt struct {
+		Data struct {
+			OperationID string `json:"operation_id"`
+			NewRevision uint64 `json:"new_revision"`
+		} `json:"data"`
+	}
+	body, _ = json.Marshal(map[string]string{"backup_id": id, "confirmation_token": p.Token})
+	// net/http resends a request carrying an Idempotency-Key once when a reused
+	// connection drops it; a committed reset then answers from its receipt.
+	if err = session.post(ctx, resetPath, body, uuid.NewString(), &receipt, "reset"); err != nil {
+		return resetHint(err)
+	}
+	_, err = fmt.Fprintf(out, "Reset %s committed at revision %d.\nThe owner signs in again with their password (zzrouter access recover-owner if it is lost), then creates new app keys.\nTo undo it, export backup %s and restore it as docs/recovery.md describes, before retention removes it.\n",
+		receipt.Data.OperationID, receipt.Data.NewRevision, id)
+	return err
+}
+
+// resetHint adds the command's own next step to a refused backup or confirmation.
+func resetHint(err error) error {
+	var refused *pkgClient.APIError
+	if errors.As(err, &refused) && (refused.StatusCode == http.StatusNotFound || refused.StatusCode == http.StatusConflict) {
+		return fmt.Errorf("%w\nRun zzrouter access state reset again without --backup-id: it takes a new backup and previews again", err)
+	}
+	return err
 }
 
 // exportBackup copies a retained backup, a new one when id is empty, from the
@@ -106,20 +192,29 @@ func exportBackup(ctx context.Context, dir, id, output string) (err error) {
 
 // createBackup takes a new online backup and returns its ID.
 func (s *localSession) createBackup(ctx context.Context) (string, error) {
-	req, err := s.request(ctx, http.MethodPost, backupsPath, []byte("{}"))
-	if err != nil {
-		return "", err
-	}
-	response, err := s.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("contact the running local installation: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
 	var created struct {
 		Data struct{ ID string } `json:"data"`
 	}
-	err = pkgClient.ReadResponse(response, &created, "backup")
+	err := s.post(ctx, backupsPath, []byte("{}"), "", &created, "backup")
 	return created.Data.ID, err
+}
+
+// post sends body to path, under the Idempotency-Key key unless it is empty,
+// and reads the answer into target.
+func (s *localSession) post(ctx context.Context, path string, body []byte, key string, target any, operation string) error {
+	req, err := s.request(ctx, http.MethodPost, path, body)
+	if err != nil {
+		return err
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	response, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("contact the running local installation: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	return pkgClient.ReadResponse(response, target, operation)
 }
 
 // newOutsideInstallation refuses an output that exists or whose directory is

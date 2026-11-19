@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,7 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access"
+	"github.com/stperic/zzrouter/pkg/access/accesstest"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -175,4 +178,40 @@ func TestStartKeepsSpendWhenNoStoreVouchesForAbsence(t *testing.T) {
 			assert.Equal(t, map[string]int64{"key:k:": 1, "team:t:": 2, "person:p:": 3}, spentBy(startCore(t, state, path)))
 		})
 	}
+}
+
+// A reset purges the spend of every key and team it removes and writes the
+// purge at once; the owner's team, which it keeps, keeps its spend.
+func TestResetForgetsAndFlushesTheSpendOfWhatItRemoves(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spend.json")
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{People: true, ValidateExternalIssuer: accesstest.ValidateExternalIssuer})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	setup, err := store.IssueSetup(t.Context(), people.Issuer{Reference: "installation"})
+	require.NoError(t, err)
+	bound, err := store.People().Exchange(t.Context(), setup.Token, "browser")
+	require.NoError(t, err)
+	owner, err := store.People().ClaimOwner(t.Context(), bound.Token, "browser", people.CreatePerson{Username: "owner", Name: "Owner", Password: "a long reset spend password"}) //nolint:gosec // test fixture, not a credential
+	require.NoError(t, err)
+	createTeam(t, store, "eng", quota.QuotaConfig{})
+	createKey(t, store, "member", owner.TeamID, quota.QuotaConfig{})
+	createKey(t, store, "engineer", "eng", quota.QuotaConfig{})
+	writeSpend(t, path, map[quota.SpendScope]int64{
+		{Kind: quota.ScopeKey, EntityID: "member"}: 1, {Kind: quota.ScopeKey, EntityID: "engineer"}: 2,
+		{Kind: quota.ScopeTeam, EntityID: "eng"}: 3, {Kind: quota.ScopeTeam, EntityID: owner.TeamID}: 4,
+	})
+	core := startCore(t, store, path)
+
+	_, err = store.Reset(t.Context(), sqlstore.ResetRequest{Principal: "local:operator", IdempotencyKey: "k", BodySHA256: strings.Repeat("0", 64)},
+		func(sqlstore.Meta) error { return nil })
+	require.NoError(t, err)
+	kept := map[string]int64{"team:" + owner.TeamID + ":": 4}
+	assert.Equal(t, kept, spentBy(core))
+	rows := map[string]int64{}
+	for scope, st := range spendRows(t, path) {
+		rows[scope] = st.SpendMicro
+	}
+	assert.Equal(t, kept, rows, "the purge is written at once")
 }

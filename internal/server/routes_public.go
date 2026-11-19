@@ -30,6 +30,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	router.GET("/system/recovery", browserResponseHeaders, s.handleRecoveryInventory)
 	router.GET("/system/state", s.browserCoordinatorOnly, browserResponseHeaders, s.handleStoreState)
 	s.registerStateBackups(router)
+	s.localRoute(http.MethodPost, "/system/state/reset/preview", false, false, s.handleResetPreview)
+	s.localRoute(http.MethodPost, "/system/state/reset", true, false, s.handleReset)
 
 	// Initialize services (inject routing layer). The compat surfaces need
 	// a subset of these and are registered on their own engine on a worker,

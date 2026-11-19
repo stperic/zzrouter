@@ -161,9 +161,11 @@ func TestLocalOperatorRoutesStayOutOfAgentSurfaces(t *testing.T) {
 		calls++
 		c.JSON(http.StatusOK, gin.H{})
 	}
-	s.localRoute(http.MethodPost, "/system/state/reset", true, false, probe)
-	require.Len(t, s.localRoutes, 3, "owner recovery, backup content and a probe")
+	s.localRoute(http.MethodPost, "/system/state/probe", true, false, probe)
+	require.Len(t, s.localRoutes, 5, "owner recovery, backup content, reset preview, reset and a probe")
 	require.Contains(t, s.localRoutes, http.MethodGet+" "+backupsPath+"/:id/content")
+	require.Contains(t, s.localRoutes, http.MethodPost+" /zzrouter/v1/system/state/reset/preview")
+	require.Contains(t, s.localRoutes, http.MethodPost+" /zzrouter/v1/system/state/reset")
 	catalog := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/server/routes", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, catalog.Code)
 	var routes struct{ Routes []RouteSpec }

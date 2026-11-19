@@ -11,6 +11,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/openaicompat"
+	"github.com/stperic/zzrouter/pkg/protocol/openai"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -95,6 +96,9 @@ var failureTable = []failureRow{
 	{sentinel: recovery.ErrImageCheck, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "The backup's copy of the access database failed its check, so nothing was kept. Stop the service and run zzrouter-node recovery inventory."},
 	{sentinel: recovery.ErrArchiveRefused, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "This backup's archive failed its check, so nothing was sent; the live access database is not involved. Take a new backup and export that one."},
 	{status: http.StatusInsufficientStorage, code: string(httperr.CodeStateBackupCapacityExceeded), resolve: resolveBackupCapacity},
+	{sentinel: errStateRevisionChanged, status: http.StatusConflict, code: string(httperr.CodeStateRevisionChanged), message: "The access records changed after this backup was taken, so nothing was reset. Take a new backup, preview the reset with it and confirm within five minutes."},
+	{sentinel: errResetConfirmation, status: http.StatusConflict, code: string(httperr.CodeStateResetConfirmationInvalid), message: "The confirmation token was not issued by this coordinator since it started, has expired or names another backup, so nothing was reset. Preview the reset again and confirm within five minutes."},
+	{sentinel: sqlstore.ErrReceiptConflict, status: http.StatusUnprocessableEntity, code: string(openai.ErrorCodeIdempotencyKeyConflict), title: "Idempotency Key Conflict", message: idempotencyKeyConflictMessage},
 	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrPortUnavailable, status: http.StatusServiceUnavailable, code: ""},

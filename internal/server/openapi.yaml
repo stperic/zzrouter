@@ -12559,7 +12559,7 @@ paths:
             enum: [key.created, key.updated, key.rotated, key.deleted, key.usage_reset, team.created, team.updated, team.deleted,
               team.usage_reset, person.created, person.updated, person.password_changed, person.recovered,
               person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared, store.backup_created,
-              store.backup_exported]
+              store.backup_exported, store.reset]
         - in: query
           name: since
           description: Inclusive lower bound on the event time, an RFC 3339 date-time.
@@ -12887,6 +12887,159 @@ paths:
           description: >-
             The export could not be recorded (`access_store_busy`, `access_store_failed`, or `service_unavailable`
             while the coordinator stops), so nothing was sent. Retry after `Retry-After`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/reset/preview:
+    post:
+      tags: [System]
+      operationId: previewStateReset
+      summary: Preview a reset of the access store
+      description: >-
+        Local operator only, coordinator only: the local proof in the `X-Zzrouter-Local-Proof` header, from an address
+        of the node's host; an API key or session alone is refused. Called by `zzrouter access state reset`. Names what
+        a reset removes from the current records (every app key, every team but the owner's, every person but the
+        owner, every grant and the onboarding progress) and what it keeps (the owner and the owner's team, with its
+        policy and spend). The backup must be retained, inside its `protected_until`, and hold the current revision.
+        Answers with a `confirmation_token` that binds this state and this backup until `expires_at`, at most five
+        minutes and never past the backup's `protected_until`; a coordinator restart voids it. Changes nothing.
+      security:
+        - LocalProof: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [backup_id]
+              properties:
+                backup_id: { type: string, format: uuid, description: A retained online backup of the current records. }
+      responses:
+        '200':
+          description: What the reset removes and keeps, and its confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateResetPreview' }
+        '400':
+          description: The body is not a JSON object with `backup_id` and nothing else.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or it is past its `protected_until`. Take a new backup.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`state_revision_changed`: the records changed after the backup was taken. Take a new backup and preview again.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: '`access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/reset:
+    post:
+      tags: [System]
+      operationId: resetState
+      summary: Reset the access store to its owner
+      description: >-
+        Local operator only, coordinator only, as the preview. Removes what the preview named, in one transaction with
+        one `store.reset` access-history event and a stored receipt: every app key, every team but the owner's, every
+        person but the owner, every grant and the onboarding progress. The owner keeps their ID and password under a
+        new credential revision, so their sessions and delegated grants stop resolving; the owner's team keeps its
+        policy and spend. Without an owner nothing stays and owner setup stays open. The access history is kept.
+        Removed keys stop authenticating at once, and their spend and that of removed teams is purged. A receipt
+        stored for this Idempotency-Key answers first, with the original `200`, even after a restart or once the
+        token has expired; another body under the key is `422`. Here the `Idempotency-Key` is required, and its
+        receipt is kept for good. To undo a reset, restore the backup it names.
+      security:
+        - LocalProof: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [backup_id, confirmation_token]
+              properties:
+                backup_id: { type: string, format: uuid }
+                confirmation_token: { type: string, description: The preview's token for this backup. }
+      responses:
+        '200':
+          description: The committed reset's receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+                  data: { $ref: '#/components/schemas/StateResetReceipt' }
+        '400':
+          description: >-
+            `required`: no `Idempotency-Key` header. Otherwise the body is not a JSON object with `backup_id`,
+            `confirmation_token` and nothing else. Answered before any backup, token or revision is judged.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID. Take a new backup and preview again.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: >-
+            Nothing was reset. `state_reset_confirmation_invalid`: the token was not issued by this coordinator since it
+            started, has expired or names another backup; preview again. `state_revision_changed`: the records changed
+            after the preview; take a new backup and preview again.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `access_store_busy`: another process holds the access database; retry after `Retry-After`.
+            `access_store_failed`: the coordinator is restarting; read the status before retrying. `service_unavailable`:
+            the coordinator is stopping. Nothing was reset unless the store failed.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13992,6 +14145,52 @@ components:
           type: string
           format: date-time
           description: When retention removes it; a newer backup can bring it forward, never back.
+    StateResetCounts:
+      type: object
+      additionalProperties: false
+      required: [app_keys, teams, people, grants]
+      properties:
+        app_keys: { type: integer, minimum: 0 }
+        teams: { type: integer, minimum: 0 }
+        people: { type: integer, minimum: 0 }
+        grants: { type: integer, minimum: 0, description: 'Invitation, sign-in and recovery grants, used or not.' }
+    StateResetPreview:
+      type: object
+      additionalProperties: false
+      required: [store_id, generation, revision, backup_id, removes, keeps, confirmation_token, expires_at]
+      properties:
+        store_id: { type: string }
+        generation: { type: string }
+        revision: { type: integer, minimum: 0, description: The revision previewed, which the backup holds. }
+        backup_id: { type: string, format: uuid }
+        removes: { $ref: '#/components/schemas/StateResetCounts' }
+        keeps:
+          description: The owner and the owner's team; null when no owner exists, so nothing stays and owner setup stays open.
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [owner_id, owner_username, team_id, team_name]
+          properties:
+            owner_id: { type: string }
+            owner_username: { type: string }
+            team_id: { type: string }
+            team_name: { type: string }
+        confirmation_token: { type: string, description: 'Opaque; send it to the reset with the same backup_id before expires_at.' }
+        expires_at: { type: string, format: date-time }
+    StateResetReceipt:
+      type: object
+      additionalProperties: false
+      required: [operation_id, created_at, backup_id, store_id, generation, old_revision, new_revision, sequence, removed]
+      properties:
+        operation_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        backup_id: { type: string, format: uuid, description: The backup to restore to undo the reset. }
+        store_id: { type: string }
+        generation: { type: string }
+        old_revision: { type: integer, minimum: 0 }
+        new_revision: { type: integer, minimum: 0 }
+        sequence: { type: integer, minimum: 0, description: The commit that reset the records. }
+        removed: { $ref: '#/components/schemas/StateResetCounts' }
     TeamMembership:
       type: object
       description: Authoritative impact used by team deletion. Counts include suspended people and suspended or expired app keys. Pending grants are counted by lifecycle, even when issuer authority has since changed.

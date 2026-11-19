@@ -292,6 +292,57 @@ with `recovery restore`, then place the prepared image as
 the next section describes for a staged `database` bundle. A command that
 activates it is a later change.
 
+## Reset access state
+
+A reset returns the access records to the owner alone, on the running
+coordinator, without touching configuration, providers, routes or the static
+installation keys. Reset when the records are the problem but the installation
+is sound: leaked or unknown app keys, people and teams nobody can account for,
+or a coordinator handed to someone new. Restore a backup instead when you want
+an earlier state of the records back.
+
+Run on the coordinator's host, as the installation account:
+
+```sh
+zzrouter access state reset
+```
+
+The command takes an online backup (or names the retained one given with
+`--backup-id ID`), previews the reset against it, prints what goes and what
+stays, asks for confirmation (`--yes` skips the question) and resets. A reset
+removes every app key, every team but the owner's, every person but the owner,
+every grant (invitations and setup, sign-in and recovery codes) and the
+onboarding progress, in one transaction with one `store.reset` event in the access history and a stored
+receipt. What survives:
+
+- the owner, with their ID, name and password, under a new credential revision:
+  their console sessions and delegated grants stop resolving, so they sign in
+  again with their password, or with `zzrouter access recover-owner` if it is
+  lost;
+- the owner's team, with its policy and spend;
+- the access history, the online backups and everything outside the access
+  database, including the static installation keys.
+
+Removed app keys stop authenticating at once, and the spend of removed keys and
+teams is purged. Requests admitted before the reset finish under the identity
+they were admitted with. With no owner claimed, everything goes and owner setup
+stays open. The node answers `/zzrouter/v1/system/state/reset/preview` and
+`/zzrouter/v1/system/state/reset` to the local proof only, so no API key,
+session or MCP tool can reset.
+
+The backup must hold the records' current revision, and the preview's
+confirmation lasts five minutes, never past the backup's `protected_until`, and
+no longer than the coordinator process. If anything changes the records after
+the backup (`409 state_revision_changed`) or the confirmation lapses
+(`409 state_reset_confirmation_invalid`), nothing is reset: run the command
+again without `--backup-id`. The reset needs an `Idempotency-Key`; a retry with
+the same key and body answers with the stored receipt, after a restart too.
+
+To undo a reset, restore the backup its receipt names, as for any online
+backup: export it, stop the node, stage the copy with `recovery restore` and
+place the prepared image as the next section describes for a staged `database`
+bundle. Export it before retention removes it.
+
 ## Restore and activate deliberately
 
 ```sh
