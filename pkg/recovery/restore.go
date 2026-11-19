@@ -29,8 +29,11 @@ import (
 // the system's temporary directory, where sqlstore.CheckImage checks it, and
 // must match the manifest; the directory is removed on return.
 func Check(ctx context.Context, archive, keyFile string) (Manifest, error) {
-	return readArchive(ctx, archive, keyFile, extraction{scratch: filepath.Join(os.TempDir(), "zzrouter-recovery")})
+	return readArchive(ctx, archive, keyFile, extraction{scratch: checkScratch()})
 }
+
+// checkScratch is where a check extracts a database image.
+func checkScratch() string { return filepath.Join(os.TempDir(), "zzrouter-recovery") }
 
 // Restore writes only into a new, protected staging directory. Nothing is
 // activated. It first checks the archive as Check does, with the image inside
@@ -68,7 +71,7 @@ type extraction struct {
 
 // archiveReader is an archive opened at its first entry, its manifest read.
 type archiveReader struct {
-	file       *os.File
+	file       io.ReadCloser
 	buffered   *bufio.Reader
 	compressed *gzip.Reader
 	entries    *tar.Reader
@@ -90,7 +93,7 @@ func openArchive(archive string) (*archiveReader, error) {
 
 // readArchiveManifest reads and validates the manifest of the archive f holds;
 // it closes f when it fails.
-func readArchiveManifest(f *os.File) (*archiveReader, error) {
+func readArchiveManifest(f io.ReadCloser) (*archiveReader, error) {
 	r := &archiveReader{file: f, buffered: bufio.NewReader(f)}
 	var err error
 	if r.compressed, err = gzip.NewReader(r.buffered); err != nil {
@@ -112,6 +115,11 @@ func readArchive(ctx context.Context, archive, keyFile string, x extraction) (Ma
 		return Manifest{}, err
 	}
 	defer func() { _ = r.Close() }()
+	return r.check(ctx, keyFile, x)
+}
+
+// check runs every check of x's pass on the archive r reads, to its end.
+func (r *archiveReader) check(ctx context.Context, keyFile string, x extraction) (Manifest, error) {
 	manifest := r.manifest
 	if x.checked != nil && !reflect.DeepEqual(*x.checked, manifest) {
 		return manifest, errors.New("the recovery archive changed while it was restored")

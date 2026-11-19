@@ -1,12 +1,16 @@
 package recovery
 
 import (
+	"archive/tar"
+	"bytes"
 	"cmp"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -655,4 +659,119 @@ func TestOnlineBackupCreateRacesClose(t *testing.T) {
 	require.ErrorIs(t, err, access.ErrClosed)
 	require.Len(t, backupFiles(t, dir), 1)
 	b.Close()
+}
+
+// damageImage returns archive with one byte of the image entry's data flipped
+// and every digest left as it was; only the gzip layer is written again.
+func damageImage(t *testing.T, archive []byte) []byte {
+	t.Helper()
+	unzipped, err := gzip.NewReader(bytes.NewReader(archive))
+	require.NoError(t, err)
+	tarred, err := io.ReadAll(unzipped)
+	require.NoError(t, err)
+	entries := tar.NewReader(bytes.NewReader(tarred))
+	manifest, err := entries.Next()
+	require.NoError(t, err)
+	image, err := entries.Next()
+	require.NoError(t, err)
+	require.Equal(t, imageName, image.Name)
+	const block = 512 // a header, then data padded to whole blocks
+	tarred[block+(manifest.Size+block-1)/block*block+block+image.Size/2] ^= 0xff
+	var damaged bytes.Buffer
+	zipped := gzip.NewWriter(&damaged)
+	_, err = zipped.Write(tarred)
+	require.NoError(t, errors.Join(err, zipped.Close()))
+	return damaged.Bytes()
+}
+
+// TestOnlineBackupOpen: an export reads the archive as it is on disk, checked
+// and with one "backup exported" row recorded first. A failing row fails the
+// open and an unknown backup is ErrBackupNotFound. An archive damaged while
+// the node was down, so the index hashed it at open (an image byte changed,
+// or the end cut off), fails the check; another valid archive swapped in
+// after listing fails the digest; all are ErrArchiveRefused and record
+// nothing. A cancellation and a missing temporary directory are not.
+func TestOnlineBackupOpen(t *testing.T) {
+	store, dir := liveStore(t)
+	h := &hooked{Store: store}
+	b := openBackups(t, dir, h)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err)
+	exported := func() []audit.Event {
+		events, _, err := store.AuditPage(t.Context(), audit.Filter{Action: audit.ActionBackupExported}, "", audit.MaxPage)
+		require.NoError(t, err)
+		return events
+	}
+	export, err := b.Open(t.Context(), backup.ID)
+	require.NoError(t, err)
+	content, err := io.ReadAll(export.File)
+	require.NoError(t, errors.Join(err, export.File.Close()))
+	require.Equal(t, readBytes(t, archiveOf(dir, backup.ID)), content, "positioned at the start, the whole archive")
+	require.Equal(t, backup, export.OnlineBackup)
+	events := exported()
+	require.Len(t, events, 1)
+	require.Equal(t, backup.ID, events[0].Subject)
+	require.Equal(t, map[string]any{"sha256": backup.SHA256}, events[0].Metadata)
+
+	_, err = b.Open(t.Context(), uuid.NewString())
+	require.ErrorIs(t, err, ErrBackupNotFound)
+	h.record = func(context.Context, audit.Event) error { return sqlstore.ErrBusy }
+	_, err = b.Open(t.Context(), backup.ID)
+	require.ErrorIs(t, err, sqlstore.ErrBusy)
+	h.record = nil
+	other, err := b.Create(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(archiveOf(dir, backup.ID), readBytes(t, archiveOf(dir, other.ID)), 0o600))
+	_, err = b.Open(t.Context(), backup.ID)
+	require.ErrorIs(t, err, ErrArchiveRefused, "a valid archive, but not the one listed")
+	for name, damaged := range map[string][]byte{"an image byte": damageImage(t, content), "a cut end": content[:len(content)-64]} {
+		require.NoError(t, os.WriteFile(archiveOf(dir, backup.ID), damaged, 0o600))
+		b.Close()
+		b = openBackups(t, dir, h) // hashes the damaged file into its index
+		_, err = b.Open(t.Context(), backup.ID)
+		require.ErrorIs(t, err, ErrArchiveRefused, "%s: listed as it is, but damaged", name)
+	}
+	require.Len(t, exported(), 1, "a refused export records nothing")
+
+	require.NoError(t, os.WriteFile(archiveOf(dir, backup.ID), content, 0o600))
+	b.Close()
+	b = openBackups(t, dir, h)
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = b.Open(canceled, backup.ID)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrArchiveRefused, "the caller left; the archive is fine")
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, missing)
+	}
+	_, err = b.Open(t.Context(), backup.ID)
+	var path *fs.PathError
+	require.ErrorAs(t, err, &path)
+	require.NotErrorIs(t, err, ErrArchiveRefused, "the temporary directory failed, not the archive")
+	require.Len(t, exported(), 1)
+}
+
+// TestOnlineBackupExportOutlivesPruning: pruning an archive being exported
+// does not cut the stream short, since the open file keeps its bytes (Unix;
+// Windows refuses to remove an open file and pruning retries).
+func TestOnlineBackupExportOutlivesPruning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows keeps an open file in place")
+	}
+	store, dir := liveStore(t)
+	b := openBackups(t, dir, store)
+	backup, err := b.Create(t.Context())
+	require.NoError(t, err)
+	want := readBytes(t, archiveOf(dir, backup.ID))
+	export, err := b.Open(t.Context(), backup.ID)
+	require.NoError(t, err)
+	defer func() { _ = export.File.Close() }()
+	restore := utils.SetClock(utils.FixedClock(utils.NowUTC().Add(8 * 24 * time.Hour)))
+	b.prune()
+	restore()
+	require.NoFileExists(t, archiveOf(dir, backup.ID), "pruned")
+	got, err := io.ReadAll(export.File)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }

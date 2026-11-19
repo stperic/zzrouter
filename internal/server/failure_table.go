@@ -93,6 +93,7 @@ var failureTable = []failureRow{
 	{sentinel: access.ErrClosed, status: http.StatusServiceUnavailable, message: "This coordinator is stopping, so the request was not served. Retry once it answers again.", retryAfter: accessStoreClosedRetryAfter},
 	{sentinel: recovery.ErrBackupNotFound, status: http.StatusNotFound, code: string(httperr.CodeStateBackupNotFound), message: "No retained online backup has this ID. List the retained backups with zz_api_get operation listStateBackups and use one of their IDs."},
 	{sentinel: recovery.ErrImageCheck, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "The backup's copy of the access database failed its check, so nothing was kept. Stop the service and run zzrouter-node recovery inventory."},
+	{sentinel: recovery.ErrArchiveRefused, status: http.StatusInternalServerError, code: string(httperr.CodeStateImageCheckFailed), message: "This backup's archive failed its check, so nothing was sent; the live access database is not involved. Take a new backup and export that one."},
 	{status: http.StatusInsufficientStorage, code: string(httperr.CodeStateBackupCapacityExceeded), resolve: resolveBackupCapacity},
 	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},

@@ -285,9 +285,12 @@ names a path, a file or a destination, and no answer carries a path or archive
 content. Retention removes them: each is kept for the 24-hour replay window,
 then only the three newest, and none past seven days, within 1 GiB. The
 status (`GET /zzrouter/v1/system/state`) lists every retained copy by kind,
-creation time and size. They never travel in an installation bundle. A copy an
-operator takes elsewhere holds the same credential hashes: protect it as the
-installation bundle is protected. An older backup restored later can bring back
+creation time and size. They never travel in an installation bundle. Only the
+local operator, with the installation's local proof on its host, can download
+one (`zzrouter access state export`); no API key, session or MCP tool can, and
+each download is recorded (`store.backup_exported`) before its first byte. A
+copy an operator takes elsewhere holds the same credential hashes outside
+retention: protect it as the installation bundle is protected. An older backup restored later can bring back
 access revoked since.
 
 Offline recovery shares an installation lock with node startup. Restore only

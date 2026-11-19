@@ -236,9 +236,27 @@ connections, OAuth authority or cluster trust, so moving a coordinator to
 another machine needs the installation bundle that `recovery backup` writes. It
 is also not a copy elsewhere: the archives live in the configuration's
 `access/backups` directory, owner-only, beside the database, and retention
-deletes them. They never travel in an installation bundle. To keep one, copy
-`access/backups/<id>.tar.gz` as the installation account into your own
-protected backup storage, then run `recovery check` on the copy.
+deletes them. They never travel in an installation bundle.
+
+To take a copy off the running coordinator, run on its host, as the
+installation account:
+
+```sh
+zzrouter access state export --output /secure-backups/access.tar.gz
+zzrouter-node recovery check /secure-backups/access.tar.gz
+```
+
+Without `--backup-id ID`, the export takes a new backup first; with it, it
+copies that retained backup. The command reads the installation's local proof,
+so only an operator on that host can export, and `--dir` selects another
+installation. The node checks the archive on the file it sends from, records
+one `store.backup_exported` event in the access history before the first byte,
+and sends the whole archive. The command refuses an output that exists or lies
+inside the installation, writes `FILE.partial` owner-only, checks the SHA-256
+the node announced, and only then renames it; a mismatch or an interrupt
+(Ctrl-C) removes the partial file. If the node refuses the archive as damaged,
+take a new backup and export that one; the live database is not involved. The copy holds the same credential
+hashes as the backup, outside retention: it is yours to protect and to delete.
 
 A failed or interrupted backup lists nothing and leaves no file. A copy that
 fails its check answers `500 state_image_check_failed`: the live database may be
@@ -269,8 +287,8 @@ a 297 MiB one (1,000,000 events), and the whole backup 0.6 s and 6.8 s.
 Inference never writes to the access history, so it grows with administration,
 not with traffic.
 
-To restore an online backup today, stop the node, copy the archive out of
-`access/` and stage it with `recovery restore`, then place the prepared image as
+To restore an online backup today, export it, stop the node and stage the copy
+with `recovery restore`, then place the prepared image as
 the next section describes for a staged `database` bundle. A command that
 activates it is a later change.
 

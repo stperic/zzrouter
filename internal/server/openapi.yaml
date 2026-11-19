@@ -12558,7 +12558,8 @@ paths:
             type: string
             enum: [key.created, key.updated, key.rotated, key.deleted, key.usage_reset, team.created, team.updated, team.deleted,
               team.usage_reset, person.created, person.updated, person.password_changed, person.recovered,
-              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared, store.backup_created]
+              person.authority_revoked, enrollment.issued, enrollment.revoked, store.restore_prepared, store.backup_created,
+              store.backup_exported]
         - in: query
           name: since
           description: Inclusive lower bound on the event time, an RFC 3339 date-time.
@@ -12826,6 +12827,66 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '421':
           description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/system/state/backups/{id}/content:
+    get:
+      tags: [System]
+      operationId: exportStateBackup
+      summary: Download a retained online backup's archive
+      description: >-
+        Local operator only, coordinator only: the local proof in the `X-Zzrouter-Local-Proof` header, from an address
+        of the node's host; an API key or session alone is refused. Called by `zzrouter access state export`. Before the
+        first byte the coordinator checks the archive on the file it streams from, as `zzrouter-node recovery check`
+        does, and records one `store.backup_exported` access-history event; then it sends the whole archive. A
+        `Range` header is ignored. The archive holds credential hashes and access policy: the copy belongs to the
+        operator, who keeps it protected.
+      security:
+        - LocalProof: []
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The archive, a `database` recovery bundle.
+          headers:
+            Content-Disposition:
+              description: An attachment named `zzrouter-access-<creation time>-<first 8 characters of the id>.tar.gz`.
+              schema: { type: string }
+            Content-Length: { description: The archive's length., schema: { type: integer } }
+            Repr-Digest: { description: "The archive's SHA-256 (RFC 9530), as `sha-256=:<base64>:`.", schema: { type: string } }
+            Accept-Ranges: { description: Always `none`., schema: { type: string } }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '403':
+          description: Not the local operator. Every refused proof, peer or header answers the same 403.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`state_backup_not_found`: no retained backup has this ID, or retention removed it.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: A worker received the request. Send it to the coordinator.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: this backup's archive failed its check, or is not the archive the backup list
+            describes; nothing was sent and nothing recorded. The live access database is not involved: take a new
+            backup and export that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            The export could not be recorded (`access_store_busy`, `access_store_failed`, or `service_unavailable`
+            while the coordinator stops), so nothing was sent. Retry after `Retry-After`.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

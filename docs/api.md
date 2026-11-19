@@ -333,4 +333,10 @@ administrators: `id`, `created_at`, `size_bytes`, the store identity it holds,
 `readable`, the archive's `sha256`, `protected_until` and `expires_at`. An unknown
 or expired ID is 404 `state_backup_not_found`; a full cap or disk is 507
 `state_backup_capacity_exceeded`; a copy that fails its check is 500
-`state_image_check_failed`. See [recovery](recovery.md#online-backups-of-the-access-database).
+`state_image_check_failed`. `GET /zzrouter/v1/system/state/backups/{id}/content`
+sends a retained backup's archive whole (`application/gzip`, `Content-Length`,
+`Repr-Digest`, `Accept-Ranges: none`; a `Range` is ignored) to the local
+operator only: an API key or session alone is 403. It checks the archive and
+records `store.backup_exported` before the first byte; a failed check is 500
+`state_image_check_failed` and an unrecorded export 503, both with nothing sent.
+See [recovery](recovery.md#online-backups-of-the-access-database).

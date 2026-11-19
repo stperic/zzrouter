@@ -118,6 +118,9 @@ func (s *Server) localOperator(c *gin.Context) {
 // browser-admin gate instead, and the route keeps its admin tier, since zz_api reaches it
 // with the caller's key; a request with the header never reaches that gate.
 func (s *Server) localRoute(method, route string, replay, orAdmin bool, handler gin.HandlerFunc) {
+	if strings.HasSuffix(route, "/") {
+		panic("localRoute: " + route + " ends with a slash: the route would be recorded without it, so the catalog would not mark it local")
+	}
 	gate := s.localOperator
 	if orAdmin {
 		local, admin := gate, s.auth.browserAdminAuthMiddleware()

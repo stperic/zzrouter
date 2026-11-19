@@ -162,8 +162,8 @@ func TestLocalOperatorRoutesStayOutOfAgentSurfaces(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{})
 	}
 	s.localRoute(http.MethodPost, "/system/state/reset", true, false, probe)
-	s.localRoute(http.MethodGet, "/system/state/backups/:id/content", false, false, probe)
-	require.Len(t, s.localRoutes, 3, "owner recovery and two probes")
+	require.Len(t, s.localRoutes, 3, "owner recovery, backup content and a probe")
+	require.Contains(t, s.localRoutes, http.MethodGet+" "+backupsPath+"/:id/content")
 	catalog := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/server/routes", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, catalog.Code)
 	var routes struct{ Routes []RouteSpec }
@@ -221,11 +221,13 @@ func TestLocalOperatorProofStaysOutOfMCPDispatch(t *testing.T) {
 }
 
 // Only localRoute names the gate, so every route behind the proof is mounted by it, and
-// is recorded as local unless it declares the admin alternative.
+// is recorded as local unless it declares the admin alternative; only the gate checks a
+// request or a proof, so no handler admits a caller by half of it.
 func TestLocalOperatorMountedOnlyByLocalRoute(t *testing.T) {
 	names, err := filepath.Glob("*.go")
 	require.NoError(t, err)
-	uses := 0
+	owners := map[string]string{"localOperator": "localRoute", "localOperatorRequest": "localOperator", "localProof.Verify": "localOperator"}
+	uses := map[string]int{}
 	for _, name := range names {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -233,17 +235,36 @@ func TestLocalOperatorMountedOnlyByLocalRoute(t *testing.T) {
 		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
 		require.NoError(t, err)
 		for _, decl := range file.Decls {
+			fn, _ := decl.(*ast.FuncDecl)
 			ast.Inspect(decl, func(n ast.Node) bool {
-				if selector, ok := n.(*ast.SelectorExpr); ok && selector.Sel.Name == "localOperator" {
-					uses++
-					fn, _ := decl.(*ast.FuncDecl)
-					require.True(t, fn != nil && fn.Name.Name == "localRoute", "%s names the gate outside localRoute", name)
+				var used string
+				switch n := n.(type) {
+				case *ast.SelectorExpr:
+					used = n.Sel.Name
+					if inner, ok := n.X.(*ast.SelectorExpr); ok && used == "Verify" {
+						used = inner.Sel.Name + ".Verify"
+					}
+				case *ast.CallExpr:
+					if ident, ok := n.Fun.(*ast.Ident); ok {
+						used = ident.Name
+					}
+				}
+				if owner, gated := owners[used]; gated {
+					uses[used]++
+					require.True(t, fn != nil && fn.Name.Name == owner, "%s uses %s outside %s", name, used, owner)
 				}
 				return true
 			})
 		}
 	}
-	require.Equal(t, 1, uses)
+	require.Equal(t, map[string]int{"localOperator": 1, "localOperatorRequest": 1, "localProof.Verify": 1}, uses)
+}
+
+// A route ending in a slash would be recorded without it, and so not as local: refused.
+func TestLocalRouteRefusesATrailingSlash(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	require.PanicsWithValue(t, "localRoute: /test/local/ ends with a slash: the route would be recorded without it, so the catalog would not mark it local",
+		func() { s.localRoute(http.MethodGet, "/test/local/", false, false, func(*gin.Context) {}) })
 }
 
 // Neither the access log nor the server log ever holds the proof.

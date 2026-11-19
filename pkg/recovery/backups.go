@@ -3,8 +3,11 @@ package recovery
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -43,6 +46,9 @@ var (
 	ErrBackupNotFound = errors.New("no retained online backup has this ID")
 	// ErrImageCheck refuses a backup whose copy of the database failed its check.
 	ErrImageCheck = errors.New("the backup's copy of the access database failed its check")
+	// ErrArchiveRefused refuses to export a retained archive that fails its
+	// check, or is not the archive listed.
+	ErrArchiveRefused = errors.New("the backup's archive failed its check")
 )
 
 // LiveStore is the access store an online backup copies: *sqlstore.Store.
@@ -218,6 +224,59 @@ func (b *Backups) Get(id string) (OnlineBackup, error) {
 		}
 	}
 	return OnlineBackup{}, ErrBackupNotFound
+}
+
+// Export is a retained backup opened for streaming, checked on the file it
+// streams from and positioned at its start. The caller closes File.
+type Export struct {
+	OnlineBackup
+	File *os.File
+}
+
+// Open opens the retained backup with this ID for export. It checks the
+// archive on the open file as recovery check does, hashing it, then commits
+// the "backup exported" audit row, so no byte leaves unchecked or unrecorded.
+// A failed check, or bytes other than the ones listed, is ErrArchiveRefused;
+// a cancellation or a file-system failure is returned as it is.
+func (b *Backups) Open(ctx context.Context, id string) (Export, error) {
+	backup, err := b.Get(id)
+	if err != nil {
+		return Export{}, err
+	}
+	f, err := openRegular(b.path(id + archiveSuffix))
+	if errors.Is(err, fs.ErrNotExist) {
+		err = ErrBackupNotFound // pruned since it was listed
+	}
+	if err != nil {
+		return Export{}, err
+	}
+	sum := sha256.New()
+	r, err := readArchiveManifest(struct { // closes f when it fails
+		io.Reader
+		io.Closer
+	}{io.TeeReader(f, sum), f})
+	if err == nil {
+		_, err = r.check(ctx, "", extraction{scratch: checkScratch()}) // reads the whole file
+	}
+	if err == nil && hex.EncodeToString(sum.Sum(nil)) != backup.SHA256 {
+		err = errors.New("the archive is not the one listed")
+	}
+	if err != nil {
+		_ = f.Close()
+		var path *fs.PathError // a file-system failure: the surroundings failed, not the archive
+		if ctx.Err() == nil && !errors.As(err, &path) {
+			err = fmt.Errorf("%w: %w", ErrArchiveRefused, err)
+		}
+		return Export{}, err
+	}
+	if _, err = f.Seek(0, io.SeekStart); err == nil {
+		err = b.src.Record(ctx, audit.Event{Action: audit.ActionBackupExported, Subject: id, Metadata: map[string]any{"sha256": backup.SHA256}})
+	}
+	if err != nil {
+		_ = f.Close()
+		return Export{}, err
+	}
+	return Export{OnlineBackup: backup, File: f}, nil
 }
 
 // Create copies the live store into a checked archive, commits the "backup

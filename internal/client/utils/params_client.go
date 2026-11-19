@@ -96,7 +96,7 @@ func (c *Client) sendMergePatch(ctx context.Context, provider string, query url.
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return readResponse(resp, target, operation)
+	return ReadResponse(resp, target, operation)
 }
 
 // ParameterSchema describes one key in a provider's merged schema.

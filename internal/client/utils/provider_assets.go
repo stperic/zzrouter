@@ -62,7 +62,7 @@ func (c *Client) PutProviderAsset(provider, name string, data []byte, restart bo
 		return out, fmt.Errorf("%s: %w", operation, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return out, readResponse(resp, &out, operation)
+	return out, ReadResponse(resp, &out, operation)
 }
 
 // DeleteProviderAsset removes an asset.
