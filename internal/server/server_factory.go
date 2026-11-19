@@ -161,9 +161,8 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.GetNodename, s.failureClassifier)
 	s.inference.affinity = newResponseAffinity(0)
 
-	// Initialize the model subsystem. Pricing wires up front; Cache and
-	// NodeCache are assigned in server_wiring.go once cluster setup has
-	// built the dependencies they need.
+	// Initialize the model subsystem. Pricing wires up front; the catalog
+	// cache is assigned once its cluster dependencies are available.
 	s.model = &model.Subsystem{}
 	if cfg.Models.Pricing.IsEnabled() {
 		cm := pkgConfig.NewConfigManager("zzrouter")
@@ -403,11 +402,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			slog.Info("Model groups loaded", "count", s.model.Groups.Len(), "path", groupsPath)
 		}
 		s.model.Resolver = resolver.NewGroup(s.model.Groups, defaultResolver)
-		s.model.NodeCache = cache.NewNodeResourceCache()
-
-		// Wire Cache — must happen after NodeCache is built. AutoRoute is
-		// set via SetAutoRoute below (breaks the construction cycle:
-		// autoroute.New needs Cache.GetAllModels).
+		// AutoRoute is wired below once Cache.GetAllModels is available.
 		s.model.Cache = cache.New(cache.Config{
 			InventoryStatus: s.providerInventoryStatus,
 			ModelDetails: func(provider, model string, details map[string]any) map[string]any {
@@ -420,8 +415,6 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			Registry:                  func() *modelregistry.Registry { return s.model.Registry },
 			AppsConfig:                s.appsConfig,
 			ClusterClient:             s.getClusterClient,
-			NodeCache:                 s.model.NodeCache,
-			Resources:                 s.cluster.resources,
 			NodeConfig:                cfg,
 			ResolveEndpointToNodename: s.resolveEndpointToNodename,
 		})
@@ -918,7 +911,7 @@ func wireRouteEventEmitters(bus *route_events.Bus, cooldowns *fallback.CooldownM
 	}
 }
 
-// observePeerSnapshot accepts resources from the existing authenticated health cadence.
+// observePeerSnapshot records peer identity and attaches the signal poller.
 func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) {
 	s.cachePeerName(hostURL, snapshot.NodeName)
 	if s.cluster.poller != nil && snapshot.Quality == mesh.QualityFull {
@@ -926,9 +919,6 @@ func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) 
 		if clusterURL != "" {
 			s.cluster.poller.Observe(clusterURL, snapshot.NodeName)
 		}
-	}
-	if snapshot.Quality == mesh.QualityFull && snapshot.Resources != nil && s.model.NodeCache != nil {
-		s.model.NodeCache.Put(snapshot.NodeName, snapshot.Resources, snapshot.ResourcesObservedAt)
 	}
 }
 

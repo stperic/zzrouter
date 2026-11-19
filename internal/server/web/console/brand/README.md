@@ -25,9 +25,11 @@ The main palette is charcoal `#242420`, terracotta `#d97757`, and cream `#faf9f5
 The app tile uses deeper terracotta `#c96f4d` behind charcoal and cream strokes.
 The console selects the light or dark mark through the existing theme tokens.
 
-The terminal rendition lives in `pkg/ui/brand.go`. CLI help and the first TUI
-menu share the five-line ASCII logo, including its Router wordmark.
-Opening a menu item or group replaces it with the quiet `zzRouter` text wordmark,
+The terminal renditions live in `pkg/ui/brand.go`. CLI help uses the five-line
+ASCII logo. The first TUI menu draws in the interlocking double-Z symbol beside
+the Router wordmark. The terminal cells follow the console mark and keep the
+terracotta stroke in both themes, with cream on dark and charcoal on light.
+Opening a menu item or group replaces it with the single-line `zzRouter` wordmark,
 which all working views share. Short and narrow terminals start compact.
 Command names and machine-readable output retain the
 `zzrouter` identity.

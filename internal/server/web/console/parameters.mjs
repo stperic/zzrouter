@@ -34,7 +34,8 @@ export function parameterPatch(selection, changes, schema) {
     case 'defaults': return { defaults: cell };
     case 'model': return { models: { [selection.model]: cell } };
     case 'node': return { nodes: { [selection.node]: cell } };
-    case 'node-model': return { nodes: { [selection.node]: { models: { [selection.model]: cell } } } };
+    // The API accepts a model declaration and its first node override atomically.
+    case 'node-model': return { models: { [selection.model]: {} }, nodes: { [selection.node]: { models: { [selection.model]: cell } } } };
     default: throw new Error('Choose a configuration scope.');
   }
 }

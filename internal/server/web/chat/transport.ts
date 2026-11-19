@@ -124,6 +124,7 @@ export function createChatAdapter(host: ChatHost): ChatModelAdapter {
           name: 'zzrouter', baseURL: host.baseURL, includeUsage: true, metadataExtractor: timingMetadata,
           fetch: async (url, init) => {
             const response = await host.fetcher(url, init);
+            stats.route = response.headers.get('X-zzrouter-Route');
             stats.node = response.headers.get('X-zzrouter-Node');
             stats.provider = response.headers.get('X-zzrouter-Provider');
             return compatibleStream(response, host.onStatus);

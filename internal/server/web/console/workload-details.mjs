@@ -2,6 +2,7 @@ import { el, text, button, leaveButton, actions, badge, facts, message, problem,
 import { liveReads } from './live-reads.mjs';
 import { activityText, observeActivity } from './observations.mjs';
 import { failureDetails } from './diagnostics.mjs';
+import { parameterSettings } from './parameters.mjs';
 import { runLogs } from './run-logs.mjs';
 import { ownedPath, jobProgress, jobSubject, newerJob, workloadKey } from './workload-data.mjs';
 
@@ -67,6 +68,14 @@ export async function inspectWorkload(p, kind, node, id, { controls = [], observ
       row = kind === 'jobs' ? newerJob(row, { ...next, node }) : { ...next, node };
       observeActivity(row.activity, startedAt);
       content.replaceChildren(kind === 'jobs' ? jobDetails(row) : runDetails(p, row));
+      const failedLaunch = kind === 'runs' ? row.status === 'failed' && row :
+        row.kind === 'run' && row.phase === 'failed' && row.meta?.failure && row.meta;
+      if (failedLaunch?.provider && failedLaunch.model) {
+        const { provider, model } = failedLaunch;
+        content.append(actions(leaveButton('Edit launch parameters', () => parameterSettings(p, {
+          provider, model, node, back: () => inspectWorkload(p.panel.view(kind === 'runs' ? 'Run details' : 'Job details'), kind, node, id, { controls, observed }),
+        }), p.api)));
+      }
       terminal = kind === 'jobs' ? ['done', 'failed'].includes(row.phase) : row.record_only || ['stopped', 'failed', 'crashed'].includes(row.status);
       observed(row, terminal);
       stop.textContent = row.record_only ? 'Remove retained pin' : 'Stop run';

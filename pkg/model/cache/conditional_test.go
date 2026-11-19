@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,8 +25,6 @@ func TestConditionalNodePublicationLifecycle(t *testing.T) {
 	initial := &conditionalWarmCluster{}
 	c.clusterClient = func() mesh.ClusterClient { return initial }
 	require.NoError(t, c.RefreshCacheSync(t.Context()))
-	newer := &mesh.ResourceMetrics{NodeName: "A", GPUMemoryFreeMB: 8192}
-	c.nodeCache.Put("A", newer, utils.Now())
 	phase := 0
 	client := conditionalRequestCluster{read: func(q *mesh.QueryParams) (*mesh.Response, error) {
 		switch phase {
@@ -48,7 +45,6 @@ func TestConditionalNodePublicationLifecycle(t *testing.T) {
 	c.clusterClient = func() mesh.ClusterClient { return client }
 	require.NoError(t, c.RefreshNode(t.Context(), "A"))
 	require.True(t, c.HasModel("old"))
-	require.Same(t, newer, c.nodeCache.Get("A"), "304 must not replay resource samples")
 	phase = 1
 	require.Error(t, c.RefreshNode(t.Context(), "A"))
 	require.Empty(t, c.workerETags["A"])
@@ -72,7 +68,7 @@ type conditionalCluster struct {
 }
 
 func conditionalResponse(name, etag string) *mesh.Response {
-	r := noticeResponse("A", name, nil)
+	r := noticeResponse("A", name)
 	r.Headers = http.Header{"Etag": []string{etag}}
 	return r
 }

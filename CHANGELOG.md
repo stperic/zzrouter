@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep running worker models eligible for route selection when their GPUs
+  have little free memory. The serving node handles memory admission for new runs.
+
 - Enable model pricing by default. An explicit `models.pricing.enabled: false`
   in `node.yaml` still disables it.
 
@@ -15,8 +18,9 @@
   hide disabled providers by default, and confirm provider removal.
 
 - Carry the double-Z brand into CLI help, the TUI and the project README.
-  Share the five-line ASCII logo between CLI help and the first TUI menu, then
-  use a quiet single-line wordmark during navigation and in small terminals.
+  Use the ASCII logo in CLI help and animate the double-Z symbol in the TUI
+  welcome. The TUI uses a single-line wordmark during navigation and in small
+  terminals.
 - Add the double-Z console logo, matching color and monochrome assets, and a
   browser icon. Pair the symbol with Router without repeating the ZZ lettering.
 - Add browser-local Claude Web and Claude Code light/dark console themes, with

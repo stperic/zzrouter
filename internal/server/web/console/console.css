@@ -152,7 +152,7 @@
 .chat-composer-footer { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:0 .75rem .75rem }
 .chat-composer-footer>span:first-child { color:var(--muted); font-size:.72rem }
 .chat-composer-footer button { min-width:82px }
-.chat-privacy { text-align:center; color:var(--muted); font-size:.72rem; margin:.6rem 0 0 }
+.chat-footer { display:flex; flex-wrap:wrap; justify-content:center; gap:.2rem 1rem; text-align:center; color:var(--muted); font-size:.72rem; margin:.6rem 0 0 }
 .chat-scroll { position:absolute; top:-2.2rem; left:50%; transform:translateX(-50%); font-size:.75rem; padding:.3rem .8rem; box-shadow:0 2px 10px var(--shadow) }
 .chat-scroll:disabled { display:none }
 .chat-progress { max-width:850px; margin:0 auto 1rem; display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.85rem }
@@ -1307,7 +1307,7 @@ h1 {
   .chat-composer-area { padding:.5rem .75rem }
   .chat-composer textarea { min-height:56px; max-height:90px; padding:.6rem .75rem }
   .chat-composer-footer { padding-bottom:.5rem }
-  .chat-privacy { font-size:.65rem; margin-top:.3rem }
+  .chat-footer { font-size:.65rem; margin-top:.3rem }
 }
 
 .discovery-markdown, .discovery-extra, .discovery-files { overflow-wrap:anywhere; min-width:0 }

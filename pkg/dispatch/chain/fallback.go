@@ -19,7 +19,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
-	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
@@ -146,10 +145,8 @@ func (p *Proxy) ProxyWithFallback(
 		},
 	)
 
-	// Filter: remove candidates that don't have enough memory for the model.
-	filtered = p.filterByMemory(filtered, endpoint)
-
-	// Apply routing strategy.
+	// The serving node owns memory admission and can reuse a run that has
+	// already allocated its memory.
 	strategy := p.strategies.Get(resolved.Strategy)
 	if strategy == nil {
 		strategy = p.strategies.Get(string(modelgroup.StrategyPriority)) // default
@@ -650,72 +647,6 @@ func attemptHeaders(h http.Header, up backend.Upstream, dep pfallback.Candidate)
 func (p *Proxy) isModelRunning(model, provider, endpoint string) bool {
 	inst, found := p.deps.AppInstance(model, provider, endpoint)
 	return found && inst.GetStatus() == instance.StatusRunning
-}
-
-// filterByMemory removes candidates on nodes that don't have enough
-// memory for the model. Uses the node resource cache (refreshed
-// alongside the model cache) — no per-request calls. Only checks
-// on-demand models that aren't already running (running models have
-// memory allocated). Rough first-pass: estimates model memory from
-// parameter count, compares against cached node metrics.
-func (p *Proxy) filterByMemory(candidates []pfallback.Candidate, endpoint string) []pfallback.Candidate {
-	if !p.deps.NodeCacheReady() || len(candidates) <= 1 {
-		return candidates
-	}
-
-	localHostname := p.deps.NodeName()
-
-	result := make([]pfallback.Candidate, 0, len(candidates))
-	for _, c := range candidates {
-		// Already-running models have memory allocated — pass through.
-		if c.Node == "" && p.isModelRunning(c.Model, c.App, endpoint) {
-			result = append(result, c)
-			continue
-		}
-
-		// Replicas of one group may serve different models, so each is sized by its own.
-		estimate := modelregistry.EstimateModelMemory(c.Model, "", "")
-		if estimate == nil || estimate.MinMemoryMB <= 0 {
-			result = append(result, c) // Can't estimate — pass through.
-			continue
-		}
-
-		// Resolve node name for cache lookup.
-		nodeName := c.Node
-		if nodeName == "" {
-			nodeName = localHostname
-		}
-
-		metrics := p.deps.NodeMetrics(nodeName)
-		if metrics == nil {
-			result = append(result, c) // No metrics for this node — don't filter.
-			continue
-		}
-
-		// Check available memory: prefer GPU VRAM if available, fall
-		// back to RAM.
-		availableMB := metrics.RAMAvailableMB
-		if metrics.GPUMemoryFreeMB > 0 {
-			availableMB = metrics.GPUMemoryFreeMB
-		}
-
-		if availableMB < estimate.MinMemoryMB {
-			slog.Info("[Fallback] Skipping deployment: insufficient memory",
-				"deployment", c.Name, "node", nodeName, "model", c.Model,
-				"required_mb", estimate.MinMemoryMB, "available_mb", availableMB)
-			continue
-		}
-
-		result = append(result, c)
-	}
-
-	// Never filter ALL candidates — keep at least one to try (let it
-	// fail naturally).
-	if len(result) == 0 && len(candidates) > 0 {
-		return candidates[:1]
-	}
-
-	return result
 }
 
 // recordFallbackMetrics updates the inference recorder with fallback

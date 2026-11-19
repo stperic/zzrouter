@@ -29,8 +29,10 @@ function MessageFooter() {
   const { showStats, enabled } = useContext(Settings);
   const status = useAuiState(state => state.message.status);
   const stats = useAuiState(state => state.message.metadata.custom);
-  const { promptMs, generationMs, tokensPerSecond, providerFirstTokenMs, firstTokenMs, durationMs, outputTokens } = stats;
+  const { route, node, provider, promptMs, generationMs, tokensPerSecond, providerFirstTokenMs, firstTokenMs, durationMs, outputTokens } = stats;
   const entries = showStats && typeof durationMs === 'number' ? [
+    route && typeof node === 'string' && node && `Node: ${node}`,
+    route && typeof provider === 'string' && provider && `Provider: ${provider}`,
     typeof stats.inputTokens === 'number' && `${stats.inputTokens.toLocaleString()} input tokens`,
     typeof outputTokens === 'number' && `${outputTokens.toLocaleString()} output tokens`,
     typeof promptMs === 'number' ? `Prompt processing ${seconds(promptMs)}`
@@ -51,7 +53,7 @@ function MessageFooter() {
         other: 'The model ended the response without reporting completion.',
       }[status.reason]}
     </p>}
-    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')} · * Measured or calculated in the browser</p>}
+    {entries.length > 0 && <p className="chat-stats">{entries.join(' · ')}</p>}
     <ActionBarPrimitive.Root className="chat-message-actions">
       <ActionBarPrimitive.Copy copiedDuration={1500}>
         <AuiIf condition={state => state.message.isCopied}>Copied</AuiIf>
@@ -92,7 +94,13 @@ function Conversation({ status }: { status: string }) {
           <AuiIf condition={state => state.thread.isRunning}><ComposerPrimitive.Cancel>Stop ■</ComposerPrimitive.Cancel></AuiIf>
         </div>
       </ComposerPrimitive.Root>
-      <p className="chat-privacy">Kept in this tab until you start a new chat, reload or sign out.</p>
+      <div className="chat-footer">
+        <span>Kept in this tab until you start a new chat, reload or sign out.</span>
+        {settings.showStats && <AuiIf condition={state => state.thread.messages.some(message =>
+          message.role === 'assistant' && typeof message.metadata.custom.durationMs === 'number')}>
+          <span>* Measured or calculated in the browser</span>
+        </AuiIf>}
+      </div>
     </div>
   </ThreadPrimitive.Root>;
 }

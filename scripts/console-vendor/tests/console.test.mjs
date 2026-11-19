@@ -715,35 +715,54 @@ test('large topology, mobile list and constrained Chat remain usable', { timeout
   assert.equal(await p.getByRole('button', { name: 'Verify session' }).evaluate(node => { const r = node.getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === node; }), true);
 });
 
-test('Chat distinguishes reported timings, calculated speed, and browser timing', { timeout: 30000 }, async t => {
+test('Chat shows serving targets for routes and explains browser timing once', { timeout: 30000 }, async t => {
   const f = await consolePage(t), { page } = f;
-  const timingFrames = [
-    { timings: { prompt_ms: 300, predicted_ms: 3500 } },
-    { timings: { prompt_ms: -1, predicted_ms: null } },
-    { metrics: { time_to_first_token_ms: 85.2, generation_time_ms: 1240.5, tokens_per_second: 103.2 } },
+  const responses = [
+    { node: 'fixture-worker', provider: 'ollama', stats: { timings: { prompt_ms: 300, predicted_ms: 3500 } } },
+    { node: 'studio-gpu', provider: 'vllm', stats: { timings: { prompt_ms: -1, predicted_ms: null } } },
+    { provider: 'groq', stats: { metrics: { time_to_first_token_ms: 85.2, generation_time_ms: 1240.5, tokens_per_second: 103.2 } } },
+    { node: 'studio-gpu', provider: 'vllm', stats: {} },
   ];
   let replies = 0;
   await page.route('**/v1/chat/completions', route => {
-    const stats = { choices: [], usage: { prompt_tokens: 31, completion_tokens: 22, total_tokens: 53 }, ...timingFrames[replies++] };
-    return route.fulfill({ contentType: 'text/event-stream',
-      headers: { 'X-zzrouter-Provider': 'ollama', 'X-zzrouter-Node': 'fixture-worker' }, body:
+    const { node, provider, stats } = responses[replies++];
+    const headers = { 'X-zzrouter-Provider': provider };
+    if (node) headers['X-zzrouter-Node'] = node;
+    if (route.request().postDataJSON().model === 'coding') headers['X-zzrouter-Route'] = 'coding';
+    const terminal = { choices: [], usage: { prompt_tokens: 31, completion_tokens: 22, total_tokens: 53 }, ...stats };
+    return route.fulfill({ contentType: 'text/event-stream', headers, body:
       'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n\n' +
-      `data: ${JSON.stringify(stats)}\n\ndata: [DONE]\n\n` });
+      `data: ${JSON.stringify(terminal)}\n\ndata: [DONE]\n\n` });
   });
   await f.open('#chat'); await f.model('coding');
   const composer = page.getByRole('textbox', { name: 'Message', exact: true });
   const send = page.getByRole('button', { name: 'Send ↑', exact: true });
   const stats = page.locator('.chat-assistant .chat-stats');
+  const timingNote = page.getByText('* Measured or calculated in the browser', { exact: true });
+  assert.equal(await timingNote.count(), 0);
   await composer.fill('First reply'); await send.click();
   await stats.nth(0).waitFor();
-  assert.match(await stats.nth(0).innerText(), /^31 input tokens · 22 output tokens · Prompt processing 0\.30s · Generation 3\.50s · 6\.3 tok\/s\* · \d+\.\d{2}s total\* · \* Measured or calculated in the browser$/);
+  assert.match(await stats.nth(0).innerText(), /^Node: fixture-worker · Provider: ollama · 31 input tokens · 22 output tokens · Prompt processing 0\.30s · Generation 3\.50s · 6\.3 tok\/s\* · \d+\.\d{2}s total\*$/);
   await composer.fill('Second reply'); await send.click();
   await stats.nth(1).waitFor();
-  assert.match(await stats.nth(1).innerText(), /^31 input tokens · 22 output tokens · First token \d+\.\d{2}s\* · Output stream \d+\.\d{2}s\* · \d+\.\d{2}s total\* · \* Measured or calculated in the browser$/);
-  await page.setViewportSize({ width: 390, height: 844 });
+  assert.match(await stats.nth(1).innerText(), /^Node: studio-gpu · Provider: vllm · 31 input tokens · 22 output tokens · First token \d+\.\d{2}s\* · Output stream \d+\.\d{2}s\* · \d+\.\d{2}s total\*$/);
   await composer.fill('Third reply'); await send.click();
   await stats.nth(2).waitFor();
-  assert.match(await stats.nth(2).innerText(), /First token 0\.09s · Generation 1\.24s · 103\.2 tok\/s ·/);
-  assert.equal(await stats.count(), 3, 'one stats row per assistant reply');
+  assert.match(await stats.nth(2).innerText(), /^Provider: groq · 31 input tokens · 22 output tokens · First token 0\.09s · Generation 1\.24s · 103\.2 tok\/s ·/);
+  await f.model('qwen3-coder@studio-gpu');
+  await composer.fill('Direct model reply'); await send.click();
+  await stats.nth(3).waitFor();
+  assert.match(await stats.nth(3).innerText(), /^31 input tokens · 22 output tokens · First token /);
+  assert.match(await stats.nth(0).innerText(), /^Node: fixture-worker · Provider: ollama ·/);
+  assert.equal(await stats.count(), 4, 'one stats row per assistant reply');
+  assert.equal(await timingNote.count(), 1);
+  assert.equal(await page.locator('.chat-footer').getByText('* Measured or calculated in the browser', { exact: true }).isVisible(), true);
+  assert.doesNotMatch(await page.locator('.chat-viewport').innerText(), /Measured or calculated in the browser/);
+  await page.setViewportSize({ width: 390, height: 844 });
   await audit(page, 'chat-stats-phone');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Show response statistics', exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Apply settings' }).click();
+  await timingNote.waitFor({ state: 'hidden' });
+  assert.equal(await stats.count(), 0);
 });

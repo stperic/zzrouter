@@ -59,8 +59,6 @@ type Cache struct {
 	registry                  func() *modelregistry.Registry
 	appsConfig                func() *pkgConfig.AppsConfig
 	clusterClient             func() mesh.ClusterClient
-	nodeCache                 *NodeResourceCache
-	resources                 *mesh.ResourceTracker
 	autoRoute                 AutoRouter
 	config                    *pkgConfig.NodeConfig
 	resolveEndpointToNodename func(string) string
@@ -130,11 +128,6 @@ type Config struct {
 	AppsConfig func() *pkgConfig.AppsConfig
 	// ClusterClient lazily supplies worker inventory reads; nil means no cluster.
 	ClusterClient func() mesh.ClusterClient
-	// NodeCache receives metrics from the same accepted catalog publication.
-	NodeCache *NodeResourceCache
-	// Resources is the local node's resource tracker. Its metrics are
-	// written into NodeCache under the local hostname on each refresh.
-	Resources *mesh.ResourceTracker
 	// AutoRoute, if non-nil, is reconciled after every successful refresh.
 	// Set post-construction via SetAutoRoute when the autoroute manager
 	// is wired.
@@ -157,8 +150,6 @@ func New(cfg Config) *Cache {
 		registry:                  cfg.Registry,
 		appsConfig:                cfg.AppsConfig,
 		clusterClient:             cfg.ClusterClient,
-		nodeCache:                 cfg.NodeCache,
-		resources:                 cfg.Resources,
 		autoRoute:                 cfg.AutoRoute,
 		config:                    cfg.NodeConfig,
 		resolveEndpointToNodename: cfg.ResolveEndpointToNodename,
@@ -378,8 +369,6 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 //   - Registry scan cache (pkg/modelregistry): invalidated first so the
 //     next RefreshCacheSync re-scans fresh.
 //   - Cache itself: indexes cleared, valid flag flipped; last models retained as failure evidence.
-//
-// NodeResourceCache follows accepted catalog publications without separate invalidation.
 //
 // Registry.InvalidateScanCache is called outside mc.mu to preserve the
 // lock order: RefreshCacheSync calls Registry.ListAllModels without
@@ -677,14 +666,14 @@ func (mc *Cache) refreshOnce(ctx context.Context, node string) (bool, error) {
 			return false, err
 		}
 	}
-	workerItems, workerResources, workerUnavailable := mc.fetchWorkerData(ctx, node)
+	workerItems, workerRead, workerUnavailable := mc.fetchWorkerData(ctx, node)
 	allItems := make([]map[string]any, 0, len(localItems)+len(workerItems))
 	allItems = append(allItems, localItems...)
 	allItems = append(allItems, workerItems...)
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local, node, workerResources) {
+	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local, node, workerRead) {
 		return false, nil
 	}
 	if mc.autoRoute != nil {
@@ -790,15 +779,12 @@ func (mc *Cache) placeItem(item map[string]any, node string) {
 }
 
 type workerRead struct {
-	resources  map[string]*mesh.ResourceMetrics
 	validators map[string]string
 	unchanged  map[string]bool
-	startedAt  time.Time
 }
 
 func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[string]any, *workerRead, []InventoryUnavailable) {
-	read := &workerRead{resources: make(map[string]*mesh.ResourceMetrics), validators: make(map[string]string), unchanged: make(map[string]bool), startedAt: utils.Now()}
-	workerResources := read.resources
+	read := &workerRead{validators: make(map[string]string), unchanged: make(map[string]bool)}
 	cc := mc.clusterClient()
 	if cc == nil {
 		return nil, read, nil
@@ -856,7 +842,6 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 		var body struct {
 			Unavailable []InventoryUnavailable `json:"inventory_unavailable,omitempty"`
 			Models      []map[string]any       `json:"models"`
-			Resources   *mesh.ResourceMetrics  `json:"resources,omitempty"`
 		}
 		if err := json.Unmarshal(nodeResp.Response.Body, &body); err != nil {
 			unavailable = append(unavailable, InventoryUnavailable{Node: nodeName, Reason: "node returned an invalid model inventory"})
@@ -871,27 +856,6 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 			mc.placeItem(item, node)
 		}
 		allModels = append(allModels, body.Models...)
-		if body.Resources != nil {
-			if node != "" {
-				workerResources[node] = body.Resources
-				continue
-			}
-			nodeName := body.Resources.NodeName
-			if nodeName == "" {
-				nodeName = nodeResp.NodeName
-			}
-			if nodeName == "" {
-				nodeName = nodeResp.Node
-			}
-			if mc.resolveEndpointToNodename != nil {
-				if resolved := mc.resolveEndpointToNodename(nodeName); resolved != "" {
-					nodeName = resolved
-				}
-			}
-			if nodeName != "" {
-				workerResources[nodeName] = body.Resources
-			}
-		}
 	}
 	return allModels, read, unavailable
 }
@@ -1000,7 +964,7 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 	return true
 }
 
-// acceptWorkerReadLocked binds validators and resource observations to the accepted publication.
+// acceptWorkerReadLocked binds validators to the accepted publication.
 func (mc *Cache) acceptWorkerReadLocked(node string, read *workerRead) {
 	if node == "" {
 		clear(mc.workerETags)
@@ -1015,13 +979,6 @@ func (mc *Cache) acceptWorkerReadLocked(node string, read *workerRead) {
 		for name, validator := range read.validators {
 			if validator != "" {
 				mc.workerETags[name] = validator
-			}
-		}
-		if mc.nodeCache != nil {
-			if node == "" {
-				mc.nodeCache.Update(mc.resources, mc.node.Nodename(), read.resources, read.startedAt)
-			} else if !read.unchanged[node] {
-				mc.nodeCache.Put(node, read.resources[node], read.startedAt)
 			}
 		}
 	}

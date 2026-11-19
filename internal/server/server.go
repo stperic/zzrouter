@@ -217,8 +217,7 @@ func (s *Server) IsWorker() bool {
 }
 
 // Invalidate is the single model-catalog invalidation entry point
-// (satisfies ModelCacheProvider). Cascades to Registry scan cache +
-// ModelCache; NodeResourceCache rides the next RefreshCacheSync.
+// (satisfies ModelCacheProvider). Cascades to the registry scan cache.
 func (s *Server) Invalidate() {
 	s.model.Cache.Invalidate()
 }

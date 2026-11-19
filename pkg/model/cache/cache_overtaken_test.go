@@ -11,7 +11,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -147,9 +146,9 @@ func (c noticeCluster) Broadcast(ctx context.Context, _ string, _ *mesh.QueryPar
 	return c.broadcast(ctx)
 }
 
-func noticeResponse(node, name string, metrics *mesh.ResourceMetrics) *mesh.Response {
+func noticeResponse(node, name string) *mesh.Response {
 	body, _ := json.Marshal(map[string]any{
-		"models": []map[string]any{{"name": name, "node": node, "assigned_app": "llamacpp"}}, "resources": metrics,
+		"models": []map[string]any{{"name": name, "node": node, "assigned_app": "llamacpp"}},
 	})
 	return &mesh.Response{StatusCode: 200, Body: body}
 }
@@ -159,16 +158,13 @@ func TestRefreshNodePreservesOtherNodes(t *testing.T) {
 	c.node = &fakeNode{name: "coordinator"}
 	cfg := variantApps(t, true, map[string]config.ModelSpec{"fast": {From: "base"}})
 	c.appsConfig = func() *config.AppsConfig { return cfg }
-	c.nodeCache = NewNodeResourceCache()
-	bMetrics := &mesh.ResourceMetrics{NodeName: "B"}
-	aMetrics := &mesh.ResourceMetrics{NodeName: "A"}
 	local := localModelSnapshot{models: []map[string]any{{"name": "base"}}}
 	require.True(t, c.publishModelItems([]map[string]any{
 		{"name": "base", "node": c.node.Nodename(), "assigned_app": "llamacpp"},
 		{"name": "local/shared", "node": c.node.Nodename(), "assigned_app": "llamacpp"},
 		{"name": "old", "node": "A", "assigned_app": "llamacpp"},
 		{"name": "kept", "node": "B", "assigned_app": "llamacpp"},
-	}, c.generation, []InventoryUnavailable{{Node: "A", Reason: "old failure"}, {Node: "B", Reason: "kept failure"}, {Reason: "broadcast failure"}}, local, "", &workerRead{resources: map[string]*mesh.ResourceMetrics{"B": bMetrics}, startedAt: utils.Now()}))
+	}, c.generation, []InventoryUnavailable{{Node: "A", Reason: "old failure"}, {Node: "B", Reason: "kept failure"}, {Reason: "broadcast failure"}}, local, "", nil))
 	attempt, populationErr := c.lastAttempt, errors.New("previous population error")
 	c.lastAttempt = attempt.Add(-2 * inventoryRetryInterval)
 	c.populateErr = populationErr
@@ -177,7 +173,7 @@ func TestRefreshNodePreservesOtherNodes(t *testing.T) {
 	client := noticeCluster{
 		unicast: func(_ context.Context, node string) (*mesh.Response, error) {
 			require.Equal(t, "A", node)
-			return &mesh.Response{StatusCode: 200, Body: []byte(`{"models":[{"name":"FAST","node":"A","assigned_app":"llamacpp"},{"name":"remote/shared","node":"A","assigned_app":"llamacpp"}],"resources":{"node_name":"A"}}`)}, nil
+			return &mesh.Response{StatusCode: 200, Body: []byte(`{"models":[{"name":"FAST","node":"A","assigned_app":"llamacpp"},{"name":"remote/shared","node":"A","assigned_app":"llamacpp"}]}`)}, nil
 		},
 		broadcast: func(context.Context) (*mesh.BroadcastResponse, error) {
 			t.Error("a notice broadcast to unrelated nodes")
@@ -192,8 +188,6 @@ func TestRefreshNodePreservesOtherNodes(t *testing.T) {
 	require.Equal(t, []InventoryUnavailable{{Node: "B", Reason: "kept failure"}}, c.UnavailableInventories("B", ""))
 	require.Empty(t, c.UnavailableInventories("A", ""))
 	require.Contains(t, c.UnavailableInventories("", ""), InventoryUnavailable{Reason: "broadcast failure"})
-	require.Same(t, bMetrics, c.nodeCache.Get("B"))
-	require.Equal(t, aMetrics, c.nodeCache.Get("A"))
 	require.Equal(t, local, c.localSnapshot)
 	require.Equal(t, attempt.Add(-2*inventoryRetryInterval), c.lastAttempt, "scoped success preserves even an old attempt")
 	require.ErrorIs(t, c.populateErr, populationErr)
@@ -211,13 +205,12 @@ func TestRefreshNodeOvertakesHungBroadcast(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c := newWorkerCache(t)
-	c.nodeCache = NewNodeResourceCache()
 	c.populateModelCacheFromItems([]map[string]any{{"name": "old", "node": "A"}})
 	entered, release := make(chan struct{}), make(chan struct{})
 	var broadcasts atomic.Int32
 	client := noticeCluster{
 		unicast: func(context.Context, string) (*mesh.Response, error) {
-			return noticeResponse("A", "fresh", &mesh.ResourceMetrics{NodeName: "A", CollectedAt: 2}), nil
+			return noticeResponse("A", "fresh"), nil
 		},
 		broadcast: func(ctx context.Context) (*mesh.BroadcastResponse, error) {
 			name := "fresh"
@@ -231,9 +224,8 @@ func TestRefreshNodeOvertakesHungBroadcast(t *testing.T) {
 				}
 			} else {
 				require.True(t, c.HasModel("fresh"), "an overtaken build must leave the notice published")
-				require.Equal(t, int64(2), c.nodeCache.Get("A").CollectedAt, "an overtaken build cannot overwrite metrics")
 			}
-			return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("A", name, &mesh.ResourceMetrics{NodeName: "A", CollectedAt: map[string]int64{"fresh": 2, "stale": 1}[name]})}}}, nil
+			return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("A", name)}}}, nil
 		},
 	}
 	c.clusterClient = func() mesh.ClusterClient { return client }
@@ -256,7 +248,6 @@ func TestRefreshNodeOvertakesHungBroadcast(t *testing.T) {
 	require.NoError(t, <-full)
 	require.False(t, c.HasModel("stale"))
 	require.True(t, c.HasModel("fresh"))
-	require.Equal(t, int64(2), c.nodeCache.Get("A").CollectedAt)
 }
 
 func TestRefreshNodeFailureRetainsUnavailableEvidence(t *testing.T) {
@@ -308,9 +299,9 @@ func TestRefreshNodeFailureRetainsUnavailableEvidence(t *testing.T) {
 }
 
 func TestRefreshNodeUsesRequestedIdentity(t *testing.T) {
-	for _, tc := range []struct{ name, host, resourceNode string }{
-		{"unresolved host", "unregistered.invalid:9090", "A"},
-		{"different resource spelling", "192.0.2.10:9090", "a"},
+	for _, tc := range []struct{ name, host string }{
+		{"unresolved host", "unregistered.invalid:9090"},
+		{"registered host", "192.0.2.10:9090"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newWorkerCache(t)
@@ -320,16 +311,15 @@ func TestRefreshNodeUsesRequestedIdentity(t *testing.T) {
 				}
 				return ""
 			}
-			metrics := &mesh.ResourceMetrics{NodeName: tc.resourceNode, CollectedAt: 2}
 			var reads int
 			client := noticeCluster{
 				broadcast: func(context.Context) (*mesh.BroadcastResponse, error) {
-					return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("192.0.2.10:9090", "old", &mesh.ResourceMetrics{NodeName: "A"})}}}, nil
+					return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("192.0.2.10:9090", "old")}}}, nil
 				},
 				unicast: func(_ context.Context, node string) (*mesh.Response, error) {
 					require.Equal(t, "A", node)
 					reads++
-					return noticeResponse(tc.host, map[int]string{1: "fresh", 2: "replacement"}[reads], metrics), nil
+					return noticeResponse(tc.host, map[int]string{1: "fresh", 2: "replacement"}[reads]), nil
 				},
 			}
 			c.clusterClient = func() mesh.ClusterClient { return client }
@@ -341,7 +331,6 @@ func TestRefreshNodeUsesRequestedIdentity(t *testing.T) {
 			fresh, found := c.LookupByNode("fresh", "A")
 			require.True(t, found)
 			require.Equal(t, tc.host, fresh.Extra["ip_address"])
-			require.Equal(t, metrics, c.nodeCache.Get("A"), "metrics are keyed by the requested node")
 			require.NoError(t, c.RefreshNode(t.Context(), "A"))
 			require.False(t, c.HasModel("fresh"), "the reported host must not preserve stale entries as another node")
 			require.True(t, c.HasModel("replacement"))
@@ -349,16 +338,6 @@ func TestRefreshNodeUsesRequestedIdentity(t *testing.T) {
 			require.Empty(t, c.UnavailableInventories("A", ""))
 		})
 	}
-}
-
-func TestWarmLocalCachePreservesNodeResources(t *testing.T) {
-	c := newWorkerCache(t)
-	metrics := &mesh.ResourceMetrics{NodeName: "A"}
-	c.nodeCache.Put("A", metrics, utils.Now())
-	c.warmLocalCache()
-	require.Same(t, metrics, c.nodeCache.Get("A"))
-	require.NoError(t, c.RefreshCacheSync(t.Context()))
-	require.Same(t, metrics, c.nodeCache.Get("A"), "a partial catalog read must not erase fresh health evidence")
 }
 
 func TestRefreshNodeUnpublishedAndInvalidated(t *testing.T) {
@@ -373,11 +352,11 @@ func TestRefreshNodeUnpublishedAndInvalidated(t *testing.T) {
 				unicast: func(context.Context, string) (*mesh.Response, error) {
 					reads++
 					c.Invalidate()
-					return noticeResponse("A", "stale", nil), nil
+					return noticeResponse("A", "stale"), nil
 				},
 				broadcast: func(context.Context) (*mesh.BroadcastResponse, error) {
 					broadcasts++
-					return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("A", "fresh", nil)}}}, nil
+					return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: "A", Response: noticeResponse("A", "fresh")}}}, nil
 				},
 			}
 			c.clusterClient = func() mesh.ClusterClient { return client }
@@ -396,7 +375,6 @@ func TestRefreshNodeUnpublishedAndInvalidated(t *testing.T) {
 
 func TestRefreshNodeConcurrentNotices(t *testing.T) {
 	c := newWorkerCache(t)
-	c.nodeCache = NewNodeResourceCache()
 	c.populateModelCacheFromItems([]map[string]any{{"name": "old-A", "node": "A"}, {"name": "old-B", "node": "B"}})
 	entered, release := make(chan string, 2), make(chan struct{})
 	var mu sync.Mutex
@@ -410,7 +388,7 @@ func TestRefreshNodeConcurrentNotices(t *testing.T) {
 			entered <- node
 			<-release
 		}
-		return noticeResponse(node, "fresh-"+node, &mesh.ResourceMetrics{NodeName: node}), nil
+		return noticeResponse(node, "fresh-"+node), nil
 	}}
 	c.clusterClient = func() mesh.ClusterClient { return client }
 	results := make(chan error, 2)
@@ -425,6 +403,5 @@ func TestRefreshNodeConcurrentNotices(t *testing.T) {
 	for _, node := range []string{"A", "B"} {
 		require.False(t, c.HasModel("old-"+node))
 		require.True(t, c.HasModel("fresh-"+node))
-		require.Equal(t, node, c.nodeCache.Get(node).NodeName)
 	}
 }
