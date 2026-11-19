@@ -102,11 +102,6 @@ type Manifest struct {
 	keyInfo         fs.FileInfo
 }
 
-// Backup writes an installation bundle, as BackupProfile does.
-func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error) {
-	return BackupProfile(ctx, ProfileInstallation, dir, output, keyOutput)
-}
-
 // BackupProfile writes an installation or a handoff bundle. It requires a
 // stopped installation and a fresh output path. The key is
 // exported separately, never packed with the secret-bearing recovery archive.

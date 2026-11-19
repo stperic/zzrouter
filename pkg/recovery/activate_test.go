@@ -598,7 +598,7 @@ func TestNoBundleCarriesAnActivation(t *testing.T) {
 	_, err := Activate(t.Context(), dir, staging, ActivateOptions{})
 	require.NoError(t, err)
 	require.DirExists(t, filepath.Join(dir, rollbackDir))
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	for _, file := range manifest.Files {
 		require.False(t, strings.HasPrefix(file.Name, "config/"+rollbackDir+"/") || file.Name == "config/"+activationFile, "%s travels", file.Name)
