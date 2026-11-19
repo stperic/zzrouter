@@ -1,6 +1,7 @@
 package people
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -74,4 +75,50 @@ func TestNewStateValidates(t *testing.T) {
 		_, err := NewState(records)
 		require.Error(t, err, name)
 	}
+}
+
+// TestRestaged gives every person a new revision and expires exactly the
+// pending grants, leaving everything else, and its argument, as they were.
+func TestRestaged(t *testing.T) {
+	t.Parallel()
+	now := utils.NowUTC()
+	used, revoked := now.Add(-time.Hour), now.Add(-time.Minute)
+	grant := func(expires time.Time, usedAt, revokedAt *time.Time) GrantRecord {
+		return GrantRecord{Grant: Grant{ID: "grant", Purpose: PurposeSession, ExpiresAt: expires, UsedAt: usedAt, RevokedAt: revokedAt}, Issuer: Issuer{Reference: "installation"}, BrowserHash: "browser"}
+	}
+	r := Records{
+		Initialized: true,
+		OwnerID:     "owner",
+		People: map[string]PersonRecord{
+			"owner":  {Person: Person{ID: "owner", Username: "owner", Revision: "owner revision"}, PasswordHash: "owner hash"},
+			"member": {Person: Person{ID: "member", Username: "member", Revision: "member revision"}, PasswordHash: "member hash"},
+		},
+		Grants: map[string]GrantRecord{
+			"pending": grant(now.Add(time.Hour), nil, nil),
+			"used":    grant(now.Add(time.Hour), &used, nil),
+			"revoked": grant(now.Add(time.Hour), nil, &revoked),
+			"expired": grant(now.Add(-time.Second), nil, nil),
+		},
+	}
+	original := Records{Initialized: r.Initialized, OwnerID: r.OwnerID, People: maps.Clone(r.People), Grants: maps.Clone(r.Grants)}
+
+	restaged := Restaged(r)
+	assert.Equal(t, original, r, "the argument is unchanged")
+	require.Len(t, restaged.People, 2)
+	for id, p := range restaged.People {
+		assert.NotEqual(t, r.People[id].Revision, p.Revision, id)
+		assert.NotEmpty(t, p.Revision, id)
+		p.Revision = r.People[id].Revision
+		assert.Equal(t, r.People[id], p, "%s: only the revision changes", id)
+	}
+	assert.NotEqual(t, restaged.People["owner"].Revision, restaged.People["member"].Revision)
+	pending := restaged.Grants["pending"]
+	assert.False(t, active(pending.Grant), "a pending grant expires")
+	assert.False(t, pending.ExpiresAt.Before(now), "at the time of the restore")
+	pending.ExpiresAt = r.Grants["pending"].ExpiresAt
+	assert.Equal(t, r.Grants["pending"], pending, "only its expiry changes")
+	for _, hash := range []string{"used", "revoked", "expired"} {
+		assert.Equal(t, r.Grants[hash], restaged.Grants[hash], hash)
+	}
+	assert.Equal(t, r.OwnerID, restaged.OwnerID)
 }

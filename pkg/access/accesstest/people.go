@@ -534,22 +534,25 @@ func testConcurrentIssueSetup(t *testing.T, h Harness) {
 }
 
 // testInvitationRacesTeamDeletion: an invitation either sees its team gone or
-// keeps it from being deleted.
+// keeps it from being deleted, in either order.
 func testInvitationRacesTeamDeletion(t *testing.T, h Harness) {
 	s := h.Store
-	for i := range 8 {
-		teamID := fmt.Sprint("invited-", i)
+	createTeam(t, s, "gate", sharedTeam())
+	issued := map[bool]int{}
+	for round := 0; issued[true] == 0 || issued[false] == 0; round++ {
+		require.Less(t, round, 12, "both orders occur")
+		teamID := fmt.Sprint("invited-", round)
 		createTeam(t, s, teamID, sharedTeam())
-		start := make(chan struct{})
 		var issueErr, deleteErr error
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			<-start
+		issue := func() {
 			_, issueErr = s.People().Issue(context.Background(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: teamID, Role: "user", Issuer: people.Issuer{Reference: installation}})
-		})
-		wg.Go(func() { <-start; deleteErr = s.DeleteTeam(context.Background(), teamID, audit.Event{}) })
-		close(start)
-		wg.Wait()
+		}
+		remove := func() { deleteErr = s.DeleteTeam(context.Background(), teamID, audit.Event{}) }
+		if round%2 == 0 {
+			QueuedRace(t, s, "gate", issue, remove)
+		} else {
+			QueuedRace(t, s, "gate", remove, issue)
+		}
 		snap := s.Snapshot()
 		if issueErr == nil {
 			require.ErrorIs(t, deleteErr, teams.ErrTeamHasMembers)
@@ -560,6 +563,7 @@ func testInvitationRacesTeamDeletion(t *testing.T, h Harness) {
 			assert.Nil(t, snap.Team(teamID))
 			assert.Zero(t, snap.TeamImpact(teamID).Invitations, "no invitation outlives its team")
 		}
+		issued[issueErr == nil]++
 	}
 }
 

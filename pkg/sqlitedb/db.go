@@ -66,13 +66,14 @@ func openError(path string, err error) error {
 	return fmt.Errorf("open %s: %w", path, err)
 }
 
-func connect(ctx context.Context, path string, configured bool) (*sql.DB, error) {
+// connect opens path in mode "rw" or "ro"; a configured connection gets the store settings.
+func connect(ctx context.Context, path, mode string, configured bool) (*sql.DB, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 	u := url.URL{Scheme: "file", Path: filepath.ToSlash(abs), OmitHost: true}
-	q := url.Values{"mode": {"rw"}, "_pragma": {"busy_timeout(5000)"}}
+	q := url.Values{"mode": {mode}, "_pragma": {"busy_timeout(5000)"}}
 	if configured {
 		q["_pragma"] = append(q["_pragma"], "foreign_keys(1)", "journal_mode(DELETE)", "synchronous(EXTRA)")
 		q.Set("_txlock", "immediate")
@@ -103,7 +104,7 @@ func Probe(ctx context.Context, path string) (h Header, err error) {
 		}
 		return h, err
 	}
-	db, err := connect(ctx, path, false)
+	db, err := connect(ctx, path, "rw", false)
 	if err != nil {
 		return h, err
 	}
@@ -126,41 +127,47 @@ func Open(ctx context.Context, path string, s Schema) (*DB, error) {
 	if err := security.RestrictFilePermissions(path); err != nil {
 		return nil, openError(path, err)
 	}
-	db, err := connect(ctx, path, true)
+	db, err := connect(ctx, path, "rw", true)
 	if err != nil {
 		return nil, openError(path, err)
 	}
 	return &DB{db: db, schema: s, detached: context.WithoutCancel(ctx)}, nil
 }
 
+// OpenAny probes path, which settles a journal a crash left, and opens it
+// read-only without admitting its header, which it returns for the caller to
+// judge: a stopped file another release wrote can still be copied with CopyTo
+// and read for the tables every version keeps. Probe's journal recovery is its
+// only write; it leaves permissions alone.
+func OpenAny(ctx context.Context, path string, s Schema) (*DB, Header, error) {
+	h, err := Probe(ctx, path)
+	if err != nil {
+		return nil, h, err
+	}
+	db, err := connect(ctx, path, "ro", false)
+	if err != nil {
+		return nil, h, openError(path, err)
+	}
+	return &DB{db: db, schema: s, detached: context.WithoutCancel(ctx)}, h, nil
+}
+
 // Create makes and syncs an absent 0600 staged file, applying migrations and init atomically.
 // Failure removes it; a crash can leave a file that Create refuses, so callers own staging cleanup.
 func Create(ctx context.Context, path string, s Schema, init func(*sql.Tx) error) (d *DB, err error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
+	err = createFile(path, func() error {
+		db, err := connect(ctx, path, "rw", true)
 		if err != nil {
-			if d != nil {
-				err = errors.Join(err, d.Close())
-			}
-			err = errors.Join(err, os.Remove(path))
-			d = nil
+			return err
 		}
-	}()
-	if err = errors.Join(f.Close(), security.RestrictFilePermissions(path)); err != nil {
-		return nil, err
-	}
-	db, err := connect(ctx, path, true)
-	if err != nil {
-		return nil, err
-	}
-	d = &DB{db: db, schema: s, detached: context.WithoutCancel(ctx)}
-	_, _, err = d.migrate(ctx, init, true)
-	if err == nil {
-		err = syncFile(path)
-	}
+		d = &DB{db: db, schema: s, detached: context.WithoutCancel(ctx)}
+		if _, _, err = d.migrate(ctx, init, true); err == nil {
+			err = syncFile(path)
+		}
+		if err != nil {
+			err, d = errors.Join(err, d.Close()), nil
+		}
+		return err
+	})
 	return d, err
 }
 

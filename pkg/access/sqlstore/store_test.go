@@ -58,18 +58,22 @@ func openStore(t *testing.T, dir string, opts Options) *Store {
 func dbPath(dir string) string { return filepath.Join(dir, "access", fileName) }
 
 // rawDB opens dir's database beside any open store, as an operator's tool would.
-func rawDB(t *testing.T, dir string) *sql.DB {
+func rawDB(t *testing.T, dir string) *sql.DB { return rawFile(t, dbPath(dir)) }
+
+func rawFile(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sqlitedb.Open(t.Context(), dbPath(dir), schema)
+	db, err := sqlitedb.Open(t.Context(), path, schema)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db.SQL()
 }
 
 // storedEvents reads the audit table, oldest first.
-func storedEvents(t *testing.T, dir string) []audit.Event {
+func storedEvents(t *testing.T, dir string) []audit.Event { return fileEvents(t, dbPath(dir)) }
+
+func fileEvents(t *testing.T, path string) []audit.Event {
 	t.Helper()
-	db, err := sqlitedb.Open(t.Context(), dbPath(dir), schema)
+	db, err := sqlitedb.Open(t.Context(), path, schema)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, db.Close()) }()
 	var events []audit.Event

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -84,10 +85,14 @@ type Options struct {
 	Fatal func(error)
 }
 
-// meta are the values any release can read: see the meta table.
-type meta struct {
-	storeID, generation string
-	revision, sequence  uint64
+// Meta are the values any release can read from any schema version: the
+// immutable StoreID, the Generation that a restore replaces, the SchemaVersion
+// from the file header, the Revision that record changes advance and the
+// Sequence that every commit advances.
+type Meta struct {
+	StoreID, Generation string
+	SchemaVersion       int
+	Revision, Sequence  uint64
 }
 
 // part is the set of records a commit may change; none records events only.
@@ -111,7 +116,7 @@ type records struct {
 type state struct {
 	records
 	snap *access.Snapshot
-	meta meta
+	meta Meta
 }
 
 // Store is access.Store over access.sqlite.
@@ -153,21 +158,37 @@ func open(ctx context.Context, dir string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.attach(ctx, path, false); err != nil {
+		return nil, err
+	}
+	if err := ensureMarker(dir, s.pub.Load().meta.StoreID); err != nil {
+		_ = s.db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// errLiveImage refuses an image operation on the live database's file, which
+// an open store would overwrite with what it publishes.
+var errLiveImage = errors.New("an image cannot be the live access database file")
+
+// attach opens the database at path into s, refusing it for a start's reasons.
+func (s *Store) attach(ctx context.Context, path string, image bool) error {
+	if image && strings.EqualFold(filepath.Base(path), fileName) {
+		return errLiveImage
+	}
 	db, err := sqlitedb.Open(ctx, path, schema)
 	if err != nil {
-		return nil, fileRefusal(err)
+		return fileRefusal(err)
 	}
-	st, err := check(ctx, db)
-	if err == nil {
-		err = ensureMarker(dir, st.meta.storeID)
-	}
+	st, err := check(ctx, db, image)
 	if err != nil {
 		_ = db.Close()
-		return nil, err
+		return err
 	}
 	s.db = db
 	s.pub.Store(st)
-	return s, nil
+	return nil
 }
 
 func (s *Store) openPeople(opts Options) error {
@@ -211,20 +232,13 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 	if err := security.RestrictDirectoryPermissions(accessDir); err != nil {
 		return "", err
 	}
-	path := filepath.Join(accessDir, fileName)
+	path := databasePath(dir)
 	staged := path + ".staged"
 	if err := removeLeftovers(staged); err != nil {
 		return "", err
 	}
-	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
-		return path, nil // any other failure is Open's to report
-	}
-	// An empty store here would let the next visitor claim the owner account.
-	if _, err := os.Lstat(filepath.Join(dir, markerName)); !errors.Is(err, fs.ErrNotExist) {
-		if err != nil {
-			return "", err
-		}
-		return "", refuse(Missing, nil)
+	if none, err := noStore(dir); !none {
+		return path, err
 	}
 	if err := removeLeftovers(path + "-journal"); err != nil {
 		return "", err
@@ -243,12 +257,30 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 	return path, ensureMarker(dir, storeID)
 }
 
+func databasePath(dir string) string { return filepath.Join(dir, "access", fileName) }
+
+// noStore reports whether dir holds neither a database nor a store marker. A
+// marker without its database is Missing: an empty store there would let the
+// next visitor claim the owner account.
+func noStore(dir string) (bool, error) {
+	if _, err := os.Lstat(databasePath(dir)); !errors.Is(err, fs.ErrNotExist) {
+		return false, nil // any other failure is the opener's to report
+	}
+	if _, err := os.Lstat(filepath.Join(dir, markerName)); !errors.Is(err, fs.ErrNotExist) {
+		if err == nil {
+			err = refuse(Missing, nil)
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // Settle finishes SQLite's recovery of a journal a crash left beside dir's
 // database, so a copy of the file holds exactly the committed transactions.
 // The caller holds the installation lock. No database is nothing to settle;
 // an unreadable or foreign file is the Refusal Open would give.
 func Settle(ctx context.Context, dir string) error {
-	h, err := sqlitedb.Probe(ctx, filepath.Join(dir, "access", fileName))
+	h, err := sqlitedb.Probe(ctx, databasePath(dir))
 	if errors.Is(err, sqlitedb.ErrNotExist) {
 		return nil
 	}
@@ -262,9 +294,13 @@ func Settle(ctx context.Context, dir string) error {
 	return fileRefusal(err)
 }
 
-// fileRefusal is the store's reason for a file sqlitedb would not open.
+// fileRefusal is the store's reason for a file sqlitedb would not open or
+// found damaged.
 func fileRefusal(err error) error {
+	var failed *sqlitedb.CheckError
 	switch {
+	case errors.As(err, &failed):
+		return refuse(IntegrityFailed, err)
 	case errors.Is(err, sqlitedb.ErrNewer):
 		return refuse(SchemaNewer, err)
 	case errors.Is(err, sqlitedb.ErrUnreadable), errors.Is(err, sqlitedb.ErrForeign):
@@ -301,16 +337,18 @@ func initialize(ctx context.Context, tx *sql.Tx, storeID string) error {
 }
 
 // check refuses a database that fails its checks or holds a record its rules
-// refuse; it migrates before loading because the loader reads the latest schema.
-func check(ctx context.Context, db *sqlitedb.DB) (*state, error) {
-	if err := db.Check(ctx, false); err != nil {
-		var failed *sqlitedb.CheckError
-		if errors.As(err, &failed) {
-			return nil, refuse(IntegrityFailed, err)
-		}
-		return nil, err
+// refuse. A live store gets quick_check and migrates before loading, because
+// the loader reads the latest schema; an image gets integrity_check and, never
+// being migrated, must already be at the latest schema.
+func check(ctx context.Context, db *sqlitedb.DB, image bool) (*state, error) {
+	if err := db.Check(ctx, image); err != nil {
+		return nil, fileRefusal(err)
 	}
-	if _, _, err := db.Migrate(ctx); err != nil {
+	if image {
+		if err := atLatest(ctx, db); err != nil {
+			return nil, err
+		}
+	} else if _, _, err := db.Migrate(ctx); err != nil {
 		return nil, fmt.Errorf("migrate access store: %w", err)
 	}
 	st, err := load(ctx, db.SQL(), 1)
@@ -318,6 +356,18 @@ func check(ctx context.Context, db *sqlitedb.DB) (*state, error) {
 		return nil, refuse(IntegrityFailed, err)
 	}
 	return st, err
+}
+
+// atLatest refuses an image whose header names a schema version other than the
+// latest: Open already refused a newer one, so a lower one is a damaged header.
+func atLatest(ctx context.Context, db *sqlitedb.DB) error {
+	var version int
+	err := db.SQL().QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	latest, latestErr := schema.Latest()
+	if err = errors.Join(err, latestErr); err == nil && version != latest {
+		err = refuse(Unreadable, fmt.Errorf("image schema version %d, latest %d", version, latest))
+	}
+	return err
 }
 
 // errBroken marks a stored record that breaks its rules or cannot be decoded,
@@ -393,28 +443,32 @@ func load(ctx context.Context, db querier, keysVersion uint64) (*state, error) {
 	if r.people, err = people.NewState(p); err != nil {
 		return nil, fmt.Errorf("%w: %w", errBroken, err)
 	}
-	snap := access.NewSnapshot(m.generation, keysVersion, r.keys, r.teams, r.people)
+	snap := access.NewSnapshot(m.Generation, keysVersion, r.keys, r.teams, r.people)
 	if err := snap.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %w", errBroken, err)
 	}
 	return &state{records: r, snap: snap, meta: m}, nil
 }
 
-func loadMeta(ctx context.Context, db querier) (meta, error) {
+func loadMeta(ctx context.Context, db querier) (Meta, error) {
+	var version int
+	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return Meta{}, err
+	}
 	values := make(map[string]string)
 	pair := func(kv *[2]string) []col { return []col{{"key", &kv[0]}, {"value", &kv[1]}} }
 	if err := scanAll(ctx, db, pair, func(kv *[2]string) { values[kv[0]] = kv[1] }, "SELECT key, value FROM meta"); err != nil {
-		return meta{}, err
+		return Meta{}, err
 	}
-	m := meta{storeID: values["store_id"], generation: values["generation"]}
+	m := Meta{StoreID: values["store_id"], Generation: values["generation"], SchemaVersion: version}
 	revision, err := strconv.ParseUint(values["revision"], 10, 64)
 	sequence, err2 := strconv.ParseUint(values["sequence"], 10, 64)
-	m.revision, m.sequence = revision, sequence
-	if err = errors.Join(err, err2); err == nil && (m.storeID == "" || m.generation == "") {
+	m.Revision, m.Sequence = revision, sequence
+	if err = errors.Join(err, err2); err == nil && (m.StoreID == "" || m.Generation == "") {
 		err = errors.New("store ID or generation is missing")
 	}
 	if err != nil {
-		return meta{}, fmt.Errorf("%w: meta: %w", errBroken, err)
+		return Meta{}, fmt.Errorf("%w: meta: %w", errBroken, err)
 	}
 	return m, nil
 }
@@ -422,12 +476,8 @@ func loadMeta(ctx context.Context, db querier) (meta, error) {
 // Snapshot returns the last published state without locking.
 func (s *Store) Snapshot() *access.Snapshot { return s.pub.Load().snap }
 
-// Meta reports the published store ID, generation, revision and sequence
-// without a query.
-func (s *Store) Meta() (storeID, generation string, revision, sequence uint64) {
-	m := s.pub.Load().meta
-	return m.storeID, m.generation, m.revision, m.sequence
-}
+// Meta reports the published meta without a query.
+func (s *Store) Meta() Meta { return s.pub.Load().meta }
 
 // OnCommit registers fn to run after each commit that changes records.
 func (s *Store) OnCommit(fn func(access.Commit)) {

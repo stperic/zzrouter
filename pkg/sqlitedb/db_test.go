@@ -167,6 +167,49 @@ func TestProbeUnparseableNewerSchema(t *testing.T) {
 	require.ErrorIs(t, err, sqlitedb.ErrNewer)
 }
 
+// TestOpenAny opens a file Open refuses for its version, for copying, returns
+// its header for the caller to judge and leaves its permissions alone.
+func TestOpenAny(t *testing.T) {
+	s := testSchema(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "newer.sqlite")
+	db := createDB(t, path, s)
+	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'kept'); PRAGMA user_version=999")
+	require.NoError(t, db.Close())
+	require.NoError(t, os.Chmod(path, 0o644))
+	_, err := sqlitedb.Open(t.Context(), path, s)
+	require.ErrorIs(t, err, sqlitedb.ErrNewer)
+
+	opened, h, err := sqlitedb.OpenAny(t.Context(), path, s)
+	require.NoError(t, err)
+	require.Equal(t, sqlitedb.Header{AppID: s.AppID, Version: 999}, h)
+	_, _, err = opened.Migrate(t.Context())
+	require.ErrorIs(t, err, sqlitedb.ErrNewer, "a file opened whatever its version is never migrated")
+	_, err = opened.SQL().ExecContext(t.Context(), "INSERT INTO parents VALUES(2, 'written')")
+	var readOnly *sqlite.Error
+	require.ErrorAs(t, err, &readOnly, "nothing is written through it")
+	require.Equal(t, sqlite3.SQLITE_READONLY, readOnly.Code()&0xff, "%v", err)
+	dst := filepath.Join(dir, "copy.sqlite")
+	require.NoError(t, opened.CopyTo(t.Context(), dst))
+	require.NoError(t, opened.Close())
+	copied, err := sqlitedb.Probe(t.Context(), dst)
+	require.NoError(t, err)
+	require.Equal(t, h, copied)
+	require.EqualValues(t, 1, integer(t, rawDB(t, dst), "SELECT count(*) FROM parents WHERE value='kept'"))
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o644), info.Mode().Perm(), "the source's permissions are left alone")
+	}
+
+	_, _, err = sqlitedb.OpenAny(t.Context(), filepath.Join(dir, "absent.sqlite"), s)
+	require.ErrorIs(t, err, sqlitedb.ErrNotExist)
+	junk := filepath.Join(dir, "junk.sqlite")
+	require.NoError(t, os.WriteFile(junk, []byte(strings.Repeat("not a database ", 16)), 0o600))
+	_, _, err = sqlitedb.OpenAny(t.Context(), junk, s)
+	require.ErrorIs(t, err, sqlitedb.ErrUnreadable)
+}
+
 func TestCreate(t *testing.T) {
 	s := testSchema(t)
 	t.Run("existing", func(t *testing.T) {

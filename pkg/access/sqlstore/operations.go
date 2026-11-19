@@ -213,7 +213,7 @@ func (s *Store) IssueSetup(ctx context.Context, issuer people.Issuer) (*people.I
 		committed = t
 		id := ""
 		for teamID, team := range t.teams {
-			if team.Kind == teams.KindShared && !team.Suspended && team.Metadata[ownerWorkspace] == "true" {
+			if access.AdmitPeople(team) == nil && team.Metadata[ownerWorkspace] == "true" {
 				id = teamID
 			}
 		}

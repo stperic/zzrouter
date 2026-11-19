@@ -37,8 +37,8 @@ func readerKey() keys.VirtualKey { return keys.VirtualKey{Name: "Reader", Role: 
 func engineering() teams.Team { return teams.Team{Name: "Engineering", Kind: teams.KindShared} }
 
 func versions(s *Store) (uint64, uint64) {
-	_, _, revision, sequence := s.Meta()
-	return revision, sequence
+	m := s.Meta()
+	return m.Revision, m.Sequence
 }
 
 func auditCount(t *testing.T, s *Store) int {
@@ -169,7 +169,7 @@ func TestAuditRowCommitsWithItsChange(t *testing.T) {
 		assert.Equal(t, "operator", ev.Actor, "the actor comes from the context")
 		assert.Equal(t, "request-1", ev.RequestID)
 	}
-	_, _, _, sequence := reopened.Meta()
+	sequence := reopened.Meta().Sequence
 	assert.EqualValues(t, 1, sequence)
 }
 
@@ -189,12 +189,12 @@ func TestUncertainCommit(t *testing.T) {
 			_, _, err := s.CreateKey(t.Context(), "reader", readerKey(), audit.Event{})
 			require.NoError(t, err)
 			before := s.Snapshot()
-			_, _, _, sequence := s.Meta()
+			sequence := s.Meta().Sequence
 			// The hook ends the transaction itself, so the real COMMIT fails either way.
 			s.beforeCommit = tc.hook
 			_, err = s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error { k.Name = "Renamed"; return nil }, audit.Event{})
 			s.beforeCommit = nil
-			_, _, _, got := s.Meta()
+			got := s.Meta().Sequence
 			if tc.committed {
 				require.NoError(t, err, "a commit that happened is acknowledged")
 				assert.Equal(t, "Renamed", s.Snapshot().Key("reader").Name)
@@ -222,7 +222,7 @@ func TestUncertainCommit(t *testing.T) {
 			if err := tx.Rollback(); err != nil {
 				return err
 			}
-			_, _, _, sequence := s.Meta()
+			sequence := s.Meta().Sequence
 			for _, query := range []string{"BEGIN", "UPDATE keys SET name = 'Renamed'", fmt.Sprintf("UPDATE meta SET value = '%d' WHERE key = 'sequence'", sequence+1)} {
 				if _, err := s.db.SQL().ExecContext(context.Background(), query); err != nil {
 					return err
@@ -302,7 +302,7 @@ func TestBusyDatabaseRefusesTheWrite(t *testing.T) {
 				}
 			}
 			before := s.Snapshot()
-			_, _, _, sequence := s.Meta()
+			sequence := s.Meta().Sequence
 			other := rawDB(t, dir)
 			_, err = other.ExecContext(t.Context(), tc.lock)
 			require.NoError(t, err)
@@ -310,7 +310,7 @@ func TestBusyDatabaseRefusesTheWrite(t *testing.T) {
 			require.ErrorIs(t, err, ErrBusy)
 			assert.Equal(t, ErrBusy.Error(), err.Error(), "no database text")
 			assert.Same(t, before, s.Snapshot(), "nothing is published")
-			_, _, _, got := s.Meta()
+			got := s.Meta().Sequence
 			assert.Equal(t, sequence, got)
 			_, err = other.ExecContext(t.Context(), "ROLLBACK")
 			require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestConcurrentWritersAndReaders(t *testing.T) {
 	owner := claim(t, s)
 	_, err := s.CreateTeam(t.Context(), "eng", engineering(), audit.Event{})
 	require.NoError(t, err)
-	_, _, _, start := s.Meta()
+	start := s.Meta().Sequence
 	const writers = 6
 	var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -374,7 +374,7 @@ func TestConcurrentWritersAndReaders(t *testing.T) {
 	wg.Wait()
 	assert.Len(t, keyIDs(s), writers)
 	assert.Equal(t, writers, s.Snapshot().Team("eng").RPMLimit)
-	_, _, _, end := s.Meta()
+	end := s.Meta().Sequence
 	assert.Equal(t, start+3*writers, end, "every commit took exactly one sequence number")
 	require.NoError(t, s.Close())
 	assert.Len(t, storedEvents(t, dir), 2+2*writers, "the claim's two events, then one per key and per rename")
@@ -484,7 +484,7 @@ func TestRefusedEventChangesNothing(t *testing.T) {
 		assert.Equal(t, "Reader", s.Snapshot().Key("reader").Name, name)
 		s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "reader", Metadata: metadata})
 	}
-	_, _, _, sequence := s.Meta()
+	sequence := s.Meta().Sequence
 	assert.EqualValues(t, 1, sequence, "a refused event commits nothing")
 	assert.Empty(t, storedEvents(t, dir))
 }

@@ -30,14 +30,17 @@ type Store interface {
 
 	// CreateKey with an empty TeamID also creates the key's personal team,
 	// teams.PersonalID(id), with the key as its owner, recording team.created
-	// before ev. A key joins only an existing shared team.
+	// before ev. A key joins only an existing shared team. The store sets
+	// team_id, team_role and created_personal in ev's metadata, overwriting a
+	// caller's entries of those names.
 	CreateKey(ctx context.Context, id string, key keys.VirtualKey, ev audit.Event) (*keys.VirtualKey, string, error)
 	// apply runs on a private copy under the gate; the store then restores ID,
 	// UUID, credentials, team binding, CreatedAt, CreatedBy. apply must not call the Store.
 	UpdateKey(ctx context.Context, id string, apply func(*keys.VirtualKey) error, ev audit.Event) (*keys.VirtualKey, error)
 	RotateKey(ctx context.Context, id string, ev audit.Event) (*keys.VirtualKey, string, error)
 	// DeleteKey also deletes the key's personal team, recording its
-	// team.deleted, with cascade metadata, after ev.
+	// team.deleted, with cascade metadata, after ev. The store sets team_id in
+	// ev's metadata, overwriting a caller's entry of that name.
 	DeleteKey(ctx context.Context, id string, ev audit.Event) error
 	CreateTeam(ctx context.Context, id string, team teams.Team, ev audit.Event) (*teams.Team, error)
 	// apply follows UpdateKey's rules; the store restores ID, UUID, Kind,

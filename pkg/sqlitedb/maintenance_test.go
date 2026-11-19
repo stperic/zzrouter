@@ -29,32 +29,53 @@ func TestCopyToPurgesDeletedContent(t *testing.T) {
 	require.NoError(t, err)
 	marker := []byte(strings.Repeat("purge-this-value-", 16))
 	require.True(t, bytes.Contains(data, marker), "source must still contain deleted bytes for this test to prove purging")
-	for _, preexisting := range []bool{false, true} {
-		t.Run(map[bool]string{false: "absent", true: "empty"}[preexisting], func(t *testing.T) {
-			dst := filepath.Join(dir, t.Name()[strings.LastIndex(t.Name(), "/")+1:]+" ?#%.sqlite")
-			if preexisting {
-				require.NoError(t, os.WriteFile(dst, nil, 0o644))
-			}
-			require.NoError(t, db.CopyTo(t.Context(), dst))
-			ownerOnly(t, dst)
-			copy := openDB(t, dst, s)
-			require.NoError(t, copy.Check(t.Context(), true))
-			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents"))
-			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents WHERE id=2 AND value='retained'"))
-			require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM children WHERE parent_id=2"))
-			data, err := os.ReadFile(dst)
-			require.NoError(t, err)
-			require.False(t, bytes.Contains(data, marker))
-		})
-	}
-	t.Run("nonempty", func(t *testing.T) {
-		dst := filepath.Join(dir, "occupied")
-		require.NoError(t, os.WriteFile(dst, []byte("preserve"), 0o600))
-		require.Error(t, db.CopyTo(t.Context(), dst))
+	dst := filepath.Join(dir, "absent ?#%.sqlite")
+	require.NoError(t, db.CopyTo(t.Context(), dst))
+	ownerOnly(t, dst)
+	copy := openDB(t, dst, s)
+	require.NoError(t, copy.Check(t.Context(), true))
+	require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents"))
+	require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM parents WHERE id=2 AND value='retained'"))
+	require.EqualValues(t, 1, integer(t, copy.SQL(), "SELECT count(*) FROM children WHERE parent_id=2"))
+	data, err = os.ReadFile(dst)
+	require.NoError(t, err)
+	require.False(t, bytes.Contains(data, marker))
+	// An existing destination, even an empty one, is refused and left as it was.
+	for name, content := range map[string]string{"empty": "", "occupied": "preserve"} {
+		dst := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(dst, []byte(content), 0o644))
+		require.ErrorIs(t, db.CopyTo(t.Context(), dst), os.ErrExist, name)
 		data, err := os.ReadFile(dst)
 		require.NoError(t, err)
-		require.Equal(t, "preserve", string(data))
-	})
+		require.Equal(t, content, string(data), name)
+	}
+}
+
+// TestCopyFile copies a file byte for byte, owner-only, into an absent
+// destination, and leaves no destination when it fails.
+func TestCopyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "source.sqlite")
+	db := createDB(t, path, testSchema(t))
+	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'kept')")
+	require.NoError(t, db.Close())
+	dst := filepath.Join(dir, "copy.sqlite")
+	require.NoError(t, sqlitedb.CopyFile(path, dst))
+	source, err := os.ReadFile(path)
+	require.NoError(t, err)
+	copied, err := os.ReadFile(dst)
+	require.NoError(t, err)
+	require.Equal(t, source, copied)
+	ownerOnly(t, dst)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "occupied"), []byte("preserve"), 0o600))
+	require.ErrorIs(t, sqlitedb.CopyFile(path, filepath.Join(dir, "occupied")), os.ErrExist)
+	data, err := os.ReadFile(filepath.Join(dir, "occupied"))
+	require.NoError(t, err)
+	require.Equal(t, "preserve", string(data))
+	failed := filepath.Join(dir, "failed.sqlite")
+	require.ErrorIs(t, sqlitedb.CopyFile(filepath.Join(dir, "absent.sqlite"), failed), os.ErrNotExist)
+	require.NoFileExists(t, failed)
 }
 
 func TestCheckCorruptPage(t *testing.T) {
@@ -175,22 +196,32 @@ func TestCopyToFailureCleansCreatedDestination(t *testing.T) {
 	db := createDB(t, filepath.Join(t.TempDir(), "source.sqlite"), testSchema(t))
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	for _, preexisting := range []bool{false, true} {
-		t.Run(map[bool]string{false: "created", true: "preexisting"}[preexisting], func(t *testing.T) {
-			dst := filepath.Join(t.TempDir(), "copy.sqlite")
-			if preexisting {
-				require.NoError(t, os.WriteFile(dst, nil, 0o600))
-			}
-			require.ErrorIs(t, db.CopyTo(ctx, dst), context.Canceled)
-			data, err := os.ReadFile(dst)
-			if preexisting {
-				require.NoError(t, err)
-				require.Empty(t, data)
-			} else {
-				require.ErrorIs(t, err, os.ErrNotExist)
-			}
-		})
-	}
+	dst := filepath.Join(t.TempDir(), "copy.sqlite")
+	require.ErrorIs(t, db.CopyTo(ctx, dst), context.Canceled)
+	require.NoFileExists(t, dst)
+}
+
+// TestCopyToCorruptPage reports a corrupt page the copy reads as a
+// *CheckError, as Check does, and leaves no destination.
+func TestCopyToCorruptPage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corrupt.sqlite")
+	s := testSchema(t)
+	db := createDB(t, path, s)
+	execSQL(t, db.SQL(), "INSERT INTO parents VALUES(1, 'intact')")
+	page := integer(t, db.SQL(), "SELECT rootpage FROM sqlite_schema WHERE name='parents'")
+	size := integer(t, db.SQL(), "PRAGMA page_size")
+	require.NoError(t, db.Close())
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	require.NoError(t, err)
+	_, err = f.WriteAt([]byte{0xff}, (page-1)*size)
+	require.NoError(t, errors.Join(err, f.Close()))
+	dst := filepath.Join(t.TempDir(), "copy.sqlite")
+	err = openDB(t, path, s).CopyTo(t.Context(), dst)
+	var failure *sqlitedb.CheckError
+	require.ErrorAs(t, err, &failure)
+	require.Equal(t, "copy", failure.Check)
+	require.NotEmpty(t, failure.Detail)
+	require.NoFileExists(t, dst)
 }
 
 func TestFreeBytes(t *testing.T) {

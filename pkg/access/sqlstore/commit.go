@@ -53,11 +53,12 @@ type stmt struct {
 
 func (w *writes) exec(query string, args ...any) { w.stmts = append(w.stmts, stmt{query, args}) }
 
-// tx is one commit being built: the records it changes and the events it
-// records, in order.
+// tx is one commit being built: the records it changes, the events it
+// records, in order, and a new generation when it replaces the content.
 type tx struct {
 	records
-	events []audit.Event
+	events     []audit.Event
+	generation string
 }
 
 // record adds ev to the commit; a zero event records nothing.
@@ -124,6 +125,15 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	m := prev.meta
+	m.Sequence++
+	if w.revises {
+		m.Revision++
+	}
+	if t.generation != "" {
+		m.Generation = t.generation
+		w.exec(updateMeta, m.Generation, "generation")
+	}
 	changed := len(w.stmts) > 0
 	if !changed && len(t.events) == 0 {
 		return nil, nil
@@ -134,15 +144,10 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 		if w.keysChanged {
 			keysVersion++
 		}
-		snap = access.NewSnapshot(prev.meta.generation, keysVersion, t.keys, t.teams, t.people)
+		snap = access.NewSnapshot(m.Generation, keysVersion, t.keys, t.teams, t.people)
 		if err := snap.Validate(); err != nil {
 			return nil, err
 		}
-	}
-	m := prev.meta
-	m.sequence++
-	if w.revises {
-		m.revision++
 	}
 	for _, ev := range t.events {
 		row := auditRow{Event: audit.Attribute(ctx, ev)}
@@ -158,14 +163,14 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 		}
 		w.exec(auditAppend, args...)
 	}
-	w.exec(updateMeta, strconv.FormatUint(m.revision, 10), "revision")
-	w.exec(updateMeta, strconv.FormatUint(m.sequence, 10), "sequence")
+	w.exec(updateMeta, strconv.FormatUint(m.Revision, 10), "revision")
+	w.exec(updateMeta, strconv.FormatUint(m.Sequence, 10), "sequence")
 	published := &state{records: t.records, snap: snap, meta: m}
 	if uncertain, err := s.write(ctx, w); err != nil {
 		if !uncertain {
 			return nil, busy(err)
 		}
-		if published, err = s.reload(ctx, err, m.sequence); err != nil {
+		if published, err = s.reload(ctx, err, m.Sequence); err != nil {
 			if errors.Is(err, ErrFailed) && s.fatal != nil {
 				return func() { s.fatal(err) }, err
 			}
@@ -216,7 +221,7 @@ func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*
 		s.pub.Store(&state{snap: access.FailedSnapshot(), meta: s.pub.Load().meta})
 		return nil, s.refusal
 	}
-	if stored.meta.sequence != sequence {
+	if stored.meta.Sequence != sequence {
 		return nil, busy(commitErr)
 	}
 	return stored, nil

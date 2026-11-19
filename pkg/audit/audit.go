@@ -46,6 +46,8 @@ const (
 	ActionSessionsRevoked Action = "person.authority_revoked"
 	ActionGrantIssued     Action = "enrollment.issued"
 	ActionGrantRevoked    Action = "enrollment.revoked"
+
+	ActionRestorePrepared Action = "store.restore_prepared"
 )
 
 // Event is a single audit record. Fields are stable on the wire — once

@@ -268,6 +268,7 @@ func encode(cols []col) ([]any, error) {
 // querier is a database or a transaction.
 type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // scanAll scans every row query returns into a fresh R and hands it to keep.

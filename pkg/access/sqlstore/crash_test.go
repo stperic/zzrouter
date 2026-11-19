@@ -143,7 +143,7 @@ func prepareCrash(t *testing.T, op crashOp) crashSetup {
 	c := crashSetup{dir: t.TempDir()}
 	s := openStore(t, c.dir, contractOptions)
 	c.arg = op.prepare(t, s)
-	_, _, c.revision, c.sequence = s.Meta()
+	c.revision, c.sequence = versions(s)
 	require.NoError(t, s.Close())
 	c.events = len(storedEvents(t, c.dir))
 	return c
@@ -187,7 +187,7 @@ func TestKillMidCommit(t *testing.T) {
 				_ = child.Wait()
 
 				reopened := openStore(t, c.dir, contractOptions)
-				_, _, revision, sequence := reopened.Meta()
+				revision, sequence := versions(reopened)
 				stored := len(storedEvents(t, c.dir))
 				committed := op.done(t, reopened, c.arg)
 				outcomes[committed]++

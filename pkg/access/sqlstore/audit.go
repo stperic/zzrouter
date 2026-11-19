@@ -34,7 +34,7 @@ func (s *Store) AuditPage(ctx context.Context, cursor string, limit int) ([]audi
 	if limit < 1 || limit > maxAuditPage {
 		return nil, "", fmt.Errorf("audit limit must be between 1 and %d", maxAuditPage)
 	}
-	generation := s.pub.Load().meta.generation
+	generation := s.pub.Load().meta.Generation
 	position := pageCursor{Generation: generation, Before: math.MaxInt64}
 	if cursor != "" {
 		position = pageCursor{}

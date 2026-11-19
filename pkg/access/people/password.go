@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -207,4 +208,24 @@ func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Perso
 		return nil, err
 	}
 	return committed.Person(id), nil
+}
+
+// Restaged is a copy of r as a restore publishes it: every person gets a new
+// credential revision, as RevokeSessions gives, so sessions and delegated
+// grants issued before stop resolving, and every pending grant expires now.
+// Password hashes and used, revoked or expired grants are kept.
+func Restaged(r Records) Records {
+	r.People, r.Grants = maps.Clone(r.People), maps.Clone(r.Grants)
+	for id, record := range r.People {
+		record.Revision = randomValue("")
+		r.People[id] = record
+	}
+	now := utils.NowUTC()
+	for hash, grant := range r.Grants {
+		if active(grant.Grant) {
+			grant.ExpiresAt = now
+			r.Grants[hash] = grant
+		}
+	}
+	return r
 }

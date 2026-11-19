@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,9 +13,10 @@ import (
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
-// CheckError reports corruption or a violation returned by a database check.
+// CheckError reports corruption or a violation returned by a database check,
+// or corruption a copy read.
 type CheckError struct {
-	// Check names the SQLite check that failed.
+	// Check names the SQLite check that failed, or "copy".
 	Check string
 	// Detail is for logs only, never for programmatic decisions.
 	Detail string
@@ -76,35 +78,56 @@ func (d *DB) FreeBytes(ctx context.Context) (int64, error) {
 	return count * size, err
 }
 
-// CopyTo writes a compact 0600 snapshot to an absent or empty destination and syncs it and its directory.
-func (d *DB) CopyTo(ctx context.Context, dst string) (err error) {
-	f, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
-	created := err == nil
-	if errors.Is(err, os.ErrExist) {
-		f, err = os.OpenFile(dst, os.O_RDWR, 0)
-	}
+// CopyTo writes a compact 0600 snapshot to dst, which must not exist; a failure
+// leaves no file. VACUUM INTO syncs the copy at this connection's synchronous
+// level; the directory entry is not synced, so a caller that keeps the copy
+// syncs its directory. Reading a corrupt page is a *CheckError, as in Check.
+func (d *DB) CopyTo(ctx context.Context, dst string) error {
+	return createFile(dst, func() error {
+		_, err := d.db.ExecContext(ctx, "VACUUM INTO ?", dst)
+		if isCorrupt(err) {
+			err = &CheckError{"copy", err.Error()}
+		}
+		return err
+	})
+}
+
+// CopyFile copies the database file at path byte for byte to dst, which must
+// not exist, owner-only and synced (its directory entry is not); a failure
+// leaves no file. Nothing parses it, so it copies a file this release cannot
+// read. The caller settles a journal first (Probe) and keeps writers out.
+func CopyFile(path, dst string) error {
+	return createFile(dst, func() error {
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = in.Close() }()
+		out, err := os.OpenFile(dst, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, in)
+		return errors.Join(err, out.Sync(), out.Close())
+	})
+}
+
+// createFile makes path, which must not exist, an empty owner-only file and
+// runs fill; if either fails, it removes the file.
+func createFile(path string, fill func() error) (err error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err != nil && created {
-			err = errors.Join(err, os.Remove(dst))
+		if err != nil {
+			err = errors.Join(err, os.Remove(path))
 		}
 	}()
-	info, err := f.Stat()
-	if err == nil && (!info.Mode().IsRegular() || info.Size() != 0) {
-		err = fmt.Errorf("copy destination is not an empty file: %s", dst)
-	}
-	if err = errors.Join(err, f.Close()); err != nil {
+	if err = errors.Join(f.Close(), security.RestrictFilePermissions(path)); err != nil {
 		return err
 	}
-	if err := security.RestrictFilePermissions(dst); err != nil {
-		return err
-	}
-	if _, err := d.db.ExecContext(ctx, "VACUUM INTO ?", dst); err != nil {
-		return err
-	}
-	return syncFile(dst)
+	return fill()
 }
 
 // Rename moves a closed database file and syncs the destination directory, so

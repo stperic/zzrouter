@@ -46,19 +46,20 @@ func TestOpenCreatesTheStoreAndItsMarker(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
-	storeID, generation, revision, sequence := s.Meta()
+	m := s.Meta()
+	storeID := m.StoreID
 	assert.NotEmpty(t, storeID)
-	assert.Equal(t, storeID, generation, "the generation starts as the store ID")
-	assert.Zero(t, revision)
-	assert.Zero(t, sequence)
+	assert.Equal(t, storeID, m.Generation, "the generation starts as the store ID")
+	assert.Equal(t, 1, m.SchemaVersion, "read from the file header")
+	assert.Zero(t, m.Revision)
+	assert.Zero(t, m.Sequence)
 	assert.Equal(t, marker{Version: 1, StoreID: storeID}, readMarker(t, dir))
 	assert.FileExists(t, dbPath(dir))
 	assert.NoFileExists(t, dbPath(dir)+".staged")
 	assert.Nil(t, s.People(), "a store opened without people offers none")
 	require.NoError(t, s.Close())
 	again := openStore(t, dir, Options{})
-	reopenedID, _, _, _ := again.Meta()
-	assert.Equal(t, storeID, reopenedID, "a reopen keeps the store")
+	assert.Equal(t, storeID, again.Meta().StoreID, "a reopen keeps the store")
 }
 
 func TestOpenRefusesPeopleWithoutAnIssuerValidator(t *testing.T) {
@@ -114,7 +115,7 @@ func TestOpenTidiesStagingAndTheMarker(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	s := openStore(t, dir, Options{})
-	storeID, _, _, _ := s.Meta()
+	storeID := s.Meta().StoreID
 	require.NoError(t, s.Close())
 	staged := dbPath(dir) + ".staged"
 	marker := filepath.Join(dir, markerName)
@@ -230,7 +231,7 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	db, err := sqlitedb.Open(t.Context(), dbPath(dir), schema)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
-	_, err = check(t.Context(), db)
+	_, err = check(t.Context(), db, false)
 	require.Error(t, err, "a check that cannot run")
 	var refusal *Refusal
 	require.False(t, errors.As(err, &refusal), "a check that cannot run is not a failed check: %v", err)
@@ -242,13 +243,12 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
 }
 
-// TestSettle rolls back the journal a crash left mid-commit, so a copy of the
-// file holds exactly the committed transactions, and refuses a file it cannot read.
-func TestSettle(t *testing.T) {
-	t.Parallel()
-	require.NoError(t, Settle(t.Context(), t.TempDir()), "no database is nothing to settle")
-
-	dir := t.TempDir()
+// crashedMidCommit returns a closed store holding one committed audit row, a
+// copy of it as a crash mid-commit leaves it (a hot journal beside a file that
+// holds uncommitted pages), and the committed file's bytes.
+func crashedMidCommit(t *testing.T) (dir, crashed string, committed []byte) {
+	t.Helper()
+	dir = t.TempDir()
 	s := openStore(t, dir, Options{})
 	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "committed"})
 	require.NoError(t, s.Close())
@@ -264,10 +264,12 @@ func TestSettle(t *testing.T) {
 	}
 	tx, err := db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
-	_, err = tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+	// A committed row changes first, so its page is among those spilled.
+	_, err = tx.ExecContext(t.Context(), `UPDATE meta SET value = '999' WHERE key = 'sequence';
+		WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
 		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 1 + i, 0, 'x', 'a', hex(randomblob(512)), '' FROM n`)
 	require.NoError(t, err)
-	crashed := t.TempDir()
+	crashed = t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(crashed, "access"), 0o700))
 	for _, suffix := range []string{"", "-journal"} {
 		data, err := os.ReadFile(dbPath(dir) + suffix)
@@ -278,7 +280,16 @@ func TestSettle(t *testing.T) {
 	inFlight, err := os.ReadFile(dbPath(crashed))
 	require.NoError(t, err)
 	require.NotEqual(t, committed, inFlight, "the copy holds uncommitted pages")
+	return dir, crashed, committed
+}
 
+// TestSettle rolls back the journal a crash left mid-commit, so a copy of the
+// file holds exactly the committed transactions, and refuses a file it cannot read.
+func TestSettle(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, Settle(t.Context(), t.TempDir()), "no database is nothing to settle")
+
+	dir, crashed, committed := crashedMidCommit(t)
 	require.NoError(t, Settle(t.Context(), crashed))
 	assert.NoFileExists(t, dbPath(crashed)+"-journal")
 	settled, err := os.ReadFile(dbPath(crashed))
