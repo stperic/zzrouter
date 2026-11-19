@@ -103,8 +103,51 @@ test('node selection includes worker-only cloud services and assigned-model prov
  }, () => {}));
  assert.doesNotMatch(named(f.root, 'provider_0').textContent, /private-cloud|private-engine|browser-tool/);
  named(f.root, 'node_0').value = 'worker'; named(f.root, 'node_0').dispatchEvent(new Event('change'));
- assert.match(named(f.root, 'provider_0').textContent, /private-cloud \(Cloud\).*private-engine \(Local\)/);
+ assert.match(named(f.root, 'provider_0').textContent, /private-engine \(Local\).*private-cloud \(Cloud\)/);
  assert.doesNotMatch(named(f.root, 'provider_0').textContent, /browser-tool/);
+});
+
+
+test('route startup follows the selected provider and stays off cloud destinations', async t => {
+ const f = page(t);
+ const local = { key: 'vllm', name: 'vLLM', kind: 'on-demand', protocol: 'openai' };
+ const external = { key: 'external-api', name: 'External API', kind: 'external', protocol: 'openai' };
+ const choices = { ...options, catalog: [...catalog, local, external], nodes: [
+  { name: 'worker', health_status: 'healthy', providers: [
+   { key: 'vllm', run_lifecycle: 'process' }, { key: 'external-api', run_lifecycle: 'none' }, { key: 'groq', kind: 'cloud' },
+  ] },
+ ] };
+ const original = { ...route.replicas[0], provider: 'vllm', on_demand: true };
+ f.root.append(routeForm(f.p, { ...route, replicas: [original] }, choices, () => {}));
+ const provider = named(f.root, 'provider_0');
+ const checkbox = named(f.root, 'on_demand_0');
+ const startup = find(f.root, node => node.tag === 'label' && node.children.includes(checkbox));
+ assert.equal(startup.hidden, false);
+ assert.equal(checkbox.checked, true);
+ assert.deepEqual(provider.children.filter(item => item.tag === 'optgroup').map(item => item.getAttribute('label')),
+  ['Local providers', 'Cloud providers']);
+ const choose = value => { provider.value = value; provider.dispatchEvent(new Event('change')); };
+ choose('external-api');
+ assert.equal(startup.hidden, true);
+ choose('groq');
+ assert.equal(startup.hidden, true);
+ assert.equal(checkbox.disabled, true);
+ choose('vllm');
+ assert.equal(startup.hidden, false);
+ assert.equal(checkbox.checked, true);
+ choose('groq');
+ await submit(editor(f.root));
+ assert.deepEqual(f.calls[0].body.replicas, [{ ...original, provider: 'groq', on_demand: false }]);
+});
+
+test('an unchanged cloud destination keeps its saved settings with startup hidden', async t => {
+ const f = page(t);
+ const legacy = { ...route.replicas[0], on_demand: true };
+ f.root.append(routeForm(f.p, { ...route, replicas: [legacy] }, options, () => {}));
+ assert.equal(named(f.root, 'on_demand_0').disabled, true);
+ named(f.root, 'route_description').value = 'Renamed';
+ await submit(editor(f.root));
+ assert.deepEqual(f.calls[0].body, { description: 'Renamed' });
 });
 
 test('an old conflict recovery read cannot replace a newer editor in the same panel', async t => {

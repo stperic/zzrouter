@@ -154,6 +154,27 @@ test('all console views and shared editors fit desktop and phone viewports', { t
   await audit(f.page, 'sign-in');
 });
 
+test('route destinations group providers and show startup only for supported local models', async t => {
+  const f = await consolePage(t), p = f.page;
+  await p.route(url => url.pathname === '/zzrouter/v1/nodes', route => route.fulfill({ json: {
+    data: [{ name: 'studio-gpu', health_status: 'healthy',
+      providers: [{ key: 'vllm', kind: 'on-demand', run_lifecycle: 'process' }] }],
+  } }));
+  await f.open('#routes?item=coding');
+  await p.getByRole('dialog').getByRole('button', { name: 'Edit', exact: true }).click();
+  const destination = p.locator('.route-destination').first();
+  const provider = destination.getByLabel('Provider', { exact: true });
+  assert.deepEqual(await provider.locator('optgroup').evaluateAll(groups => groups.map(group => group.label)),
+    ['Local providers', 'Cloud providers']);
+  const startup = destination.getByRole('checkbox', { name: 'Start model on demand' });
+  await startup.check();
+  await provider.selectOption('groq');
+  await startup.waitFor({ state: 'hidden' });
+  assert.equal(await destination.getByLabel('Compute node', { exact: true }).inputValue(), 'studio-gpu');
+  await provider.selectOption('vllm');
+  assert.equal(await startup.isChecked(), true);
+});
+
 test('complete console workspaces and editors fit desktop and phone', { timeout: 180000 }, async t => {
   const f = await consolePage(t);
   const scenes = [

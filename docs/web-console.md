@@ -371,8 +371,9 @@ Routes are stable model names backed by one or more destinations. The Routes
 workspace shows providers, compute nodes, observed destination health and assigned
 teams. Select a route to inspect its right-side details, then choose Edit to change
 its description, selection strategy or destinations. Create route adds a reusable model name; clients send
-that exact name as their `model`. A cloud destination may be configured on a
-worker as well as on the coordinator.
+that exact name as their `model`. Select the compute node, then choose from
+the local or cloud provider group. A cloud destination can use a worker or
+the coordinator. **Start model on demand** appears for supported local providers.
 
 Priority tries destinations in order. Least loaded and Fastest observed use the
 existing live strategy implementations; they can choose a cloud destination

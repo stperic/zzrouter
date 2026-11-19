@@ -11,6 +11,16 @@ export function routeValues(record = {}) {
   };
 }
 
+function providerOptions(candidates, selected, placeholder, saved) {
+  const option = (value, label) => el('option', { value, selected: value === selected }, label);
+  const groups = [['local', 'Local'], ['cloud', 'Cloud']].flatMap(([kind, label]) => {
+    const items = [...candidates.values()].filter(item => providerCategory(item) === kind);
+    return items.length ? [el('optgroup', { label: `${label} providers` },
+      items.map(item => option(item.key, `${item.name || item.key} (${label})`)))] : [];
+  });
+  return [option('', placeholder), ...groups, ...(saved ? [option(...saved)] : [])];
+}
+
 export function routeForm(p, record, { catalog, models, nodes, etag, teams, incomplete, invalidatePreview, cancel = p.close, saved }, reload) {
   const before = routeValues(record || {});
   const form = el('form', { class: 'entity-editor route-editor' });
@@ -45,8 +55,17 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
       const model = input(`model_${index}`, rep.model, { required: true, list: `route-models-${index}`, placeholder: 'Choose or enter an exact model' });
       const choices = el('datalist', { id: `route-models-${index}` });
       const demand = input(`on_demand_${index}`, '', { type: 'checkbox', checked: !!rep.on_demand });
-      const populateModels = () => {
+      const startup = el('label', { class: 'model-choice' }, demand, 'Start model on demand');
+      const syncProviderFields = () => {
         const targetNode = node.value || p.state.node_name;
+        const observed = nodes.find(item => item.name === targetNode)?.providers?.find(item => item.key === provider.value);
+        const declared = catalog.find(item => item.key === provider.value);
+        const selected = declared || observed;
+        const lifecycle = observed?.run_lifecycle;
+        const canStart = selected && providerCategory(selected) === 'local' && observed?.run_scope !== 'node' &&
+          (lifecycle ? ['process', 'served'].includes(lifecycle) :
+            selected.kind === 'on-demand' || selected.mode === 'on-demand' || selected.protocol === 'ollama');
+        startup.hidden = demand.disabled = !canStart;
         choices.replaceChildren(...[...new Set(models.filter(item =>
           (!item.assigned_app || item.assigned_app === provider.value) &&
           (!item.node || item.node === targetNode)
@@ -62,15 +81,17 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
           if (catalog.some(entry => entry.key === item.key)) continue;
           if (providerCategory(item) === 'cloud' || models.some(model => model.node === targetNode && model.assigned_app === item.key)) candidates.set(item.key, item);
         }
-        const choices = [['', 'Choose a provider…'], ...[...candidates.values()].map(item => [item.key, `${item.name || item.key} (${providerCategory(item) === 'cloud' ? 'Cloud' : 'Local'})`])];
-        if (saved && !choices.some(([key]) => key === saved)) choices.push([saved, `${saved} (saved)`]);
-        provider.replaceChildren(...choices.map(([value, label]) => el('option', { value, selected: saved === value }, label)));
-        populateModels();
+        const unavailable = saved && !candidates.has(saved) ? [saved, `${saved} (saved)`] : null;
+        provider.replaceChildren(...providerOptions(candidates, saved, 'Choose a provider…', unavailable));
+        syncProviderFields();
       };
       node.addEventListener('change', () => populateProviders(provider.value));
-      provider.addEventListener('change', populateModels);
+      provider.addEventListener('change', syncProviderFields);
       populateProviders(rep.provider);
-      row.read = () => ({ ...rep, provider: provider.value, node: node.value, model: model.value.trim(), on_demand: demand.checked });
+      row.read = () => ({
+        ...rep, provider: provider.value, node: node.value, model: model.value.trim(),
+        on_demand: demand.disabled ? provider.value === rep.provider && !!rep.on_demand : demand.checked,
+      });
       row.fields = { node, provider, model, on_demand: demand };
       const move = direction => {
         if (controls.disabled || !p.api.canLeave()) return;
@@ -91,9 +112,7 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
       describe();
       row.panel = el('details', { class: 'route-destination', open: row.expanded }, summary,
         el('div', { class: 'route-destination-heading' }, text(`Destination ${index + 1}`, 'muted'), actions(up, down, remove)),
-        field('Compute node', node, 'The node that connects to the local or cloud provider.'), field('Provider', provider), field('Model', model), choices,
-        el('details', {}, el('summary', {}, 'Startup behavior'), el('label', { class: 'model-choice' }, demand, 'Start a local model on demand'),
-          text('Applies to providers that support on-demand starts. All existing advanced destination settings are retained.', 'muted')));
+        field('Compute node', node), field('Provider', provider), field('Model', model), choices, startup);
       destinations.append(row.panel);
     });
   };
