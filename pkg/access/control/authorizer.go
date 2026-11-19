@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 )
@@ -125,7 +126,7 @@ func (c *Core) ValidateRoutes(policy teams.RouteAccess) error {
 
 // TeamContext projects current team policy for an administrator's dry run.
 func (c *Core) TeamContext(id string) *AccessContext {
-	if snapshot(c.state).Team(id) == nil {
+	if access.SnapshotOf(c.state).Team(id) == nil {
 		return nil
 	}
 	ac, _ := c.buildAccessContext(&KeyPrincipal{ID: "preview", IsVirtual: true, TeamID: id, Role: RoleUser})
@@ -135,7 +136,7 @@ func (c *Core) TeamContext(id string) *AccessContext {
 // RouteTeams returns the sorted explicit assignments, without a reverse store.
 func (c *Core) RouteTeams(name string) []string {
 	ids := []string{}
-	for id, team := range snapshot(c.state).Teams() {
+	for id, team := range access.SnapshotOf(c.state).Teams() {
 		if team.RouteAccess.Mode == "selected" && team.RouteAccess.Allows(name) {
 			ids = append(ids, id)
 		}

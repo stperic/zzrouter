@@ -11,9 +11,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// The operations below are the file adapter's, which the server switch deletes;
-// mutate validates every record they change.
-
 func credential() (string, string, error) {
 	raw, err := keys.GenerateRawKey()
 	if err != nil {
@@ -34,7 +31,7 @@ func (s *Store) CreateKey(ctx context.Context, id string, key keys.VirtualKey, e
 		if _, exists := r.keys[id]; exists {
 			return audit.Event{}, fmt.Errorf("key %q: %w", id, keys.ErrKeyExists)
 		}
-		created.ID, created.UUID, created.HashedKey, created.KeyEnv = id, uuid.NewString(), hash, ""
+		created.ID, created.UUID, created.HashedKey = id, uuid.NewString(), hash
 		created.CreatedAt = utils.NowUTC()
 		created.UpdatedAt = created.CreatedAt
 		r.keys[id] = created
@@ -54,7 +51,7 @@ func (s *Store) UpdateKey(ctx context.Context, id string, apply func(*keys.Virtu
 			return nil, err
 		}
 		next = next.Clone()
-		next.ID, next.UUID, next.HashedKey, next.KeyEnv = id, existing.UUID, existing.HashedKey, existing.KeyEnv
+		next.ID, next.UUID, next.HashedKey = id, existing.UUID, existing.HashedKey
 		next.TeamID, next.TeamRole = existing.TeamID, existing.TeamRole
 		next.CreatedAt, next.CreatedBy = existing.CreatedAt, existing.CreatedBy
 		return next, nil
@@ -69,7 +66,7 @@ func (s *Store) RotateKey(ctx context.Context, id string, ev audit.Event) (*keys
 	}
 	rotated, err := s.replaceKey(ctx, id, ev, func(existing *keys.VirtualKey) (*keys.VirtualKey, error) {
 		next := existing.Clone()
-		next.HashedKey, next.KeyEnv = hash, ""
+		next.HashedKey = hash
 		return next, nil
 	})
 	if err != nil {

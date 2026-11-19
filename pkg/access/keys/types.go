@@ -30,38 +30,37 @@ var (
 // its sole owner.
 type VirtualKey struct {
 	// Identity
-	UUID        string `yaml:"uuid,omitempty"`
-	ID          string `yaml:"-"` // from YAML map key
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"` // free-form annotation, e.g. "agent: research-bot"
+	UUID        string
+	ID          string
+	Name        string
+	Description string // free-form annotation, e.g. "agent: research-bot"
 
 	// Credentials
-	HashedKey string `yaml:"hashed_key,omitempty"`
-	KeyEnv    string `yaml:"key_env,omitempty"` // env var for raw key (dev convenience)
+	HashedKey string
 
 	// Team binding — immutable after creation.
-	TeamID   string `yaml:"team_id"`
-	TeamRole string `yaml:"team_role"` // "owner" | "member"
+	TeamID   string
+	TeamRole string // "owner" | "member"
 
 	// Access control
-	Role        string     `yaml:"role,omitempty"` // "user" or "admin"
-	Suspended   bool       `yaml:"suspended,omitempty"`
-	SuspendedAt *time.Time `yaml:"suspended_at,omitempty"`
-	SuspendedBy string     `yaml:"suspended_by,omitempty"`
+	Role        string // "user" or "admin"
+	Suspended   bool
+	SuspendedAt *time.Time
+	SuspendedBy string
 
 	// Quotas (inline embed — provides RPMLimit, TPMLimit, MaxParallelRequests, SpendLimit, ResetPeriod, DefaultMaxTokens)
-	quota.QuotaConfig `yaml:",inline"`
+	quota.QuotaConfig
 
 	// Lifecycle
-	ExpiresAt  *time.Time `yaml:"expires_at,omitempty"`
-	CreatedAt  time.Time  `yaml:"created_at,omitempty"`
-	UpdatedAt  time.Time  `yaml:"updated_at,omitempty"`
-	LastSeenAt time.Time  `yaml:"last_seen_at,omitempty"` // nothing sets or persists it yet
-	CreatedBy  string     `yaml:"created_by,omitempty"`
-	UpdatedBy  string     `yaml:"updated_by,omitempty"`
+	ExpiresAt  *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastSeenAt time.Time // nothing sets or persists it yet
+	CreatedBy  string
+	UpdatedBy  string
 
 	// Metadata
-	Metadata map[string]string `yaml:"metadata,omitempty"`
+	Metadata map[string]string
 }
 
 // IsExpired returns true if the key has passed its expiration time.
@@ -77,8 +76,8 @@ func (k *VirtualKey) Validate() error {
 	switch {
 	case k.Name == "":
 		return fmt.Errorf("%w: missing name", ErrInvalid)
-	case k.HashedKey == "" && k.KeyEnv == "":
-		return fmt.Errorf("%w: must have hashed_key or key_env", ErrInvalid)
+	case k.HashedKey == "":
+		return fmt.Errorf("%w: missing hashed_key", ErrInvalid)
 	case k.TeamID == "":
 		return fmt.Errorf("%w: missing team_id", ErrInvalid)
 	case k.TeamRole == "":

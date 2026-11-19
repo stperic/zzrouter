@@ -42,7 +42,7 @@ func sharedBrowserAuthorityFixture(t *testing.T, lostGrant string, settings ...T
 	authority := s.access.oauth
 	require.NotNil(t, authority)
 	require.NotNil(t, s.providerBrowser.authority)
-	state := filepath.Join(s.auditConfigDir, "oauth.json")
+	state := filepath.Join(s.configDir, "oauth.json")
 	endpoint.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 		if lostGrant != "" && r.URL.Path == "/oauth/token" && r.ParseForm() == nil && r.PostForm.Get("grant_type") == lostGrant {

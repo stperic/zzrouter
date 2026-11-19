@@ -149,8 +149,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 
 	// Sweep orphan personal teams — any kind=personal team with zero
 	// referencing keys is the result of a crash mid-create-key and
-	// should be garbage-collected before serving traffic. The audit
-	// sink is still audit.Null here, so the sweep is not audited.
+	// should be garbage-collected before serving traffic. Each removal
+	// is recorded in the access history.
 	s.services.Teams.ReconcilePersonalTeams()
 
 	s.services.Keys = NewKeysService(s.accessStore, s.services.Teams, s.access)

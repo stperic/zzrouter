@@ -36,5 +36,7 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodePinIsClusterWide":              "pin_is_cluster_wide",
 		"CodeProviderConnectionUnavailable": "provider_connection_unavailable",
 		"CodeModelDiscoveryUnavailable":     "model_discovery_unavailable",
+		"CodeAccessStoreFailed":             "access_store_failed",
+		"CodeAccessStoreBusy":               "access_store_busy",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }

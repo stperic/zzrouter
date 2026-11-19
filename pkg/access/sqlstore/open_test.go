@@ -35,8 +35,11 @@ func requireRefusal(t *testing.T, dir string, reason Reason) {
 	var refusal *Refusal
 	require.ErrorAs(t, err, &refusal)
 	assert.Equal(t, reason, refusal.Reason)
-	assert.Equal(t, "access store cannot open: "+string(reason), err.Error())
 	assert.Regexp(t, "^Stop the service, then ", refusal.NextAction())
+	assert.Contains(t, err.Error(), string(reason))
+	assert.Contains(t, err.Error(), refusal.NextAction(), "the message carries the operator's next step")
+	assert.NotContains(t, err.Error(), dir, "the message names no path")
+	assert.NotContains(t, err.Error(), "sqlite", "the message carries no database text")
 }
 
 func TestOpenCreatesTheStoreAndItsMarker(t *testing.T) {
@@ -242,4 +245,67 @@ func TestOpenLabelsOnlyDamage(t *testing.T) {
 	_, err = Open(t.Context(), dir, Options{})
 	require.Error(t, err)
 	require.False(t, errors.As(err, &refusal), "a load that cannot read is not a broken record: %v", err)
+}
+
+// TestSettle rolls back the journal a crash left mid-commit, so a copy of the
+// file holds exactly the committed transactions, and refuses a file it cannot read.
+func TestSettle(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, Settle(t.Context(), t.TempDir()), "no database is nothing to settle")
+
+	dir := t.TempDir()
+	s := openStore(t, dir, Options{})
+	s.Record(t.Context(), audit.Event{Action: audit.ActionKeyUsageReset, Subject: "committed"})
+	require.NoError(t, s.Close())
+	committed, err := os.ReadFile(dbPath(dir))
+	require.NoError(t, err)
+
+	// A transaction larger than the page cache writes into the file before
+	// COMMIT; copying both files then leaves what a crash would.
+	db := rawDB(t, dir)
+	for _, pragma := range []string{"PRAGMA synchronous = OFF", "PRAGMA cache_size = 10"} {
+		_, err = db.ExecContext(t.Context(), pragma)
+		require.NoError(t, err)
+	}
+	tx, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 1 + i, 0, 'x', 'a', hex(randomblob(512)), '' FROM n`)
+	require.NoError(t, err)
+	crashed := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(crashed, "access"), 0o700))
+	for _, suffix := range []string{"", "-journal"} {
+		data, err := os.ReadFile(dbPath(dir) + suffix)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(dbPath(crashed)+suffix, data, 0o600))
+	}
+	require.NoError(t, tx.Rollback())
+	inFlight, err := os.ReadFile(dbPath(crashed))
+	require.NoError(t, err)
+	require.NotEqual(t, committed, inFlight, "the copy holds uncommitted pages")
+
+	require.NoError(t, Settle(t.Context(), crashed))
+	assert.NoFileExists(t, dbPath(crashed)+"-journal")
+	settled, err := os.ReadFile(dbPath(crashed))
+	require.NoError(t, err)
+	assert.Equal(t, committed, settled, "the file holds exactly the committed transactions")
+
+	// Settle refuses what Open refuses, for the same reason.
+	foreign, newer := copyStore(t, dir), copyStore(t, dir)
+	_, err = rawDB(t, foreign).ExecContext(t.Context(), "PRAGMA application_id = 1")
+	require.NoError(t, err)
+	_, err = rawDB(t, newer).ExecContext(t.Context(), "PRAGMA user_version = 2")
+	require.NoError(t, err)
+	junk := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(junk, "access"), 0o700))
+	require.NoError(t, os.WriteFile(dbPath(junk), []byte("not a database, just text long enough to have a header"), 0o600))
+	for name, tc := range map[string]struct {
+		dir    string
+		reason Reason
+	}{"junk": {junk, Unreadable}, "another application": {foreign, Unreadable}, "a newer schema": {newer, SchemaNewer}} {
+		var refusal *Refusal
+		require.ErrorAs(t, Settle(t.Context(), tc.dir), &refusal, name)
+		assert.Equal(t, tc.reason, refusal.Reason, name)
+		requireRefusal(t, tc.dir, tc.reason)
+	}
 }

@@ -80,4 +80,11 @@ const (
 	// CodePinIsClusterWide refuses a node-addressed pin for a provider the
 	// sync carries: the coordinator holds its one pin for every node.
 	CodePinIsClusterWide RouteErrorCode = "pin_is_cluster_wide"
+
+	// CodeAccessStoreFailed means the coordinator's access store can no
+	// longer vouch for its records; the node is exiting so it restarts.
+	CodeAccessStoreFailed RouteErrorCode = "access_store_failed"
+	// CodeAccessStoreBusy means another process held the access database
+	// past the busy timeout; the change was not made.
+	CodeAccessStoreBusy RouteErrorCode = "access_store_busy"
 )

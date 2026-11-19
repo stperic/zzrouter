@@ -14,14 +14,20 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/sqlitedb"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const updateMeta = "UPDATE meta SET value = ? WHERE key = ?"
 
-// ErrFailed refuses every write after the store lost track of what it holds:
-// a COMMIT failed and reading the database back failed too.
-var ErrFailed = errors.New("access store cannot vouch for its state")
+var (
+	// ErrFailed refuses every write after the store lost track of what it holds:
+	// a COMMIT failed and reading the database back failed too.
+	ErrFailed = errors.New("access store cannot vouch for its state")
+	// ErrBusy refuses one write because another process held the database past
+	// the busy timeout; nothing changed, and a retry may succeed.
+	ErrBusy = errors.New("access store is busy: another process holds its database")
+)
 
 // writes is the SQL of one commit, its values encoded before the transaction opens.
 type writes struct {
@@ -101,7 +107,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*records) (audit.
 	w.exec(updateMeta, strconv.FormatUint(m.sequence, 10), "sequence")
 	published := &state{records: next, snap: prev.snap, meta: m}
 	if changed {
-		published.snap = access.NewSnapshot(next.keys, next.teams, next.people)
+		published.snap = access.NewSnapshot(m.generation, next.keys, next.teams, next.people)
 	}
 	if uncertain, err := s.write(ctx, w); err != nil {
 		if !uncertain {
@@ -131,6 +137,9 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*records) (audit.
 func (s *Store) write(ctx context.Context, w *writes) (uncertain bool, err error) {
 	ctx = context.WithoutCancel(ctx)
 	tx, err := s.db.SQL().BeginTx(ctx, nil)
+	if sqlitedb.IsBusy(err) {
+		return false, ErrBusy
+	}
 	if err != nil {
 		return false, fmt.Errorf("begin access commit: %w", err)
 	}
@@ -159,6 +168,9 @@ func (s *Store) reload(ctx context.Context, commitErr error, sequence uint64) (*
 		return nil, s.refusal
 	}
 	if stored.meta.sequence != sequence {
+		if sqlitedb.IsBusy(commitErr) {
+			return nil, ErrBusy
+		}
 		return nil, commitErr
 	}
 	return stored, nil
@@ -181,7 +193,7 @@ func diff(prev, next *records, p part) (*writes, error) {
 	var err error
 	switch p {
 	case keyRecords:
-		w.removedKeys, err = changedRecords(w, keyTable, "key", prev.keys, next.keys, checkKey, keyCols)
+		w.removedKeys, err = changedRecords(w, keyTable, "key", prev.keys, next.keys, (*keys.VirtualKey).Validate, keyCols)
 	case teamRecords:
 		w.removedTeams, err = changedRecords(w, teamTable, "team", prev.teams, next.teams, (*teams.Team).Validate, teamCols)
 	case peopleRecords:
@@ -292,13 +304,4 @@ func sameGrant(a, b people.GrantRecord) bool {
 	times := sameTime(a.UsedAt, b.UsedAt) && sameTime(a.RevokedAt, b.RevokedAt)
 	a.UsedAt, a.RevokedAt, b.UsedAt, b.RevokedAt = nil, nil, nil, nil
 	return times && a == b
-}
-
-// checkKey is Validate plus this store's rule: an env-backed key has no column
-// for its credential, so it is refused rather than stored without one.
-func checkKey(k *keys.VirtualKey) error {
-	if k.KeyEnv != "" {
-		return fmt.Errorf("%w: env-backed keys are not stored", keys.ErrInvalid)
-	}
-	return k.Validate()
 }

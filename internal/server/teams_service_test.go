@@ -5,9 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -15,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -327,40 +325,44 @@ func TestUpdateTeam_MembersIsRefusedWithSomewhereToGo(t *testing.T) {
 	assert.Equal(t, "Before", got.Name)
 }
 
+// pinnedSnapshot is a real store whose readers see a pinned state once set.
+type pinnedSnapshot struct {
+	access.Store
+	pinned atomic.Pointer[access.Snapshot]
+}
+
+func (p *pinnedSnapshot) Snapshot() *access.Snapshot {
+	if snap := p.pinned.Load(); snap != nil {
+		return snap
+	}
+	return p.Store.Snapshot()
+}
+
 // A team update leaves warmed key authentications alone: each dropped entry
 // would cost an Argon2 verify on the next request.
 func TestUpdateTeam_KeepsWarmedAuthCache(t *testing.T) {
-	const envName = "ZZROUTER_TEST_TEAM_UPDATE_CACHE_KEY"
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "keys.yaml"), []byte(`keys:
-  ci:
-    name: CI
-    key_env: `+envName+`
-    team_id: eng
-    team_role: member
-`), 0o600))
-	store, err := filestore.Open(t.Context(), dir, filestore.Options{})
-	require.NoError(t, err)
+	store := &pinnedSnapshot{Store: newTestAccessStore(t)}
 	accessControl := newTestAccessControl(t, store)
 	svc := NewTeamsService(store, accessControl)
-	_, err = svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
+	_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
 	require.NoError(t, err)
-	authenticates := func(raw string) bool {
+	withoutKey := store.Snapshot()
+	raw := seedTestKey(t, store, "ci", keys.VirtualKey{Name: "CI", Role: "user", TeamID: "eng", TeamRole: "member"})
+	authenticates := func() bool {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 		c.Request.Header.Set("X-API-Key", raw)
 		return accessControl.Authenticate(c, RoleUser)
 	}
-	t.Setenv(envName, "first-environment-secret")
-	require.True(t, authenticates("first-environment-secret"))
-	// Only the cached principal still accepts the old value now.
-	t.Setenv(envName, "second-environment-secret")
+	require.True(t, authenticates())
+	// Only the cached principal still accepts the key once readers see a state without it.
+	store.pinned.Store(withoutKey)
 
 	renamed := "Platform"
 	_, err = svc.UpdateTeam(t.Context(), "eng", &UpdateTeamRequest{Name: &renamed}, "admin")
 	require.NoError(t, err)
-	assert.True(t, authenticates("first-environment-secret"), "the team update kept the warmed entry")
+	assert.True(t, authenticates(), "the team update kept the warmed entry")
 	accessControl.InvalidateAuthCache()
-	assert.False(t, authenticates("first-environment-secret"), "the probe detects a dropped entry")
+	assert.False(t, authenticates(), "the probe detects a dropped entry")
 }

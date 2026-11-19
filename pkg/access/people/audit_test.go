@@ -1,7 +1,6 @@
 package people
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -10,40 +9,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type auditRecorder struct{ events []audit.Event }
-
-func (r *auditRecorder) Emit(_ context.Context, event audit.Event) error {
-	r.events = append(r.events, event)
-	return nil
-}
-
 func TestPeopleAuditCommittedChanges(t *testing.T) {
 	s := openTestStore(t)
-	recorder := &auditRecorder{}
-	s.owner.setSink(recorder)
 	owner := claimTestOwner(t, s)
-	require.Len(t, recorder.events, 2)
-	require.Equal(t, audit.ActionPersonCreated, recorder.events[1].Action)
-	require.Equal(t, owner.ID, recorder.events[1].Actor)
+	require.Len(t, s.owner.recorded(), 2)
+	require.Equal(t, audit.ActionPersonCreated, s.owner.recorded()[1].Action)
+	require.Equal(t, owner.ID, s.owner.recorded()[1].Actor)
 	ctx := audit.WithIdentity(t.Context(), owner.ID, "test-request")
 	invite, err := s.Issue(ctx, GrantRequest{Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", Issuer: Issuer{Reference: "installation"}})
 	require.NoError(t, err)
-	require.Equal(t, "test-request", recorder.events[2].RequestID)
-	require.Equal(t, owner.ID, recorder.events[2].Actor)
+	require.Equal(t, "test-request", s.owner.recorded()[2].RequestID)
+	require.Equal(t, owner.ID, s.owner.recorded()[2].Actor)
 	require.NoError(t, s.RevokeGrant(ctx, invite.ID))
 	require.NoError(t, s.RevokeGrant(ctx, invite.ID))
-	require.Len(t, recorder.events, 4, "no event for idempotent revocation")
+	require.Len(t, s.owner.recorded(), 4, "no event for idempotent revocation")
 	name := "Changed"
 	s.owner.failPersists(errors.New("persistence failed"))
 	_, err = s.Update(ctx, owner.ID, UpdatePerson{Name: &name})
 	require.Error(t, err)
-	require.Len(t, recorder.events, 4)
+	require.Len(t, s.owner.recorded(), 4)
 	s.owner.failPersists(nil)
 	_, err = s.Update(ctx, owner.ID, UpdatePerson{Name: &name})
 	require.NoError(t, err)
-	require.Len(t, recorder.events, 5, "the committed retry is audited once")
-	require.Equal(t, "test-request", recorder.events[4].RequestID)
-	data, err := json.Marshal(recorder.events)
+	require.Len(t, s.owner.recorded(), 5, "the committed retry is audited once")
+	require.Equal(t, "test-request", s.owner.recorded()[4].RequestID)
+	data, err := json.Marshal(s.owner.recorded())
 	require.NoError(t, err)
 	for _, secret := range []string{testPassword, testProof, owner.Revision, invite.Token, "installation", "Changed"} {
 		require.NotContains(t, string(data), secret)

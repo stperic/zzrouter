@@ -14,8 +14,8 @@ const maxAuditPage = 100
 
 var auditPage = auditTable.selectAll + " WHERE seq < ? ORDER BY seq DESC LIMIT ?"
 
-// pageCursor is the position after a page; the generation makes a cursor from
-// before a restore fail instead of skipping events.
+// pageCursor is the position after a page. The generation names the stored
+// content, so a cursor fails instead of skipping events once that is replaced.
 type pageCursor struct {
 	Generation string `json:"g"`
 	Before     int64  `json:"b"`

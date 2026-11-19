@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -26,18 +27,16 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	s, endpoint := oauthTestNode(t, config.ClusterModeCoordinator)
 	// The ordinary OAuth fixture intentionally has no persisted node/provider
 	// configuration. Add a real disposable installation for inventory reads.
-	require.NoError(t, os.WriteFile(filepath.Join(s.auditConfigDir, "node.yaml"), []byte("node: {name: test-host, port: 9090}\n"), 0o600))
-	_, err := templates.PrepareProviders(filepath.Join(s.auditConfigDir, "providers"))
+	require.NoError(t, os.WriteFile(filepath.Join(s.configDir, "node.yaml"), []byte("node: {name: test-host, port: 9090}\n"), 0o600))
+	_, err := templates.PrepareProviders(filepath.Join(s.configDir, "providers"))
 	require.NoError(t, err)
-	cfg, err := config.ReadExistingNodeConfig(s.auditConfigDir)
+	cfg, err := config.ReadExistingNodeConfig(s.configDir)
 	require.NoError(t, err)
-	apps, err := config.LoadAppsConfig(filepath.Join(s.auditConfigDir, "providers"))
+	apps, err := config.LoadAppsConfig(filepath.Join(s.configDir, "providers"))
 	require.NoError(t, err)
 	inventory, err := recovery.Capture(t.Context(), cfg, apps)
 	require.NoError(t, err)
 	require.NoError(t, recovery.Save(t.Context(), inventory))
-	s.openAuditSink()
-	t.Cleanup(s.closeAuditSink)
 	for _, path := range []string{"/zzrouter/v1/access/audit", "/zzrouter/v1/system/recovery"} {
 		for _, credential := range []struct {
 			key  string
@@ -51,7 +50,7 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	pageResponse := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?limit=1", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, pageResponse.Code)
 	var response struct {
-		Data audit.Page `json:"data"`
+		Data auditPage `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(pageResponse.Body, &response))
 	require.Len(t, response.Data.Events, 1)
@@ -59,10 +58,10 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 	require.Equal(t, owner.ID, response.Data.Events[0].Actor)
 	require.NotEmpty(t, response.Data.Events[0].RequestID)
 	require.NotEmpty(t, response.Data.Next)
-	s.closeAuditSink()
-	s.openAuditSink()
-	stale := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?cursor="+response.Data.Next, TestAdminKey, nil)
-	require.Equal(t, http.StatusConflict, stale.Code)
+	for _, cursor := range []string{"malformed", strings.Repeat("x", 4096)} {
+		stale := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?cursor="+cursor, TestAdminKey, nil)
+		require.Equal(t, http.StatusConflict, stale.Code)
+	}
 	for _, limit := range []string{"0", "101", "invalid"} {
 		result := makeAuthRequest(t, s, "GET", "/zzrouter/v1/access/audit?limit="+limit, TestAdminKey, nil)
 		require.Equal(t, http.StatusBadRequest, result.Code)

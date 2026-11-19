@@ -115,7 +115,7 @@ func (a *Authenticator) Validate(rawKey string) (*KeyPrincipal, error) {
 	}
 
 	// Virtual keys (Argon2id — slow, hence the cache).
-	if id, vk := snapshot(a.state).ValidateRawKey(rawKey); vk != nil {
+	if id, vk := access.SnapshotOf(a.state).ValidateRawKey(rawKey); vk != nil {
 		if vk.IsExpired() {
 			return nil, fmt.Errorf("%w: %q", ErrKeyExpired, id)
 		}

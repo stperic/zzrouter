@@ -39,6 +39,25 @@ func (s Schema) Latest() (int, error) {
 	return len(names), err
 }
 
+// Admit refuses a header from another application (ErrForeign), a newer
+// schema (ErrNewer) or an invalid version (ErrUnreadable).
+func (s Schema) Admit(h Header) error {
+	if h.AppID != s.AppID {
+		return fmt.Errorf("%w: got %d, want %d", ErrForeign, h.AppID, s.AppID)
+	}
+	latest, err := s.Latest()
+	if err != nil {
+		return err
+	}
+	if h.Version > latest {
+		return fmt.Errorf("%w: got %d, latest %d", ErrNewer, h.Version, latest)
+	}
+	if h.Version < 0 {
+		return fmt.Errorf("%w: invalid schema version: %d", ErrUnreadable, h.Version)
+	}
+	return nil
+}
+
 // Verify checks migration numbering and exact SUMS coverage so released migrations cannot change silently.
 func (s Schema) Verify() error {
 	names, err := s.migrations()

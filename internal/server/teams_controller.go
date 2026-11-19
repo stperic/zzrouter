@@ -160,6 +160,6 @@ func writeTeamsError(c *gin.Context, err error) {
 	case isInvalidInput(err):
 		BadRequest(c, err.Error())
 	default:
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 	}
 }

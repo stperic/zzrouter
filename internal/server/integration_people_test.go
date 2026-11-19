@@ -191,7 +191,7 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 	owner.csrf = info.CSRF
 	status, _ := second.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, http.StatusUnauthorized, status)
-	proof, err := localproof.Read(t.Context(), s.auditConfigDir)
+	proof, err := localproof.Read(t.Context(), s.configDir)
 	require.NoError(t, err)
 	postProof := func(value, origin string) (int, []byte) {
 		data, err := json.Marshal(map[string]string{"proof": value})

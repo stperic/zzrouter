@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
@@ -21,7 +21,7 @@ import (
 // directly with an injected "now".
 func newTestCore(t *testing.T, staticKeys StaticKeySet) (*Core, access.Store) {
 	t.Helper()
-	store := openTestStore(t, filestore.Options{})
+	store := openTestStore(t, sqlstore.Options{})
 	return newTestCoreFor(t, staticKeys, store), store
 }
 
@@ -37,9 +37,9 @@ func newTestCoreFor(t *testing.T, staticKeys StaticKeySet, store access.Store) *
 	return c
 }
 
-func openTestStore(t *testing.T, opts filestore.Options) access.Store {
+func openTestStore(t *testing.T, opts sqlstore.Options) access.Store {
 	t.Helper()
-	store, err := filestore.Open(t.Context(), t.TempDir(), opts)
+	store, err := sqlstore.Open(t.Context(), t.TempDir(), opts)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

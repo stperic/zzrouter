@@ -230,19 +230,29 @@ not hold the state transaction lock. OAuth form bodies and response writes have
 
 ## Access audit and recovery boundaries
 
-The append-only `audit.jsonl` records committed people/enrollment mutations,
-password changes, authority revocations and existing app-key/team/quota changes.
-Actors identify accounts or keys, static installation authority, or a verified
-local operator. Events contain identifiers and safe change metadata, not passwords,
-grant tokens, credential references or local recovery proof. Account events are
-emitted after persistence, even if the later browser-session operation fails.
-Audit failures are warned and do not undo committed access changes.
+The access history in `access/access.sqlite` records committed people/enrollment
+mutations, password changes, authority revocations and app-key/team/quota changes.
+An event for a change to access records commits in the same transaction as the
+change, so a change is never kept without its record. Usage and spend resets,
+whose state lives outside the database, are recorded after their own commit,
+best effort. Actors identify accounts or keys, static installation authority,
+or a verified local operator. Events contain identifiers and safe change
+metadata, not passwords, grant tokens, credential references or local recovery
+proof. History is append-only: the database refuses updates and deletions of
+recorded events.
 
-**System → Access history** is administrator-only and reads bounded pages of the
-current audit file. It does not aggregate old archives or record every OAuth
-login/logout. New appends preserve page boundaries; reopening, replacing or
-truncating the source requires Refresh. Keep audit history in protected backup
-storage and define retention operationally; this change adds no automatic rotation.
+**System → Access history** is administrator-only and reads bounded pages of
+that history, newest first. It does not record every OAuth login/logout. A page
+cursor survives new events and restarts; a malformed cursor, or one another
+store issued, is refused and the reader refreshes. Define retention
+operationally; nothing prunes the history automatically.
+
+The database file is internal, not an interface. Inspect a backup copy, never
+the live file. While a tool holds the live file, each key, team or people
+change waits five seconds for it and then answers `503 access_store_busy`
+with `Retry-After`; nothing is changed, and a retry succeeds once the tool lets
+go. If the coordinator cannot even tell whether a change was committed, it
+answers `503 access_store_failed` and exits so its service manager restarts it.
 
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.

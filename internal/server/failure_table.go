@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -15,6 +16,10 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
+
+// accessStoreBusyRetryAfter suggests a retry once another lock holder has had
+// as long again as the store already waited for it.
+const accessStoreBusyRetryAfter = 5 * time.Second
 
 // failureRow is one decided answer; an empty code leaves each surface its generic one.
 type failureRow struct {
@@ -76,6 +81,9 @@ var failureTable = []failureRow{
 	// The daemon dropped the model: the next request loads it again.
 	{sentinel: prov_apps.ErrModelDropped, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrShutdown, status: http.StatusServiceUnavailable, code: ""},
+	// The node exits on this through its fatal path; the supervisor restarts it.
+	{sentinel: sqlstore.ErrFailed, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreFailed), message: "Access records are unavailable while this coordinator restarts. Retry once it answers again."},
+	{sentinel: sqlstore.ErrBusy, status: http.StatusServiceUnavailable, code: string(httperr.CodeAccessStoreBusy), message: "Another process holds the access database, so the change was not made. Retry shortly.", retryAfter: accessStoreBusyRetryAfter},
 	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrPortUnavailable, status: http.StatusServiceUnavailable, code: ""},

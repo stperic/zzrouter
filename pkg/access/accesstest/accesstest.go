@@ -27,9 +27,8 @@ import (
 // ValidateExternalIssuer and ValidateTeam below.
 type Harness struct {
 	Store          access.Store
-	Reopen         func() access.Store  // closes Store and opens its persisted state again
-	FailNextCommit func()               // makes the next persist fail before anything is committed
-	Events         func() []audit.Event // every event the store recorded, oldest first, open or closed
+	Reopen         func() access.Store // closes Store and opens its persisted state again
+	FailNextCommit func()              // makes the next persist fail before anything is committed
 }
 
 // Run checks every rule that holds for any access.Store.
@@ -78,9 +77,26 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 	}
 }
 
+// auditEvents reads every event s recorded through AuditPage, oldest first.
+func auditEvents(t *testing.T, s access.Store) []audit.Event {
+	t.Helper()
+	var events []audit.Event
+	for cursor := ""; ; {
+		page, next, err := s.AuditPage(t.Context(), cursor, 100)
+		require.NoError(t, err)
+		events = append(events, page...)
+		if next == "" {
+			slices.Reverse(events)
+			return events
+		}
+		cursor = next
+	}
+}
+
 type recorder struct {
-	events  func() []audit.Event
-	before  int // events recorded before observe
+	t       *testing.T
+	store   access.Store // whose history counts; a reopened store may replace it
+	before  int          // events recorded before observe
 	mu      sync.Mutex
 	commits []access.Commit
 }
@@ -92,13 +108,14 @@ func (r *recorder) commit(c access.Commit) {
 }
 
 func (r *recorder) counts() (int, int) {
+	events := len(auditEvents(r.t, r.store)) - r.before
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.events()) - r.before, len(r.commits)
+	return events, len(r.commits)
 }
 
 func (r *recorder) lastEvent() audit.Event {
-	events := r.events()
+	events := auditEvents(r.t, r.store)
 	return events[len(events)-1]
 }
 
@@ -109,8 +126,8 @@ func (r *recorder) lastCommit() access.Commit {
 }
 
 // observe counts the audit events and commits of h's store from now on.
-func observe(h Harness) *recorder {
-	r := &recorder{events: h.Events, before: len(h.Events())}
+func observe(t *testing.T, h Harness) *recorder {
+	r := &recorder{t: t, store: h.Store, before: len(auditEvents(t, h.Store))}
 	h.Store.OnCommit(r.commit)
 	return r
 }
@@ -149,16 +166,13 @@ func keyIDs(snap *access.Snapshot, teamID string) []string {
 
 func testKeyLifecycle(t *testing.T, h Harness) {
 	s := h.Store
-	input := newKey("team")
-	input.KeyEnv = "IGNORED_ON_CREATE"
-	created, raw, err := s.CreateKey(t.Context(), "reader", input, audit.Event{})
+	created, raw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
 	require.NoError(t, err)
 	assert.Contains(t, raw, keys.KeyPrefix)
 	assert.Equal(t, "reader", created.ID)
 	assert.Equal(t, "Reader", created.Name)
 	assert.NotEmpty(t, created.UUID)
 	assert.NotEmpty(t, created.HashedKey)
-	assert.Empty(t, created.KeyEnv, "a created key is never env-backed")
 	assert.False(t, created.CreatedAt.IsZero())
 	assert.Equal(t, created.CreatedAt, created.UpdatedAt)
 	assert.Equal(t, created, s.Snapshot().Key("reader"))
@@ -201,7 +215,7 @@ func testKeyStoreOwnedFields(t *testing.T, h Harness) {
 	assert.NotEqual(t, "caller-uuid", created.UUID, "the store assigns the UUID")
 
 	updated, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error {
-		k.ID, k.UUID, k.HashedKey, k.KeyEnv = "moved", "other-uuid", "forged-hash", "FORGED_ENV"
+		k.ID, k.UUID, k.HashedKey = "moved", "other-uuid", "forged-hash"
 		k.TeamID, k.TeamRole = "elsewhere", string(teams.RoleOwner)
 		k.CreatedAt, k.CreatedBy, k.UpdatedAt = time.Time{}, "impostor", time.Time{}
 		k.Name, k.Description, k.UpdatedBy = "Renamed", "agent: research", "editor"
@@ -212,7 +226,6 @@ func testKeyStoreOwnedFields(t *testing.T, h Harness) {
 	assert.Equal(t, "reader", updated.ID)
 	assert.Equal(t, created.UUID, updated.UUID)
 	assert.Equal(t, created.HashedKey, updated.HashedKey)
-	assert.Empty(t, updated.KeyEnv)
 	assert.Equal(t, "team", updated.TeamID)
 	assert.Equal(t, string(teams.RoleMember), updated.TeamRole)
 	assert.Equal(t, created.CreatedAt, updated.CreatedAt)
@@ -289,7 +302,7 @@ func testInvalidRecords(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(h)
+	rec := observe(t, h)
 	key := func(apply func(*keys.VirtualKey)) keys.VirtualKey { k := newKey("team"); apply(&k); return k }
 	team := func(apply func(*teams.Team)) teams.Team { team := sharedTeam(); apply(&team); return team }
 	for name, run := range map[string]func() error{
@@ -407,7 +420,7 @@ func testTimeBounds(t *testing.T, h Harness) {
 	snap := h.Reopen().Snapshot()
 	for id, at := range bounds {
 		require.NotNil(t, snap.Key(id), id)
-		assert.Equal(t, at, seconds(snap.Key(id)).ExpiresAt.UTC(), id)
+		assert.Equal(t, at, *snap.Key(id).ExpiresAt, id)
 	}
 }
 
@@ -437,7 +450,7 @@ func testApplyError(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(h)
+	rec := observe(t, h)
 	refused := errors.New("refused by the caller")
 	_, err := s.UpdateKey(t.Context(), "reader", func(k *keys.VirtualKey) error {
 		k.Name = "half applied"
@@ -608,7 +621,7 @@ func testTeamSnapshotIsolation(t *testing.T, h Harness) {
 
 func testCommitNotifications(t *testing.T, h Harness) {
 	s := h.Store
-	rec, second := observe(h), observe(h)
+	rec, second := observe(t, h), observe(t, h)
 	_, raw, err := s.CreateKey(t.Context(), "reader", newKey("team"), audit.Event{})
 	require.NoError(t, err)
 	c := rec.lastCommit()
@@ -670,7 +683,7 @@ func testSubscriberReentry(t *testing.T, h Harness) {
 
 func testAuditEvents(t *testing.T, h Harness) {
 	s := h.Store
-	rec := observe(h)
+	rec := observe(t, h)
 	steps := []struct {
 		ev  audit.Event
 		run func(audit.Event) error
@@ -709,8 +722,9 @@ func testAuditEvents(t *testing.T, h Harness) {
 	ev := rec.lastEvent()
 	assert.Equal(t, audit.ActionKeyUsageReset, ev.Action)
 	s.Record(t.Context(), audit.Event{})
-	events, _ = rec.counts()
+	events, commits = rec.counts()
 	assert.Equal(t, len(steps)+1, events)
+	assert.Equal(t, len(steps)+1, commits, "an event recorded alone changes no record and notifies nobody")
 }
 
 func testPersistFailure(t *testing.T, h Harness) {
@@ -718,7 +732,7 @@ func testPersistFailure(t *testing.T, h Harness) {
 	_, oldRaw, err := s.CreateKey(t.Context(), "reader", newKey("eng"), audit.Event{})
 	require.NoError(t, err)
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(h)
+	rec := observe(t, h)
 	for name, run := range map[string]func() error{
 		"create key": func() error {
 			_, _, err := s.CreateKey(t.Context(), "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
@@ -765,7 +779,7 @@ func testCanceledContext(t *testing.T, h Harness) {
 	s := h.Store
 	createKey(t, s, "reader")
 	createTeam(t, s, "eng", sharedTeam())
-	rec := observe(h)
+	rec := observe(t, h)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, _, err := s.CreateKey(ctx, "writer", newKey("eng"), event(audit.ActionKeyCreated, "writer"))
@@ -797,7 +811,7 @@ func testClosedStore(t *testing.T, h Harness) {
 	require.NoError(t, err)
 	createTeam(t, s, "eng", sharedTeam())
 	owner := claimOwner(t, s)
-	rec := observe(h)
+	rec := observe(t, h)
 	last := s.Snapshot()
 	require.NoError(t, s.Close())
 	for name, run := range map[string]func() error{
@@ -822,13 +836,17 @@ func testClosedStore(t *testing.T, h Harness) {
 		require.ErrorIs(t, run(), access.ErrClosed, name)
 	}
 	s.Record(t.Context(), event(audit.ActionKeyUsageReset, "reader"))
-	events, commits := rec.counts()
-	assert.Zero(t, events, "a closed store records nothing")
-	assert.Zero(t, commits)
+	_, _, err = s.AuditPage(t.Context(), "", 1)
+	require.ErrorIs(t, err, access.ErrClosed, "a closed store reads no history")
 	assert.Same(t, last, s.Snapshot(), "a closed store keeps its last published snapshot")
 	assert.True(t, s.Snapshot().Initialized(), "the snapshot keeps its people")
 	assert.Equal(t, owner, s.Snapshot().Owner())
-	snap := h.Reopen().Snapshot()
+	reopened := h.Reopen()
+	rec.store = reopened
+	events, commits := rec.counts()
+	assert.Zero(t, events, "a closed store records nothing")
+	assert.Zero(t, commits)
+	snap := reopened.Snapshot()
 	id, _ := snap.ValidateRawKey(oldRaw)
 	assert.Equal(t, "reader", id)
 	assert.Nil(t, snap.Key("writer"))
@@ -838,7 +856,7 @@ func testClosedStore(t *testing.T, h Harness) {
 
 func testConcurrentCreates(t *testing.T, h Harness) {
 	s := h.Store
-	rec := observe(h)
+	rec := observe(t, h)
 	const callers = 4
 	start := make(chan struct{})
 	results := make(chan error, callers)
@@ -869,7 +887,7 @@ func testConcurrentCreates(t *testing.T, h Harness) {
 // fullKey and fullTeam set every field a caller may set, so a field a store
 // forgets fails the round trip; storeOwned lists what the store sets itself.
 func fullKey(teamID string) keys.VirtualKey {
-	expires, suspended := utils.NowUTC().Add(time.Hour), utils.NowUTC()
+	expires, suspended := subMicro(2031), subMicro(2029)
 	return keys.VirtualKey{
 		Name: "Reader", Description: "agent: research-bot", Role: "admin", TeamID: teamID, TeamRole: string(teams.RoleOwner),
 		Suspended: true, SuspendedAt: &suspended, SuspendedBy: "suspender", ExpiresAt: &expires,
@@ -879,7 +897,7 @@ func fullKey(teamID string) keys.VirtualKey {
 }
 
 func fullTeam() teams.Team {
-	suspended := utils.NowUTC()
+	suspended := subMicro(2029)
 	return teams.Team{
 		Name: "Engineering", Kind: teams.KindShared, AllowedModels: []string{"qwen"}, Metadata: map[string]string{"dept": "r&d"},
 		RouteAccess:    teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}},
@@ -887,6 +905,13 @@ func fullTeam() teams.Team {
 		Suspended:      true, SuspendedAt: &suspended, SuspendedBy: "suspender", CreatedBy: "creator", UpdatedBy: "updater",
 		QuotaConfig: quota.QuotaConfig{RPMLimit: 100, TPMLimit: 200, MaxParallelRequests: 4, SpendLimit: 50, ResetPeriod: "daily", DefaultMaxTokens: 512},
 	}
+}
+
+// subMicro is an instant in year with digits below a microsecond, in a zone
+// other than UTC, so a store that publishes what it did not store is caught
+// on a clock that already reads whole microseconds.
+func subMicro(year int) time.Time {
+	return time.Date(year, 2, 3, 4, 5, 6, 123456789, time.FixedZone("ahead", 2*3600))
 }
 
 // zeroFields lists the exported fields of *record left zero, nested structs
@@ -912,7 +937,7 @@ func zeroFields(record any, except ...string) []string {
 }
 
 // requireAllSet fails for every exported field left zero, except those named;
-// KeyEnv excludes HashedKey and nothing stores LastSeenAt yet.
+// nothing sets LastSeenAt yet.
 func requireAllSet(t *testing.T, record any, except ...string) {
 	t.Helper()
 	for _, name := range zeroFields(record, except...) {
@@ -938,45 +963,19 @@ func requireCovered[T any](t *testing.T, records []T, except ...string) {
 	}
 }
 
-// seconds drops what a store may not keep below second precision.
-func seconds[T any](record *T) *T {
-	var walk func(reflect.Value)
-	walk = func(v reflect.Value) {
-		for i := range v.NumField() {
-			switch field := v.Field(i); {
-			case !field.CanSet():
-			case field.Type() == reflect.TypeFor[time.Time]():
-				at, _ := field.Interface().(time.Time)
-				field.Set(reflect.ValueOf(at.Truncate(time.Second)))
-			case field.Type() == reflect.TypeFor[*time.Time]() && !field.IsNil():
-				at, _ := field.Elem().Interface().(time.Time)
-				truncated := at.Truncate(time.Second)
-				field.Set(reflect.ValueOf(&truncated))
-			case field.Kind() == reflect.Struct:
-				walk(field)
-			}
-		}
-	}
-	walk(reflect.ValueOf(record).Elem())
-	return record
-}
-
 func testReopenRoundTrip(t *testing.T, h Harness) {
 	s := h.Store
 	key, raw, err := s.CreateKey(t.Context(), "reader", fullKey("eng"), audit.Event{})
 	require.NoError(t, err)
 	team, err := s.CreateTeam(t.Context(), "eng", fullTeam(), audit.Event{})
 	require.NoError(t, err)
-	requireAllSet(t, key, "KeyEnv", "LastSeenAt")
+	requireAllSet(t, key, "LastSeenAt")
 	requireAllSet(t, team)
 	reopen := func(wantKey *keys.VirtualKey, wantTeam *teams.Team) access.Store {
 		t.Helper()
 		reopened := h.Reopen()
-		gotKey, gotTeam := reopened.Snapshot().Key("reader"), reopened.Snapshot().Team("eng")
-		require.NotNil(t, gotKey)
-		require.NotNil(t, gotTeam)
-		assert.Equal(t, seconds(wantKey.Clone()), seconds(gotKey))
-		assert.Equal(t, seconds(wantTeam.Clone()), seconds(gotTeam))
+		assert.Equal(t, wantKey, reopened.Snapshot().Key("reader"), "a reopen reads what was published")
+		assert.Equal(t, wantTeam, reopened.Snapshot().Team("eng"))
 		return reopened
 	}
 	s = reopen(key, team)

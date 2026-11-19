@@ -40,14 +40,14 @@ test('access history loads older pages and presents stale cursor recovery', asyn
   const p = owner(t, async path => {
     calls.push(path);
     if (calls.length === 3) throw Object.assign(new Error('History changed'), { status: 409 });
-    return { events: [{ time: '2026-11-16T00:00:00Z', action: 'person.created', actor: 'person-safe', subject: 'person-safe' }], next: 'opaque cursor', skipped: 0 };
+    return { events: [{ time: '2026-11-16T00:00:00Z', action: 'person.created', actor: 'person-safe', subject: 'person-safe' }], next: 'opaque cursor' };
   });
   await auditHistory(p);
   await button(p.root, 'Load older').listeners.get('click')(); await drain();
   assert.match(calls[1], /cursor=opaque%20cursor/);
   assert.match(p.root.textContent, /2 events shown/);
   await button(p.root, 'Load older').listeners.get('click')(); await drain();
-  assert.match(p.root.textContent, /Refresh to read the current audit file/);
+  assert.match(p.root.textContent, /Refresh to read the current history/);
 });
 
 test('recovery shows server-owned paths and staged-only commands', async t => {

@@ -20,7 +20,6 @@ var (
 	ErrInitialized        = errors.New("owner setup is already complete")
 	ErrNotFound           = errors.New("person not found")
 	ErrLimited            = errors.New("too many account attempts; try again later")
-	ErrClosed             = errors.New("people store is closed")
 	ErrCapacity           = errors.New("people or invitation capacity reached")
 )
 
@@ -57,9 +56,9 @@ type UpdatePerson struct {
 // Person references are checked inside the people transaction. Reference is an
 // opaque, nonsecret reference for the consumer's static/virtual or local authority.
 type Issuer struct {
-	PersonID  string `json:"person_id,omitempty"`
-	Revision  string `json:"revision,omitempty"`
-	Reference string `json:"reference,omitempty"`
+	PersonID  string
+	Revision  string
+	Reference string
 }
 
 // Purpose prevents a grant from being redeemed at another access transition.
@@ -135,8 +134,7 @@ type Options struct {
 	// closed owner returns access.ErrClosed. A failed change returns its error
 	// unwrapped, a failed persist an error whose chain holds the cause, and
 	// neither publishes or records anything. A change that alters nothing and
-	// returns no event may write nothing; whether subscribers hear of it is
-	// unspecified.
+	// returns no event writes nothing and notifies no subscriber.
 	Mutate func(ctx context.Context, change func(*State) (audit.Event, error)) (*State, error)
 	// View returns the state the owner's snapshot publishes, without locking.
 	View func() *State

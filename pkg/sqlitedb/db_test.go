@@ -357,3 +357,21 @@ func TestOpenNeverRecreatesRemovedFile(t *testing.T) {
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
+
+// TestIsBusy names a lock another connection held past the busy timeout, and nothing else.
+func TestIsBusy(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "busy.sqlite")
+	db := createDB(t, path, testSchema(t))
+	locker := rawDB(t, path)
+	execSQL(t, locker, "BEGIN IMMEDIATE")
+	t.Cleanup(func() { _, _ = locker.ExecContext(context.Background(), "ROLLBACK") })
+	execSQL(t, db.SQL(), "PRAGMA busy_timeout = 10")
+	_, err := db.SQL().ExecContext(t.Context(), "INSERT INTO parents VALUES(1, 'blocked')")
+	require.Error(t, err)
+	require.True(t, sqlitedb.IsBusy(err), "a held write lock: %v", err)
+	_, err = db.SQL().ExecContext(t.Context(), "SELECT * FROM missing")
+	require.Error(t, err)
+	require.False(t, sqlitedb.IsBusy(err), "a failed statement is not busy: %v", err)
+	require.False(t, sqlitedb.IsBusy(errors.New("database is locked")), "text alone classifies nothing")
+}

@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
@@ -23,7 +23,7 @@ const fixtureProof = "a validated fixture browser proof"
 // identityFixture enrolls a real member in engineering beside an app key there.
 func identityFixture(t *testing.T, limits quota.QuotaConfig) (*Core, access.Store, CredentialReference, CredentialReference) {
 	t.Helper()
-	store := openTestStore(t, filestore.Options{
+	store := openTestStore(t, sqlstore.Options{
 		People:                 true,
 		ValidateExternalIssuer: func(context.Context, string) error { return nil },
 		ValidateTeam: func(snap *access.Snapshot, id string) error {

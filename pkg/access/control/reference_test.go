@@ -2,64 +2,50 @@ package control
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestCredentialReferenceShortEnvironmentKey(t *testing.T) {
-	const envName = "ZZROUTER_TEST_SHORT_REFERENCE_KEY"
-	const raw = "tiny-secret"
-	t.Setenv(envName, raw)
-	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "keys.yaml"), []byte(`keys:
-  reader:
-    uuid: short-env-reference
-    name: Reader
-    role: user
-    key_env: ZZROUTER_TEST_SHORT_REFERENCE_KEY
-    team_id: team
-    team_role: member
-`), 0o600))
-	store, err := filestore.Open(t.Context(), dir, filestore.Options{})
-	require.NoError(t, err)
-	createReferenceTeam(t, store)
-	core := NewCore(StaticKeySet{}, store, nil, nil, nil)
-	ref, err := core.Reference(raw)
-	require.NoError(t, err)
-	data, err := json.Marshal(ref)
-	require.NoError(t, err)
-	assert.NotContains(t, string(data), raw, "persisted bindings must not contain a reusable environment credential")
-	var saved CredentialReference
-	require.NoError(t, json.Unmarshal(data, &saved))
-	ac, err := core.AuthenticateReference(saved)
-	require.NoError(t, err)
-	assert.Equal(t, "reader", ac.Key.ID)
-	assert.True(t, ac.Key.IsVirtual)
-	assert.Equal(t, "[redacted]", ac.Key.Fingerprint)
+// fixedState publishes the one snapshot a test sets.
+type fixedState struct{ snap *access.Snapshot }
 
-	const rotated = "next-key"
-	t.Setenv(envName, rotated)
-	_, err = core.AuthenticateReference(saved)
-	require.ErrorIs(t, err, ErrInvalidKey)
-	_, err = core.Reference(raw)
-	require.ErrorIs(t, err, ErrInvalidKey)
-	next, err := core.Reference(rotated)
+func (s *fixedState) Snapshot() *access.Snapshot   { return s.snap }
+func (s *fixedState) OnCommit(func(access.Commit)) {}
+
+// TestCredentialReferenceGeneration: an app-key reference resolves only
+// against the content it was issued from, so replacing the generation
+// invalidates it even though the key record is unchanged.
+func TestCredentialReferenceGeneration(t *testing.T) {
+	raw, err := keys.GenerateRawKey()
 	require.NoError(t, err)
-	assert.NotEqual(t, saved.Version, next.Version)
-	data, err = json.Marshal(next)
+	hash, err := keys.HashKey(raw)
 	require.NoError(t, err)
-	assert.NotContains(t, string(data), rotated)
-	_, err = core.AuthenticateReference(next)
+	under := func(generation string) *access.Snapshot {
+		key := &keys.VirtualKey{ID: "reader", UUID: "reader-uuid", Name: "Reader", Role: "user", HashedKey: hash, TeamID: "team", TeamRole: "member"}
+		team := &teams.Team{ID: "team", Name: "Reference team", Kind: teams.KindShared}
+		return access.NewSnapshot(generation, map[string]*keys.VirtualKey{"reader": key}, map[string]*teams.Team{"team": team}, nil)
+	}
+	state := &fixedState{snap: under("before")}
+	core := NewCore(StaticKeySet{}, state, nil, nil, nil)
+	issued, err := core.Reference(raw)
+	require.NoError(t, err)
+	_, err = core.AuthenticateReference(issued)
+	require.NoError(t, err)
+
+	state.snap = under("after")
+	_, err = core.AuthenticateReference(issued)
+	require.ErrorIs(t, err, ErrInvalidKey, "a reference from another generation does not resolve")
+	current, err := core.Reference(raw)
+	require.NoError(t, err, "the same key signs in again under the new generation")
+	assert.NotEqual(t, issued.Version, current.Version)
+	_, err = core.AuthenticateReference(current)
 	require.NoError(t, err)
 }
 
@@ -159,7 +145,7 @@ func TestCredentialReferenceConcurrentRotation(t *testing.T) {
 
 func referenceStore(t *testing.T) access.Store {
 	t.Helper()
-	store := openTestStore(t, filestore.Options{})
+	store := openTestStore(t, sqlstore.Options{})
 	createReferenceTeam(t, store)
 	return store
 }

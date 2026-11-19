@@ -17,8 +17,8 @@ var ErrClosed = errors.New("access store is closed")
 // operation: validate, persist, publish a new Snapshot, record ev; or change
 // nothing and return the error. A zero ev records nothing. A record that breaks
 // its Validate rule is refused with keys.ErrInvalid or teams.ErrInvalid. The
-// store assigns ID, UUID and timestamps; after Close every write returns
-// ErrClosed and Snapshot keeps returning the last published state.
+// store assigns ID, UUID and timestamps; after Close every write and AuditPage
+// return ErrClosed, and Snapshot keeps returning the last published state.
 type Store interface {
 	Snapshot() *Snapshot // lock-free
 	// OnCommit registers fn before serving; fn runs after each commit,
@@ -38,10 +38,23 @@ type Store interface {
 	DeleteTeam(ctx context.Context, id string, ev audit.Event) error
 	// Record appends ev for a change whose state lives outside the store, best effort.
 	Record(ctx context.Context, ev audit.Event)
+	// AuditPage returns up to limit recorded events older than cursor, newest
+	// first and never nil, with the opaque cursor of the next page, empty after
+	// the oldest. A cursor the store did not issue for its current generation
+	// is audit.ErrCursor.
+	AuditPage(ctx context.Context, cursor string, limit int) ([]audit.Event, string, error)
 
-	People() People          // nil when this node has no people store
-	SetAuditSink(audit.Sink) // removed in step 12
+	People() People // nil when this node has no people store
 	Close() error
+}
+
+// SnapshotOf returns st's published state. A node that holds no store passes
+// nil and reads as empty.
+func SnapshotOf(st interface{ Snapshot() *Snapshot }) *Snapshot {
+	if st == nil {
+		return nil
+	}
+	return st.Snapshot()
 }
 
 // People is today's identity operation set; *people.Store satisfies it unchanged.

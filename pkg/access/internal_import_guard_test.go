@@ -18,7 +18,7 @@ import (
 func TestClientsDoNotImportAccessStorage(t *testing.T) {
 	t.Parallel()
 	const module = "github.com/stperic/zzrouter/"
-	storage := []string{module + "pkg/access", module + "pkg/access/filestore", module + "pkg/access/people", module + "pkg/access/sqlstore", module + "pkg/sqlitedb"}
+	storage := []string{module + "pkg/access", module + "pkg/access/people", module + "pkg/access/sqlstore", module + "pkg/sqlitedb"}
 	root := filepath.Join("..", "..")
 	roots := []string{"cmd/zzrouter", "cmd/zzrouter-launcher"}
 	for _, subtree := range []string{"internal/cli/clientcli", "internal/client"} {

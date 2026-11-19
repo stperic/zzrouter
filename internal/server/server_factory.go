@@ -20,9 +20,8 @@ import (
 	"github.com/stperic/common/httpclient"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/audit"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
@@ -171,7 +170,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		cacheDir := filepath.Join(cm.GetNodeConfigDir(), "pricing")
 		s.model.Pricing = pricing.NewStore(&cfg.Models.Pricing, cacheDir)
 		// Overrides live with the other operator-authored state
-		// (keys.yaml, teams.yaml, model_groups.yaml), not in the cache
+		// (model_groups.yaml, provider config), not in the cache
 		// dir the upstream table is refetched into.
 		overridesPath := filepath.Join(cm.GetNodeConfigDir(), "pricing_overrides.yaml")
 		if err := s.model.Pricing.LoadOverrides(overridesPath); err != nil {
@@ -455,18 +454,16 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			if issuer, err = s.config.Auth.OAuth.EffectiveIssuer(s.config.Node); err != nil {
 				return nil, err
 			}
-			s.accessStore, err = filestore.Open(context.Background(), configDir, filestore.Options{
-				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam,
+			// A refusal ends construction: the node exits with its reason and next action.
+			store, err := sqlstore.Open(context.Background(), configDir, sqlstore.Options{
+				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam, Fatal: s.fail,
 			})
 			if err != nil {
 				return nil, err
 			}
+			s.accessStore = store
 		}
-
-		// === Audit sink ===
-		// Opened and closed with the coordinator group; workers stay on Null.
-		s.auditSink = audit.Null{}
-		s.auditConfigDir = configDir
+		s.configDir = configDir
 
 		// === AccessControl: unified auth + quota enforcement ===
 		staticKeySet := buildStaticKeySet(cfg)

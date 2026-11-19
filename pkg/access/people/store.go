@@ -1,15 +1,12 @@
 package people
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -28,14 +25,14 @@ const (
 // PersonRecord is a stored account with its password hash.
 type PersonRecord struct {
 	Person
-	PasswordHash string `json:"password_hash"`
+	PasswordHash string
 }
 
 // GrantRecord is a stored grant with its issuer and browser binding.
 type GrantRecord struct {
 	Grant
-	Issuer      Issuer `json:"issuer"`
-	BrowserHash string `json:"browser_hash,omitempty"`
+	Issuer      Issuer
+	BrowserHash string
 }
 
 // State is the people records, grants and onboarding progress. A published
@@ -48,20 +45,14 @@ type State struct {
 	progress    Progress
 }
 
-// Records is a State's plain transfer form, for an owner that stores records
-// rather than JSON: people by ID, grants by token digest.
+// Records is a State's plain transfer form, what its owner stores: people by
+// ID, grants by token digest.
 type Records struct {
-	Initialized bool                    `json:"initialized"`
-	OwnerID     string                  `json:"owner_id,omitempty"`
-	People      map[string]PersonRecord `json:"people"`
-	Grants      map[string]GrantRecord  `json:"grants"`
-	Progress    Progress                `json:"progress"`
-}
-
-// stateJSON is the persisted form of State.
-type stateJSON struct {
-	Version int `json:"version"`
-	Records
+	Initialized bool
+	OwnerID     string
+	People      map[string]PersonRecord
+	Grants      map[string]GrantRecord
+	Progress    Progress
 }
 
 // Clone is the private copy a transition changes; a nil State clones as empty.
@@ -97,28 +88,6 @@ func (s *State) Records() Records {
 		s.grants[hash] = grant
 	}
 	return Records{Initialized: s.initialized, OwnerID: s.ownerID, People: s.people, Grants: s.grants, Progress: s.progress}
-}
-
-// MarshalJSON writes the persisted form.
-func (s *State) MarshalJSON() ([]byte, error) {
-	return json.Marshal(stateJSON{Version: 1, Records: s.Records()})
-}
-
-// DecodeState validates persisted account state.
-func DecodeState(data []byte) (*State, error) {
-	var wire stateJSON
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return nil, fmt.Errorf("decode people snapshot: %w", err)
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, fmt.Errorf("people snapshot has trailing data")
-	}
-	if wire.Version != 1 || wire.People == nil || wire.Grants == nil {
-		return nil, fmt.Errorf("invalid people snapshot structure")
-	}
-	return NewState(wire.Records)
 }
 
 func (s *State) validate() error {

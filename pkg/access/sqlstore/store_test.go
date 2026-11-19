@@ -43,7 +43,6 @@ func TestStoreContract(t *testing.T) {
 				current = open()
 				return current
 			},
-			Events: func() []audit.Event { return storedEvents(t, dir) },
 		}
 	})
 }

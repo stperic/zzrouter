@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,10 +15,10 @@ import (
 
 	"github.com/stperic/common/secrets"
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -26,7 +27,7 @@ import (
 )
 
 // peopleOptions accepts every issuer and team: the fixture tests archives, not authority.
-var peopleOptions = filestore.Options{
+var peopleOptions = sqlstore.Options{
 	People:                 true,
 	ValidateExternalIssuer: func(context.Context, string) error { return nil },
 	ValidateTeam:           func(*access.Snapshot, string) error { return nil },
@@ -56,7 +57,7 @@ func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	_, err = vault.Replace(t.Context(), "cloud", 0, map[string]string{"token": "synthetic-provider-secret"})
 	require.NoError(t, err)
 	require.NoError(t, vault.Close())
-	accessStore, err := filestore.Open(t.Context(), dir, peopleOptions)
+	accessStore, err := sqlstore.Open(t.Context(), dir, peopleOptions)
 	require.NoError(t, err)
 	_, err = accessStore.CreateTeam(t.Context(), "workspace", teams.Team{Name: "Workspace", Kind: teams.KindShared}, audit.Event{})
 	require.NoError(t, err)
@@ -91,25 +92,22 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "restored")
 	_, err = Restore(t.Context(), output, keyOutput, destination)
 	require.NoError(t, err)
-	for _, name := range []string{"node.yaml", "keys.yaml", "teams.yaml", "spend.json", "access/people.json", "credentials.enc"} {
+	// The database and its marker travel as ordinary files.
+	for _, name := range []string{"node.yaml", "spend.json", "access/access.sqlite", "access-store.json", "credentials.enc"} {
 		before, err := os.ReadFile(filepath.Join(dir, name))
 		require.NoError(t, err)
 		after, err := os.ReadFile(filepath.Join(destination, "config", name))
 		require.NoError(t, err)
 		require.Equal(t, before, after, name)
 	}
-	restoredStore, err := filestore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
+	restoredStore, err := sqlstore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
 	require.NoError(t, err)
 	person, err := restoredStore.People().Authenticate(t.Context(), "owner", "a long test password")
 	require.NoError(t, err)
 	require.Equal(t, "admin", person.Role)
 	require.Equal(t, "workspace", person.TeamID)
+	require.Equal(t, "workspace", restoredStore.Snapshot().Key("editor").TeamID)
 	require.NoError(t, restoredStore.Close())
-	keyData, err := os.ReadFile(filepath.Join(destination, "config", "keys.yaml"))
-	require.NoError(t, err)
-	restoredKeys, err := filestore.DecodeKeys(keyData)
-	require.NoError(t, err)
-	require.Equal(t, "workspace", restoredKeys["editor"].TeamID)
 	spend, err := quota.LoadSpend(filepath.Join(destination, "config", "spend.json"))
 	require.NoError(t, err)
 	require.EqualValues(t, 1750000, spend.States["team:workspace:"].SpendMicro)
@@ -155,7 +153,7 @@ func TestRecoveryRefusesLiveNodeAndInvalidAuthority(t *testing.T) {
 }
 
 func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
-	for _, name := range []string{"../escape", "config/../../escape", "config/C:drive", "config/CON", "config/name.", "config\\escape", "config/private/key", "config/owner.lock", "config/update-pending-confirm.json", "config/update-operation.json", "config/backups/executable", "config/TEAMS.YAML", "config/Access/people.json"} {
+	for _, name := range []string{"../escape", "config/../../escape", "config/C:drive", "config/CON", "config/name.", "config\\escape", "config/private/key", "config/owner.lock", "config/update-pending-confirm.json", "config/update-operation.json", "config/backups/executable", "config/SPEND.JSON", "config/OAuth.json", "config/access/access.sqlite-journal", "config/access/access.sqlite.staged", "config/Access/Access.sqlite-Journal"} {
 		t.Run(name, func(t *testing.T) {
 			archive := writeTestBundle(t, map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}"), name: []byte("unsafe")})
 			_, err := Check(t.Context(), archive, "")
@@ -168,8 +166,77 @@ func TestRecoveryArchivePathAndIntegrityRefusals(t *testing.T) {
 	require.NoError(t, os.WriteFile(archive, data[:len(data)-5], 0o600))
 	_, err = Check(t.Context(), archive, "")
 	require.Error(t, err, "gzip truncation must be detected")
-	_, err = filestore.DecodeKeys([]byte("keys: {broken: null}"))
-	require.Error(t, err, "malformed keys must never panic")
+}
+
+// TestRecoveryBackupSettlesAJournalLeftByACrash: a coordinator killed
+// mid-commit leaves uncommitted pages in the file and a hot journal beside it;
+// the offline backup carries exactly the committed database, and the restored
+// node opens it.
+func TestRecoveryBackupSettlesAJournalLeftByACrash(t *testing.T) {
+	dir, output, keyOutput := recoveryFixture(t)
+	dbFile := filepath.Join(dir, "access", "access.sqlite")
+	committed, err := os.ReadFile(dbFile)
+	require.NoError(t, err)
+
+	// A transaction larger than the page cache writes into the file before COMMIT.
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbFile)+"?_pragma=synchronous(OFF)&_pragma=cache_size(10)")
+	require.NoError(t, err)
+	db.SetMaxOpenConns(1)
+	tx, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+		INSERT INTO audit_events (seq, time, action, actor, subject, request_id) SELECT 100000 + i, 0, 'x', 'a', hex(randomblob(512)), '' FROM n`)
+	require.NoError(t, err)
+	inFlight, err := os.ReadFile(dbFile)
+	require.NoError(t, err)
+	journal, err := os.ReadFile(dbFile + "-journal")
+	require.NoError(t, err)
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, db.Close())
+	// Put back what the kill would have left on disk.
+	require.NoError(t, os.WriteFile(dbFile, inFlight, 0o600))
+	require.NoError(t, os.WriteFile(dbFile+"-journal", journal, 0o600))
+	require.NotEqual(t, committed, inFlight, "the crash left uncommitted pages in the file")
+
+	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	require.False(t, slices.ContainsFunc(manifest.Files, func(f File) bool { return strings.HasSuffix(f.Name, "-journal") }))
+	require.NoFileExists(t, dbFile+"-journal", "backup settled the journal in place")
+	_, err = Check(t.Context(), output, keyOutput)
+	require.NoError(t, err)
+	destination := filepath.Join(t.TempDir(), "restored")
+	_, err = Restore(t.Context(), output, keyOutput, destination)
+	require.NoError(t, err)
+	restored, err := os.ReadFile(filepath.Join(destination, "config", "access", "access.sqlite"))
+	require.NoError(t, err)
+	require.Equal(t, committed, restored, "the bundle holds exactly the committed transactions")
+	store, err := sqlstore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
+	require.NoError(t, err)
+	_, err = store.People().Authenticate(t.Context(), "owner", "a long test password")
+	require.NoError(t, err)
+	require.NoError(t, store.Close())
+}
+
+// TestRecoveryBackupSettlesTheAccessStore copies no staged or journal file
+// and refuses a database it cannot read, with the store's reason.
+func TestRecoveryBackupSettlesTheAccessStore(t *testing.T) {
+	dir, output, keyOutput := recoveryFixture(t)
+	staged := filepath.Join(dir, "access", "access.sqlite.staged")
+	require.NoError(t, os.WriteFile(staged, []byte("an unpublished store"), 0o600))
+	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == "config/access/access.sqlite" }))
+	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool {
+		return strings.HasPrefix(file.Name, "config/access/access.sqlite") && file.Name != "config/access/access.sqlite"
+	}))
+
+	dir, output, keyOutput = recoveryFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
+	_, err = Backup(t.Context(), dir, output, keyOutput)
+	var refusal *sqlstore.Refusal
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, sqlstore.Unreadable, refusal.Reason)
+	require.NoFileExists(t, output)
 }
 
 func writeTestBundle(t *testing.T, files map[string][]byte) string {

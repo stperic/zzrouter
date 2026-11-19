@@ -45,7 +45,7 @@ func (s *Server) initOAuth(issuer string) error {
 		ownedClients = map[string]oauth.OwnedClient{providerBrowserOwner: {Name: "Provider browser", RedirectURI: origin + "/oauth/callback", ResourcePath: providerBrowserResource}}
 	}
 	authority, err := oauth.New(oauth.Options[control.CredentialReference]{
-		Issuer: issuer, StatePath: filepath.Join(s.auditConfigDir, "oauth.json"),
+		Issuer: issuer, StatePath: filepath.Join(s.configDir, "oauth.json"),
 		Resources: resources, OwnedClients: ownedClients, Browser: browser,
 		Authenticate: func(_ context.Context, key string) (control.CredentialReference, error) {
 			return s.access.core.Reference(key)

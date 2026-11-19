@@ -64,7 +64,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 		descriptor.TLSName = parsed.Hostname()
 	}
 	descriptor.Endpoint = scheme + "://" + net.JoinHostPort(host, strconv.Itoa(s.config.Node.Port))
-	s.ownerRecovery, err = localproof.New(ctx, s.auditConfigDir, descriptor)
+	s.ownerRecovery, err = localproof.New(ctx, s.configDir, descriptor)
 	if err != nil {
 		return fmt.Errorf("initialize owner recovery: %w", err)
 	}
@@ -123,7 +123,7 @@ func localRecoveryHost(ctx context.Context, bind string) (string, error) {
 // called only after this returns, preserving the documented lock order.
 func (s *Server) mutatePeople(change func() error) error {
 	if s.services.Teams == nil || s.accessStore.People() == nil {
-		return people.ErrClosed
+		return access.ErrClosed
 	}
 	s.services.Teams.mu.Lock()
 	defer s.services.Teams.mu.Unlock()
@@ -159,16 +159,10 @@ func localRecoveryRequest(rhost string) bool {
 	return err == nil && localproof.Address(host)
 }
 
-// accessSnapshot is the server's one read of access records. A node that
-// did not boot as a coordinator holds no store and reads empty.
-func (s *Server) accessSnapshot() *access.Snapshot {
-	if s.accessStore == nil {
-		return nil
-	}
-	return s.accessStore.Snapshot()
-}
+// accessSnapshot is the server's one read of access records.
+func (s *Server) accessSnapshot() *access.Snapshot { return access.SnapshotOf(s.accessStore) }
 
-// closeAccess releases the owner proof before the store and its people lock.
+// closeAccess releases the owner proof before the store.
 func (s *Server) closeAccess() error {
 	var err error
 	if s.ownerRecovery != nil {

@@ -49,6 +49,12 @@ func isCorrupt(err error) bool {
 	return errors.As(err, &e) && (e.Code()&0xff == sqlite3.SQLITE_CORRUPT || e.Code()&0xff == sqlite3.SQLITE_NOTADB)
 }
 
+// IsBusy reports whether err is SQLite giving up on a lock another connection held.
+func IsBusy(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && (e.Code()&0xff == sqlite3.SQLITE_BUSY || e.Code()&0xff == sqlite3.SQLITE_LOCKED)
+}
+
 func openError(path string, err error) error {
 	if err == nil {
 		return nil
@@ -110,21 +116,11 @@ func Probe(ctx context.Context, path string) (h Header, err error) {
 // Open refuses absent, foreign, newer, or negatively versioned files and configures one connection.
 func Open(ctx context.Context, path string, s Schema) (*DB, error) {
 	h, err := Probe(ctx, path)
+	if err == nil {
+		err = s.Admit(h)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if h.AppID != s.AppID {
-		return nil, fmt.Errorf("%w: got %d, want %d", ErrForeign, h.AppID, s.AppID)
-	}
-	latest, err := s.Latest()
-	if err != nil {
-		return nil, err
-	}
-	if h.Version > latest {
-		return nil, fmt.Errorf("%w: got %d, latest %d", ErrNewer, h.Version, latest)
-	}
-	if h.Version < 0 {
-		return nil, fmt.Errorf("%w: invalid schema version: %d", ErrUnreadable, h.Version)
 	}
 	if err := security.RestrictFilePermissions(path); err != nil {
 		return nil, openError(path, err)

@@ -267,6 +267,42 @@ func TestUncertainCommit(t *testing.T) {
 	}
 }
 
+// TestBusyDatabaseRefusesTheWrite: a lock another process holds past the busy
+// timeout refuses the write with ErrBusy, whether the write cannot begin or its
+// COMMIT cannot finish, and changes nothing.
+func TestBusyDatabaseRefusesTheWrite(t *testing.T) {
+	t.Parallel()
+	for name, lock := range map[string]string{"a reader at COMMIT": "BEGIN; SELECT count(*) FROM keys", "a writer at BEGIN": "BEGIN IMMEDIATE"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			s := openStore(t, dir, Options{})
+			_, _, err := s.CreateKey(t.Context(), "reader", readerKey(), audit.Event{})
+			require.NoError(t, err)
+			_, err = s.db.SQL().ExecContext(t.Context(), "PRAGMA busy_timeout = 50") // the store's one connection keeps it
+			require.NoError(t, err)
+			before := s.Snapshot()
+			_, _, _, sequence := s.Meta()
+			other := rawDB(t, dir)
+			_, err = other.ExecContext(t.Context(), lock)
+			require.NoError(t, err)
+			rename := func(k *keys.VirtualKey) error { k.Name = "Renamed"; return nil }
+			_, err = s.UpdateKey(t.Context(), "reader", rename, audit.Event{Action: audit.ActionKeyUpdated, Subject: "refused"})
+			require.ErrorIs(t, err, ErrBusy)
+			assert.Equal(t, ErrBusy.Error(), err.Error(), "no database text")
+			assert.Same(t, before, s.Snapshot(), "nothing is published")
+			_, _, _, got := s.Meta()
+			assert.Equal(t, sequence, got)
+			_, err = other.ExecContext(t.Context(), "ROLLBACK")
+			require.NoError(t, err)
+			_, err = s.UpdateKey(t.Context(), "reader", rename, audit.Event{Action: audit.ActionKeyUpdated, Subject: "kept"})
+			require.NoError(t, err, "the store keeps accepting writes")
+			require.NoError(t, s.Close())
+			assert.Equal(t, []string{"kept"}, subjects(storedEvents(t, dir)), "the refused write recorded nothing")
+		})
+	}
+}
+
 // TestConcurrentWritersAndReaders mixes key, team and people writers with lock-free readers.
 func TestConcurrentWritersAndReaders(t *testing.T) {
 	t.Parallel()

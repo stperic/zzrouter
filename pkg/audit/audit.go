@@ -1,43 +1,32 @@
-// Package audit records operator- and API-driven mutations to access
-// control state (keys, teams, quotas) in an append-only log for
-// compliance and incident investigation.
+// Package audit defines the records of operator- and API-driven changes to
+// access control state (keys, teams, people, quotas). The access store is
+// their one writer and reader; this package holds only the event shape.
 //
-// Design contract:
-//
-//   - Every exported Sink method is safe for concurrent use.
-//   - Emit is best-effort: a sink failure does NOT abort the mutation
-//     that called it. Callers emit AFTER the state store has persisted;
-//     a dropped audit event is logged at WARN but never propagates.
-//   - Events are immutable once emitted. The on-disk format is JSONL
-//     (one JSON object per line) with no updates-in-place.
-//   - No PII beyond actor key-id and team-id. Never log secrets (key
-//     material, plaintext credentials). Fields that could carry secrets
-//     are redacted at emission.
+//   - Events are immutable once recorded.
+//   - No PII beyond actor and subject identifiers. Never record secrets (key
+//     material, plaintext credentials) in an event or its metadata.
 package audit
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"os"
-	"sync"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
+
+// ErrCursor refuses a page cursor the history did not issue for its current
+// generation: the reader starts again without one.
+var ErrCursor = errors.New("audit history changed; refresh to start a new page")
 
 // Action is the identifier for an audited mutation. Kept as a typed
 // string so consumers can switch on known values without importing an
 // enum; new actions are added by constant here.
 type Action string
 
-// Action constants. Group by subject to make the switch on a sink easy
-// to read. Additive-only: a released action constant must not be
-// renamed or repurposed.
+// Action constants, grouped by subject. Additive-only: a released action
+// constant must not be renamed or repurposed.
 const (
 	ActionKeyCreated    Action = "key.created"
 	ActionKeyUpdated    Action = "key.updated"
@@ -49,12 +38,6 @@ const (
 	ActionTeamUpdated    Action = "team.updated"
 	ActionTeamDeleted    Action = "team.deleted"
 	ActionTeamUsageReset Action = "team.usage_reset"
-
-	ActionQuotaSpendReset Action = "quota.spend_reset"
-
-	// Nothing emits these two any more; existing audit logs contain them.
-	ActionStateSnapshot Action = "state.snapshot"
-	ActionStateRestore  Action = "state.restore"
 
 	ActionPersonCreated   Action = "person.created"
 	ActionPersonUpdated   Action = "person.updated"
@@ -75,8 +58,7 @@ type Event struct {
 	Action Action `json:"action"`
 	// Actor is the caller identity. For static admin keys this is the
 	// sentinel "static:admin"; for virtual keys it is the key UUID.
-	// Empty is rejected by Emit — the caller must resolve identity
-	// before emitting.
+	// The store records an unresolved actor as "unknown" (Attribute).
 	Actor string `json:"actor"`
 	// Subject identifies the object being mutated (a key UUID, a team
 	// ID, or a scope string for quota resets). Required.
@@ -101,85 +83,6 @@ const ActorStaticAdmin = "static:admin"
 // driven deletes on the static admin key.
 const ActorSystemReconciler = "system:reconciler"
 
-// Sink is an abstract audit output. Production uses FileSink;
-// tests use Null.
-type Sink interface {
-	// Emit writes one event. Implementations must return quickly —
-	// callers hold locks when invoking.
-	Emit(ctx context.Context, ev Event) error
-}
-
-// Null is a Sink that drops every event. Useful as a zero-value
-// placeholder and in tests that don't assert on audit output.
-type Null struct{}
-
-// Emit on Null is a no-op.
-func (Null) Emit(_ context.Context, _ Event) error { return nil }
-
-// FileSink appends JSON-encoded events to a file. One line per event.
-// Concurrent Emit calls are serialized; the underlying file is opened
-// once at construction and closed via Close.
-type FileSink struct {
-	mu         sync.Mutex
-	w          io.WriteCloser
-	path       string
-	file       *os.File
-	generation string
-}
-
-// NewFileSink opens path for append-only writing. Creates the file if
-// absent with mode 0o600 — audit logs contain identifiers operators
-// expect to be locally readable only.
-func NewFileSink(path string) (*FileSink, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("audit: open %s: %w", path, err)
-	}
-	return &FileSink{w: f, file: f, path: path, generation: uuid.NewString()}, nil
-}
-
-// Emit validates the event, JSON-encodes it, and writes it. Returns
-// an error on sink failure; the caller decides whether to log or
-// degrade.
-func (s *FileSink) Emit(_ context.Context, ev Event) error {
-	if err := ev.Validate(); err != nil {
-		return err
-	}
-	if ev.Time.IsZero() {
-		ev.Time = utils.NowUTC()
-	}
-	data, err := json.Marshal(ev)
-	if err != nil {
-		return fmt.Errorf("audit: marshal: %w", err)
-	}
-	data = append(data, '\n')
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.w == nil {
-		return fmt.Errorf("audit: sink closed")
-	}
-	if _, err := s.w.Write(data); err != nil {
-		return fmt.Errorf("audit: write %s: %w", s.path, err)
-	}
-	return nil
-}
-
-// Close releases the underlying file. Further Emit calls return an
-// error. Safe to call multiple times.
-func (s *FileSink) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.w == nil {
-		return nil
-	}
-	err := s.w.Close()
-	s.w = nil
-	return err
-}
-
-// Path returns the on-disk location; useful for diagnostics and tests.
-func (s *FileSink) Path() string { return s.path }
-
 // Validate enforces the event-shape contract. Recording an invalid
 // event would pollute the audit log with records a compliance review
 // cannot trust.
@@ -200,21 +103,4 @@ func (ev Event) Validate() error {
 		return fmt.Errorf("audit: metadata must be valid UTF-8")
 	}
 	return nil
-}
-
-// Log is a small wrapper that emits an event and, on sink failure,
-// logs a warning at the structured logger instead of propagating.
-// Call sites that want to fail-loud on audit errors should call
-// sink.Emit directly.
-func Log(ctx context.Context, sink Sink, ev Event) {
-	if sink == nil {
-		return
-	}
-	if err := sink.Emit(ctx, Attribute(ctx, ev)); err != nil {
-		slog.WarnContext(ctx, "audit emit failed",
-			"action", ev.Action,
-			"subject", ev.Subject,
-			"actor", ev.Actor,
-			"error", err)
-	}
 }

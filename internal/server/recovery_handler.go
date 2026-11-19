@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Server) handleRecoveryInventory(c *gin.Context) {
-	inventory, err := recovery.Read(c.Request.Context(), s.auditConfigDir)
+	inventory, err := recovery.Read(c.Request.Context(), s.configDir)
 	if err != nil {
 		ServiceUnavailable(c, "Recovery inventory is unavailable; inspect the installed node locally")
 		return

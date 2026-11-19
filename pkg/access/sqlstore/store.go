@@ -50,8 +50,8 @@ const (
 var nextActions = map[Reason]string{
 	Missing:         "Stop the service, then activate a checked backup, or remove the store marker (access-store.json) to start over at owner setup.",
 	SchemaNewer:     "Stop the service, then start the release that wrote the database, or activate a backup the installed release can read.",
-	IntegrityFailed: "Stop the service, then activate the newest checked backup.",
-	Unreadable:      "Stop the service, then activate the newest checked backup.",
+	IntegrityFailed: "Stop the service, then activate a checked backup, or remove the access directory and the store marker to start over at owner setup.",
+	Unreadable:      "Stop the service, then activate a checked backup, or remove the access directory and the store marker to start over at owner setup.",
 }
 
 // Refusal is a store that cannot open: the node exits with Reason and
@@ -64,8 +64,10 @@ type Refusal struct {
 
 func refuse(reason Reason, cause error) *Refusal { return &Refusal{Reason: reason, cause: cause} }
 
-// Error names the reason only.
-func (r *Refusal) Error() string { return "access store cannot open: " + string(r.Reason) }
+// Error names the reason and the next action.
+func (r *Refusal) Error() string {
+	return "access store cannot open: " + string(r.Reason) + ". " + r.NextAction()
+}
 
 // Unwrap returns the cause, for logs.
 func (r *Refusal) Unwrap() error { return r.cause }
@@ -151,13 +153,8 @@ func open(ctx context.Context, dir string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	db, err := sqlitedb.Open(ctx, path, schema)
-	switch {
-	case errors.Is(err, sqlitedb.ErrNewer):
-		return nil, refuse(SchemaNewer, err)
-	case errors.Is(err, sqlitedb.ErrUnreadable), errors.Is(err, sqlitedb.ErrForeign):
-		return nil, refuse(Unreadable, err)
-	case err != nil:
-		return nil, err
+	if err != nil {
+		return nil, fileRefusal(err)
 	}
 	st, err := check(ctx, db)
 	if err == nil {
@@ -236,6 +233,40 @@ func ensureFile(ctx context.Context, dir string) (string, error) {
 		return "", err
 	}
 	return path, ensureMarker(dir, storeID)
+}
+
+// Settle finishes SQLite's recovery of a journal a crash left beside dir's
+// database, so a copy of the file holds exactly the committed transactions.
+// The caller holds the installation lock. No database is nothing to settle;
+// a file this release would refuse to open is that Refusal.
+func Settle(ctx context.Context, dir string) error {
+	h, err := sqlitedb.Probe(ctx, filepath.Join(dir, "access", fileName))
+	if errors.Is(err, sqlitedb.ErrNotExist) {
+		return nil
+	}
+	if err == nil {
+		err = schema.Admit(h)
+	}
+	return fileRefusal(err)
+}
+
+// fileRefusal is the store's reason for a file sqlitedb would not open.
+func fileRefusal(err error) error {
+	switch {
+	case errors.Is(err, sqlitedb.ErrNewer):
+		return refuse(SchemaNewer, err)
+	case errors.Is(err, sqlitedb.ErrUnreadable), errors.Is(err, sqlitedb.ErrForeign):
+		return refuse(Unreadable, err)
+	}
+	return err
+}
+
+// Excluded lists, slash-separated and relative to dir, the files beside the
+// database that a copy of dir must not carry: a journal belongs to the moment
+// it was left, and a staged file was never published.
+func Excluded() []string {
+	name := "access/" + fileName
+	return []string{name + "-journal", name + ".staged"}
 }
 
 // removeLeftovers removes files an earlier attempt left. SQLite drops a journal
@@ -336,7 +367,7 @@ func load(ctx context.Context, db querier) (*state, error) {
 		return nil, fmt.Errorf("%w: installation has %d rows", errBroken, installations)
 	}
 	for id, k := range r.keys {
-		if err := checkKey(k); err != nil {
+		if err := k.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: key %q: %w", errBroken, id, err)
 		}
 	}
@@ -349,7 +380,7 @@ func load(ctx context.Context, db querier) (*state, error) {
 	if r.people, err = people.NewState(p); err != nil {
 		return nil, fmt.Errorf("%w: %w", errBroken, err)
 	}
-	return &state{records: r, snap: access.NewSnapshot(r.keys, r.teams, r.people), meta: m}, nil
+	return &state{records: r, snap: access.NewSnapshot(m.generation, r.keys, r.teams, r.people), meta: m}, nil
 }
 
 func loadMeta(ctx context.Context, db querier) (meta, error) {
@@ -395,10 +426,6 @@ func (s *Store) People() access.People {
 	}
 	return s.people
 }
-
-// SetAuditSink does nothing: this store is its own audit history. The method
-// leaves access.Store together with the file adapter.
-func (s *Store) SetAuditSink(audit.Sink) {}
 
 // Record commits ev alone, for a change whose state lives outside the store:
 // it advances the sequence, not the revision. A failure is logged.

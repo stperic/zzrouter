@@ -33,7 +33,6 @@ CREATE TABLE teams (
   metadata TEXT CHECK (metadata IS NULL OR json_type(metadata) = 'object')
 ) STRICT;
 
--- No key_env: the store holds only hashed keys.
 CREATE TABLE keys (
   id TEXT PRIMARY KEY,
   uuid TEXT NOT NULL,

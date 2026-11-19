@@ -287,10 +287,11 @@ client to recalculate. Counts include suspended people and suspended/expired key
 `configured` HTTPS, or `unavailable`. It never asserts tested remote connectivity.
 
 `GET /zzrouter/v1/access/audit?limit=50&cursor=...` is coordinator administrator-only
-and returns `data.events`, optional `data.next` and `data.skipped`. Pages are newest
-first, with a 100-event and 1 MiB read bound. A stale cursor returns 409; refresh
-without one. It covers the current audit file only. People mutation events describe
-committed authority changes, not every OAuth login or logout.
+and returns `data.events`, never null, and `data.next`, absent on the last page.
+Pages are newest first, at most 100 events (default 50). A malformed cursor, or
+one another store issued, returns 409; refresh without one. A history that cannot
+be read returns 503. People mutation events describe committed authority changes,
+not every OAuth login or logout.
 
 `GET /zzrouter/v1/system/recovery` returns safe recovery inventory and separate
 requirements to administrators. It exports no file content or credential values.

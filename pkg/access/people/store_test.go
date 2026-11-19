@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,11 +39,11 @@ func testOptions() Options {
 }
 
 // memoryOwner stands in for the access store: one gate, the published state,
-// an audit sink and an optional persist failure.
+// the events it recorded and an optional persist failure.
 type memoryOwner struct {
 	gate    sync.Mutex
 	current atomic.Pointer[State]
-	sink    audit.Sink
+	events  []audit.Event
 	failure error
 }
 
@@ -60,8 +62,8 @@ func (o *memoryOwner) mutate(ctx context.Context, change func(*State) (audit.Eve
 		return nil, o.failure
 	}
 	o.current.Store(next)
-	if event.Action != "" && o.sink != nil {
-		audit.Log(ctx, o.sink, event)
+	if event.Action != "" {
+		o.events = append(o.events, audit.Attribute(ctx, event))
 	}
 	return next, nil
 }
@@ -73,10 +75,11 @@ func (o *memoryOwner) failPersists(err error) {
 	o.failure = err
 }
 
-func (o *memoryOwner) setSink(sink audit.Sink) {
+// recorded returns a copy of the events committed so far.
+func (o *memoryOwner) recorded() []audit.Event {
 	o.gate.Lock()
 	defer o.gate.Unlock()
-	o.sink = sink
+	return slices.Clone(o.events)
 }
 
 // testPeople is a Store over its own in-memory owner.
@@ -100,12 +103,10 @@ func newTestPeople(t *testing.T, state *State) *testPeople {
 
 func openTestStore(t *testing.T) *testPeople { return newTestPeople(t, nil) }
 
-// reopen restarts over the persisted form of the current state.
+// reopen restarts over the stored form of the current state.
 func (p *testPeople) reopen(t *testing.T) *testPeople {
 	t.Helper()
-	data, err := json.Marshal(p.state())
-	require.NoError(t, err)
-	state, err := DecodeState(data)
+	state, err := NewState(p.state().Records())
 	require.NoError(t, err)
 	return newTestPeople(t, state)
 }
@@ -157,14 +158,15 @@ func TestOwnerClaimConcurrentAndDurable(t *testing.T) {
 	before := s.state().Owner()
 	require.True(t, s.state().OwnerTeam(before.TeamID))
 	require.True(t, s.state().TeamImpact(before.TeamID).HasMembers())
-	data, err := json.Marshal(s.state())
-	require.NoError(t, err)
-	assert.NotContains(t, string(data), testPassword)
-	assert.NotContains(t, string(data), grant.Token)
-	assert.NotContains(t, string(data), testProof)
+	stored := fmt.Sprintf("%+v", s.state().Records())
+	assert.NotContains(t, stored, testPassword, "the stored form holds a password hash only")
+	assert.NotContains(t, stored, grant.Token, "and token and proof digests")
+	assert.NotContains(t, stored, testProof)
+	hash := s.state().Records().People[before.ID].PasswordHash
+	require.True(t, strings.HasPrefix(hash, "$argon2id$"))
 	public, err := json.Marshal(s.state().People())
 	require.NoError(t, err)
-	assert.NotContains(t, string(public), "password_hash")
+	assert.NotContains(t, string(public), hash, "the public form never carries the password hash")
 	reopened := s.reopen(t)
 	assert.Equal(t, before, reopened.state().Owner())
 	_, err = reopened.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "retry", Name: "Retry", Password: testPassword})

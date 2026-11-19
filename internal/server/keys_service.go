@@ -258,8 +258,8 @@ func (s *KeysService) CreateKey(ctx context.Context, id string, req *CreateKeyRe
 	if err != nil {
 		// Roll back the auto-created personal team so we don't leak an
 		// orphan. A failure here is recoverable by the reconciliation
-		// sweep on next startup, but eagerly rolling back keeps the
-		// working directory clean for humans reading the yaml.
+		// sweep on next startup, but eagerly rolling back leaves no
+		// orphan in the store meanwhile.
 		if createdPersonal {
 			if rollbackErr := s.teams.DeletePersonalTeam(context.WithoutCancel(ctx), teamID, createdBy); rollbackErr != nil {
 				// Don't mask the original error, but make sure operators

@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -11,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
@@ -178,16 +180,45 @@ func TestRoleCrossingAfterStopDoesNotBlock(t *testing.T) {
 	}
 }
 
-// TestWorkerOpensNoAccessStore: a node that boots as a worker reads neither
-// keys.yaml nor teams.yaml, creates no access directory (so no people lock),
-// and authenticates static installation keys only.
+// accessFiles returns the store marker and everything under access/ in dir,
+// by relative path; a directory reads as nil.
+func accessFiles(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	files := map[string][]byte{}
+	if data, err := os.ReadFile(filepath.Join(dir, "access-store.json")); err == nil {
+		files["access-store.json"] = data
+	}
+	err := filepath.WalkDir(filepath.Join(dir, "access"), func(path string, entry fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil || entry.IsDir() {
+			files[rel] = nil
+			return err
+		}
+		files[rel], err = os.ReadFile(path)
+		return err
+	})
+	require.NoError(t, err)
+	return files
+}
+
+// TestWorkerOpensNoAccessStore: a node that boots as a worker opens no access
+// store. It creates no access directory, marker or database, starts beside a
+// store a coordinator would refuse, leaves a coordinator's database as it
+// was, and authenticates static installation keys only.
 func TestWorkerOpensNoAccessStore(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, dir string) string // returns a virtual key's raw secret, if any
 	}{
-		{"virtual admin key on disk", func(t *testing.T, dir string) string {
-			store, err := filestore.Open(t.Context(), dir, filestore.Options{})
+		{"empty installation", func(*testing.T, string) string { return "" }},
+		{"virtual admin key in a database", func(t *testing.T, dir string) string {
+			store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
 			require.NoError(t, err)
 			_, err = store.CreateTeam(t.Context(), "operators", teams.Team{Name: "Operators", Kind: teams.KindShared}, audit.Event{})
 			require.NoError(t, err)
@@ -195,21 +226,26 @@ func TestWorkerOpensNoAccessStore(t *testing.T) {
 			require.NoError(t, store.Close())
 			return raw
 		}},
-		{"unparseable records", func(t *testing.T, dir string) string {
-			for _, name := range []string{"keys.yaml", "teams.yaml"} {
-				require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("{unparseable"), 0o600))
-			}
+		{"marker without its database", func(t *testing.T, dir string) string {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "access-store.json"), []byte(`{"version":1,"store_id":"lost"}`), 0o600))
+			return ""
+		}},
+		{"unreadable database", func(t *testing.T, dir string) string {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "access"), 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "access", "access.sqlite"), []byte("{unparseable"), 0o600))
 			return ""
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var dir, raw string
+			var before map[string][]byte
 			s := createSeededTestNode(t, seededTestNodeConfig{
 				TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: pkgConfig.ClusterModeWorker},
 				prepareProviders: func(string) {
 					dir = pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir()
 					require.NoError(t, os.MkdirAll(dir, 0o700))
 					raw = tc.seed(t, dir)
+					before = accessFiles(t, dir)
 				},
 			})
 			reset := func(key string) int {
@@ -219,8 +255,7 @@ func TestWorkerOpensNoAccessStore(t *testing.T) {
 			if raw != "" {
 				require.Equal(t, http.StatusUnauthorized, reset(raw), "a virtual key never authenticates on a worker")
 			}
-			// Guards the next change, whose database lives in access/; the old worker never created it either.
-			require.NoDirExists(t, filepath.Join(dir, "access"))
+			require.Equal(t, before, accessFiles(t, dir), "the worker created or changed no access file")
 		})
 	}
 }

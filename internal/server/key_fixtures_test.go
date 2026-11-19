@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stretchr/testify/require"
@@ -44,7 +44,9 @@ func seedTestKey(t *testing.T, store access.Store, id string, key keys.VirtualKe
 // newTestAccessStore opens an empty store without people in a private directory.
 func newTestAccessStore(t *testing.T) access.Store {
 	t.Helper()
-	store, err := filestore.Open(t.Context(), t.TempDir(), filestore.Options{})
+	dir := t.TempDir()
+	require.NoError(t, seedTestStore(dir))
+	store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 	return store

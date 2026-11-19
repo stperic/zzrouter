@@ -14,9 +14,9 @@
 //   - [teams]   — teams and their access policies.
 //
 // people holds the account state and its transitions without storage;
-// filestore implements Store over keys.yaml, teams.yaml and people.json;
-// accesstest is the contract every Store passes. Localproof owns the
-// installation proof without importing access storage.
+// sqlstore implements Store over access/access.sqlite, which also holds the
+// audit history; accesstest is the contract every Store passes. Localproof
+// owns the installation proof without importing access storage.
 //
 // # Dependency Direction
 //
@@ -24,7 +24,7 @@
 //	  \      |      /
 //	   \     |     /
 //	    \    |    /
-//	     control  ->  access (root)  <-  filestore
+//	     control  ->  access (root)  <-  sqlstore
 //
 // `control` composes the three data-plane subpackages and reads the root's
 // Snapshot. None of keys, teams, or quota imports another or the root.

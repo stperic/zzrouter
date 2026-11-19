@@ -1,7 +1,7 @@
 import { el, text, leaveButton, actions, card, date, message, problem } from './dom.mjs';
 
 export async function auditHistory(p) {
-  const root = card('Access history', text('Committed changes to people, invitations, keys, teams and quotas. This view covers the current audit file, not inference requests or every OAuth sign-in.', 'muted'));
+  const root = card('Access history', text('Committed changes to people, invitations, keys, teams and quotas. This view covers the coordinator\'s access history, not inference requests or every OAuth sign-in.', 'muted'));
   const feedback = el('div', { 'aria-live': 'polite' });
   const rows = el('tbody');
   const footer = el('div');
@@ -23,13 +23,13 @@ export async function auditHistory(p) {
         el('td', {}, date(event.time)), el('td', {}, event.action), el('td', {}, event.actor), el('td', {}, event.subject),
         el('td', {}, el('details', {}, el('summary', {}, 'Inspect'), event.request_id ? text('Request: ' + event.request_id) : null, el('pre', {}, JSON.stringify(event.metadata || {}, null, 2))))));
       count += page.events.length; cursor = page.next;
-      feedback.replaceChildren(...(page.skipped ? [message('Some unreadable records or incomplete fragments were skipped.', 'warning')] : []));
+      feedback.replaceChildren();
       footer.replaceChildren(text(count ? `${count} event${count === 1 ? '' : 's'} shown.` : 'No recorded changes yet.', 'muted'));
-      if (cursor) footer.append(count < 1000 ? older : text('Display limit reached. Refresh for the latest events; older history remains in the local audit file.', 'muted'));
+      if (cursor) footer.append(count < 1000 ? older : text('Display limit reached. Refresh for the latest events; older events stay recorded on the coordinator.', 'muted'));
     } catch (error) {
       if (p.current()) {
         feedback.replaceChildren(problem(error));
-        if (error.status === 409) feedback.append(message('Refresh to read the current audit file.', 'warning'));
+        if (error.status === 409) feedback.append(message('Refresh to read the current history.', 'warning'));
       }
     } finally { if (p.current()) busy = refresh.disabled = older.disabled = false; }
   }

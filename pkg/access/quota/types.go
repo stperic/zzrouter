@@ -29,14 +29,13 @@ import (
 )
 
 // QuotaConfig defines the quota limits for a key or team.
-// Embedded inline via yaml:",inline" on VirtualKey and Team.
 type QuotaConfig struct {
-	RPMLimit            int     `yaml:"rpm_limit,omitempty" json:"rpm_limit,omitempty"`
-	TPMLimit            int     `yaml:"tpm_limit,omitempty" json:"tpm_limit,omitempty"`
-	MaxParallelRequests int     `yaml:"max_parallel_requests,omitempty" json:"max_parallel_requests,omitempty"`
-	SpendLimit          float64 `yaml:"spend_limit,omitempty" json:"spend_limit,omitempty"`   // USD, display only — tracker uses microdollars internally
-	ResetPeriod         string  `yaml:"reset_period,omitempty" json:"reset_period,omitempty"` // "daily", "weekly", "monthly"
-	DefaultMaxTokens    int     `yaml:"default_max_tokens,omitempty" json:"default_max_tokens,omitempty"`
+	RPMLimit            int     `json:"rpm_limit,omitempty"`
+	TPMLimit            int     `json:"tpm_limit,omitempty"`
+	MaxParallelRequests int     `json:"max_parallel_requests,omitempty"`
+	SpendLimit          float64 `json:"spend_limit,omitempty"`  // USD, display only — tracker uses microdollars internally
+	ResetPeriod         string  `json:"reset_period,omitempty"` // "daily", "weekly", "monthly"
+	DefaultMaxTokens    int     `json:"default_max_tokens,omitempty"`
 }
 
 // ValidSpendLimit reports whether the spend limit is a finite number, which

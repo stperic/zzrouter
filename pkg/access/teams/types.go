@@ -48,25 +48,25 @@ const (
 
 // Team represents a collection of virtual keys with shared quotas and model access.
 type Team struct {
-	UUID string `yaml:"uuid"`
-	ID   string `yaml:"-"` // from YAML map key
-	Name string `yaml:"name"`
+	UUID string
+	ID   string
+	Name string
 
-	Kind           TeamKind       `yaml:"kind"` // "personal" | "shared" — immutable
-	AllowedModels  []string       `yaml:"allowed_models,omitempty"`
-	RouteAccess    RouteAccess    `yaml:"route_access,omitempty"`
-	ProviderAccess ProviderAccess `yaml:"provider_access,omitempty"`
-	Suspended      bool           `yaml:"suspended,omitempty"`
-	SuspendedAt    *time.Time     `yaml:"suspended_at,omitempty"`
-	SuspendedBy    string         `yaml:"suspended_by,omitempty"`
+	Kind           TeamKind // "personal" | "shared" — immutable
+	AllowedModels  []string
+	RouteAccess    RouteAccess
+	ProviderAccess ProviderAccess
+	Suspended      bool
+	SuspendedAt    *time.Time
+	SuspendedBy    string
 
-	quota.QuotaConfig `yaml:",inline"`
+	quota.QuotaConfig
 
-	CreatedAt time.Time         `yaml:"created_at,omitempty"`
-	UpdatedAt time.Time         `yaml:"updated_at,omitempty"`
-	CreatedBy string            `yaml:"created_by,omitempty"`
-	UpdatedBy string            `yaml:"updated_by,omitempty"`
-	Metadata  map[string]string `yaml:"metadata,omitempty"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	CreatedBy string
+	UpdatedBy string
+	Metadata  map[string]string
 }
 
 // Validate holds the invariants every stored team keeps.

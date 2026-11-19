@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,8 +14,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
@@ -246,47 +245,53 @@ func TestKeysService_CreateKey_RejectsBadTeamInputAsCallerError(t *testing.T) {
 // Key insert failing after its personal team was written
 // ============================================================================
 
-// cancelOnEvent ends a request as soon as the store records one action.
-type cancelOnEvent struct {
-	action audit.Action
+// createKeyFault is a real store whose key creation fails: as a failed
+// persist, or, with cancel set, as a client that leaves once its personal
+// team is written.
+type createKeyFault struct {
+	access.Store
 	cancel context.CancelFunc
 }
 
-func (c cancelOnEvent) Emit(_ context.Context, ev audit.Event) error {
-	if ev.Action == c.action {
-		c.cancel()
+func (f createKeyFault) CreateTeam(ctx context.Context, id string, team teams.Team, ev audit.Event) (*teams.Team, error) {
+	created, err := f.Store.CreateTeam(ctx, id, team, ev)
+	if f.cancel != nil {
+		f.cancel()
 	}
-	return nil
+	return created, err
+}
+
+func (f createKeyFault) CreateKey(ctx context.Context, id string, key keys.VirtualKey, ev audit.Event) (*keys.VirtualKey, string, error) {
+	if f.cancel == nil {
+		return nil, "", errors.New("injected persist failure")
+	}
+	return f.Store.CreateKey(ctx, id, key, ev)
 }
 
 func TestKeysService_CreateKey_RollsBackPersonalTeamWhenKeyFails(t *testing.T) {
 	for _, cause := range []string{"persist failure", "client disconnect"} {
 		t.Run(cause, func(t *testing.T) {
 			dir := t.TempDir()
-			store, err := filestore.Open(t.Context(), dir, filestore.Options{})
+			store, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
 			require.NoError(t, err)
-			teamsSvc := NewTeamsService(store, newTestAccessControl(t, store))
-			svc := NewKeysService(store, teamsSvc, teamsSvc.access)
+			fault := createKeyFault{Store: store}
 			ctx := t.Context()
-			if cause == "persist failure" {
-				// A directory where keys.yaml belongs fails only the key's rename.
-				require.NoError(t, os.Mkdir(filepath.Join(dir, "keys.yaml"), 0o700))
-			} else {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithCancel(ctx)
-				defer cancel()
-				store.SetAuditSink(cancelOnEvent{action: audit.ActionTeamCreated, cancel: cancel})
+			if cause == "client disconnect" {
+				ctx, fault.cancel = context.WithCancel(ctx)
+				defer fault.cancel()
 			}
+			teamsSvc := NewTeamsService(fault, newTestAccessControl(t, fault))
+			svc := NewKeysService(fault, teamsSvc, teamsSvc.access)
 
 			_, err = svc.CreateKey(ctx, "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
 			require.Error(t, err)
 			assert.Nil(t, store.Snapshot().Key("alice"))
 			assert.Nil(t, store.Snapshot().Team("personal-alice"), "the personal team is rolled back with the failed key")
-			data, err := os.ReadFile(filepath.Join(dir, "teams.yaml"))
+			require.NoError(t, store.Close())
+			reopened, err := sqlstore.Open(t.Context(), dir, sqlstore.Options{})
 			require.NoError(t, err)
-			persisted, err := filestore.DecodeTeams(data)
-			require.NoError(t, err)
-			assert.NotContains(t, persisted, "personal-alice", "no orphan is left on disk for the next start to sweep")
+			t.Cleanup(func() { _ = reopened.Close() })
+			assert.Nil(t, reopened.Snapshot().Team("personal-alice"), "no orphan is left on disk for the next start to sweep")
 		})
 	}
 }

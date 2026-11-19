@@ -3,8 +3,15 @@
 ## Unreleased
 
 - Remove `POST /zzrouter/v1/state/snapshot` and `POST /zzrouter/v1/state/restore`; retire `POST /zzrouter/v1/keys/reload` with `410 Gone`.
-- A failed write to `keys.yaml` or `teams.yaml` no longer leaves the running node ahead of the file, and an unreadable `keys.yaml` now stops the start. A key or team request cancelled before its write changes nothing, and a change that would leave a record the node cannot load (such as a key with an empty name) is refused with `400`. Rotating a key now updates its `updated_at`. Key descriptions are now saved to `keys.yaml`.
-- A worker no longer loads `keys.yaml` or `teams.yaml`: only static installation keys (node.yaml or environment) authenticate on a worker. A node whose role crosses the coordinator boundary while it runs now exits, so its service manager restarts it in the new role.
+- A key or team request cancelled before its write changes nothing, and a change that would leave a record the node cannot load (such as a key with an empty name) is refused with `400`. Rotating a key now updates its `updated_at`. Key descriptions are now saved.
+- A worker opens no access store: only static installation keys (node.yaml or environment) authenticate on a worker. A node whose role crosses the coordinator boundary while it runs now exits, so its service manager restarts it in the new role.
+- Access records and the access history now live in one SQLite database on the coordinator, `access/access.sqlite`, beside the store marker `access-store.json`. A change and its audit event commit together. `keys.yaml`, `teams.yaml`, `access/people.json` and `audit.jsonl` are no longer read and are not imported, so an existing development installation starts at owner setup. Those files, with `access/people.json.lock`, still hold key and password hashes and still travel in offline backups: delete them.
+- An `expires_at` sent with a UTC offset is returned in UTC (the same instant).
+- A key, team or people change answers `503 access_store_busy` with `Retry-After` when another process holds the access database past the busy timeout; nothing is changed.
+- The node refuses to start when its access database is missing while the marker exists (`missing`), cannot be read (`unreadable`), was written by a newer release (`schema_newer`) or fails its checks (`integrity_failed`); the final log line names the reason and the next action. A store that can no longer vouch for its records after startup answers `503 access_store_failed`, drains in-flight requests and stops the node so its service manager restarts it.
+- Remove env-backed app keys (`key_env`). Browser sessions and delegated OAuth access bound to an app key before this release stop resolving; sign in again.
+- `GET /zzrouter/v1/access/audit` reads the database: `data.skipped` is removed, and a cursor survives restarts.
+- `zzrouter-node recovery backup` settles a journal a crash left beside the access database before copying it, and never copies a journal or an unpublished staged store; restore refuses a bundle carrying one. `recovery check` does not yet validate access records.
 
 - Expand shortened OpenRouter descriptions on demand from the public model page.
 - Render model-card Markdown and safe links across Discover, and show the

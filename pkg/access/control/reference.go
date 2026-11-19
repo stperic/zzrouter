@@ -4,8 +4,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"os"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
 )
@@ -26,8 +26,9 @@ func credentialVersion(secret string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func virtualVersion(k *keys.VirtualKey) string {
-	return credentialVersion(k.UUID + "\x00" + k.HashedKey + "\x00" + os.Getenv(k.KeyEnv))
+// virtualVersion includes the generation, which changes only when the stored content is replaced.
+func virtualVersion(generation string, k *keys.VirtualKey) string {
+	return credentialVersion(generation + "\x00" + k.UUID + "\x00" + k.HashedKey)
 }
 
 // Reference authenticates a browser login and binds it to the current credential.
@@ -41,11 +42,12 @@ func (c *Core) Reference(raw string) (CredentialReference, error) {
 	if !p.IsVirtual {
 		ref.Version = credentialVersion(raw)
 	} else {
-		k := snapshot(c.state).Key(p.ID)
-		if k == nil || !(k.HashedKey != "" && keys.VerifyKey(raw, k.HashedKey) || k.KeyEnv != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(os.Getenv(k.KeyEnv))) == 1) {
+		snap := access.SnapshotOf(c.state)
+		k := snap.Key(p.ID)
+		if k == nil || !keys.VerifyKey(raw, k.HashedKey) {
 			return CredentialReference{}, ErrInvalidKey
 		}
-		ref.Version = virtualVersion(k)
+		ref.Version = virtualVersion(snap.Generation(), k)
 	}
 	_, err = c.AuthenticateReference(ref)
 	return ref, err
@@ -63,7 +65,7 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 		if ref.IsVirtual {
 			return nil, ErrInvalidKey
 		}
-		if person := snapshot(c.state).Person(ref.ID); person != nil {
+		if person := access.SnapshotOf(c.state).Person(ref.ID); person != nil {
 			p = &KeyPrincipal{Kind: KindPerson, ID: person.ID, Name: person.Name, Role: UserRole(person.Role), TeamID: person.TeamID, TeamRole: "member", Suspended: person.Suspended}
 			if person.Owner {
 				p.TeamRole = "owner"
@@ -82,8 +84,9 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 		}
 	default:
 		if ref.IsVirtual {
-			if k := snapshot(c.state).Key(ref.ID); k != nil {
-				version = virtualVersion(k)
+			snap := access.SnapshotOf(c.state)
+			if k := snap.Key(ref.ID); k != nil {
+				version = virtualVersion(snap.Generation(), k)
 				p = keyPrincipalFromVirtual(k.ID, k, "")
 				p.Fingerprint = ref.Fingerprint
 			}

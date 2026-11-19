@@ -12509,7 +12509,7 @@ paths:
       tags: [Access]
       operationId: readAccessAudit
       summary: Read recent committed access changes
-      description: Administrator only, coordinator only. Reads the current audit file, newest first, at most 1 MiB per page. A cursor survives appends but becomes stale after truncation, replacement or reopening the audit sink. No archived files or protocol-level OAuth sign-in history are included.
+      description: Administrator only, coordinator only. Reads the access history held in the coordinator's access store, newest first. A cursor stays valid across new events and restarts; a malformed cursor, or one another store issued, answers 409. Protocol-level OAuth sign-in history is not included.
       security:
         - AdminKey: []
         - BrowserSession: []
@@ -13531,10 +13531,9 @@ components:
 
     AuditPage:
       type: object
-      required: [events, skipped]
+      required: [events]
       properties:
-        next: { type: string, description: Opaque cursor for older records. Absent at the beginning of the file. }
-        skipped: { type: integer, minimum: 0, description: Unreadable records or partial fragments skipped in this window. }
+        next: { type: string, description: Opaque cursor for older records. Absent once the oldest record is on this page. }
         events:
           type: array
           items:

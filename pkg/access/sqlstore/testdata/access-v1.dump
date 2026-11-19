@@ -160,7 +160,6 @@ decoded
       "Name": "Reader",
       "Description": "fixture key",
       "HashedKey": "$argon2id$v=19$m=65536,t=1,p=2$nfwbqH/BdX7Togyq7GSQLg$kPbDGRaplsYHx3ncZQEBN+VZyRrRxULvDox/Jmfe7V4",
-      "KeyEnv": "",
       "TeamID": "eng",
       "TeamRole": "member",
       "Role": "user",
@@ -242,9 +241,9 @@ decoded
     }
   },
   "People": {
-    "initialized": true,
-    "owner_id": "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo",
-    "people": {
+    "Initialized": true,
+    "OwnerID": "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo",
+    "People": {
       "person_ZxO5IdAiNJdJRDrq-qKpK9qsL2fA0TGbTB0NNUOXH7o": {
         "id": "person_ZxO5IdAiNJdJRDrq-qKpK9qsL2fA0TGbTB0NNUOXH7o",
         "username": "member",
@@ -256,7 +255,7 @@ decoded
         "revision": "FuzjEGLp-mrqZt-MYTe0cB9vJKDwrE_KrIGfHrCyuww",
         "created_at": "2026-11-18T21:08:16.819808Z",
         "updated_at": "2026-11-18T21:08:16.832731Z",
-        "password_hash": "$argon2id$v=19$m=65536,t=3,p=1$x0dCEsvWUspzentLsV2l6Q$tw3k7XMBRIMJqPIPBjHyHIeBSdkVvQspl+fX3MTCaFA"
+        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$x0dCEsvWUspzentLsV2l6Q$tw3k7XMBRIMJqPIPBjHyHIeBSdkVvQspl+fX3MTCaFA"
       },
       "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo": {
         "id": "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo",
@@ -269,10 +268,10 @@ decoded
         "revision": "zcYR0IJdoMP7G9RqdpoltiqjyYZZXlZqrwWgfXphoTw",
         "created_at": "2026-11-18T21:08:16.499418Z",
         "updated_at": "2026-11-18T21:08:16.499418Z",
-        "password_hash": "$argon2id$v=19$m=65536,t=3,p=1$6tXvrDaQOgDWmqTjEv73eQ$m9QVqi51xIDyg5oHa3Hytw4EeQod5xavdzoXtJ3vooM"
+        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$6tXvrDaQOgDWmqTjEv73eQ$m9QVqi51xIDyg5oHa3Hytw4EeQod5xavdzoXtJ3vooM"
       }
     },
-    "grants": {
+    "Grants": {
       "51c22d3a2d99bf21a1669e0831ad6aee5e0401eb94b55e607ce2b9c6cadfae90": {
         "id": "grant_unNkMrHw6YseQukfqJmZ6fmJGFqc5frd66KYY1_SV5w",
         "purpose": "recovery",
@@ -281,9 +280,12 @@ decoded
         "created_at": "2026-11-18T21:08:16.884778Z",
         "expires_at": "2026-11-18T21:18:16.884778Z",
         "status": "",
-        "issuer": {
-          "reference": "installation"
-        }
+        "Issuer": {
+          "PersonID": "",
+          "Revision": "",
+          "Reference": "installation"
+        },
+        "BrowserHash": ""
       },
       "679fb0675c05e81edbe806ee9f077972a4338a435d3bb567137d426c87c3ce66": {
         "id": "grant_-kK-UPXg-SbpDwYXON7m-HpFbAaSY6QPpMHZE1AbQ88",
@@ -293,12 +295,12 @@ decoded
         "created_at": "2026-11-18T21:08:16.844764Z",
         "expires_at": "2026-11-19T21:08:16.844764Z",
         "status": "",
-        "issuer": {
-          "person_id": "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo",
-          "revision": "zcYR0IJdoMP7G9RqdpoltiqjyYZZXlZqrwWgfXphoTw",
-          "reference": "owner"
+        "Issuer": {
+          "PersonID": "person_e0T6Y5c0YhDHfemahgEzilAmakyjqF9S5hd5_4lfRDo",
+          "Revision": "zcYR0IJdoMP7G9RqdpoltiqjyYZZXlZqrwWgfXphoTw",
+          "Reference": "owner"
         },
-        "browser_hash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+        "BrowserHash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
       },
       "9ae6b4977ab3743ac3391433a044724318baec6f0ddf6278d07b8396f8eeaedb": {
         "id": "grant_BN6NZKRcvkVERYvynn6n510jN8TciM5XRo_ixQNzKH4",
@@ -309,13 +311,15 @@ decoded
         "expires_at": "2026-11-19T21:08:16.59351Z",
         "used_at": "2026-11-18T21:08:16.819807Z",
         "status": "",
-        "issuer": {
-          "reference": "installation"
+        "Issuer": {
+          "PersonID": "",
+          "Revision": "",
+          "Reference": "installation"
         },
-        "browser_hash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+        "BrowserHash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
       }
     },
-    "progress": {
+    "Progress": {
       "step": "model",
       "dismissed": true,
       "response_verified": true,

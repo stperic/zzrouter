@@ -165,7 +165,6 @@ func quotaCols(q *quota.QuotaConfig) []col {
 	}
 }
 
-// keyCols has no KeyEnv: checkKey refuses a key that sets it.
 func keyCols(k *keys.VirtualKey) []col {
 	cols := []col{
 		{"id", &k.ID}, {"uuid", &k.UUID}, {"name", &k.Name}, {"description", &k.Description},

@@ -107,14 +107,6 @@ type accessState interface {
 	OnCommit(func(access.Commit))
 }
 
-// snapshot reads the current state; without a store it reads as empty.
-func snapshot(state accessState) *access.Snapshot {
-	if state == nil {
-		return nil
-	}
-	return state.Snapshot()
-}
-
 // NewCore wires the collaborators. Caller must call Start() to begin
 // background goroutines (auth cache cleanup, reservation reaper,
 // rate-limiter cleanup, spend persistence).
@@ -200,7 +192,7 @@ func (c *Core) buildAccessContext(p *KeyPrincipal) (*AccessContext, error) {
 	if !p.TeamBound() {
 		return ac, nil
 	}
-	team := snapshot(c.state).Team(p.TeamID)
+	team := access.SnapshotOf(c.state).Team(p.TeamID)
 	if team == nil {
 		return nil, ErrInvalidKey
 	}

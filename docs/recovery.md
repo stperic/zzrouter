@@ -43,10 +43,15 @@ existing [service instructions](install.md#supervised-services) to stop and star
 ## Included and separate state
 
 The archive includes configuration and provider definitions/assets/ownership
-receipts, applicable configuration-directory dotenv files, people and grants,
-OAuth authority, app keys, teams, routes/model groups, spend, pricing overrides,
-cluster identity and trust including revocations, encrypted provider connections,
-audit history, node pins/download state and provider install metadata. Declared
+receipts, applicable configuration-directory dotenv files, the access database
+(`access/access.sqlite`: people and grants, app keys, teams and the access
+history) with its store marker, OAuth authority, routes/model groups, spend,
+pricing overrides, cluster identity and trust including revocations, encrypted
+provider connections, node pins/download state and provider install metadata. An
+installation that ran an earlier development build may still hold `keys.yaml`,
+`teams.yaml`, `access/people.json`, `access/people.json.lock` and `audit.jsonl`.
+Nothing reads them any more, but they hold key and password hashes and travel in
+every backup: delete them. Declared
 provider data such as workflows and uploads is included; declared model stores
 are excluded and listed separately.
 
@@ -61,8 +66,12 @@ directories. Special files are also refused. Installation roots themselves
 are the operator-selected boundaries; back up linked external data separately.
 
 Pairing codes, local owner-recovery proof, lock/PID/temp files, caches and pending
-update requests, pending update confirmation and executable rollback backups are
-excluded. A node creates fresh transient state after startup.
+update requests, pending update confirmation, executable rollback backups, and
+an access database journal or unpublished staged store are excluded. Before it
+copies anything, backup finishes SQLite's recovery of a journal a crash left
+beside the access database, so the copy holds exactly the committed
+transactions. A database it cannot read stops the backup with the store's
+`unreadable` reason. A node creates fresh transient state after startup.
 Archives are limited to 20,000 files and 4 GiB; they are recovery state bundles,
 not model-library or complete operating-system images.
 
@@ -86,9 +95,13 @@ the installation has encrypted connections. It is never packed in the archive.
 A failed export can leave a protected partial output; do not use it unless a
 subsequent check succeeds. Keep a previous verified backup until the new one passes.
 
-Checking verifies bounded archive structure, paths, file hashes, account, app-key,
-team and spend snapshots, team references, trust key/certificate pairs and
-encrypted connections with the matching key. It does not authenticate the archive's author or prove remote
+Checking verifies bounded archive structure, paths, file hashes, spend snapshots,
+trust key/certificate pairs and encrypted connections with the matching key.
+Until backups capture the access database as a checked image, `recovery check`
+validates no access records: the database travels as an ordinary file, and the
+restored coordinator checks it when it starts, refusing to start with a reason
+if it fails. A restored store marker without its
+database refuses with `missing`. It does not authenticate the archive's author or prove remote
 reachability, provider compatibility or successful inference. Use only trusted
 backups. Checks do not prune expired grants or turn corrupt spend into zero usage.
 Other configuration and provider assets are preserved byte for byte; the matching

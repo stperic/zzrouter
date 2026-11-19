@@ -61,7 +61,7 @@ func (ctrl *KeysController) CreateKey(c *gin.Context) {
 			BadRequest(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -106,7 +106,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 			BadRequest(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -122,7 +122,7 @@ func (ctrl *KeysController) DeleteKey(c *gin.Context) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -139,7 +139,7 @@ func (ctrl *KeysController) RotateKey(c *gin.Context) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 
@@ -156,7 +156,7 @@ func (ctrl *KeysController) GetKeyUsage(c *gin.Context) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 	respondSuccess(c, "Key usage retrieved", resp)
@@ -171,7 +171,7 @@ func (ctrl *KeysController) ResetKeyUsage(c *gin.Context) {
 			NotFound(c, err.Error())
 			return
 		}
-		InternalNodeError(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
 	respondSuccess(c, "Key usage reset successfully", nil)

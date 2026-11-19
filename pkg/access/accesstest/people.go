@@ -56,18 +56,6 @@ func bind(t *testing.T, s access.Store, req people.GrantRequest) *people.IssuedG
 	return bound
 }
 
-// recordsInSeconds drops what a store may not keep below second precision.
-func recordsInSeconds(r people.Records) people.Records {
-	for id, p := range r.People {
-		r.People[id] = *seconds(&p)
-	}
-	for hash, g := range r.Grants {
-		r.Grants[hash] = *seconds(&g)
-	}
-	seconds(&r.Progress)
-	return r
-}
-
 // race runs call n times at once and requires exactly one success; every
 // loser fails with one of allowed.
 func race(t *testing.T, n int, call func(int) error, allowed ...error) {
@@ -121,7 +109,7 @@ func testPeopleOwnerSetup(t *testing.T, h Harness) {
 	s := h.Store
 	require.NotNil(t, s.People())
 	assert.False(t, s.Snapshot().Initialized())
-	rec := observe(h)
+	rec := observe(t, h)
 	createTeam(t, s, "workspace", sharedTeam())
 	ctx := audit.WithIdentity(t.Context(), "operator", "setup-request")
 	grant, err := s.People().Issue(ctx, people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: installation}})
@@ -181,7 +169,7 @@ func testPeopleFailedCommit(t *testing.T, h Harness) {
 	s := h.Store
 	createTeam(t, s, "workspace", sharedTeam())
 	bound := boundGrant(t, s, people.PurposeSetup, "workspace", "admin")
-	rec := observe(h)
+	rec := observe(t, h)
 	h.FailNextCommit()
 	_, err := s.People().ClaimOwner(t.Context(), bound.Token, proof, people.CreatePerson{Username: "owner", Name: "Owner", Password: password})
 	require.Error(t, err)
@@ -226,7 +214,7 @@ func testPeopleReopen(t *testing.T, h Harness) {
 
 	reopened := h.Reopen()
 	snap := reopened.Snapshot()
-	assert.Equal(t, recordsInSeconds(records), recordsInSeconds(snap.PeopleState().Records()), "every person, grant and the progress survive")
+	assert.Equal(t, records, snap.PeopleState().Records(), "every person, grant and the progress survive")
 
 	authenticated, err := reopened.People().Authenticate(t.Context(), "alice", password)
 	require.NoError(t, err)
@@ -437,7 +425,7 @@ func testPeopleAndKeyWriters(t *testing.T, h Harness) {
 func testPeopleCommitNotifies(t *testing.T, h Harness) {
 	s := h.Store
 	createTeam(t, s, "workspace", sharedTeam())
-	rec := observe(h)
+	rec := observe(t, h)
 	_, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: installation}})
 	require.NoError(t, err)
 	_, commits := rec.counts()
@@ -446,6 +434,15 @@ func testPeopleCommitNotifies(t *testing.T, h Harness) {
 	assert.False(t, c.KeysChanged, "a people commit leaves key caches alone")
 	assert.Empty(t, c.RemovedKeys)
 	assert.Empty(t, c.RemovedTeams)
+
+	invitation, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeInvitation, TeamID: "workspace", Role: "user", Issuer: people.Issuer{Reference: installation}})
+	require.NoError(t, err)
+	require.NoError(t, s.People().RevokeGrant(t.Context(), invitation.ID))
+	events, commits := rec.counts()
+	require.NoError(t, s.People().RevokeGrant(t.Context(), invitation.ID), "revoking a revoked grant succeeds")
+	gotEvents, gotCommits := rec.counts()
+	assert.Equal(t, events, gotEvents, "a commit that changes nothing and carries no event records nothing")
+	assert.Equal(t, commits, gotCommits, "and notifies nobody")
 }
 
 func testPeopleSnapshotIsolation(t *testing.T, h Harness) {

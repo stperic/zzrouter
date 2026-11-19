@@ -3,6 +3,7 @@ package control
 import (
 	"log/slog"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 )
 
@@ -17,7 +18,7 @@ import (
 // scope too.
 func (c *Core) RecordSpendByKey(keyID string, reservationID ReservationID, costMicro, tokensIn, tokensOut int64) {
 	subject := Subject{Kind: KindKey, ID: keyID}
-	if key := snapshot(c.state).Key(keyID); key != nil {
+	if key := access.SnapshotOf(c.state).Key(keyID); key != nil {
 		subject.TeamID = key.TeamID
 	}
 	c.RecordSpend(subject, reservationID, costMicro, tokensIn, tokensOut)
@@ -144,4 +145,4 @@ func (c *Core) FlushSpend() {
 }
 
 // HasGatedTeam exposes the published gated-team flag for the anonymous-compat guard.
-func (c *Core) HasGatedTeam() bool { return snapshot(c.state).HasGatedTeam() }
+func (c *Core) HasGatedTeam() bool { return access.SnapshotOf(c.state).HasGatedTeam() }

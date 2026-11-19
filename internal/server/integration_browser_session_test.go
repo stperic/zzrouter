@@ -71,7 +71,7 @@ func TestIntegrationBrowserAuthorityFollowsLiveRoleAndClosesOnStop(t *testing.T)
 	require.NoError(t, s.Stop())
 	_, err := s.access.oauth.Bootstrap(t.Context(), httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, endpoint.URL+"/session", nil))
 	require.ErrorIs(t, err, oauth.ErrClosed)
-	lock, err := atomicfile.Lock(filepath.Join(s.auditConfigDir, "oauth.json.lock"))
+	lock, err := atomicfile.Lock(filepath.Join(s.configDir, "oauth.json.lock"))
 	require.NoError(t, err, "final stop must release the authority's exclusive lock regardless of role")
 	require.NoError(t, lock.Close())
 }

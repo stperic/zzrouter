@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
@@ -194,11 +193,11 @@ func (s *Server) startServing() error {
 			served <- s.httpServer.Serve(ln)
 		}
 	}()
+	// A fatal error leaves the listener to Start's deferred stop, whose
+	// graceful drain lets in-flight requests, the failing one included, answer.
 	select {
 	case err = <-served:
 	case err = <-s.servingErrors:
-		_ = s.httpServer.Close()
-		<-served
 	}
 	if err != nil && err != http.ErrServerClosed {
 		return err
@@ -416,7 +415,6 @@ func (s *Server) startCoordinatorSubsystems() {
 	if s.services.Deployments != nil {
 		s.services.Deployments.Start()
 	}
-	s.openAuditSink()
 	s.access.Start(s.shutdownCtx)
 	s.providers.fallback.Start(s.shutdownCtx)
 	if s.model.Groups != nil {
@@ -444,39 +442,6 @@ func (s *Server) startCoordinatorSubsystems() {
 	if s.cluster.coordinator != nil {
 		s.cluster.coordinator.ReplayStartupReconnects()
 	}
-}
-
-// openAuditSink opens the JSONL audit log and pushes it into the access
-// store, which a node that booted as a coordinator always holds.
-func (s *Server) openAuditSink() {
-	s.auditMu.Lock()
-	defer s.auditMu.Unlock()
-	if s.auditConfigDir == "" {
-		return
-	}
-	path := filepath.Join(s.auditConfigDir, "audit.jsonl")
-	sink, err := audit.NewFileSink(path)
-	if err != nil {
-		slog.Warn("audit: open failed; mutations will not be audited", "path", path, "error", err)
-		return
-	}
-	s.auditSink = sink
-	s.accessStore.SetAuditSink(sink)
-	slog.Info("audit log opened", "path", path)
-}
-
-// closeAuditSink closes the audit sink (if open) and resets the
-// access store's sink to audit.Null. Paired with openAuditSink at stop.
-func (s *Server) closeAuditSink() {
-	s.auditMu.Lock()
-	defer s.auditMu.Unlock()
-	s.accessStore.SetAuditSink(audit.Null{})
-	if closer, ok := s.auditSink.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			slog.Warn("audit sink close failed", "error", err)
-		}
-	}
-	s.auditSink = audit.Null{}
 }
 
 // startCommonSubsystems starts lifecycle-managed subsystems that run on
@@ -589,7 +554,6 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) {
 			slog.Warn("ephemeral-route reaper did not stop before shutdown deadline")
 		}
 	}
-	s.closeAuditSink()
 	s.access.Stop(ctx)
 }
 

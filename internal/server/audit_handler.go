@@ -8,6 +8,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
+// auditPage is one page of the access history, newest first.
+type auditPage struct {
+	Events []audit.Event `json:"events"`
+	Next   string        `json:"next,omitempty"`
+}
+
 func (s *Server) handleAccessAudit(c *gin.Context) {
 	limit := 50
 	if value := c.Query("limit"); value != "" {
@@ -18,14 +24,7 @@ func (s *Server) handleAccessAudit(c *gin.Context) {
 		}
 		limit = parsed
 	}
-	s.auditMu.RLock()
-	defer s.auditMu.RUnlock()
-	sink, ok := s.auditSink.(*audit.FileSink)
-	if !ok {
-		ServiceUnavailable(c, "Audit recording is unavailable on this coordinator")
-		return
-	}
-	page, err := sink.ReadPage(c.Request.Context(), c.Query("cursor"), limit)
+	events, next, err := s.accessStore.AuditPage(c.Request.Context(), c.Query("cursor"), limit)
 	if errors.Is(err, audit.ErrCursor) {
 		Conflict(c, err.Error())
 		return
@@ -34,5 +33,5 @@ func (s *Server) handleAccessAudit(c *gin.Context) {
 		ServiceUnavailable(c, "Could not read audit history")
 		return
 	}
-	respondRetrievalSuccess(c, "Audit history", page)
+	respondRetrievalSuccess(c, "Audit history", auditPage{Events: events, Next: next})
 }

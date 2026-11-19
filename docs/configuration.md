@@ -93,8 +93,16 @@ managed secrets into provider files.
 | `providers/settings.yaml` | Global provider settings |
 | `providers/<kind>/<name>/config.yaml` | Provider endpoints, runtime and parameter defaults |
 | `providers/<kind>/<name>/schema.yaml` | Extended parameter schema |
-| `keys.yaml`, `teams.yaml` | Virtual key hashes and team policy |
+| `access/access.sqlite` | Coordinator access records: people, teams, app-key hashes, invitations and the access history |
+| `access-store.json` | Store marker: tells a lost access database from a fresh installation |
 | `model_groups.yaml` | Logical model routes |
+
+Only a node that boots as a coordinator opens the access store; a worker
+creates neither access file and authenticates static installation keys only.
+Access records change through the API, never by editing the database. A
+coordinator whose store is missing while its marker exists, cannot be read,
+was written by a newer release, or fails its checks refuses to start; its log
+names the reason and the next action. See [recovery](recovery.md).
 
 Provider kinds are `on-demand`, `external`, `cloud` and `registries`.
 Shipped provider files are embedded in the node; initialization

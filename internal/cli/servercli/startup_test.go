@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -28,24 +29,38 @@ const runServeRestartChild = "ZZROUTER_RUNSERVE_RESTART_CHILD"
 // A detached node discards stderr, so the end of runServe must reach the log
 // once: at ERROR when construction refuses or a running server stops on its
 // own (the path a role crossing takes through Start), at INFO when an update
-// restart ends it on purpose.
+// restart ends it on purpose. A refused access store's line names its reason
+// and the operator's next action, and no path.
 func TestRunServeLogsFinalErrorOnce(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		serve func(t *testing.T) error
-		level slog.Level
-		want  string // the error text at ERROR, the restart reason at INFO
+		name    string
+		serve   func(t *testing.T) error
+		level   slog.Level
+		want    string // the error text at ERROR, the restart reason at INFO
+		refusal sqlstore.Reason
 	}{
 		{"construction", func(*testing.T) error {
 			return runServe(&pkgConfig.NodeConfig{Auth: pkgConfig.AuthConfig{AdminKey: "too-short"}}, nil)
-		}, slog.LevelError, "failed to create server"},
+		}, slog.LevelError, "failed to create server", ""},
+		{"store marker without its database", func(t *testing.T) error {
+			cfg := runServeNode(t, freePort(t))
+			require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("ZZROUTER_CONFIG_DIR"), "access-store.json"), []byte(`{"version":1,"store_id":"lost"}`), 0o600))
+			return runServe(cfg, nil)
+		}, slog.LevelError, "failed to create server", sqlstore.Missing},
+		{"unreadable store", func(t *testing.T) error {
+			cfg := runServeNode(t, freePort(t))
+			dir := filepath.Join(os.Getenv("ZZROUTER_CONFIG_DIR"), "access")
+			require.NoError(t, os.MkdirAll(dir, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "access.sqlite"), []byte("not a database, just text long enough to have a header"), 0o600))
+			return runServe(cfg, nil)
+		}, slog.LevelError, "failed to create server", sqlstore.Unreadable},
 		{"serving", func(t *testing.T) error {
 			occupied, err := net.Listen("tcp", "127.0.0.1:0")
 			require.NoError(t, err)
 			defer occupied.Close()
 			return runServe(runServeNode(t, occupied.Addr().(*net.TCPAddr).Port), nil)
-		}, slog.LevelError, "listen 127.0.0.1:"},
-		{"update restart", serveUntilUpdateRestart, slog.LevelInfo, "update restart fixture"},
+		}, slog.LevelError, "listen 127.0.0.1:", ""},
+		{"update restart", serveUntilUpdateRestart, slog.LevelInfo, "update restart fixture", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.level == slog.LevelInfo && os.Getenv(runServeRestartChild) != "1" {
@@ -82,16 +97,29 @@ func TestRunServeLogsFinalErrorOnce(t *testing.T) {
 			}
 			require.ErrorContains(t, err, tc.want)
 			require.Equal(t, err.Error(), exits[0].Error)
+			if tc.refusal != "" {
+				var refusal *sqlstore.Refusal
+				require.ErrorAs(t, err, &refusal)
+				require.Equal(t, tc.refusal, refusal.Reason)
+				require.Contains(t, exits[0].Error, string(tc.refusal))
+				require.Contains(t, exits[0].Error, refusal.NextAction())
+				require.NotContains(t, exits[0].Error, os.Getenv("ZZROUTER_CONFIG_DIR"), "the line names no path")
+			}
 		})
 	}
 }
 
-// serveUntilUpdateRestart runs a real node and requests an update restart once it serves.
-func serveUntilUpdateRestart(t *testing.T) error {
+func freePort(t *testing.T) int {
+	t.Helper()
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	port := probe.Addr().(*net.TCPAddr).Port
-	require.NoError(t, probe.Close())
+	defer probe.Close()
+	return probe.Addr().(*net.TCPAddr).Port
+}
+
+// serveUntilUpdateRestart runs a real node and requests an update restart once it serves.
+func serveUntilUpdateRestart(t *testing.T) error {
+	port := freePort(t)
 	done := make(chan error, 1)
 	go func() { done <- runServe(runServeNode(t, port), nil) }()
 	health := "http://127.0.0.1:" + strconv.Itoa(port) + "/health/live"

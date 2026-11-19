@@ -68,10 +68,6 @@ func TestKeyCodecRoundTrip(t *testing.T) {
 	empty := bare.Clone()
 	empty.Metadata = map[string]string{}
 	assert.Equal(t, empty, roundTrip(t, emptyDB(t), keyTable, keyCols, empty.Clone()), "empty metadata stays empty, not nil")
-
-	envKey := bare.Clone()
-	envKey.KeyEnv = "ZZROUTER_KEY"
-	require.ErrorIs(t, checkKey(envKey), keys.ErrInvalid, "a key_env key has no column, so the store refuses it")
 }
 
 func TestTeamCodecRoundTrip(t *testing.T) {

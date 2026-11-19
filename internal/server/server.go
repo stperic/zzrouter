@@ -14,7 +14,6 @@ import (
 	"github.com/stperic/common/secrets"
 	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/localproof"
-	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
@@ -96,13 +95,11 @@ type Server struct {
 
 	// === Access control ===
 
-	access         *AccessControl // Unified auth + quota enforcement
-	spendEvents    *SpendEventBus // Quota breach event bus → /spend/events SSE
-	accessStore    access.Store   // Keys, teams and people; nil unless the node booted as a coordinator
-	auditMu        sync.RWMutex
-	auditSink      audit.Sink // Append-only audit log for key/team/quota mutations; audit.Null until wired
-	auditConfigDir string     // configDir for the coordinator's audit log and owner proof
-	ownerRecovery  *localproof.Proof
+	access        *AccessControl // Unified auth + quota enforcement
+	spendEvents   *SpendEventBus // Quota breach event bus → /spend/events SSE
+	accessStore   access.Store   // Keys, teams, people and the audit history; nil unless the node booted as a coordinator
+	configDir     string         // Installation configuration directory: owner proof, OAuth state, recovery inventory
+	ownerRecovery *localproof.Proof
 
 	// === Infrastructure ===
 

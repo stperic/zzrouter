@@ -501,6 +501,10 @@ func writePeopleError(c *gin.Context, err error) {
 	case errors.Is(err, people.ErrLimited), errors.Is(err, people.ErrCapacity):
 		RespondWithProblem(c, http.StatusTooManyRequests, "Too Many Requests", "Access requests are temporarily limited. Try again later.")
 	default:
+		if wire, ok := knownFailure(err); ok {
+			respondSurfaceError(c, wire)
+			return
+		}
 		RespondWithProblem(c, http.StatusServiceUnavailable, "Service Unavailable", "Could not save the access change. Check current state before trying again.")
 	}
 }

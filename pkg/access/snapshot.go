@@ -2,7 +2,6 @@ package access
 
 import (
 	"iter"
-	"os"
 
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
@@ -12,6 +11,7 @@ import (
 // Snapshot is one published state of keys, teams and people; a nil *Snapshot
 // reads as empty. Yielded records are copies.
 type Snapshot struct {
+	generation string
 	keys       map[string]*keys.VirtualKey
 	teams      map[string]*teams.Team
 	keysByTeam map[string][]string
@@ -28,9 +28,10 @@ func FailedSnapshot() *Snapshot {
 }
 
 // NewSnapshot owns k and t: the caller never changes them or their records
-// again. A nil p means no people.
-func NewSnapshot(k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
-	s := &Snapshot{keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
+// again. A nil p means no people. generation names the stored content the
+// records belong to and changes only when that content is replaced.
+func NewSnapshot(generation string, k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
+	s := &Snapshot{generation: generation, keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
 	for id, key := range k {
 		s.keysByTeam[key.TeamID] = append(s.keysByTeam[key.TeamID], id)
 	}
@@ -76,19 +77,21 @@ func (s *Snapshot) KeysByTeam(teamID string) iter.Seq2[string, *keys.VirtualKey]
 	}
 }
 
-// ValidateRawKey compares env-var keys directly and hashed keys with Argon2id.
+// Generation names the stored content this state belongs to; empty for none.
+func (s *Snapshot) Generation() string {
+	if s == nil {
+		return ""
+	}
+	return s.generation
+}
+
+// ValidateRawKey returns the key whose Argon2id hash matches raw.
 func (s *Snapshot) ValidateRawKey(raw string) (string, *keys.VirtualKey) {
 	if s == nil {
 		return "", nil
 	}
 	for id, key := range s.keys {
-		if key.KeyEnv != "" {
-			if value := os.Getenv(key.KeyEnv); value != "" && value == raw {
-				return id, key.Clone()
-			}
-			continue
-		}
-		if key.HashedKey != "" && keys.VerifyKey(raw, key.HashedKey) {
+		if keys.VerifyKey(raw, key.HashedKey) {
 			return id, key.Clone()
 		}
 	}

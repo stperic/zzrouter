@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/sqlstore"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -70,6 +71,10 @@ func Backup(ctx context.Context, dir, output, keyOutput string) (Manifest, error
 		return manifest, err
 	}
 	defer func() { _ = lock.Close() }()
+	// A journal left by a crash would be copied beside pages it undoes.
+	if err := sqlstore.Settle(ctx, dir); err != nil {
+		return manifest, err
+	}
 	inventory, err := Read(ctx, dir)
 	if err != nil {
 		return manifest, err
