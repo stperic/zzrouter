@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -703,4 +704,36 @@ func TestRecoveryExcludesProtectionKeyAliasesAndReservedCaseVariants(t *testing.
 	}
 	_, err = Check(t.Context(), output, keyOutput)
 	require.NoError(t, err)
+}
+
+// TestRecoveryRefusalsQuoteEntryNames: an archive is untrusted input for
+// every profile, so a refusal that names an entry quotes it and never prints
+// its control characters to the operator's terminal.
+func TestRecoveryRefusalsQuoteEntryNames(t *testing.T) {
+	node := []byte("node: {port: 9090}")
+	for name, tc := range map[string]struct {
+		entry string
+		edit  func(*Manifest)
+		want  string
+	}{
+		"an unsafe entry": {"config/private/\x1b[2Jkey", nil, "unsafe or duplicate recovery entry: "},
+		"a checksum mismatch": {"config/\x1b[2Jnotes.txt", func(m *Manifest) {
+			for i := range m.Files {
+				if m.Files[i].Name != "config/node.yaml" {
+					m.Files[i].SHA256 = digest([]byte("other bytes"))
+				}
+			}
+		}, "recovery checksum mismatch: "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var edits []func(*Manifest)
+			if tc.edit != nil {
+				edits = append(edits, tc.edit)
+			}
+			archive := writeTestBundle(t, map[string][]byte{"config/node.yaml": node, tc.entry: []byte("x")}, edits...)
+			_, err := Check(t.Context(), archive, "")
+			require.ErrorContains(t, err, tc.want+strconv.Quote(tc.entry))
+			require.NotContains(t, err.Error(), "\x1b")
+		})
+	}
 }

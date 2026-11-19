@@ -24,7 +24,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Check validates a bundle of either profile without writing installation
+// Check validates a bundle of any profile without writing installation
 // state or creating stores. A database image streams to a private directory in
 // the system's temporary directory, where sqlstore.CheckImage checks it, and
 // must match the manifest; the directory is removed on return.
@@ -328,7 +328,7 @@ func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, roo
 		}
 		header, err := reader.Next()
 		if err != nil || header.Name != expected.Name || header.Typeflag != tar.TypeReg || header.Size != expected.Size {
-			return snapshots, fmt.Errorf("recovery entry does not match manifest: %s", expected.Name)
+			return snapshots, fmt.Errorf("recovery entry does not match manifest: %q", expected.Name)
 		}
 		hash := sha256.New()
 		writers := []io.Writer{hash}
@@ -370,7 +370,7 @@ func readEntries(ctx context.Context, reader *tar.Reader, manifest Manifest, roo
 			return snapshots, copyErr
 		}
 		if hex.EncodeToString(hash.Sum(nil)) != expected.SHA256 {
-			return snapshots, fmt.Errorf("recovery checksum mismatch: %s", expected.Name)
+			return snapshots, fmt.Errorf("recovery checksum mismatch: %q", expected.Name)
 		}
 	}
 	return snapshots, nil
@@ -389,10 +389,13 @@ func validateManifest(manifest Manifest) error {
 	for _, file := range manifest.Files {
 		lower := strings.ToLower(file.Name)
 		if validateContent(lower) && file.Name != lower {
-			return fmt.Errorf("authority path must use canonical spelling: %s", file.Name)
+			return fmt.Errorf("authority path must use canonical spelling: %q", file.Name)
 		}
-		if !safeName(file.Name) || !strings.HasPrefix(file.Name, "config/") && !strings.HasPrefix(file.Name, "data/") && !strings.HasPrefix(file.Name, "providers/") && file.Name != imageName || strings.HasPrefix(lower, "config/") && excluded(strings.TrimPrefix(lower, "config/"), configExclusions()) || excluded(lower, nil) || seen[lower] {
-			return fmt.Errorf("unsafe or duplicate recovery entry: %s", file.Name)
+		// A handoff's allow-list judges its entries instead of the exclusions
+		// (validateHandoff).
+		exclusion := manifest.Profile != ProfileHandoff && (strings.HasPrefix(lower, "config/") && excluded(strings.TrimPrefix(lower, "config/"), configExclusions()) || excluded(lower, nil))
+		if !safeName(file.Name) || !strings.HasPrefix(file.Name, "config/") && !strings.HasPrefix(file.Name, "data/") && !strings.HasPrefix(file.Name, "providers/") && file.Name != imageName || exclusion || seen[lower] {
+			return fmt.Errorf("unsafe or duplicate recovery entry: %q", file.Name)
 		}
 		if file.Size < 0 || file.Size > maxTotal || len(file.SHA256) != 64 {
 			return errors.New("invalid recovery file metadata")
@@ -430,6 +433,13 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 	if image != (manifest.Store != nil) {
 		return errors.New("a database image and its store description travel together")
 	}
+	if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
+		return errors.New("encrypted state requires its separate protection-key fingerprint")
+	}
+	handoff := manifest.Profile == ProfileHandoff
+	if handoff != (manifest.Source != nil) || !handoff && manifest.Separate != nil {
+		return errors.New("a handoff bundle, and no other, names its source and what moves separately")
+	}
 	switch manifest.Profile {
 	case ProfileInstallation:
 		if manifest.Inventory == nil || manifest.Inventory.Version != 1 {
@@ -438,13 +448,12 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 		if !seen["config/node.yaml"] {
 			return errors.New("recovery bundle requires node.yaml")
 		}
-		if seen["config/credentials.enc"] && len(manifest.KeySHA256) != 64 {
-			return errors.New("encrypted state requires its separate protection-key fingerprint")
-		}
 	case ProfileDatabase:
 		if !image || len(manifest.Files) != 1 || manifest.Inventory != nil || manifest.KeySHA256 != "" || len(manifest.MissingOptional) > 0 {
 			return errors.New("a database bundle holds the database image alone")
 		}
+	case ProfileHandoff:
+		return validateHandoff(manifest, image)
 	default:
 		return fmt.Errorf("unknown recovery bundle profile %q", manifest.Profile)
 	}

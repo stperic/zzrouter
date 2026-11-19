@@ -142,10 +142,17 @@ coordinator, has no access store, and its bundle carries no image and no `store`
 Archives are limited to 20,000 files and 4 GiB; they are recovery state bundles,
 not model-library or complete operating-system images.
 
-Every archive has a `profile`. `recovery backup` writes `installation` bundles:
-the scope above. A `database` bundle holds the access database image alone, with
-no configuration and no key; `recovery check` and `recovery restore` handle it
-the same way. A profile this release does not know is refused.
+## Bundle profiles
+
+Every archive names a `profile` in its manifest. The three profiles share one
+manifest format, one check and one staged restore. A profile this release does not
+know is refused.
+
+| Profile | What it carries | What it is for |
+| --- | --- | --- |
+| `installation` | The scope above, with an `inventory` of the installation's recorded roots. | Recovering this installation. `recovery backup` writes it by default. |
+| `database` | The access database image alone: no configuration, no key, no inventory. | Restoring the access database into the installation it came from. `recovery backup` does not write it. |
+| `handoff` (experimental) | The access database image, the provider tree's definitions and assets, routes, spend, pricing overrides and encrypted provider connections, with the old coordinator's `source` and a `separate` list. Nothing that belongs to the old machine. | Moving the coordinator to another machine. `recovery backup --profile handoff` writes it. See [Coordinator handoff](#coordinator-handoff-experimental). |
 
 ## Back up and verify
 
@@ -304,6 +311,8 @@ an operator can do today, by hand, with the node stopped:
   described below, into the installation it came from: the store ID in that
   installation's `access-store.json` must equal `store.store_id` in the staging
   `manifest.json`. Nothing else in the installation changes.
+- A staged `handoff` bundle is not activated in this release, by command or by
+  hand: see [Coordinator handoff](#coordinator-handoff-experimental).
 
 Once the prepared image is in place, browser sessions, delegated OAuth tokens and
 app-key references issued before the restore do not resolve, without any edit of
@@ -344,3 +353,120 @@ the existing local recovery command if necessary. Expired worker certificates ca
 require pairing again. An older valid backup can restore access that was revoked
 later; review people, keys, grants and budget state after recovery. A successful
 archive check is not a successful activation test.
+
+## Coordinator handoff (experimental)
+
+A `handoff` bundle holds what a new coordinator needs from the old one, and
+nothing that belongs to the old machine. This release writes, checks and stages
+it. Activating a staged handoff on the new coordinator arrives in a later release;
+until then the staging directory shows what would move, and nothing in this
+release, command or manual step, activates it. Treat the profile as experimental
+until that release has been rehearsed on a real two-node cluster.
+
+A handoff carries exactly these entries, and `recovery check` and `recovery
+restore` refuse a handoff that carries any other, naming the entry. They also
+refuse one with no provider definition, which has lost its provider tree, and one
+whose `source`, `separate` list or entry names are not short plain text. The
+list alone decides what a handoff carries: a provider or an asset named like a
+temporary, lock or PID file travels like any other:
+
+| Entry | What it is |
+| --- | --- |
+| `store/image.sqlite` | The access database image: people and their passwords, app keys, teams and their policies, and the access history. Staging prepares it like every image. |
+| `config/providers/settings.yaml` | Global provider settings. |
+| `config/providers/<kind>/<name>/config.yaml` and `schema.yaml` | Each provider's definition and its parameter schema, for the kinds `on-demand`, `external`, `cloud` and `registries`. |
+| `config/providers/<kind>/<name>/assets/<asset>` | Operator assets, such as chat templates. |
+| `config/providers/.managed-ownership.json` | The ownership receipt: which keys of each shipped provider definition the release manages. |
+| `config/model_groups.yaml` | Routes. |
+| `config/spend.json` | Recorded spend. A clean stop flushes it; from a source that crashed, it holds spend only up to its last save, at most 60 seconds old. |
+| `config/pricing_overrides.yaml` | Pricing overrides. |
+| `config/credentials.enc` | Encrypted provider connections. As for an installation bundle, the key is exported separately with `--key-output` and never packed, and the manifest's `key_sha256` names it. |
+
+An entry travels only because this list names it: a file a later release adds to
+the configuration directory does not travel until the list names it too. A
+handoff never carries `node.yaml`, the dotenv files (`.env`, `.env.local`,
+`.env.<environment>`), OAuth authority state (`oauth.json`), the cluster CA and
+its deny list (`ca/`), node identity (`identity/`), cluster and pairing state
+(`cluster/`, `pairing.txt`), private keys (`private/`), the recovery layout, the
+store marker, online backups, the rollback directory, update state, data
+directories, the pricing cache, provider installs or models. Its manifest has no
+`inventory`. It names `source`, the old coordinator's release, node name and
+platform, and `separate`, what the operator moves or recreates by hand:
+
+```json
+{"version": 1, "profile": "handoff", "created": "2026-11-19T10:54:46Z",
+ "store": {"store_id": "4b244e15-…", "generation": "4b244e15-…", "schema_version": 1, "revision": 3, "sequence": 5},
+ "source": {"release": "0.3.0", "node": "coord-1", "platform": "linux"},
+ "key_sha256": "4b94c8b3…",
+ "separate": ["The destination's own node.yaml: node name, listen address, TLS, storage paths, authentication and cluster role.", "…"],
+ "files": [{"name": "config/credentials.enc", "size": 204, "sha256": "3ceac6a1…"}, "…"]}
+```
+
+The flow, up to staging:
+
+1. Install the matching release on the destination.
+2. Stop the source coordinator through its supervisor and keep its supervisor from
+   restarting it. The ordinary stop drains requests and flushes spend.
+3. Take the handoff from the stopped source:
+
+   ```sh
+   zzrouter-node recovery backup --profile handoff --dir /path/to/installation \
+     --output /secure-backups/handoff.tar.gz \
+     --key-output /separate-key-storage/handoff.key
+   ```
+
+   The same rules as an installation backup apply: the installation lock, new
+   output paths, the key in a separate directory, no output after a failure or an
+   interrupt. A worker, or a node that never ran as a coordinator, has no access
+   database and so no handoff: the command stops with `no access store` and writes
+   nothing. A link in place of the provider tree, a kind, a provider, its assets
+   or a carried file, and, on a case-insensitive filesystem, a name that is a
+   carried entry spelled in another case, also stop it, naming the path: the
+   node would read them, so a handoff refuses them rather than leave them behind.
+   On a case-sensitive filesystem such a spelling is a separate file the node
+   ignores, and it is not carried. Links elsewhere, such as a provider install's
+   environment, are not carried either. The command prints what the bundle
+   carries and the `separate` list.
+4. Check it, and stage it on the destination:
+
+   ```sh
+   zzrouter-node recovery check /secure-backups/handoff.tar.gz \
+     --key-file /separate-key-storage/handoff.key
+   zzrouter-node recovery restore /secure-backups/handoff.tar.gz \
+     --key-file /separate-key-storage/handoff.key \
+     --to /new/private/handoff-staging
+   ```
+
+   Staging works as for every profile. The staging directory holds
+   `manifest.json`, `config/` with the entries above, the prepared
+   `store/image.sqlite` and `protection/credentials.key`. Once a later release
+   activates it, sessions, delegated tokens and app-key references the old
+   coordinator issued do not resolve; passwords and app keys keep working.
+
+What the operator moves or recreates by hand, as `separate` lists:
+
+- The destination's own `node.yaml`: node name, listen address, TLS, storage
+  paths, authentication settings and cluster role. A handoff carries none of the
+  source's.
+- Environment variables the dotenv files or the service environment set: the
+  static installation keys (`ZZROUTER_ADMIN_API_KEY`, `ZZROUTER_API_KEY`),
+  provider credentials (such as `OPENAI_API_KEY` or `HF_TOKEN`) and every variable
+  a provider definition reads (`connection.fields[].env`, or `${VARIABLE}` in a
+  value). Set them on the destination: a connection that reads its key from the
+  environment fails without it. A handoff carries the connections saved through
+  zzRouter in `credentials.enc`, never the environment.
+- External services the provider definitions point at, such as an Ollama server
+  or an endpoint on the old machine's network: make sure the destination reaches
+  them.
+- External TLS or proxy trust material that `node.yaml` names: copy it over a
+  secure channel and name it in the destination's `node.yaml`.
+- Provider runtimes and model weights: install and download them on the
+  destination.
+- Workers: pair each one again with the new coordinator. The cluster CA, node
+  identity and worker enrollments stay with the old one. Browsers and delegated
+  OAuth clients sign in or authorize again.
+
+A handoff never rewrites node names. Provider enablement entries (`nodes.<node>`)
+and route replicas pinned to the old coordinator's node keep that name, and a
+replica with no node, which meant the old coordinator, means the new one; review
+them through the running API after activation.

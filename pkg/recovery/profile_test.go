@@ -148,7 +148,7 @@ func TestRecoveryProfileRefusals(t *testing.T) {
 		edit   func(*Manifest)
 		reason sqlstore.Reason // a refusal from the image check, or none
 	}{
-		"an unknown profile":                  {map[string][]byte{imageName: content}, func(m *Manifest) { database(m); m.Profile = "handoff" }, ""},
+		"an unknown profile":                  {map[string][]byte{imageName: content}, func(m *Manifest) { database(m); m.Profile = "everything" }, ""},
 		"no profile":                          {map[string][]byte{"config/node.yaml": node}, func(m *Manifest) { m.Profile = "" }, ""},
 		"a database bundle with an inventory": {map[string][]byte{imageName: content}, func(m *Manifest) { database(m); m.Inventory = &Inventory{Version: 1} }, ""},
 		"a database bundle with a key":        {map[string][]byte{imageName: content}, func(m *Manifest) { database(m); m.KeySHA256 = digest(content) }, ""},
