@@ -248,6 +248,8 @@ func newManifest(profile Profile, inventory Inventory) (Manifest, error) {
 	case ProfileHandoff:
 		manifest.Source = &Origin{Release: inventory.Release, Node: inventory.Node, Platform: inventory.Platform}
 		manifest.Separate = handoffSeparate()
+	case ProfileDatabase:
+		return manifest, errors.New("recovery backup writes installation or handoff bundles; take a database bundle from the running coordinator's backup API")
 	default:
 		return manifest, fmt.Errorf("recovery backup writes %s or %s bundles, not %q", ProfileInstallation, ProfileHandoff, profile)
 	}
@@ -437,6 +439,15 @@ func collectSource(ctx context.Context, manifest *Manifest, inventory Inventory,
 		}
 		name := path.Join(source.Name, rel)
 		if manifest.Profile == ProfileHandoff && !handoffEntry(name) {
+			// What the node's loader would read under another spelling or
+			// through a link is refused, never dropped.
+			folded := strings.ToLower(name)
+			if handoffEntry(folded) {
+				return fmt.Errorf("a handoff refuses %s: it differs only in case from an entry a handoff carries; give it that entry's exact name", name)
+			}
+			if handoffDir(folded) {
+				return rejectLinks(root, filepath.FromSlash(full))
+			}
 			return nil
 		}
 		if !safeName(name) || seen[strings.ToLower(name)] {

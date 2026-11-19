@@ -298,7 +298,9 @@ release, command or manual step, activates it. Treat the profile as experimental
 until that release has been rehearsed on a real two-node cluster.
 
 A handoff carries exactly these entries, and `recovery check` and `recovery
-restore` refuse a handoff that carries any other, naming the entry:
+restore` refuse a handoff that carries any other, naming the entry. They also
+refuse one with no provider definition, without which a node loads no providers,
+and one whose `source` or `separate` list is not short plain text:
 
 | Entry | What it is |
 | --- | --- |
@@ -308,7 +310,7 @@ restore` refuse a handoff that carries any other, naming the entry:
 | `config/providers/<kind>/<name>/assets/<asset>` | Operator assets, such as chat templates. |
 | `config/providers/.managed-ownership.json` | The ownership receipt: which keys of each shipped provider definition the release manages. |
 | `config/model_groups.yaml` | Routes. |
-| `config/spend.json` | Recorded spend, flushed by the source's stop. |
+| `config/spend.json` | Recorded spend. A clean stop flushes it; from a source that crashed, it holds spend only up to its last save, at most 60 seconds old. |
 | `config/pricing_overrides.yaml` | Pricing overrides. |
 | `config/credentials.enc` | Encrypted provider connections. As for an installation bundle, the key is exported separately with `--key-output` and never packed, and the manifest's `key_sha256` names it. |
 
@@ -349,7 +351,12 @@ The flow, up to staging:
    output paths, the key in a separate directory, no output after a failure or an
    interrupt. A worker, or a node that never ran as a coordinator, has no access
    database and so no handoff: the command stops with `no access store` and writes
-   nothing. The command prints what the bundle carries and the `separate` list.
+   nothing. A link in place of the provider tree, a kind, a provider, its assets
+   or a carried file, and a name that differs only in case from a carried entry,
+   also stop it, naming the path: the node would read them, so a handoff refuses
+   them rather than leave them behind. Links elsewhere, such as a provider
+   install's environment, are not carried. The command prints what the bundle
+   carries and the `separate` list.
 4. Check it, and stage it on the destination:
 
    ```sh
@@ -371,8 +378,15 @@ What the operator moves or recreates by hand, as `separate` lists:
 - The destination's own `node.yaml`: node name, listen address, TLS, storage
   paths, authentication settings and cluster role. A handoff carries none of the
   source's.
-- Static installation keys (`ZZROUTER_ADMIN_API_KEY`, `ZZROUTER_API_KEY`) from
-  `node.yaml` or a dotenv file: set them on the destination if clients still use
+- Environment variables the dotenv files or the service environment set: the
+  static installation keys (`ZZROUTER_ADMIN_API_KEY`, `ZZROUTER_API_KEY`),
+  provider credentials (such as `OPENAI_API_KEY` or `HF_TOKEN`) and every variable
+  a provider definition reads (`connection.fields[].env`, or `${VARIABLE}` in a
+  value). Set them on the destination: a connection that reads its key from the
+  environment fails without it. A handoff carries the connections saved through
+  zzRouter in `credentials.enc`, never the environment.
+- External services the provider definitions point at, such as an Ollama server
+  or an endpoint on the old machine's network: make sure the destination reaches
   them.
 - External TLS or proxy trust material that `node.yaml` names: copy it over a
   secure channel and name it in the destination's `node.yaml`.

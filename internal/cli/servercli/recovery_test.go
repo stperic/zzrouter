@@ -144,7 +144,7 @@ func TestRecoveryCommandsHandoffProfile(t *testing.T) {
 
 	database := filepath.Join(t.TempDir(), "database.tar.gz")
 	_, err = runRecovery(t, dir, "backup", "--profile", "database", "--output", database)
-	require.ErrorContains(t, err, `not "database"`)
+	require.ErrorContains(t, err, "take a database bundle from the running coordinator's backup API")
 	require.NoFileExists(t, database)
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "access")))
 	require.NoError(t, os.Remove(filepath.Join(dir, sqlstore.MarkerName)))

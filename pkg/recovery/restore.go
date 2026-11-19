@@ -450,14 +450,7 @@ func validateProfile(manifest Manifest, seen map[string]bool) error {
 			return errors.New("a database bundle holds the database image alone")
 		}
 	case ProfileHandoff:
-		if !image || manifest.Inventory != nil || len(manifest.MissingOptional) > 0 {
-			return errors.New("a handoff bundle holds the access database image and its store, and no inventory")
-		}
-		for _, file := range manifest.Files {
-			if !handoffEntry(file.Name) {
-				return fmt.Errorf("a handoff bundle does not carry %s", file.Name)
-			}
-		}
+		return validateHandoff(manifest, image)
 	default:
 		return fmt.Errorf("unknown recovery bundle profile %q", manifest.Profile)
 	}

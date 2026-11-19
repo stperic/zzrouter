@@ -1,12 +1,17 @@
 package recovery
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stperic/common/secrets"
@@ -201,7 +206,8 @@ func TestRecoveryHandoffCheckRefusesOtherEntries(t *testing.T) {
 		m.Profile, m.Inventory, m.Store = ProfileHandoff, nil, &meta
 		m.Source, m.Separate = &Origin{Release: "0.3.0", Node: "coord-1", Platform: "linux"}, handoffSeparate()
 	}
-	base := map[string][]byte{imageName: content, "config/model_groups.yaml": []byte("version: \"1\"\n")}
+	const definition = "config/providers/cloud/openai/config.yaml"
+	base := map[string][]byte{imageName: content, definition: []byte("enabled: false\n"), "config/model_groups.yaml": []byte("version: \"1\"\n")}
 	with := func(name string, data []byte) map[string][]byte {
 		files := map[string][]byte{name: data}
 		for name, data := range base {
@@ -229,28 +235,82 @@ func TestRecoveryHandoffCheckRefusesOtherEntries(t *testing.T) {
 			refuse(t, writeTestBundle(t, with(entry, []byte("node: {port: 9090}")), handoff), entry)
 		})
 	}
-	for _, name := range []string{"data/pinned_runs.json", "data/downloads.json", "data/update-history.json", "providers/llamacpp/manifest.json", "providers/comfyui/data/workflow.json"} {
+	// Logical data and provider roots, and case variants of carried entries,
+	// which the loader reads on a case-insensitive filesystem.
+	for _, name := range []string{"data/pinned_runs.json", "data/downloads.json", "data/update-history.json", "providers/llamacpp/manifest.json", "providers/comfyui/data/workflow.json",
+		"config/providers/cloud/groq/Config.yaml", "config/providers/Registries/huggingface/config.yaml", "config/providers/cloud/openai/Assets/template.jinja", "config/Spend.json"} {
 		t.Run(name, func(t *testing.T) {
 			refuse(t, writeTestBundle(t, with(name, []byte("{}")), handoff), name)
 		})
 	}
+	image2 := map[string][]byte{imageName: content, "config/model_groups.yaml": base["config/model_groups.yaml"]}
+	withHandoff := func(edit func(*Manifest)) func(*Manifest) { return func(m *Manifest) { handoff(m); edit(m) } }
 	for name, tc := range map[string]struct {
 		files map[string][]byte
 		edit  func(*Manifest)
 		want  string
 	}{
-		"no image and no store":         {map[string][]byte{"config/model_groups.yaml": base["config/model_groups.yaml"]}, func(m *Manifest) { handoff(m); m.Store = nil }, "holds the access database image"},
-		"an image without its store":    {base, func(m *Manifest) { handoff(m); m.Store = nil }, "travel together"},
-		"a store without its image":     {map[string][]byte{"config/model_groups.yaml": base["config/model_groups.yaml"]}, handoff, "travel together"},
-		"no source":                     {base, func(m *Manifest) { handoff(m); m.Source = nil }, "names its source"},
-		"an inventory":                  {base, func(m *Manifest) { handoff(m); m.Inventory = &Inventory{Version: 1} }, "no inventory"},
-		"missing optional state":        {base, func(m *Manifest) { handoff(m); m.MissingOptional = []string{"data/downloads.json"} }, "no inventory"},
+		"no image and no store":         {map[string][]byte{definition: base[definition]}, withHandoff(func(m *Manifest) { m.Store = nil }), "holds the access database image"},
+		"an image without its store":    {base, withHandoff(func(m *Manifest) { m.Store = nil }), "travel together"},
+		"a store without its image":     {map[string][]byte{definition: base[definition]}, handoff, "travel together"},
+		"no source":                     {base, withHandoff(func(m *Manifest) { m.Source = nil }), "names its source"},
+		"an inventory":                  {base, withHandoff(func(m *Manifest) { m.Inventory = &Inventory{Version: 1} }), "no inventory"},
+		"missing optional state":        {base, withHandoff(func(m *Manifest) { m.MissingOptional = []string{"data/downloads.json"} }), "no inventory"},
 		"connections without a key":     {with("config/credentials.enc", []byte("ciphertext")), handoff, "protection-key fingerprint"},
-		"a database naming a source":    {map[string][]byte{imageName: content}, func(m *Manifest) { handoff(m); m.Profile = ProfileDatabase }, "names its source"},
+		"a database naming a source":    {map[string][]byte{imageName: content}, withHandoff(func(m *Manifest) { m.Profile = ProfileDatabase }), "names its source"},
 		"an installation with separate": {map[string][]byte{"config/node.yaml": []byte("node: {port: 9090}")}, func(m *Manifest) { m.Separate = handoffSeparate() }, "names its source"},
+		"no provider definition":        {image2, handoff, "at least one provider definition"},
+		"only a provider schema":        {map[string][]byte{imageName: content, "config/providers/external/ollama/schema.yaml": []byte("{}")}, handoff, "at least one provider definition"},
+		"an empty source":               {base, withHandoff(func(m *Manifest) { m.Source = &Origin{} }), "in plain text"},
+		"a source without its node":     {base, withHandoff(func(m *Manifest) { m.Source.Node = "" }), "in plain text"},
+		"a source with a newline":       {base, withHandoff(func(m *Manifest) { m.Source.Release = "0.3.0\nall clear" }), "in plain text"},
+		"no separate list":              {base, withHandoff(func(m *Manifest) { m.Separate = nil }), "in plain text"},
+		"an empty separate item":        {base, withHandoff(func(m *Manifest) { m.Separate = append(m.Separate, "") }), "in plain text"},
+		"an escape sequence":            {base, withHandoff(func(m *Manifest) { m.Separate = []string{"\x1b[2J copy ca/ca.key and node.yaml"} }), "in plain text"},
+		"a bidirectional override":      {base, withHandoff(func(m *Manifest) { m.Separate = []string{"keep \u202enoitces siht"} }), "in plain text"},
+		"an overlong separate item":     {base, withHandoff(func(m *Manifest) { m.Separate = []string{strings.Repeat("a", maxPlainText+1)} }), "in plain text"},
+		"too many separate items":       {base, withHandoff(func(m *Manifest) { m.Separate = slices.Repeat([]string{"move it"}, maxSeparate+1) }), "in plain text"},
 	} {
 		t.Run(name, func(t *testing.T) { refuse(t, writeTestBundle(t, tc.files, tc.edit), tc.want) })
 	}
+	t.Run("a link in place of a definition", func(t *testing.T) {
+		refuse(t, linkBundle(t, content, handoff, definition), "does not match manifest: "+definition)
+	})
+}
+
+// linkBundle writes a handoff bundle of image whose entry name, which its
+// manifest lists as an empty regular file, is a symbolic link in the archive.
+func linkBundle(t *testing.T, image []byte, handoff func(*Manifest), name string) string {
+	t.Helper()
+	archive := writeTestBundle(t, map[string][]byte{imageName: image, name: nil}, handoff)
+	in, err := os.Open(archive)
+	require.NoError(t, err)
+	defer func() { _ = in.Close() }()
+	compressed, err := gzip.NewReader(in)
+	require.NoError(t, err)
+	manifest, err := readManifest(tar.NewReader(compressed))
+	require.NoError(t, err)
+	encoded, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	var buffer bytes.Buffer
+	gz := gzip.NewWriter(&buffer)
+	writer := tar.NewWriter(gz)
+	require.NoError(t, writer.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(encoded))}))
+	_, err = writer.Write(encoded)
+	require.NoError(t, err)
+	for _, file := range manifest.Files {
+		if file.Name == name {
+			require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeSymlink, Linkname: "../../../../../etc/passwd", Mode: 0o600}))
+			continue
+		}
+		require.NoError(t, writer.WriteHeader(&tar.Header{Name: file.Name, Mode: 0o600, Size: file.Size}))
+		_, err = writer.Write(image)
+		require.NoError(t, err)
+	}
+	require.NoError(t, errors.Join(writer.Close(), gz.Close()))
+	forged := filepath.Join(t.TempDir(), "link.tar.gz")
+	require.NoError(t, os.WriteFile(forged, buffer.Bytes(), 0o600))
+	return forged
 }
 
 // TestRecoveryHandoffRefusalsWriteNothing: a worker, or a node that never
@@ -264,7 +324,7 @@ func TestRecoveryHandoffRefusalsWriteNothing(t *testing.T) {
 		check   func(t *testing.T, err error)
 	}{
 		"a worker":         {ProfileHandoff, true, func(t *testing.T, err error) { require.ErrorIs(t, err, sqlstore.ErrNoStore) }},
-		"a database":       {ProfileDatabase, false, func(t *testing.T, err error) { require.ErrorContains(t, err, `not "database"`) }},
+		"a database":       {ProfileDatabase, false, func(t *testing.T, err error) { require.ErrorContains(t, err, "the running coordinator's backup API") }},
 		"an unknown kind":  {"everything", false, func(t *testing.T, err error) { require.ErrorContains(t, err, `not "everything"`) }},
 		"no profile given": {"", false, func(t *testing.T, err error) { require.ErrorContains(t, err, `not ""`) }},
 	} {
@@ -280,6 +340,85 @@ func TestRecoveryHandoffRefusalsWriteNothing(t *testing.T) {
 			emptyDir(t, filepath.Dir(output), "no archive and no temporary beside it")
 			emptyDir(t, filepath.Dir(keyOutput), "no key and no temporary beside it")
 			emptyDir(t, temp, "nothing in the system's temporary directory")
+		})
+	}
+}
+
+// TestRecoveryHandoffRefusesLinksAndCaseVariants: what the node's loader
+// would read through a link or under another spelling on a case-insensitive
+// filesystem is refused by a handoff backup, never silently dropped, with
+// the installation profile's reason for a link; links elsewhere in the tree,
+// such as a provider install's environment, are not carried and do not stop
+// it. A refusal writes nothing.
+func TestRecoveryHandoffRefusesLinksAndCaseVariants(t *testing.T) {
+	// link moves dir's rel out of the tree and links it back.
+	link := func(t *testing.T, dir, rel string) {
+		t.Helper()
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		moved := filepath.Join(t.TempDir(), "moved")
+		require.NoError(t, os.Rename(path, moved))
+		if err := os.Symlink(moved, path); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	rename := func(from, to string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			require.NoError(t, os.Rename(filepath.Join(dir, filepath.FromSlash(from)), filepath.Join(dir, filepath.FromSlash(to))))
+		}
+	}
+	linked := func(rel string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) { link(t, dir, rel) }
+	}
+	withAsset := func(rel string) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			_, err := assets.NewDir(filepath.Join(dir, "providers", "cloud", "openai")).Write("template.jinja", []byte("{{ messages }}"))
+			require.NoError(t, err)
+			link(t, dir, rel)
+		}
+	}
+	for name, tc := range map[string]struct {
+		edit     func(t *testing.T, dir string)
+		provider string // a provider the loader still reads after edit
+		want     string
+	}{
+		"a linked provider tree":      {linked("providers"), "openai", "must not contain links: providers"},
+		"a linked kind":               {linked("providers/cloud"), "openai", "must not contain links: " + filepath.Join("providers", "cloud")},
+		"a linked provider":           {linked("providers/cloud/openai"), "openai", "must not contain links: " + filepath.Join("providers", "cloud", "openai")},
+		"a linked definition":         {linked("providers/cloud/groq/config.yaml"), "groq", "must not contain links: " + filepath.Join("providers", "cloud", "groq", "config.yaml")},
+		"linked assets":               {withAsset("providers/cloud/openai/assets"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets")},
+		"a linked asset":              {withAsset("providers/cloud/openai/assets/template.jinja"), "", "must not contain links: " + filepath.Join("providers", "cloud", "openai", "assets", "template.jinja")},
+		"a definition's case variant": {rename("providers/cloud/groq/config.yaml", "providers/cloud/groq/Config.yaml"), "", "a handoff refuses config/providers/cloud/groq/Config.yaml"},
+		"a kind's case variant":       {rename("providers/registries", "providers/Registries"), "", "a handoff refuses config/providers/Registries/huggingface/config.yaml"},
+		"links in a provider's install": {func(t *testing.T, dir string) {
+			for _, rel := range []string{"providers/mlx-vlm/venv/bin/python", "providers/on-demand/mlx/venv"} {
+				path := filepath.Join(dir, filepath.FromSlash(rel))
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+				if err := os.Symlink(filepath.Join(t.TempDir(), "python3"), path); err != nil {
+					t.Skipf("symlinks unavailable: %v", err)
+				}
+			}
+		}, "mlx", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir, output, keyOutput := recoveryFixture(t)
+			tc.edit(t, dir)
+			if tc.provider != "" {
+				apps, err := config.LoadAppsConfig(filepath.Join(dir, "providers"))
+				require.NoError(t, err)
+				_, ok := apps.LookupApp(tc.provider)
+				require.True(t, ok, "the loader reads %s", tc.provider)
+			}
+			manifest, err := BackupProfile(t.Context(), ProfileHandoff, dir, output, keyOutput)
+			if tc.want == "" {
+				require.NoError(t, err)
+				for _, file := range manifest.Files {
+					require.NotContains(t, file.Name, "venv")
+				}
+				return
+			}
+			require.ErrorContains(t, err, tc.want)
+			emptyDir(t, filepath.Dir(output), "no archive and no temporary beside it")
+			emptyDir(t, filepath.Dir(keyOutput), "no key and no temporary beside it")
 		})
 	}
 }

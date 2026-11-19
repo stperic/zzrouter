@@ -289,8 +289,14 @@ separately as for an installation archive. It also holds routes, spend, pricing
 overrides and the provider definitions and assets, byte for byte: a secret an
 operator wrote into a provider definition travels with it. Protect it like an
 installation archive.
-It holds no private key and no node-local trust: not `node.yaml` or the dotenv
-files and the static installation keys they hold, not the OAuth authority state,
-the cluster CA and its deny list, the node identity or `private/`. Workers pair
-again with the new coordinator, and browsers and delegated clients sign in again.
-`recovery check` refuses a handoff carrying any entry beyond its fixed list.
+It holds no private key and no node-local trust: not `node.yaml`, not the OAuth
+authority state, the cluster CA and its deny list, the node identity or
+`private/`, and no environment. Environment variables the dotenv files or the
+service environment set (the static installation keys `ZZROUTER_ADMIN_API_KEY`
+and `ZZROUTER_API_KEY`, provider credentials such as `OPENAI_API_KEY` or
+`HF_TOKEN`, and every variable a provider definition reads) stay behind: set them
+on the destination, where a connection that reads its key from the environment
+fails without it. Workers pair again with the new coordinator, and browsers and
+delegated clients sign in again. `recovery check` refuses a handoff carrying any
+entry beyond its fixed list, a source or `separate` list that is not short plain
+text, or no provider definition.
