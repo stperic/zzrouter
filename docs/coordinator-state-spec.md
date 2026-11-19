@@ -71,8 +71,8 @@ A store that cannot open is fatal at startup, as an unreadable `teams.yaml` is t
 | --- | --- | --- |
 | `missing` | The store marker says a database existed, and it is gone. | Activate a checked backup, or remove the marker to start over at owner setup. |
 | `schema_newer` | A newer release wrote the database. | Start that release, or activate a backup the installed release can read. |
-| `integrity_failed` | The database opens but fails its checks. | Activate the newest checked backup. |
-| `unreadable` | The database cannot be opened. | Activate the newest checked backup. |
+| `integrity_failed` | The database opens but fails its checks. | Activate the newest checked backup, or remove the access directory and the marker to start over at owner setup. |
+| `unreadable` | The database cannot be opened. | Activate the newest checked backup, or remove the access directory and the marker to start over at owner setup. |
 
 **First start.** With no database and no store marker, the node creates an empty store and is at owner setup. Nothing is imported.
 
