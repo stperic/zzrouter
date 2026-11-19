@@ -382,6 +382,13 @@ expose, including request parameters, health configuration, timeouts and tags.
 Saving an automatic route claims it for manual management. A route with assigned
 teams cannot be deleted through this API until those assignments are removed.
 
+In Route details, choose **Assign to team** or **Manage team assignments**.
+Select a shared team to open its route policy with the current route selected.
+Review the policy and choose **Save route access**. If there are no shared
+teams, choose **Create team** to open a new team with this route selected.
+To remove an assignment, clear its checkbox. If it was the only assigned
+route, choose which route access mode the team should use.
+
 Teams choose Direct models & routes, Assigned routes only, or No inference.
 Existing teams retain direct access unless changed. Assigned routes only blocks
 direct physical model names, provider/node pins and opaque operations that cannot

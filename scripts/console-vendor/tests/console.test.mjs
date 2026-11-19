@@ -154,6 +154,64 @@ test('all console views and shared editors fit desktop and phone viewports', { t
   await audit(f.page, 'sign-in');
 });
 
+test('route details assign and remove a shared team without leaving Routes', async t => {
+  const f = await consolePage(t), { page } = f;
+  await f.open('#routes?item=local-chat', 390, 844);
+  const drawer = page.getByRole('dialog');
+  const selectTeam = async (action, id) => {
+    await drawer.getByRole('button', { name: action, exact: true }).click();
+    await drawer.getByRole('combobox', { name: 'Shared team' }).selectOption(id);
+    await drawer.getByRole('button', { name: 'Continue', exact: true }).click();
+  };
+  const save = () => drawer.getByRole('button', { name: 'Save route access', exact: true }).click();
+  const coding = drawer.getByRole('checkbox', { name: /^coding/ });
+  const localChat = drawer.getByRole('checkbox', { name: /^local-chat/ });
+  const count = n => drawer.getByRole('heading', { name: `Assigned teams (${n})`, exact: true }).waitFor();
+  await selectTeam('Assign to team', 'engineering');
+  assert.equal(await coding.isChecked(), true);
+  assert.equal(await localChat.isChecked(), true);
+  await audit(page, 'route-team-assignment-phone');
+  await save();
+  await count(1);
+  await drawer.getByRole('button', { name: 'Engineering', exact: true }).waitFor();
+
+  await selectTeam('Manage team assignments', 'engineering');
+  await localChat.uncheck();
+  await save();
+  await count(0);
+
+  await selectTeam('Assign to team', 'local-only');
+  await drawer.getByText(/Current access: Direct models & routes/).waitFor();
+  assert.equal(await drawer.getByRole('combobox', { name: 'Clients may use' }).inputValue(), 'selected');
+  assert.equal(await localChat.isChecked(), true);
+  await drawer.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await count(0);
+  assert.equal(new URL(page.url()).hash, '#routes?item=local-chat');
+  assert.deepEqual((await f.requests()).filter(row => row.method === 'PATCH').map(({ path, payload }) => [path, payload]), [
+    ['/teams/engineering', { route_access: { mode: 'selected', routes: ['coding', 'local-chat'] } }],
+    ['/teams/engineering', { route_access: { mode: 'selected', routes: ['coding'] } }],
+  ]);
+});
+
+test('route details can create the first shared team with the route assigned', async t => {
+  const f = await consolePage(t), { page } = f;
+  let created = false;
+  await page.route(url => url.pathname === '/zzrouter/v1/teams', route => {
+    if (route.request().method() === 'POST') created = true;
+    return created ? route.continue() : route.fulfill({ json: { data: [] } });
+  });
+  await f.open('#routes?item=local-chat');
+  const drawer = page.getByRole('dialog');
+  await drawer.getByRole('button', { name: 'Assign to team', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Create team', exact: true }).click();
+  await drawer.getByRole('textbox', { name: 'Name', exact: true }).fill('Support');
+  assert.equal(await drawer.getByRole('checkbox', { name: /^local-chat/ }).isChecked(), true);
+  await drawer.getByRole('button', { name: 'Create team', exact: true }).click();
+  await drawer.getByRole('button', { name: 'Support', exact: true }).waitFor();
+  const post = (await f.requests()).find(row => row.path === '/teams' && row.method === 'POST');
+  assert.deepEqual(post.payload.route_access, { mode: 'selected', routes: ['local-chat'] });
+});
+
 test('route destinations group providers and show startup only for supported local models', async t => {
   const f = await consolePage(t), p = f.page;
   await p.route(url => url.pathname === '/zzrouter/v1/nodes', route => route.fulfill({ json: {

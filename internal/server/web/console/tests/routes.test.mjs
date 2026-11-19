@@ -7,11 +7,11 @@ import { installDOM, named, button, find, drain } from './dom-fixture.mjs';
 
 const catalog = [{ key: 'ollama', name: 'Ollama', kind: 'external', protocol: 'ollama' }, { key: 'groq', name: 'Groq', kind: 'cloud', protocol: 'openai' }];
 catalog.push({ key: 'huggingface', kind: 'registry', protocol: '' }, { key: 'comfyui', kind: 'python', protocol: '' });
-const team = { id: 'engineering', name: 'Engineering', route_access: { mode: 'selected', routes: ['coding'] } };
+const team = { id: 'engineering', name: 'Engineering', kind: 'shared', route_access: { mode: 'selected', routes: ['coding'] } };
 const route = { name: 'coding', description: 'Shared coding route', strategy: 'priority', replicas: [{ name: 'primary', provider: 'groq', model: 'old-model', node: 'worker', priority: 1, on_demand: false, tags: ['fast'], timeout: '30s', params: { temperature: 0.4 } }] };
 function page(t, data) {
  const root = installDOM(t), abort = new AbortController(), calls = [];
- const p = { root, scope: { signal: abort.signal }, current: () => !abort.signal.aborted, state: { node_name: 'coord' }, go() {}, syncActivity() {}, api: {
+ const p = { root, scope: { signal: abort.signal }, current: () => !abort.signal.aborted, identity: {}, state: { node_name: 'coord' }, go() {}, syncActivity() {}, api: {
   canChange: () => true, canLeave: () => true,
   list: async path => ({ '/model-groups': [structuredClone(route)], '/teams': [team], '/providers/catalog?kind=all': catalog, '/models': [], '/nodes': [{ name: 'worker' }] })[path],
   data: async (path, options = {}) => {
@@ -66,6 +66,22 @@ test('route picker preserves unavailable assignments and filtered selections wit
  assert.deepEqual(fields.read(), { mode: 'selected', routes: ['coding', 'missing'] });
  const empty = routeFields({}, []); named(empty.root, 'route_mode').value = 'selected'; assert.throws(() => empty.read(), /at least one route/);
  named(empty.root, 'route_mode').value = 'none'; assert.deepEqual(empty.read(), { mode: 'none' });
+});
+
+test('assignment refuses to replace a team route policy changed by another administrator', async t => {
+ const f = page(t, async path => {
+  if (path === '/teams/engineering') return { ...team, route_access: { mode: 'selected', routes: ['other'] } };
+ });
+ await routes(f.p, 'coding');
+ button(f.root, 'Manage team assignments').dispatchEvent(new Event('click'));
+ const choice = named(f.root, 'assignment_team');
+ choice.value = 'engineering';
+ await submit(find(f.root, node => node.tag === 'form' && node.contains(choice)));
+ named(f.root, 'route_mode').value = 'none';
+ await submit(find(f.root, node => node.tag === 'form' && node.contains(named(f.root, 'route_mode'))));
+ assert.match(f.root.textContent, /An edited field changed on the server/);
+ assert.equal(button(f.root, 'Save route access').disabled, true);
+ assert.equal(f.calls.some(call => call.method === 'PATCH'), false);
 });
 
 test('a preview from another route version cannot display stale destination labels', async t => {

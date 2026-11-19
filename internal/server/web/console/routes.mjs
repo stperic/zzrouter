@@ -2,12 +2,14 @@ import { Lifetime } from './api.mjs';
 import { el, text, button, leaveButton, actions, message, card, heading, field, input, select, facts, problem, date, selectableRow, markSelection } from './dom.mjs';
 import { details } from './details.mjs';
 import { routeForm } from './route-form.mjs';
+import { accessForm } from './access-form.mjs';
 import { providerCategory } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
 import { routeReason } from './diagnostics.mjs';
 
 const endpoint = name => `/model-groups/${encodeURIComponent(name)}`;
 const assignedTeams = (teams, name) => teams.filter(team => team.route_access?.mode === 'selected' && team.route_access.routes?.includes(name));
+const description = 'Create named routes and manage team access.';
 
 export function routeStatus(state) {
   const replicas = state?.replicas;
@@ -24,7 +26,7 @@ function healthLabel(label, tone) {
 }
 
 export async function routes(p, selected, mode) {
-  p.root.append(heading('Routes', 'Define destinations once. Assign routes and budgets through teams.'), message('Loading routes…'));
+  p.root.append(heading('Routes', description), message('Loading routes…'));
   let [records, teams] = await Promise.all(['/model-groups', '/teams'].map(path => p.api.list(path, { signal: p.scope.signal })));
   const readChoices = () => Promise.allSettled(['/providers/catalog?kind=all', '/models', '/nodes'].map(path => p.api.list(path, { signal: p.scope.signal })));
   let choices = await readChoices();
@@ -67,16 +69,54 @@ export async function routes(p, selected, mode) {
         editor.root.querySelector?.('input')?.focus({ preventScroll: true });
         p.syncActivity();
       };
-      const show = () => {
+      const editTeam = target => {
+        const editor = owner.panel.view(target ? 'Edit team route access' : 'Create team for route');
+        const saved = target ? 'Team route access saved.' : 'Team created.';
+        const assignment = accessForm({ ...editor, closeEditor: () => show(true) }, 'teams', target,
+          { catalog, models, groups: records, route: record.name, catalogUnavailable: choices[0].status === 'rejected', modelsUnavailable: choices[1].status === 'rejected' },
+          teamID => reload(id, false, teamID ? saved : undefined));
+        editor.root.append(assignment.root);
+        assignment.focus();
+        p.syncActivity();
+      };
+      const chooseTeam = () => {
+        const picker = owner.panel.view('Assign route to team');
+        const shared = teams.filter(team => team.kind === 'shared');
+        const cancel = leaveButton('Cancel', () => show(true), p.api);
+        picker.root.append(el('h2', {}, record.name));
+        if (!shared.length) {
+          const create = leaveButton('Create team', () => editTeam(null), p.api, 'primary');
+          picker.root.append(message('Create a shared team to assign this route.'), actions(create, cancel));
+          create.focus();
+          return;
+        }
+        const team = select('assignment_team', [['', 'Choose a team…'], ...shared.map(team => [
+          team.id, `${team.name}${assigned.includes(team) ? ' (assigned)' : ''}${team.suspended ? ' (suspended)' : ''}`,
+        ])], '');
+        team.required = true;
+        const form = el('form', { class: 'entity-editor' }, field('Shared team', team),
+          actions(el('button', { type: 'submit', class: 'primary', 'data-leave-view': true }, 'Continue'), cancel));
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          if (!picker.current() || !p.api.canLeave() || !form.reportValidity()) return;
+          const target = shared.find(item => item.id === team.value);
+          if (target) editTeam(target);
+        });
+        picker.root.append(form);
+        team.focus();
+      };
+      const show = (focusAssignment = false) => {
         const reader = owner.panel.view('Route details');
+        const assign = leaveButton(assigned.length ? 'Manage team assignments' : 'Assign to team', chooseTeam, p.api);
         reader.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, record.name), actions(leaveButton('Try in Chat', () => p.go('chat', record.name), p.api), leaveButton('Edit', edit, p.api, 'primary'))),
           notice ? message(notice) : '', text(record.description || 'No description', 'muted'),
           facts([['Selection', { priority: 'Priority order', 'least-load': 'Least loaded', fastest: 'Fastest observed' }[record.strategy] || record.strategy], ['Management', record.auto_managed ? 'Automatic' : record.auto_owner ? 'Claimed automatic route' : 'Manual'], ['Expires', date(record.expires_at)]]),
-          el('section', { class: 'access-section' }, el('h3', {}, 'Destinations'), destinations(record)),
           el('section', { class: 'access-section' }, el('h3', {}, `Assigned teams (${assigned.length})`),
-            assigned.length ? actions(assigned.map(team => leaveButton(team.name, () => p.go('access', `teams/${team.id}`), p.api, 'link'))) : text('No explicit assignments. Teams allowing direct models and routes may still use this route.', 'muted'),
-            leaveButton('Manage team assignments', () => p.go('access', 'teams'), p.api, 'link')),
+            assigned.length ? actions(assigned.map(team => leaveButton(team.name, () => p.go('access', `teams/${team.id}`), p.api, 'link'))) : text('Teams with direct model and route access may already use this route.', 'muted'),
+            assign),
+          el('section', { class: 'access-section' }, el('h3', {}, 'Destinations'), destinations(record)),
           routePreview(reader, record, teams, assigned, etag).root);
+        if (focusAssignment) assign.focus();
       };
       if (record) show(); else edit();
       return true;
@@ -134,7 +174,7 @@ export async function routes(p, selected, mode) {
   search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { if (p.current()) { page = 0; render(); } }, 150); });
   p.scope.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
   listing.append(card('Your routes', search, results));
-  p.root.replaceChildren(heading('Routes', 'Define destinations once. Assign routes and budgets through teams.',
+  p.root.replaceChildren(heading('Routes', description,
     leaveButton('Refresh', refresh, p.api), leaveButton('+ Create route', () => p.go('routes', undefined, 'create'), p.api, 'primary')), workspace);
   p.handleSelection?.(selectRoute);
   render(); await selectRoute(selected, mode);

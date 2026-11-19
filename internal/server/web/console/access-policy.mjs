@@ -100,10 +100,12 @@ export function routePolicy(record) {
   return policy?.mode === 'selected' ? { mode: 'selected', routes: [...(policy.routes || [])].sort() } : { mode: policy?.mode || 'direct' };
 }
 
-export function routeFields(record, groups, unavailable = false) {
+export function routeFields(record, groups, unavailable = false, routeName) {
   const policy = routePolicy(record);
   const chosen = new Set(policy.routes || []);
-  const mode = select('route_mode', [['direct', 'Direct models & routes'], ['selected', 'Assigned routes only'], ['none', 'No inference']], policy.mode);
+  if (routeName) chosen.add(routeName);
+  const modes = [['direct', 'Direct models & routes'], ['selected', 'Assigned routes only'], ['none', 'No inference']];
+  const mode = select('route_mode', modes, routeName ? 'selected' : policy.mode);
   const search = input('assigned_route_search', '', { type: 'search', placeholder: 'Search routes', 'aria-label': 'Search assigned routes' });
   const options = el('div', { class: 'model-options' });
   const names = [...new Set([...groups.map(group => group.name), ...chosen])].sort();
@@ -123,8 +125,10 @@ export function routeFields(record, groups, unavailable = false) {
   mode.addEventListener('change', update); search.addEventListener('input', render); render(); update();
   return {
     control: mode,
-    root: el('section', { class: 'access-section' }, el('h3', {}, 'Route access'), field('Clients may use', mode),
-      text('Assigned routes only blocks direct model requests and node pins. Provider permissions, model limits and budgets below still apply to every destination.', 'muted'),
+    root: el('section', { class: 'access-section' }, el('h3', {}, 'Route access'),
+      routeName && record ? text(`Current access: ${modes.find(([key]) => key === policy.mode)?.[1] || 'Unavailable'}. Changes apply to every key on this team.`, 'muted') : null,
+      field('Clients may use', mode),
+      text('Assigned routes only blocks direct model requests and node pins. The team’s provider permissions, model limits and budgets still apply to every destination.', 'muted'),
       unavailable ? message('Route catalog unavailable. Saved assignments are retained.', 'warning') : null, choices),
     read: () => {
       if (mode.value === 'selected' && !chosen.size) throw invalidField('Select at least one route, or choose No inference.', mode);
