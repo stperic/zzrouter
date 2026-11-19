@@ -106,7 +106,7 @@ func requireArchiveRefusal(t *testing.T, err error, reason sqlstore.Reason) {
 	var refusal *sqlstore.Refusal
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, reason, refusal.Reason)
-	require.Contains(t, err.Error(), "the archive's access database image is refused: "+string(reason)+".")
+	require.Contains(t, err.Error(), "the archive's access database image is refused: "+refusal.Summary()+".")
 	require.NotContains(t, err.Error(), refusal.NextAction(), "the live store's next action")
 	require.NotContains(t, err.Error(), "remove the access directory")
 }
@@ -167,6 +167,7 @@ func TestRecoveryProfileRefusals(t *testing.T) {
 		"a corrupt image, digests recomputed": {map[string][]byte{imageName: corrupt(t)}, database, sqlstore.IntegrityFailed},
 		"an image in WAL mode":                {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "PRAGMA journal_mode = WAL"))}, database, sqlstore.Unreadable},
 		"an image with an added trigger":      {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "CREATE TRIGGER planted AFTER INSERT ON teams BEGIN SELECT 1; END"))}, database, sqlstore.IntegrityFailed},
+		"an image after ANALYZE":              {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "ANALYZE"))}, database, sqlstore.IntegrityFailed},
 		"an image a newer release wrote":      {map[string][]byte{imageName: readBytes(t, alterImage(t, image, "PRAGMA user_version = 99"))}, database, sqlstore.SchemaNewer},
 	} {
 		t.Run(name, func(t *testing.T) {
