@@ -293,6 +293,17 @@ copy an operator takes elsewhere holds the same credential hashes outside
 retention: protect it as the installation bundle is protected. An older backup restored later can bring back
 access revoked since.
 
+A reset of the access records (`zzrouter access state reset`) answers only the
+local operator's proof on the coordinator's host; no API key, session or MCP
+tool reaches it. It requires a retained online backup, inside its
+`protected_until`, that holds the current revision, checked again inside the
+transaction, so the backup that can undo it matches what the operator
+previewed. In one transaction it removes every app key, every team but the
+owner's, every person but the owner and every grant, gives the owner a new
+credential revision so their sessions and delegated grants stop resolving, and
+records `store.reset`; the access history is never removed. Removed keys stop
+authenticating at once.
+
 Offline recovery shares an installation lock with node startup. Restore only
 stages into a new directory, and never activates state across multiple filesystems.
 It prepares the staged access database image so that sessions, delegated tokens

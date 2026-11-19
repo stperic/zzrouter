@@ -53,12 +53,15 @@ type stmt struct {
 
 func (w *writes) exec(query string, args ...any) { w.stmts = append(w.stmts, stmt{query, args}) }
 
-// tx is one commit being built: the records it changes, the events it
-// records, in order, and a new generation when it replaces the content.
+// tx is one commit being built from the published meta: the records it
+// changes, the events it records, in order, a new generation when it replaces
+// the content, and where to report the meta it commits, for an operation that does.
 type tx struct {
 	records
+	meta       Meta
 	events     []audit.Event
 	generation string
+	committed  *Meta
 }
 
 // record adds ev to the commit; a zero event records nothing.
@@ -105,7 +108,7 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 		return nil, s.refusal
 	}
 	prev := s.pub.Load()
-	t := &tx{records: prev.records}
+	t := &tx{records: prev.records, meta: prev.meta}
 	if p&keyRecords != 0 {
 		t.keys = maps.Clone(t.keys)
 	}
@@ -133,6 +136,9 @@ func (s *Store) commit(ctx context.Context, p part, apply func(*tx) error) (func
 	if t.generation != "" {
 		m.Generation = t.generation
 		w.exec(updateMeta, m.Generation, "generation")
+	}
+	if t.committed != nil {
+		*t.committed = m
 	}
 	changed := len(w.stmts) > 0
 	if !changed && len(t.events) == 0 {

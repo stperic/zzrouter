@@ -229,3 +229,15 @@ func Restaged(r Records) Records {
 	}
 	return r
 }
+
+// Reset is a copy of r as an access reset leaves it: the owner alone, under a
+// new credential revision as RevokeSessions gives it, with no grant and no
+// onboarding progress. Without an owner nothing is left and setup stays open.
+func Reset(r Records) Records {
+	kept := Records{Initialized: r.Initialized, OwnerID: r.OwnerID, People: map[string]PersonRecord{}, Grants: map[string]GrantRecord{}}
+	if owner, ok := r.People[r.OwnerID]; ok {
+		owner.Revision, owner.UpdatedAt = randomValue(""), utils.NowUTC()
+		kept.People[r.OwnerID] = owner
+	}
+	return kept
+}

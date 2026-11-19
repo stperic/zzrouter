@@ -22,7 +22,7 @@ One embedded SQLite database lives in the coordinator's configuration directory 
 
 | Owner | Data |
 | --- | --- |
-| Access database | People and password hashes, the permanent owner initialization marker, teams and membership, app-key records and hashes, onboarding progress, access invitations and one-time grants, the audit history, schema metadata and maintenance receipts. Replaces `access/people.json`, `keys.yaml`, `teams.yaml` and `audit.jsonl`. |
+| Access database | People and password hashes, the permanent owner initialization marker, teams and membership, app-key records and hashes, onboarding progress, access invitations and one-time grants, the audit history and schema metadata. Replaces `access/people.json`, `keys.yaml`, `teams.yaml` and `audit.jsonl`. |
 | Installation and coordinator files | `node.yaml`, provider definitions and assets, routes (`model_groups.yaml`), spend (`spend.json`), `pricing_overrides.yaml`, OAuth authority state (`oauth.json`), encrypted provider connections (`credentials.enc`), cluster trust and the store marker. Preserve existing owners and API contracts. The handoff section says which of these travel. |
 | Node-local state | Hardware and runtime paths, installed providers, model caches and weights, run state, and local node identity. Resolve these at the destination. |
 
@@ -57,7 +57,7 @@ The risk is the driver, not SQLite. `modernc.org/sqlite` is a machine translatio
   - the **schema version** (in the header, as above);
   - a **revision** that advances when people, teams, keys or invitations change. It is what a backup must match before a reset. Console-entry codes (issue, exchange, consume), onboarding milestones and audit rows for maintenance and file-backed events do not advance it, so a console sign-in, a served request or a new backup leaves a reset preview eligible;
   - a **sequence** that advances on every commit that changes stored content, including an audit row written on its own. A schema migration changes no content and does not advance it. It orders commits within a generation and identifies the state a backup holds;
-  - a **generation**, equal to the store ID at creation and replaced by a random value whenever a staged restore replaces the database's content. The new value is written into the staged image before that image is published, never afterwards. Revision and sequence are comparable only within one generation, because a restore moves them backwards. Status, backup manifests, confirmation tokens and receipts carry the generation.
+  - a **generation**, equal to the store ID at creation and replaced by a random value whenever a staged restore replaces the database's content. The new value is written into the staged image before that image is published, never afterwards. Revision and sequence are comparable only within one generation, because a restore moves them backwards. Status and backup manifests carry the generation.
 - A staged restore invalidates earlier sessions and delegated tokens through the version comparisons that exist today, with no change to a stored format (`control.CredentialReference` has no generation field, and references are persisted in `oauth.json` and in grant issuers):
   - *People.* Staging gives every person a new credential revision, the mechanism `RevokeSessions` uses. A person's version is that revision, and code outside the access core compares it (grant issuers, the compare-and-swap in password change and session revocation), so nothing may be mixed into it.
   - *App keys.* The generation is part of `virtualVersion`, so every app-key reference issued before a restore stops resolving.
@@ -156,13 +156,13 @@ Paths below are relative to `/zzrouter/v1/system/state`. Use the existing succes
 
 | Method and path | Result | Authorization |
 | --- | --- | --- |
-| `GET /` | `200` with store status, version, size and last reset receipt | Coordinator admin |
+| `GET /` | `200` with store status, version and size | Coordinator admin |
 | `GET /backups` | `200` with the retained backup metadata | Coordinator admin |
 | `POST /backups` | `201` with the new backup's metadata | Coordinator admin, `Idempotency-Key` |
 | `GET /backups/{id}` | `200` with backup metadata, checksum and expiry | Coordinator admin |
 | `GET /backups/{id}/content` | `200` with the verified archive as a streamed attachment | Local installation proof |
-| `POST /reset/preview` | `200` with exact impact and a confirmation token | Local installation proof |
-| `POST /reset` | `200` with the committed receipt | Local installation proof, confirmation token, `Idempotency-Key` |
+| `POST /reset/preview` | `200` with exact impact | Local installation proof |
+| `POST /reset` | `200` with what the reset committed | Local installation proof |
 
 Backup and reset are synchronous. This database holds access records and administrative audit only, so both are short bounded operations and neither needs a job. Remote console users can inspect status and create backups. The Recovery page displays the local retrieval and reset commands.
 
@@ -174,11 +174,11 @@ Local proof reuses the owner-recovery transport (`people.LocalRecovery`, `handle
 - On these routes the proof travels in a dedicated request header (proposed: `X-Zzrouter-Local-Proof`), never in a URL or the body. MCP dispatch forwards a fixed set of headers (the caller's key headers and a few transport ones), so this header cannot arrive through a tool. The proof changes with every daemon lifetime, so a proof in the body would make the same request hash differently after a restart and defeat replay. The owner-recovery route keeps its body field.
 - A proof middleware runs ahead of `s.idempotent` and sets a local-operator principal. The idempotency middleware skips requests without a principal today, so without this the routes would have no replay at all, and with it an unproven caller can never read a recorded reply. After admission retain only the authorized operation and the installation identity.
 - The commands are online local operations, so they live in the `zzrouter` client beside `access recover-owner` and reuse its proof-reading client. Proposed names: `zzrouter access state export` and `zzrouter access state reset`. `zzrouter-node recovery` stays offline and gains no command that talks to a running node.
-- Mark the three local-proof routes in the route catalog so `zz_api` cannot reach them. Exclude archive bytes, credentials, proofs and confirmation tokens from logs and captured API examples.
+- Mark the three local-proof routes in the route catalog so `zz_api` cannot reach them. Exclude archive bytes, credentials and proofs from logs and captured API examples.
 
 ### Status and size
 
-Return `store_id`, `generation`, `schema_version`, `revision`, `sequence`, `status`, `observed_at`, `size`, the retained copies and the last reset receipt when one exists. Status is `ready` or `setup_required`; a store in any other state stopped the node at startup. Report all sizes as integer bytes:
+Return `store_id`, `generation`, `schema_version`, `revision`, `sequence`, `status`, `observed_at`, `size`, and the retained copies. Status is `ready` or `setup_required`; a store in any other state stopped the node at startup. Report all sizes as integer bytes:
 
 | Field in `size` | Meaning |
 | --- | --- |
@@ -201,11 +201,11 @@ An online database backup can restore the access database. A coordinator move us
 
 Reset removes non-owner people, app keys, other teams, invitations, one-time grants and onboarding progress. Preserve the initialized marker, the protected owner and owner team, and the audit history. Keep the owner team's current policy and spend scope. Advance the owner's credential revision. An installation without an initialized owner remains eligible for normal setup.
 
-1. Create or select a checked online backup. `POST /reset/preview` takes `backup_id` and returns counts by affected record type, the preserved owner scope, and a short-lived opaque confirmation token that binds the store ID, generation, revision and backup ID. Require the backup to match that generation and revision. A mismatched or expired backup requires a fresh backup.
-2. `POST /reset` takes `backup_id` and `confirmation_token`. Look up the receipt first, by the idempotency key and body hash the middleware already computes, and answer a completed request from it before any token or revision check. Otherwise it is one transaction under the writer gate: recheck installation ownership, the backup, generation, revision and confirmation; apply the reset; write the audit event; store a receipt with the operation ID, that key and body hash, old and new revisions and backup ID. A changed revision yields a conflict and requires a fresh preview. The local command runs backup, preview and reset in one flow, so this is rare.
+1. Create or select a checked online backup. `POST /reset/preview` takes `backup_id` and returns the store's identity and revision, counts by affected record type and the preserved owner scope. Require the backup to be within its protected window and to match the live store ID, generation and revision. A mismatched backup, or one past its protected window, requires a fresh backup.
+2. `POST /reset` takes `backup_id`. It is one transaction under the writer gate: recheck that the backup still exists within its protected window and that its store ID, generation and revision equal the live store's; apply the reset; write the audit event. That equality is the confirmation: the backup was taken before the preview, so nothing has changed since the operator saw it. A changed revision yields a conflict and requires a fresh backup and preview. The human confirmation is the command's prompt. The local command runs backup, preview and reset in one flow, so a conflict is rare.
 3. The commit notification invalidates the authentication cache, and sessions and delegated tokens of removed identities fail their live resolution against the new snapshot. Requests admitted before the commit finish under the identity they were admitted with, and their spend settles to the scopes they were admitted under; nothing is charged to another team.
 
-A crash before the commit changes nothing. After it, the receipt is in the database. The idempotency middleware replays the original `200` while the process lives; after a restart the receipt answers the same key and body with the same `200` instead of running again.
+A crash before the commit changes nothing. After it, the reset is in the audit history as one `store.reset` event. A reset cannot run twice: the commit moves the revision, so a repeated request no longer matches its backup and gets the revision conflict. The idempotency middleware still replays the original `200` for a repeated key while the process lives. No receipt is stored and no confirmation token is issued: an earlier version of this spec asked for both, and review showed the backup equality already gives what they were for.
 
 Reset removes records the way the API's own deletes do and adds no second rule. Deleting a key or a team purges its spend rows today (`OnKeyDeleted`, `OnTeamDeleted`); a reset's commit notification carries the removed IDs to the same subscriber. A settlement still in flight can write a row back afterwards, exactly as after a delete today. No route names a team or a key, so removing them cannot widen route policy. Keep related files and static installation credentials under their existing maintenance APIs. SQLite reuses freed pages, so a successful reset may leave file length unchanged. [SQLite space reclamation](https://www.sqlite.org/lang_vacuum.html)
 
@@ -217,7 +217,6 @@ Reset removes records the way the API's own deletes do and adds no second rule. 
 | Worker received coordinator maintenance request | `421`, existing coordinator-role problem |
 | Unknown or expired backup | `404 state_backup_not_found` |
 | Reset preview or backup revision changed | `409 state_revision_changed` |
-| Invalid, stale or expired confirmation | `409 state_reset_confirmation_invalid` |
 | The disk or the backup byte cap cannot hold a backup | `507 state_backup_capacity_exceeded` |
 
 Responses identify the next read or operator action without including filesystem contents or raw database errors. Add the codes to `docs/agent_error_codes.md`.
@@ -264,9 +263,9 @@ The operator owns the cross-machine fence. A rehearsal or backup never activates
 - A release whose store cannot open exits at startup with a closed reason, so the updater's existing `/health` probe rolls it back. A release that meets a newer schema stops with `schema_newer`.
 - A database that is missing stops the start with `missing`, with or without backups, because the store marker exists; it is never replaced by an empty store. A former coordinator archived as the planned move describes starts at owner setup if it is later made a coordinator again. `recovery inventory` reports the reason and the next action for every startup refusal.
 - A backup taken during concurrent access writes is one known revision and passes the check. Corruption, low disk space and interrupted writes never list a backup. Status reports the database, journal and retained backup sizes. An offline bundle taken after a hard kill contains every committed transaction.
-- After a database restore or a manual installation restore, a backup or confirmation token from the earlier generation cannot authorize a reset, and earlier sessions and delegated tokens of people and app keys do not resolve. Password change and session revocation still work after a restore. A crash at any point of an activation leaves a node that either starts on the complete new state or refuses to start.
+- After a database restore or a manual installation restore, a backup from the earlier generation cannot authorize a reset, and earlier sessions and delegated tokens of people and app keys do not resolve. Password change and session revocation still work after a restore. A crash at any point of an activation leaves a node that either starts on the complete new state or refuses to start.
 - An audit row written by a backup or an export is never dropped silently: any such write advances the sequence.
-- Public status and backup metadata contain no secrets or installation paths. Remote sessions, `zz_api` and stale confirmations cannot retrieve backup bytes or commit a reset. Reset invalidates affected access without losing the protected owner's recovery path. Status lists every retained copy that holds credentials.
+- Public status and backup metadata contain no secrets or installation paths. Remote sessions and `zz_api` cannot retrieve backup bytes or commit a reset, and a backup that no longer matches the live store cannot authorize one. Reset invalidates affected access without losing the protected owner's recovery path. Status lists every retained copy that holds credentials.
 - Restore to a distinct supported host, including an enrolled worker chosen as the destination. Activation refuses without the explicit confirmation that the source is stopped and isolated. Demonstrate a clean rollback before destination writes and a new handoff afterward.
 - Check Linux, macOS and Windows packaging, filesystem permissions and offline recovery. Rehearse with a real two-node cluster before declaring handoff supported.
 - The two state routes are gone and `/keys/reload` answers `410`. No env-backed key path remains. A slow reader of an audit page does not delay an access write.

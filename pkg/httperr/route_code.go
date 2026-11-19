@@ -96,4 +96,10 @@ const (
 	// CodeStateImageCheckFailed means a backup's copy of the access database
 	// failed its check; nothing was kept.
 	CodeStateImageCheckFailed RouteErrorCode = "state_image_check_failed"
+	// CodeStateRevisionChanged refuses a reset whose backup no longer holds
+	// the access records' current revision; nothing was reset.
+	CodeStateRevisionChanged RouteErrorCode = "state_revision_changed"
+	// CodeStateBackupUnprotected refuses a reset backed by a retained backup
+	// past its protected_until, which retention may remove; nothing was reset.
+	CodeStateBackupUnprotected RouteErrorCode = "state_backup_unprotected"
 )

@@ -65,16 +65,6 @@ table keys: CREATE TABLE keys (
   updated_by TEXT NOT NULL,
   metadata TEXT CHECK (metadata IS NULL OR json_type(metadata) = 'object')
 ) STRICT
-table maintenance_receipts: CREATE TABLE maintenance_receipts (
-  operation_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  principal TEXT NOT NULL,
-  idempotency_key TEXT NOT NULL,
-  body_sha256 TEXT NOT NULL CHECK (length(body_sha256) = 64),
-  created_at INTEGER NOT NULL,
-  result TEXT NOT NULL CHECK (json_type(result) = 'object'),
-  UNIQUE (kind, principal, idempotency_key)
-) STRICT
 table meta: CREATE TABLE meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -123,47 +113,46 @@ BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END
 trigger audit_no_update: CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END
 rows audit_events
-  seq=1 time=1795070045793956 action="enrollment.issued" actor="unknown" subject="grant_RlI7M1T04Jq-Huz3h6MxxzexS22MkoJHNMInWgGysr4" request_id="" metadata="{\"purpose\":\"setup\",\"role\":\"admin\",\"team_id\":\"workspace\"}"
-  seq=2 time=1795070045926053 action="person.created" actor="person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE" subject="person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE" request_id="" metadata="{\"grant_id\":\"grant_RlI7M1T04Jq-Huz3h6MxxzexS22MkoJHNMInWgGysr4\",\"purpose\":\"setup\",\"role\":\"admin\",\"team_id\":\"workspace\"}"
-  seq=3 time=1795070045967874 action="key.created" actor="unknown" subject="reader" request_id="" metadata="{\"created_personal\":false,\"team_id\":\"eng\",\"team_role\":\"member\"}"
-  seq=4 time=1795070045993501 action="team.created" actor="unknown" subject="personal-solo" request_id="" metadata="{\"key_name\":\"Solo\",\"kind\":\"personal\"}"
-  seq=5 time=1795070045993511 action="key.created" actor="unknown" subject="solo" request_id="" metadata="{\"created_personal\":true,\"team_id\":\"personal-solo\",\"team_role\":\"owner\"}"
-  seq=6 time=1795070046005453 action="enrollment.issued" actor="unknown" subject="grant_7kecBAMzNM0g-1hh9xMibvb9_Zf4JJZ9j5tEvUhE7R8" request_id="" metadata="{\"purpose\":\"invitation\",\"role\":\"user\",\"team_id\":\"eng\"}"
-  seq=7 time=1795070046112412 action="person.created" actor="person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE" subject="person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE" request_id="" metadata="{\"grant_id\":\"grant_7kecBAMzNM0g-1hh9xMibvb9_Zf4JJZ9j5tEvUhE7R8\",\"purpose\":\"invitation\",\"role\":\"user\",\"team_id\":\"eng\"}"
-  seq=8 time=1795070046124700 action="person.updated" actor="unknown" subject="person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE" request_id="" metadata="{\"authority_invalidated\":true,\"name_changed\":false,\"role\":\"user\",\"suspended\":true,\"team_id\":\"eng\"}"
-  seq=9 time=1795070046136006 action="enrollment.issued" actor="unknown" subject="grant__oAKW0j_3j9MhMuIQRxjpIgA1ypGJqdExCKBOD3EmGE" request_id="" metadata="{\"purpose\":\"invitation\",\"role\":\"admin\",\"team_id\":\"eng\"}"
-  seq=10 time=1795070046158681 action="enrollment.issued" actor="unknown" subject="grant_Q-w4d0w3PH3DYdGaZtrk3nfHgGW8T9Z61-WocEiUFZU" request_id="" metadata="{\"purpose\":\"recovery\",\"role\":\"\",\"team_id\":\"eng\"}"
+  seq=1 time=1795111476968607 action="enrollment.issued" actor="unknown" subject="grant_TZpq9qDwuIeh8n6-nFq6K5SzL9oOhJ83Sn2C1eAKgZQ" request_id="" metadata="{\"purpose\":\"setup\",\"role\":\"admin\",\"team_id\":\"workspace\"}"
+  seq=2 time=1795111477098363 action="person.created" actor="person:person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI" subject="person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI" request_id="" metadata="{\"grant_id\":\"grant_TZpq9qDwuIeh8n6-nFq6K5SzL9oOhJ83Sn2C1eAKgZQ\",\"purpose\":\"setup\",\"role\":\"admin\",\"team_id\":\"workspace\"}"
+  seq=3 time=1795111477140210 action="key.created" actor="unknown" subject="reader" request_id="" metadata="{\"created_personal\":false,\"team_id\":\"eng\",\"team_role\":\"member\"}"
+  seq=4 time=1795111477167784 action="team.created" actor="unknown" subject="personal-solo" request_id="" metadata="{\"key_name\":\"Solo\",\"kind\":\"personal\"}"
+  seq=5 time=1795111477167798 action="key.created" actor="unknown" subject="solo" request_id="" metadata="{\"created_personal\":true,\"team_id\":\"personal-solo\",\"team_role\":\"owner\"}"
+  seq=6 time=1795111477178779 action="enrollment.issued" actor="unknown" subject="grant_YPzKCGHqz2mYeS-H6MkZhcGMkpztkdtGpRD7v3vKEqw" request_id="" metadata="{\"purpose\":\"invitation\",\"role\":\"user\",\"team_id\":\"eng\"}"
+  seq=7 time=1795111477289059 action="person.created" actor="person:person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo" subject="person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo" request_id="" metadata="{\"grant_id\":\"grant_YPzKCGHqz2mYeS-H6MkZhcGMkpztkdtGpRD7v3vKEqw\",\"purpose\":\"invitation\",\"role\":\"user\",\"team_id\":\"eng\"}"
+  seq=8 time=1795111477301758 action="person.updated" actor="unknown" subject="person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo" request_id="" metadata="{\"authority_invalidated\":true,\"name_changed\":false,\"role\":\"user\",\"suspended\":true,\"team_id\":\"eng\"}"
+  seq=9 time=1795111477311767 action="enrollment.issued" actor="unknown" subject="grant_Z6h6ELKG9vG0NuV_gKiO_jrLRtSwpn4u-PIopKa9E_k" request_id="" metadata="{\"purpose\":\"invitation\",\"role\":\"admin\",\"team_id\":\"eng\"}"
+  seq=10 time=1795111477333739 action="enrollment.issued" actor="unknown" subject="grant_Y5U_OgfoYYYtmbF3t07FEka6gMO8ZsjAxWacQpVJ1PA" request_id="" metadata="{\"purpose\":\"recovery\",\"role\":\"\",\"team_id\":\"eng\"}"
 rows grants
-  token_hash="414a2b6e507b3f4cbc33b5b4a4493ef7b198b4410df7355a390bcf94dfdae343" id="grant__oAKW0j_3j9MhMuIQRxjpIgA1ypGJqdExCKBOD3EmGE" purpose="invitation" team_id="eng" role="admin" person_id="" created_at=1795070046135995 expires_at=1795156446135995 used_at=<nil> revoked_at=<nil> issuer_person_id="person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE" issuer_revision="itiwYWnQiZPk_7fitKPVmG_9xr5IFtvDthhwxCmZY3Q" issuer_reference="owner" browser_hash="904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
-  token_hash="9feb86b825a2754e28b5723f3ff9a87ae04cd39821a843b13fbef36d657ca260" id="grant_Q-w4d0w3PH3DYdGaZtrk3nfHgGW8T9Z61-WocEiUFZU" purpose="recovery" team_id="eng" role="" person_id="person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE" created_at=1795070046158670 expires_at=1795070646158670 used_at=<nil> revoked_at=<nil> issuer_person_id="" issuer_revision="" issuer_reference="installation" browser_hash=""
-  token_hash="c1059ece21a6067b1657ae2002dfc229a07e65fc9e4901dc93f0d5f2842324f9" id="grant_7kecBAMzNM0g-1hh9xMibvb9_Zf4JJZ9j5tEvUhE7R8" purpose="invitation" team_id="eng" role="user" person_id="" created_at=1795070046005437 expires_at=1795156446005437 used_at=1795070046112394 revoked_at=<nil> issuer_person_id="" issuer_revision="" issuer_reference="installation" browser_hash="904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+  token_hash="02379c6094aa767d5e34420980e87b099193194b316ff601a05a98e47336061c" id="grant_YPzKCGHqz2mYeS-H6MkZhcGMkpztkdtGpRD7v3vKEqw" purpose="invitation" team_id="eng" role="user" person_id="" created_at=1795111477178763 expires_at=1795197877178763 used_at=1795111477289038 revoked_at=<nil> issuer_person_id="" issuer_revision="" issuer_reference="installation" browser_hash="904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+  token_hash="7ee598752b57eaea8f0339245553ccf31bb4f9a71af8ca08c0054f792a464b2f" id="grant_Z6h6ELKG9vG0NuV_gKiO_jrLRtSwpn4u-PIopKa9E_k" purpose="invitation" team_id="eng" role="admin" person_id="" created_at=1795111477311750 expires_at=1795197877311750 used_at=<nil> revoked_at=<nil> issuer_person_id="person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI" issuer_revision="Y6Lbb3gvlHkLIe81G2nPzOPdTVXzZYSeHmIk_7ieuxs" issuer_reference="owner" browser_hash="904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+  token_hash="8449f5665574330e134bf0f4f49fa696ca652325f82708fd15788b0cb535ca29" id="grant_Y5U_OgfoYYYtmbF3t07FEka6gMO8ZsjAxWacQpVJ1PA" purpose="recovery" team_id="eng" role="" person_id="person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo" created_at=1795111477333708 expires_at=1795112077333708 used_at=<nil> revoked_at=<nil> issuer_person_id="" issuer_revision="" issuer_reference="installation" browser_hash=""
 rows installation
-  id=1 owner_id="person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE" step="model" dismissed=1 response_verified=1 app_connected=0 progress_updated_at=1795070046181798
+  id=1 owner_id="person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI" step="model" dismissed=1 response_verified=1 app_connected=0 progress_updated_at=1795111477356689
 rows keys
-  id="reader" uuid="95fef2c0-60e8-4419-b6a9-78fb58b78003" name="Reader" description="fixture key" hashed_key="$argon2id$v=19$m=65536,t=1,p=2$u84HRlIz+iArWHpYy3hZLA$/GBAiek2Bc04hbPgiUDR+3JiayS+mqN3X8CMMJPqTpU" team_id="eng" team_role="member" role="user" suspended=1 suspended_at=1875514150000000 suspended_by="suspender" rpm_limit=1 tpm_limit=2 max_parallel_requests=3 spend_limit=4.5 reset_period="daily" default_max_tokens=6 expires_at=1893553445678901 created_at=1795070045967852 updated_at=1795070045967852 last_seen_at=-62135596800000000 created_by="creator" updated_by="updater" metadata="{\"env\":\"fixture\"}"
-  id="solo" uuid="264a6b60-d6db-4ebc-a64f-076b2b4ba7e8" name="Solo" description="" hashed_key="$argon2id$v=19$m=65536,t=1,p=2$rCGvb6R3Z+6e4QS13A8RlQ$70v3yWxP5q+NoquD5FOUR/dSgzNxrE/1iugvhaDMCSc" team_id="personal-solo" team_role="owner" role="admin" suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 expires_at=<nil> created_at=1795070045993485 updated_at=1795070045993485 last_seen_at=-62135596800000000 created_by="solo creator" updated_by="" metadata=<nil>
-rows maintenance_receipts
+  id="reader" uuid="0e97f05b-1431-4a66-9c1c-71333dc0c5bd" name="Reader" description="fixture key" hashed_key="$argon2id$v=19$m=65536,t=1,p=2$9OQ0+DijAvgll2JuTzZADA$04nzXq/4L9Iu6Wh1SRCAaJBFeVbEtFSaa4nNmwohikY" team_id="eng" team_role="member" role="user" suspended=1 suspended_at=1875514150000000 suspended_by="suspender" rpm_limit=1 tpm_limit=2 max_parallel_requests=3 spend_limit=4.5 reset_period="daily" default_max_tokens=6 expires_at=1893553445678901 created_at=1795111477140183 updated_at=1795111477140183 last_seen_at=-62135596800000000 created_by="creator" updated_by="updater" metadata="{\"env\":\"fixture\"}"
+  id="solo" uuid="0738d9de-2219-4357-9d52-87906eef4e6d" name="Solo" description="" hashed_key="$argon2id$v=19$m=65536,t=1,p=2$f08I/6bxERn4T4h6+g3Csw$QzA3uKR+LsCoTFHD4g7JBT9H3zUsFEd3HKBeqGUw9Uc" team_id="personal-solo" team_role="owner" role="admin" suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 expires_at=<nil> created_at=1795111477167762 updated_at=1795111477167762 last_seen_at=-62135596800000000 created_by="solo creator" updated_by="" metadata=<nil>
 rows meta
-  key="generation" value="3fd1a789-14ea-4666-8b3b-36e3c66a945f"
+  key="generation" value="4a40081f-bdfd-48a6-b758-069d04f8edb1"
   key="revision" value="12"
   key="sequence" value="16"
-  key="store_id" value="3fd1a789-14ea-4666-8b3b-36e3c66a945f"
+  key="store_id" value="4a40081f-bdfd-48a6-b758-069d04f8edb1"
 rows people
-  id="person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE" username="member" name="Member" role="user" team_id="eng" owner=0 suspended=1 revision="6zRH7dnvwe-PxSN_kpuUeSKXmA2syjUJ3-roGma4YYI" password_hash="$argon2id$v=19$m=65536,t=3,p=1$CZ1MmppowzQcHbKlOIZOGQ$Fy0HCfBE+NcAfgIg6pGJp/1OgplHrXcdRYYFnacsDcU" created_at=1795070046112395 updated_at=1795070046124691
-  id="person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE" username="owner" name="Owner" role="admin" team_id="workspace" owner=1 suspended=0 revision="itiwYWnQiZPk_7fitKPVmG_9xr5IFtvDthhwxCmZY3Q" password_hash="$argon2id$v=19$m=65536,t=3,p=1$zEasTHrMMSCUyHANGS1NrQ$d2TB5FekQfYCqUAlvXDh5MIS3y45OwT5of2jwzeFxgI" created_at=1795070045926030 updated_at=1795070045926030
+  id="person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo" username="member" name="Member" role="user" team_id="eng" owner=0 suspended=1 revision="0JGDJ2Ts1u00pOPm71VmGYOtJFTG9vN-tV992LQwDEI" password_hash="$argon2id$v=19$m=65536,t=3,p=1$apOca+bmTNmAv/9GYkoS3A$8WenM3Oo1Z7qDG1TxGZhHaJcs3zV81/ipF4d8zxZYj0" created_at=1795111477289038 updated_at=1795111477301747
+  id="person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI" username="owner" name="Owner" role="admin" team_id="workspace" owner=1 suspended=0 revision="Y6Lbb3gvlHkLIe81G2nPzOPdTVXzZYSeHmIk_7ieuxs" password_hash="$argon2id$v=19$m=65536,t=3,p=1$or1/LwOPaSo0TszVjviukw$bYmFjP1fWrtph8WsM7DdOxUJ2BZJbWx3kaXedhSoX1g" created_at=1795111477098343 updated_at=1795111477098343
 rows teams
-  id="eng" uuid="029c6603-f53b-4d89-a97f-f4bec3446c95" name="Engineering" kind="shared" allowed_models="[\"qwen\"]" route_access="{\"mode\":\"none\"}" provider_access="{\"mode\":\"selected\",\"providers\":[\"ollama\"]}" suspended=0 suspended_at=<nil> suspended_by="team suspender" rpm_limit=7 tpm_limit=2 max_parallel_requests=3 spend_limit=4.5 reset_period="weekly" default_max_tokens=6 created_at=1795070045938443 updated_at=1795070045938443 created_by="team creator" updated_by="team updater" metadata="{\"dept\":\"fixture\"}"
-  id="personal-solo" uuid="3daef35e-3b74-4275-ab49-397ccc7eec12" name="Personal: Solo" kind="personal" allowed_models=<nil> route_access=<nil> provider_access=<nil> suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 created_at=1795070045993485 updated_at=1795070045993485 created_by="solo creator" updated_by="solo creator" metadata=<nil>
-  id="workspace" uuid="84b6b4e4-d291-4ce8-b304-331b2a838a5e" name="Engineering" kind="shared" allowed_models=<nil> route_access=<nil> provider_access=<nil> suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 created_at=1795070045781396 updated_at=1795070045781396 created_by="" updated_by="" metadata=<nil>
+  id="eng" uuid="4f9b5049-282d-40b8-9d46-78857bf78bbb" name="Engineering" kind="shared" allowed_models="[\"qwen\"]" route_access="{\"mode\":\"none\"}" provider_access="{\"mode\":\"selected\",\"providers\":[\"ollama\"]}" suspended=0 suspended_at=<nil> suspended_by="team suspender" rpm_limit=7 tpm_limit=2 max_parallel_requests=3 spend_limit=4.5 reset_period="weekly" default_max_tokens=6 created_at=1795111477110626 updated_at=1795111477110626 created_by="team creator" updated_by="team updater" metadata="{\"dept\":\"fixture\"}"
+  id="personal-solo" uuid="1e1ffdaf-eee2-4708-8c57-7eefda9be8d4" name="Personal: Solo" kind="personal" allowed_models=<nil> route_access=<nil> provider_access=<nil> suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 created_at=1795111477167762 updated_at=1795111477167762 created_by="solo creator" updated_by="solo creator" metadata=<nil>
+  id="workspace" uuid="e009d13c-b030-41c0-9552-6f480a6f5cb0" name="Engineering" kind="shared" allowed_models=<nil> route_access=<nil> provider_access=<nil> suspended=0 suspended_at=<nil> suspended_by="" rpm_limit=0 tpm_limit=0 max_parallel_requests=0 spend_limit=0 reset_period="" default_max_tokens=0 created_at=1795111476955913 updated_at=1795111476955913 created_by="" updated_by="" metadata=<nil>
 decoded
 {
   "Keys": {
     "reader": {
-      "UUID": "95fef2c0-60e8-4419-b6a9-78fb58b78003",
+      "UUID": "0e97f05b-1431-4a66-9c1c-71333dc0c5bd",
       "ID": "reader",
       "Name": "Reader",
       "Description": "fixture key",
-      "HashedKey": "$argon2id$v=19$m=65536,t=1,p=2$u84HRlIz+iArWHpYy3hZLA$/GBAiek2Bc04hbPgiUDR+3JiayS+mqN3X8CMMJPqTpU",
+      "HashedKey": "$argon2id$v=19$m=65536,t=1,p=2$9OQ0+DijAvgll2JuTzZADA$04nzXq/4L9Iu6Wh1SRCAaJBFeVbEtFSaa4nNmwohikY",
       "TeamID": "eng",
       "TeamRole": "member",
       "Role": "user",
@@ -177,8 +166,8 @@ decoded
       "reset_period": "daily",
       "default_max_tokens": 6,
       "ExpiresAt": "2030-01-02T03:04:05.678901Z",
-      "CreatedAt": "2026-11-19T06:34:05.967852Z",
-      "UpdatedAt": "2026-11-19T06:34:05.967852Z",
+      "CreatedAt": "2026-11-19T18:04:37.140183Z",
+      "UpdatedAt": "2026-11-19T18:04:37.140183Z",
       "LastSeenAt": "0001-01-01T00:00:00Z",
       "CreatedBy": "creator",
       "UpdatedBy": "updater",
@@ -187,11 +176,11 @@ decoded
       }
     },
     "solo": {
-      "UUID": "264a6b60-d6db-4ebc-a64f-076b2b4ba7e8",
+      "UUID": "0738d9de-2219-4357-9d52-87906eef4e6d",
       "ID": "solo",
       "Name": "Solo",
       "Description": "",
-      "HashedKey": "$argon2id$v=19$m=65536,t=1,p=2$rCGvb6R3Z+6e4QS13A8RlQ$70v3yWxP5q+NoquD5FOUR/dSgzNxrE/1iugvhaDMCSc",
+      "HashedKey": "$argon2id$v=19$m=65536,t=1,p=2$f08I/6bxERn4T4h6+g3Csw$QzA3uKR+LsCoTFHD4g7JBT9H3zUsFEd3HKBeqGUw9Uc",
       "TeamID": "personal-solo",
       "TeamRole": "owner",
       "Role": "admin",
@@ -199,8 +188,8 @@ decoded
       "SuspendedAt": null,
       "SuspendedBy": "",
       "ExpiresAt": null,
-      "CreatedAt": "2026-11-19T06:34:05.993485Z",
-      "UpdatedAt": "2026-11-19T06:34:05.993485Z",
+      "CreatedAt": "2026-11-19T18:04:37.167762Z",
+      "UpdatedAt": "2026-11-19T18:04:37.167762Z",
       "LastSeenAt": "0001-01-01T00:00:00Z",
       "CreatedBy": "solo creator",
       "UpdatedBy": "",
@@ -209,7 +198,7 @@ decoded
   },
   "Teams": {
     "eng": {
-      "UUID": "029c6603-f53b-4d89-a97f-f4bec3446c95",
+      "UUID": "4f9b5049-282d-40b8-9d46-78857bf78bbb",
       "ID": "eng",
       "Name": "Engineering",
       "Kind": "shared",
@@ -234,8 +223,8 @@ decoded
       "spend_limit": 4.5,
       "reset_period": "weekly",
       "default_max_tokens": 6,
-      "CreatedAt": "2026-11-19T06:34:05.938443Z",
-      "UpdatedAt": "2026-11-19T06:34:05.938443Z",
+      "CreatedAt": "2026-11-19T18:04:37.110626Z",
+      "UpdatedAt": "2026-11-19T18:04:37.110626Z",
       "CreatedBy": "team creator",
       "UpdatedBy": "team updater",
       "Metadata": {
@@ -243,7 +232,7 @@ decoded
       }
     },
     "personal-solo": {
-      "UUID": "3daef35e-3b74-4275-ab49-397ccc7eec12",
+      "UUID": "1e1ffdaf-eee2-4708-8c57-7eefda9be8d4",
       "ID": "personal-solo",
       "Name": "Personal: Solo",
       "Kind": "personal",
@@ -257,14 +246,14 @@ decoded
       "Suspended": false,
       "SuspendedAt": null,
       "SuspendedBy": "",
-      "CreatedAt": "2026-11-19T06:34:05.993485Z",
-      "UpdatedAt": "2026-11-19T06:34:05.993485Z",
+      "CreatedAt": "2026-11-19T18:04:37.167762Z",
+      "UpdatedAt": "2026-11-19T18:04:37.167762Z",
       "CreatedBy": "solo creator",
       "UpdatedBy": "solo creator",
       "Metadata": null
     },
     "workspace": {
-      "UUID": "84b6b4e4-d291-4ce8-b304-331b2a838a5e",
+      "UUID": "e009d13c-b030-41c0-9552-6f480a6f5cb0",
       "ID": "workspace",
       "Name": "Engineering",
       "Kind": "shared",
@@ -278,8 +267,8 @@ decoded
       "Suspended": false,
       "SuspendedAt": null,
       "SuspendedBy": "",
-      "CreatedAt": "2026-11-19T06:34:05.781396Z",
-      "UpdatedAt": "2026-11-19T06:34:05.781396Z",
+      "CreatedAt": "2026-11-19T18:04:36.955913Z",
+      "UpdatedAt": "2026-11-19T18:04:36.955913Z",
       "CreatedBy": "",
       "UpdatedBy": "",
       "Metadata": null
@@ -287,58 +276,74 @@ decoded
   },
   "People": {
     "Initialized": true,
-    "OwnerID": "person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE",
+    "OwnerID": "person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI",
     "People": {
-      "person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE": {
-        "id": "person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE",
+      "person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo": {
+        "id": "person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo",
         "username": "member",
         "name": "Member",
         "role": "user",
         "team_id": "eng",
         "owner": false,
         "suspended": true,
-        "revision": "6zRH7dnvwe-PxSN_kpuUeSKXmA2syjUJ3-roGma4YYI",
-        "created_at": "2026-11-19T06:34:06.112395Z",
-        "updated_at": "2026-11-19T06:34:06.124691Z",
-        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$CZ1MmppowzQcHbKlOIZOGQ$Fy0HCfBE+NcAfgIg6pGJp/1OgplHrXcdRYYFnacsDcU"
+        "revision": "0JGDJ2Ts1u00pOPm71VmGYOtJFTG9vN-tV992LQwDEI",
+        "created_at": "2026-11-19T18:04:37.289038Z",
+        "updated_at": "2026-11-19T18:04:37.301747Z",
+        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$apOca+bmTNmAv/9GYkoS3A$8WenM3Oo1Z7qDG1TxGZhHaJcs3zV81/ipF4d8zxZYj0"
       },
-      "person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE": {
-        "id": "person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE",
+      "person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI": {
+        "id": "person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI",
         "username": "owner",
         "name": "Owner",
         "role": "admin",
         "team_id": "workspace",
         "owner": true,
         "suspended": false,
-        "revision": "itiwYWnQiZPk_7fitKPVmG_9xr5IFtvDthhwxCmZY3Q",
-        "created_at": "2026-11-19T06:34:05.92603Z",
-        "updated_at": "2026-11-19T06:34:05.92603Z",
-        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$zEasTHrMMSCUyHANGS1NrQ$d2TB5FekQfYCqUAlvXDh5MIS3y45OwT5of2jwzeFxgI"
+        "revision": "Y6Lbb3gvlHkLIe81G2nPzOPdTVXzZYSeHmIk_7ieuxs",
+        "created_at": "2026-11-19T18:04:37.098343Z",
+        "updated_at": "2026-11-19T18:04:37.098343Z",
+        "PasswordHash": "$argon2id$v=19$m=65536,t=3,p=1$or1/LwOPaSo0TszVjviukw$bYmFjP1fWrtph8WsM7DdOxUJ2BZJbWx3kaXedhSoX1g"
       }
     },
     "Grants": {
-      "414a2b6e507b3f4cbc33b5b4a4493ef7b198b4410df7355a390bcf94dfdae343": {
-        "id": "grant__oAKW0j_3j9MhMuIQRxjpIgA1ypGJqdExCKBOD3EmGE",
+      "02379c6094aa767d5e34420980e87b099193194b316ff601a05a98e47336061c": {
+        "id": "grant_YPzKCGHqz2mYeS-H6MkZhcGMkpztkdtGpRD7v3vKEqw",
+        "purpose": "invitation",
+        "team_id": "eng",
+        "role": "user",
+        "created_at": "2026-11-19T18:04:37.178763Z",
+        "expires_at": "2026-11-20T18:04:37.178763Z",
+        "used_at": "2026-11-19T18:04:37.289038Z",
+        "status": "",
+        "Issuer": {
+          "PersonID": "",
+          "Revision": "",
+          "Reference": "installation"
+        },
+        "BrowserHash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
+      },
+      "7ee598752b57eaea8f0339245553ccf31bb4f9a71af8ca08c0054f792a464b2f": {
+        "id": "grant_Z6h6ELKG9vG0NuV_gKiO_jrLRtSwpn4u-PIopKa9E_k",
         "purpose": "invitation",
         "team_id": "eng",
         "role": "admin",
-        "created_at": "2026-11-19T06:34:06.135995Z",
-        "expires_at": "2026-11-20T06:34:06.135995Z",
+        "created_at": "2026-11-19T18:04:37.31175Z",
+        "expires_at": "2026-11-20T18:04:37.31175Z",
         "status": "",
         "Issuer": {
-          "PersonID": "person_LssPnsVTfgeQR_BlcrNJhdJnvHmOTxky6-g-q4a2AXE",
-          "Revision": "itiwYWnQiZPk_7fitKPVmG_9xr5IFtvDthhwxCmZY3Q",
+          "PersonID": "person_YNuXeMqzAY4-LiPmT38ZVpuPCQ6BiJ3sc2HZCkoyLVI",
+          "Revision": "Y6Lbb3gvlHkLIe81G2nPzOPdTVXzZYSeHmIk_7ieuxs",
           "Reference": "owner"
         },
         "BrowserHash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
       },
-      "9feb86b825a2754e28b5723f3ff9a87ae04cd39821a843b13fbef36d657ca260": {
-        "id": "grant_Q-w4d0w3PH3DYdGaZtrk3nfHgGW8T9Z61-WocEiUFZU",
+      "8449f5665574330e134bf0f4f49fa696ca652325f82708fd15788b0cb535ca29": {
+        "id": "grant_Y5U_OgfoYYYtmbF3t07FEka6gMO8ZsjAxWacQpVJ1PA",
         "purpose": "recovery",
         "team_id": "eng",
-        "person_id": "person_FHA53unm_5Q_iD1hPTlEqXPLPuBxL22PmfsaecTnNjE",
-        "created_at": "2026-11-19T06:34:06.15867Z",
-        "expires_at": "2026-11-19T06:44:06.15867Z",
+        "person_id": "person_IDgKcVLyBlNJagJ_InE4dYMS-qo7GOLyHlKmglhwvYo",
+        "created_at": "2026-11-19T18:04:37.333708Z",
+        "expires_at": "2026-11-19T18:14:37.333708Z",
         "status": "",
         "Issuer": {
           "PersonID": "",
@@ -346,22 +351,6 @@ decoded
           "Reference": "installation"
         },
         "BrowserHash": ""
-      },
-      "c1059ece21a6067b1657ae2002dfc229a07e65fc9e4901dc93f0d5f2842324f9": {
-        "id": "grant_7kecBAMzNM0g-1hh9xMibvb9_Zf4JJZ9j5tEvUhE7R8",
-        "purpose": "invitation",
-        "team_id": "eng",
-        "role": "user",
-        "created_at": "2026-11-19T06:34:06.005437Z",
-        "expires_at": "2026-11-20T06:34:06.005437Z",
-        "used_at": "2026-11-19T06:34:06.112394Z",
-        "status": "",
-        "Issuer": {
-          "PersonID": "",
-          "Revision": "",
-          "Reference": "installation"
-        },
-        "BrowserHash": "904608c765f0396a7c39b34feb2cddf025b3cc61a7867e41a5caf5437af22851"
       }
     },
     "Progress": {
@@ -369,7 +358,7 @@ decoded
       "dismissed": true,
       "response_verified": true,
       "app_connected": false,
-      "updated_at": "2026-11-19T06:34:06.181798Z"
+      "updated_at": "2026-11-19T18:04:37.356689Z"
     }
   }
 }

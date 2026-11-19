@@ -41,5 +41,7 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeStateBackupNotFound":           "state_backup_not_found",
 		"CodeStateBackupCapacityExceeded":   "state_backup_capacity_exceeded",
 		"CodeStateImageCheckFailed":         "state_image_check_failed",
+		"CodeStateRevisionChanged":          "state_revision_changed",
+		"CodeStateBackupUnprotected":        "state_backup_unprotected",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }
