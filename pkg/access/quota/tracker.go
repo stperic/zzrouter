@@ -29,7 +29,7 @@ type SpendTracker struct {
 	path   string // spend.json
 
 	// saveMu orders saves, copy through rename, so the last copy is the file;
-	// taken before mu and never on the request path.
+	// taken before mu and never on the inference path.
 	saveMu sync.Mutex
 	write  func(path string, file *SpendFile) error // SaveSpend; tests delay it
 
