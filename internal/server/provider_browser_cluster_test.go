@@ -123,13 +123,9 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			})
 			workerURL := enrollTransportNode(t, owner, workerNode)
 			coordinator.cluster.listener = owner
-			if coordinator.cluster.coordinator != nil {
-				coordinator.cluster.coordinator.Stop()
-			}
 			cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coordinator"}, "http://coordinator.invalid", coordinator, nil, mesh.NewConnector(mesh.ConnectorConfig{ClusterPort: workerNode.Addr().(*net.TCPAddr).Port}))
 			require.NoError(t, err)
-			t.Cleanup(cluster.Stop)
-			coordinator.cluster.coordinator = cluster
+			useTestCluster(t, coordinator, cluster)
 			require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
 			coordinator.providerBrowser.gateway = g
 			t.Cleanup(func() {

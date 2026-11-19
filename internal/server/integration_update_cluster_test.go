@@ -278,7 +278,7 @@ func TestIntegrationUpdateRemoteWorkerOwnsSettingsAndRelease(t *testing.T) {
 	connector := mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: upstream.Client()})
 	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coord"}, "http://coord.invalid", coord, nil, connector)
 	require.NoError(t, err)
-	coord.cluster.coordinator = cluster
+	useTestCluster(t, coord, cluster)
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: upstream.URL, ClusterURL: upstream.URL, NodeName: "worker", Status: mesh.StatusUp}))
 	response := makeAuthRequest(t, coord, http.MethodPatch, "/zzrouter/v1/update/settings?node=worker", TestAdminKey, map[string]any{"enabled": true})
 	require.Equal(t, 200, response.Code, string(response.Body))

@@ -504,9 +504,7 @@ func linkOperationWorker(t *testing.T, coordinator, worker *Server) {
 	require.NoError(t, err)
 	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coordinator"}, "http://coordinator.invalid", coordinator, nil, mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client, ClusterPort: workerNode.Addr().(*net.TCPAddr).Port}))
 	require.NoError(t, err)
-	t.Cleanup(cluster.Stop)
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
-	coordinator.cluster.coordinator.Stop()
-	coordinator.cluster.coordinator = cluster
+	useTestCluster(t, coordinator, cluster)
 	coordinator.cluster.router = routing.NewClusterAwareRouterWithClient("coordinator", cluster.GetClient(), "0", coordinator.ServeLocalRequest, client)
 }

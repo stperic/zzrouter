@@ -175,7 +175,7 @@ func TestDeploymentHealthTarget_CarriesTheDeclaredCredential(t *testing.T) {
 
 	coord, err := mesh.NewCluster(&mesh.Config{}, "http://127.0.0.1:9090", nil, nil, nil)
 	require.NoError(t, err)
-	s.cluster.coordinator = coord
+	useTestCluster(t, s, coord)
 	require.NoError(t, s.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{Name: "worker-1", URL: "http://10.9.9.9:9090"}))
 	base, header = s.deploymentHealthTarget("ollama-nas", "worker-1")
 	assert.Equal(t, "http://10.9.9.9:9090", base)

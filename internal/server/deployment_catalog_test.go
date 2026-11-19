@@ -50,9 +50,6 @@ func (c deploymentCatalogClient) Broadcast(ctx context.Context, path string, par
 
 func catalogNoticeEngine(t *testing.T, reader, worker *Server) http.Handler {
 	t.Helper()
-	if reader.cluster.coordinator != nil {
-		reader.cluster.coordinator.Stop()
-	}
 	handler := testWorkerInternalHandler(t, worker)
 	client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 		rec := httptest.NewRecorder()
@@ -62,8 +59,7 @@ func catalogNoticeEngine(t *testing.T, reader, worker *Server) http.Handler {
 	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: reader.node.Name()}, "http://coord.invalid", reader, nil,
 		mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client, ClusterPort: 1}))
 	require.NoError(t, err)
-	reader.cluster.coordinator = cluster
-	t.Cleanup(cluster.Stop)
+	useTestCluster(t, reader, cluster)
 	require.NoError(t, reader.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: "http://127.0.0.1:1", NodeName: worker.node.Name(), Status: mesh.StatusUp}))
 	return peerCertHandler(workerCert(worker.node.Name()), buildTestCoordinatorEngine(reader))
 }
