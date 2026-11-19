@@ -60,7 +60,7 @@ func (s *Server) handleResetPreview(c *gin.Context) {
 	if !BindJSONStrict(c, &req) {
 		return
 	}
-	backup, err := s.backups.Get(req.BackupID)
+	backup, err := s.backups.Check(c.Request.Context(), req.BackupID)
 	preview, previewErr := s.stateStore.PreviewReset()
 	if err = cmp.Or(previewErr, backsReset(backup, err, preview.Meta)); err != nil {
 		RespondToError(c, err)
@@ -81,7 +81,7 @@ func (s *Server) handleReset(c *gin.Context) {
 	if !BindJSONStrict(c, &req) {
 		return
 	}
-	backup, backupErr := s.backups.Get(req.BackupID)
+	backup, backupErr := s.backups.Check(c.Request.Context(), req.BackupID)
 	result, err := s.stateStore.Reset(auditContext(c), req.BackupID, func(live sqlstore.Meta) error { return backsReset(backup, backupErr, live) })
 	if err != nil {
 		RespondToError(c, err)

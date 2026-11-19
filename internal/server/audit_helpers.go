@@ -22,13 +22,13 @@ func resolveActor(callerKeyID string) string {
 	return callerKeyID
 }
 
-// auditActor is the caller's principal as an audit actor, "unknown" when
+// auditActor is the caller's principal as an audit actor, audit.ActorUnknown when
 // anonymous. Controllers call it so services receive a resolved actor.
 func auditActor(c *gin.Context) string {
 	if principal := PrincipalFromContext(c); principal != "" {
 		return principal
 	}
-	return "unknown"
+	return audit.ActorUnknown
 }
 
 func auditContext(c *gin.Context) context.Context {

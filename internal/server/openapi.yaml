@@ -12954,6 +12954,13 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the backup's archive on disk failed its check or is not the one listed, so
+            nothing was previewed. The live access database is not involved: take a new backup and use that one.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: '`access_store_failed`: the store can no longer vouch for its records, so the coordinator is restarting.'
           content:
@@ -13033,6 +13040,13 @@ paths:
         '422':
           description: >
             The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: >-
+            `state_image_check_failed`: the backup's archive on disk failed its check or is not the one listed, so
+            nothing was reset. The live access database is not involved: take a new backup and use that one.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

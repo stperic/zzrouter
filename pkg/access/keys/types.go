@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -82,11 +83,14 @@ func (k *VirtualKey) IsExpired() bool {
 }
 
 // Validate holds the invariants every stored key keeps. An ID holds no ':',
-// which names callers that are not app keys ("static:admin", "person:<id>").
+// which names callers that are not app keys ("static:admin", "person:<id>"),
+// and is not audit.ActorUnknown.
 func (k *VirtualKey) Validate() error {
 	switch {
 	case strings.Contains(k.ID, ":"):
 		return fmt.Errorf("%w: id %q must not contain ':'", ErrInvalid, k.ID)
+	case k.ID == audit.ActorUnknown:
+		return fmt.Errorf("%w: id %q names unattributed audit events", ErrInvalid, k.ID)
 	case k.Name == "":
 		return fmt.Errorf("%w: missing name", ErrInvalid)
 	case k.HashedKey == "":
