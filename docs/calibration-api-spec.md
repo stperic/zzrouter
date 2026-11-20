@@ -573,7 +573,8 @@ with `usage_unavailable`.
    are not sized short. Prompts get
    `ceil((input_tokens − overhead) / ratio)` characters, with no
    engine-specific tokenizer. When the longer request does not report more
-   tokens, that run's steps are `inconclusive` with `usage_unavailable`.
+   tokens, that run's steps are `inconclusive` with `usage_unavailable`. All
+   runs warm up together under one deadline equal to the step timeout.
 3. **Run the steps.** In step k, every run whose `concurrency[k]` is non-zero
    runs at once. Each keeps `concurrency[k]` requests in flight until its
    requests for the step complete or the step times out. Every request has a
@@ -732,11 +733,11 @@ verified when every run active in it is verified.
 | `partial` | At least one step is verified, but not all. |
 | `failed` | No step is verified, and requests failed or every measured step queued (the target concurrency was never reached; reason `target_not_met`). |
 | `inconclusive` | No step is verified, no request failed, and a step was cut short. |
+| `cancelled` | A cancellation was requested. |
 
 A run step that both had a failed request and was cut short is `failed`: an
 error is a finding. For the same reason `failed` takes precedence over
 `inconclusive` overall.
-| `cancelled` | A cancellation was requested. |
 
 Every outcome except `verified` carries a `reason`: a `code`, a `message`, and
 a `next_action` with its own `code` and the `tool` to call.
