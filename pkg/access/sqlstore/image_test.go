@@ -562,8 +562,7 @@ func TestPrepareImageIsAtomic(t *testing.T) {
 	for i := range kills {
 		path, child, _ := start(t)
 		time.Sleep(rand.N(window))
-		require.NoError(t, child.Process.Kill())
-		_ = child.Wait()
+		kill(t, child)
 
 		img, snap, events := readImage(t, path)
 		revised, pending := f.changes(snap)

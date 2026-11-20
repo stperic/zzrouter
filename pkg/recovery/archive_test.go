@@ -164,7 +164,7 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, temp)
 	}
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	for _, path := range []string{output, keyOutput} {
 		entries, err := os.ReadDir(filepath.Dir(path))
@@ -237,12 +237,12 @@ func TestRecoveryRefusesLiveNodeAndInvalidAuthority(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
 	lock, err := config.LockInstallation(dir)
 	require.NoError(t, err)
-	_, err = Backup(t.Context(), dir, output, keyOutput)
+	_, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.ErrorContains(t, err, "installation is in use")
 	require.NoError(t, lock.Close())
 	_, err = os.Stat(output)
 	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = Backup(t.Context(), dir, output, keyOutput)
+	_, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	_, err = Check(t.Context(), output, "")
 	require.ErrorContains(t, err, "separate protection-key")
@@ -315,7 +315,7 @@ func TestRecoveryBackupCapturesExactlyTheCommittedState(t *testing.T) {
 	dbFile := filepath.Join(dir, "access", "access.sqlite")
 	committed := crashMidCommit(t, dbFile)
 
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	require.Equal(t, StoreMeta(committedMeta), *manifest.Store, "the image is at the committed sequence")
 	require.NoFileExists(t, dbFile+"-journal", "backup recovered the journal in place")
@@ -346,7 +346,7 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
 		require.NoError(t, os.WriteFile(path, []byte("not a raw source"), 0o600))
 	}
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	require.NotNil(t, manifest.Store)
 	require.True(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
@@ -360,7 +360,7 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), "PRAGMA user_version = 99")
 	require.NoError(t, errors.Join(err, db.Close()))
-	manifest, err = Backup(t.Context(), dir, output, keyOutput)
+	manifest, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	require.Equal(t, 99, manifest.Store.SchemaVersion)
 	live, err := os.ReadFile(filepath.Join(dir, "access", "access.sqlite"))
@@ -376,7 +376,7 @@ func TestRecoveryBackupCapturesTheAccessStore(t *testing.T) {
 	dir, output, keyOutput = recoveryFixture(t)
 	require.NoError(t, os.RemoveAll(filepath.Join(dir, "access")))
 	require.NoError(t, os.Remove(filepath.Join(dir, "access-store.json")))
-	manifest, err = Backup(t.Context(), dir, output, keyOutput)
+	manifest, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	require.Nil(t, manifest.Store)
 	require.False(t, slices.ContainsFunc(manifest.Files, func(file File) bool { return file.Name == imageName }))
@@ -445,7 +445,7 @@ func TestRecoveryBackupRefusalsWriteNothing(t *testing.T) {
 			dir, output, keyOutput := recoveryFixture(t)
 			temp := privateTemp(t)
 			damage(t, filepath.Join(dir, "access", "access.sqlite"))
-			_, err := Backup(t.Context(), dir, output, keyOutput)
+			_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 			var refusal *sqlstore.Refusal
 			require.ErrorAs(t, err, &refusal)
 			require.Equal(t, reason, refusal.Reason)
@@ -473,7 +473,7 @@ func TestRecoveryFailedBackupLeavesNoOutput(t *testing.T) {
 			dir, output, keyOutput := recoveryFixture(t)
 			kept := map[string]string{"archive": output, "key": keyOutput}[existing]
 			require.NoError(t, os.WriteFile(kept, []byte("an earlier backup"), 0o600))
-			_, err := Backup(t.Context(), dir, output, keyOutput)
+			_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 			require.ErrorIs(t, err, fs.ErrExist)
 			data, err := os.ReadFile(kept)
 			require.NoError(t, err)
@@ -495,7 +495,7 @@ func TestRecoveryFailedBackupLeavesNoOutput(t *testing.T) {
 // suffix, and check and restore refuse it as an archive or a key.
 func TestRecoveryRefusesLeftovers(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
-	_, err := Backup(t.Context(), dir, output, keyOutput)
+	_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	leftover := func(path string) string {
 		copied := filepath.Join(t.TempDir(), "leftover.tmp")
@@ -550,7 +550,7 @@ func TestRecoveryRefusedPreflightDoesNotCreateState(t *testing.T) {
 		if existing {
 			require.NoError(t, os.Mkdir(dir, 0o700))
 		}
-		_, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup.tar.gz"), "")
+		_, err := BackupProfile(t.Context(), ProfileInstallation, dir, filepath.Join(t.TempDir(), "backup.tar.gz"), "")
 		require.Error(t, err)
 		if existing {
 			entries, err := os.ReadDir(dir)
@@ -563,7 +563,7 @@ func TestRecoveryRefusedPreflightDoesNotCreateState(t *testing.T) {
 	}
 	dir, output, keyOutput := recoveryFixture(t)
 	require.NoError(t, os.Remove(filepath.Join(dir, "installation.lock")))
-	_, err := Backup(t.Context(), dir, output, keyOutput)
+	_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.ErrorContains(t, err, "missing installation lock")
 	_, err = os.Stat(filepath.Join(dir, "installation.lock"))
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -589,7 +589,7 @@ func TestRecoveryRefusesStorageDeclarationDrift(t *testing.T) {
 				data = []byte(strings.Replace(string(data), "data_dir: data", "data_dir: workflows", 1))
 			}
 			require.NoError(t, os.WriteFile(file, data, 0o600))
-			_, err = Backup(t.Context(), dir, output, keyOutput)
+			_, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 			require.ErrorContains(t, err, "storage configuration changed")
 			_, err = os.Stat(output)
 			require.ErrorIs(t, err, os.ErrNotExist)
@@ -610,7 +610,7 @@ func TestRecoveryRejectsLinkedProviderAncestor(t *testing.T) {
 	if err := os.Symlink(external, filepath.Join(inventory.ProviderDir, "comfyui")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	_, err = Backup(t.Context(), dir, output, keyOutput)
+	_, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.Error(t, err, "a linked provider parent must never be traversed")
 	_, err = os.Stat(output)
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -643,7 +643,7 @@ func TestRecoveryExcludesModelStorageAndPendingUpdates(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o700))
 		require.NoError(t, os.WriteFile(target, []byte("provider data"), 0o600))
 	}
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	for _, file := range manifest.Files {
 		require.NotContains(t, file.Name, "weights/")
@@ -667,7 +667,7 @@ func TestRecoveryKeepsKeyCustodySeparateAcrossPathSpellings(t *testing.T) {
 	dir, _, _ := recoveryFixture(t)
 	outDir := t.TempDir()
 	t.Chdir(outDir)
-	_, err := Backup(t.Context(), dir, "backup.tar.gz", filepath.Join(outDir, "key"))
+	_, err := BackupProfile(t.Context(), ProfileInstallation, dir, "backup.tar.gz", filepath.Join(outDir, "key"))
 	require.ErrorContains(t, err, "separate directory")
 	_, err = os.Stat(filepath.Join(outDir, "key"))
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -685,7 +685,7 @@ func TestRecoveryRefusesDisappearingRecordedProviderStorage(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, Save(t.Context(), inventory))
 	require.NoError(t, os.Rename(inventory.ProviderDir, inventory.ProviderDir+"-unavailable"))
-	_, err = Backup(t.Context(), dir, output, keyOutput)
+	_, err = BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.ErrorContains(t, err, "previously present recovery source is unavailable")
 	_, err = os.Stat(output)
 	require.ErrorIs(t, err, os.ErrNotExist)
@@ -696,7 +696,7 @@ func TestRecoveryExcludesProtectionKeyAliasesAndReservedCaseVariants(t *testing.
 	require.NoError(t, os.Link(filepath.Join(dir, "private", "credentials.key"), filepath.Join(dir, "key-alias")))
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "BACKUPS"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "BACKUPS", "old-node"), []byte("executable backup"), 0o600))
-	manifest, err := Backup(t.Context(), dir, output, keyOutput)
+	manifest, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.NoError(t, err)
 	for _, file := range manifest.Files {
 		require.NotEqual(t, "config/key-alias", file.Name)

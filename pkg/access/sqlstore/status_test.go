@@ -245,9 +245,9 @@ func TestStatusUnavailableSizes(t *testing.T) {
 	require.NotNil(t, gone.JournalBytes)
 	assert.Zero(t, *gone.JournalBytes)
 
-	notDir := filepath.Join(t.TempDir(), "file")
-	require.NoError(t, os.WriteFile(notDir, nil, 0o600))
-	s.path = filepath.Join(notDir, "access.sqlite")
+	// A name longer than any filesystem allows fails to stat on every
+	// platform, unlike a path under a file, which Windows reports as absent.
+	s.path = filepath.Join(t.TempDir(), strings.Repeat("x", 300)+".sqlite")
 	unreadable := status(t, s)
 	assert.Nil(t, unreadable.DatabaseBytes)
 	assert.Nil(t, unreadable.JournalBytes, "only an absent journal reads as empty")

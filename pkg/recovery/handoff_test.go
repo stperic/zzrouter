@@ -552,7 +552,7 @@ func caseInsensitive(t *testing.T) bool {
 func TestRecoveryBackupRefusesWhatItsCheckRefuses(t *testing.T) {
 	dir, output, keyOutput := recoveryFixture(t)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "OAuth.json"), []byte("{}"), 0o600))
-	_, err := Backup(t.Context(), dir, output, keyOutput)
+	_, err := BackupProfile(t.Context(), ProfileInstallation, dir, output, keyOutput)
 	require.ErrorContains(t, err, `canonical spelling: "config/OAuth.json"`)
 	emptyDir(t, filepath.Dir(output), "no archive and no temporary beside it")
 	emptyDir(t, filepath.Dir(keyOutput), "no key and no temporary beside it")
