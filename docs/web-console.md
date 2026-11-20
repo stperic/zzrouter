@@ -299,7 +299,8 @@ in place. Browser chat is not counted as a separately connected external client.
 
 ## Workloads and diagnostics
 
-Workloads has Runs and Jobs views, a compute-node filter and search. Each row
+Workloads has Runs, Jobs, Calibrations and Downloads views. The Runs, Jobs and
+Calibrations views have a compute-node filter and search. Each row
 opens the same details panel. Node/provider details link to that node's workloads.
 Reads address each node explicitly with bounded concurrency. Nodes reported down
 are skipped with one quiet offline summary. Refresh updates node health and resumes
@@ -318,11 +319,40 @@ reads the exact run on its owning node. Stop confirms the exact node/run identit
 then reads it back. Interrupted writes retain a read-only inspection result and
 are never automatically replayed.
 
+Ready runs offer **Change settings**. **Save for this model on this node**
+opens the node and model scope in the provider parameter editor. Select
+**Restart affected runs after saving** before saving to request restarts in
+the same PATCH. The effect section links to the restart job when the API returns
+one. **Try on this run only** starts with the run's request parameters and
+environment. Edit them using the provider schema, choose **Replace the running
+run**, and review the start preview. If the server reports a different request
+tier on the running process, the form offers replacement and asks for a new
+preview. When started from a calibration draft, a ready replacement is selected
+when the draft reopens. Environment values require deliberate reveal.
+
 Jobs show actual step counts, percentages, bytes and download speed when reported.
 Missing progress remains indeterminate. Older jobs load explicitly and deduplicate
 by node and job ID; the view discloses that changing event order can shift page
 boundaries. Details include errors, warnings and the retention deadline. A quiet
 job is not classified as failed, and a missing job does not imply success.
+
+Calibrate from a ready run with a supported workload, choose **New calibration**
+in Calibrations, or choose **Start and calibrate** on a completed download's node.
+The download path uses the normal start preview and waits for the exact run to
+be ready. Choose one node and its ready runs, apply workload and step presets,
+and review requests, served context and resource evidence before submitting.
+Resident runs hold resources without receiving calibration traffic. Discovery
+supplies workload kinds and limits. Refresh preserves the draft and the selected
+run revisions.
+
+Calibration jobs show step progress, completed requests per run and the latest
+resource sample with its timestamp. Pause, Refresh and Cancel use the existing
+job controls. Retained reports show the outcome and its suggested action,
+resource ownership, step measurements,
+throughput curves and settings tested. Unknown measurements are labeled separately
+from measured zero. Compare retained reports on the same node or run the workload
+again. Saving tested overrides opens a settings diff at model-on-node scope
+before applying any changes.
 
 Workload snapshots refresh every five seconds while visible and idle, with Pause
 updates and Refresh controls. Reads do not overlap, replace focused controls or

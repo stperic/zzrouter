@@ -1565,3 +1565,83 @@ test('client guidance, team impact, access history and recovery fit desktop and 
     await audit(page, 'recovery-scope-' + width);
   }
 });
+
+test('Calibration form and report stay keyboard usable at narrow widths', { timeout: 30000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  page.setDefaultTimeout(8000);
+  const node = 'studio-gpu';
+  const runs = ['qwen-long-context-fixture', 'embed-long-context-fixture'].map((id, index) => ({
+    id, target_revision: 'rev-' + index, model: 'org/' + id, provider: 'vllm', node, status: 'running',
+    endpoint: index ? 'embeddings' : 'chat', context_length: 4096, cache: { sequence_slots: 2 },
+  }));
+  const report = { outcome: 'verified', resources: [], runs: runs.map(run => ({ ...run, run_id: run.id, resolved_parameters: { slots: '2' } })),
+    steps: [{ index: 0, outcome: 'verified', throughput: { output_tokens_per_second: 5 }, resources: [],
+      runs: [{ run_id: runs[0].id, outcome: 'verified', concurrency: 1, inter_token_latency_ms: { p50: 40 }, throughput: { output_tokens_per_second: 5 } }] }] };
+  const terminal = { job_id: 'cal-one', node, kind: 'calibration', phase: 'done', epoch: 'one', seq: 1, meta: { report } };
+  const writes = [];
+  await page.route(url => /^\/zzrouter\/v1(?:\/(?:runs|jobs|calibrations|providers\/vllm\/schema)(?:\/[^/]+)?)?$/.test(url.pathname), route => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname.replace('/zzrouter/v1', '');
+    const data = (value, status = 200) => route.fulfill({ status, json: { data: value } });
+    if (!path) return data({ calibration: { workload_kinds: ['chat', 'embeddings'], max_runs: 3, max_steps: 8, max_concurrency: 32,
+      max_requests_per_step: 100, max_step_timeout_seconds: 900, default_step_timeout_seconds: 300 } });
+    if (path === '/runs') return data(runs);
+    if (path.startsWith('/runs/')) return data(runs.find(run => path.endsWith('/' + run.id)));
+    if (path.endsWith('/schema')) return route.fulfill({ json: { parameters: {} } });
+    if (path === '/calibrations') {
+      writes.push({ body: request.postDataJSON(), key: request.headers()['idempotency-key'] });
+      return data({ job_id: terminal.job_id, node }, 202);
+    }
+    if (path === '/jobs') return data(url.searchParams.get('node') === node ? [terminal, { ...terminal, job_id: 'cal-two' }] : []);
+    if (path === '/jobs/cal-one') return data(terminal);
+    if (path === '/jobs/cal-two') return data({ ...terminal, job_id: 'cal-two' });
+    return route.fallback();
+  });
+  await f.open('#workloads?mode=create-calibration&item=' + encodeURIComponent('node/' + node + '/'), 390, 844);
+  const dialog = page.getByRole('dialog');
+  const first = dialog.getByRole('checkbox', { name: /org\/qwen-long-context-fixture/ });
+  await first.focus(); await page.keyboard.press('Space');
+  const second = dialog.getByRole('checkbox', { name: /org\/embed-long-context-fixture/ });
+  await second.focus(); await page.keyboard.press('Space');
+  const ramp = dialog.getByRole('button', { name: 'Ramp', exact: true });
+  await ramp.focus(); await page.keyboard.press('Enter');
+  const table = dialog.getByRole('region', { name: 'Calibration steps', exact: true });
+  assert.equal(await table.getAttribute('tabindex'), '0');
+  const cell = table.getByRole('spinbutton', { name: /Step 1, org\/qwen/ });
+  await cell.fill('3');
+  const tokens = dialog.getByRole('spinbutton', { name: 'Input tokens', exact: true }).first();
+  await tokens.fill('5000');
+  const start = dialog.getByRole('button', { name: 'Start calibration' });
+  await start.focus(); await page.keyboard.press('Enter');
+  const summary = dialog.getByRole('alert').filter({ hasText: 'Check the highlighted fields.' });
+  await summary.waitFor({ state: 'visible' });
+  const fieldError = 'Input tokens: Requested tokens exceed served context.';
+  const inlineError = dialog.locator('.field-error').filter({ hasText: fieldError });
+  await inlineError.waitFor({ state: 'visible' });
+  assert.equal(await tokens.getAttribute('aria-invalid'), 'true');
+  assert.equal(await tokens.getAttribute('aria-describedby'), await inlineError.getAttribute('id'));
+  await summary.getByRole('link', { name: fieldError, exact: true }).press('Enter');
+  assert.equal(await tokens.evaluate(input => input === document.activeElement), true);
+  assert.equal(writes.length, 0);
+  await tokens.fill('512');
+  await Promise.all([
+    page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.ok() && url.pathname === '/zzrouter/v1/runs' && url.searchParams.get('node') === node;
+    }),
+    dialog.getByRole('button', { name: 'Refresh ready runs', exact: true }).click(),
+  ]);
+  assert.equal(await cell.inputValue(), '3');
+  assert.equal(await tokens.inputValue(), '512');
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+  await start.focus(); await page.keyboard.press('Enter');
+  await dialog.getByRole('heading', { name: 'Calibration report' }).waitFor();
+  assert.ok(writes[0].key);
+  assert.equal(writes[0].body.runs[0].workload.input_tokens, 512);
+  assert.equal(writes[0].body.runs[0].workload.concurrency[0], 3);
+  assert.equal(await dialog.getByRole('img', { name: /Per-user output tokens/ }).count(), 1);
+  await dialog.getByRole('button', { name: 'Compare with…' }).click();
+  await dialog.getByRole('combobox', { name: 'Other calibration' }).selectOption('cal-two');
+  await dialog.getByRole('heading', { name: 'cal-two' }).waitFor();
+  assert.equal(await dialog.getByRole('table', { name: 'Measured calibration steps' }).count(), 2);
+  await audit(page, 'calibration-compare-mobile');
+});
