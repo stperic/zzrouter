@@ -575,13 +575,18 @@ with `usage_unavailable`.
 1. **Check.** Record each run's identity, resolved parameters,
    `parameters_status`, served context and engine cache report, and the pools
    it holds memory in.
-2. **Warm up.** Send two unmeasured requests to each run with a workload, a
-   short one and one about eight times longer. Their reported prompt tokens
-   give a line, `tokens = overhead + ratio × characters`, which separates the
-   chat template's fixed tokens from the per-character rate, so long prompts
-   are not sized short. Prompts get
-   `ceil((input_tokens − overhead) / ratio)` characters, with no
-   engine-specific tokenizer. When the longer request does not report more
+2. **Warm up.** Send two unmeasured requests to each run with a workload: a
+   short one, then one sized to the target from the short one's
+   tokens-per-character ratio, so the fit is measured at the operating point.
+   Their reported prompt tokens give a line,
+   `tokens = overhead + ratio × characters`, which separates the chat
+   template's fixed tokens from the per-character rate. Prompts aim at
+   `input_tokens` plus a margin of the larger of 0.2% and 4 tokens, because
+   tokenization is not exactly linear and the outcome requires at least
+   `input_tokens`; the margin never takes input plus output past the run's
+   served context. No engine-specific tokenizer is used. On the lab, a fit
+   extrapolated from a 2,048-character request undershot 30,000 tokens by 6
+   (2026-11-20). When the longer request does not report more
    tokens, that run's steps are `inconclusive` with `usage_unavailable`. All
    runs warm up together under one deadline equal to the step timeout.
 3. **Run the steps.** In step k, every run whose `concurrency[k]` is non-zero
