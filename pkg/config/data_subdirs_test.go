@@ -46,7 +46,7 @@ func TestDataSubdirectoriesCannotDisappearAcrossKindConversion(t *testing.T) {
 	p.Runtime.Execution.Args = nil
 	for _, mode := range []string{"external", "service", "cloud", "registry"} {
 		t.Run(mode, func(t *testing.T) {
-			sc := providerToServiceConfig(p)
+			sc := ProviderServiceConfig(p)
 			sc.Mode = mode
 			_, err := serviceConfigToProvider(p.Name, sc)
 			require.ErrorContains(t, err, "on-demand ownership")

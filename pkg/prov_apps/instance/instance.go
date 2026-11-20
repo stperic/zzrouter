@@ -135,12 +135,12 @@ type Instance struct {
 
 	// mu protects mutable state: Status, ErrorMessage, timestamps, keep-alive state.
 	// Use RLock for reads, Lock for writes.
-	mu            sync.RWMutex    `json:"-"`
-	idleChanged   chan<- struct{} `json:"-"`
-	activityHold  bool            `json:"-"`
-	activityProbe activityProbe
-	idleReleased  bool `json:"-"`
-	pinned        bool // fixed by resolved launch settings before admission
+	mu                  sync.RWMutex    `json:"-"`
+	idleChanged         chan<- struct{} `json:"-"`
+	activityHold        bool            `json:"-"`
+	activityObservation activityObservation
+	idleReleased        bool `json:"-"`
+	pinned              bool // fixed by resolved launch settings before admission
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -153,8 +153,9 @@ type Instance struct {
 	// Goroutine tracking for graceful shutdown
 	wg sync.WaitGroup `json:"-"`
 
-	// Active request counter (atomic)
-	activeRequests int64 `json:"-"`
+	// Request counters (atomic)
+	requestsAdmitted atomic.Uint64
+	activeRequests   int64 `json:"-"`
 	// Reservations keep later victims idle while earlier stops drain.
 	idleStopClaimed bool `json:"-"`
 
@@ -315,7 +316,7 @@ func (i *Instance) setStatusLocked(status Status) {
 	i.Status = status
 	if status.IsTerminal() || status == StatusStopping {
 		i.activityHold = false
-		i.activityProbe.known = false
+		i.activityObservation.known = false
 	}
 	i.notifyIdleLocked()
 }
@@ -872,6 +873,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
+		RequestsAdmitted:      i.requestsAdmitted.Load(),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),
 		Parameters:            copyStringMap(i.Config.Parameters),
 		ResolvedParameters:    copyStringMap(i.resolved.Parameters),
@@ -1016,7 +1018,11 @@ func (i *Instance) ObserveActivity(busy bool) {
 	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
 		return
 	}
-	i.observeActivityProbeLocked(busy)
+	i.activityObservation.known = true
+	i.activityObservation.at = utils.Now()
+	if i.activityObservation.validFor <= 0 {
+		i.activityObservation.validFor = 2 * constants.HealthCheckInterval
+	}
 	i.observeActivityHoldLocked(busy)
 }
 

@@ -81,7 +81,7 @@ func TestReadinessSilenceFailsWithLastLine(t *testing.T) {
 
 func TestReadinessAbsentStallUsesAbsoluteTimeout(t *testing.T) {
 	cfg := config.ServiceConfig{Runtime: &config.AppRuntimeConfig{HealthCheck: config.HealthcheckConfig{ReadinessProbe: &config.ProbeConfig{Timeout: "200ms", LogPatterns: config.LogPatternsConfig{Success: []config.PatternConfig{{Pattern: "READY"}}}}}}}
-	probe := buildHealthCheckConfig(cfg, 0).ReadinessProbe
+	probe := buildHealthCheckConfig(cfg, nil).ReadinessProbe
 	require.NotNil(t, probe)
 	require.Zero(t, probe.StallTimeout)
 	start := utils.Now()
@@ -145,12 +145,12 @@ func TestReadinessStallDuringServeCheck(t *testing.T) {
 
 func TestBuildReadinessStallDuration(t *testing.T) {
 	cfg := config.ServiceConfig{Runtime: &config.AppRuntimeConfig{HealthCheck: config.HealthcheckConfig{ReadinessProbe: &config.ProbeConfig{Timeout: "900s", StallTimeout: "240s", LogPatterns: config.LogPatternsConfig{Success: []config.PatternConfig{{Pattern: "READY"}}}}}}}
-	probe := buildHealthCheckConfig(cfg, 0).ReadinessProbe
+	probe := buildHealthCheckConfig(cfg, nil).ReadinessProbe
 	require.NotNil(t, probe)
 	require.Equal(t, 240*time.Second, probe.StallTimeout)
 	require.Equal(t, 900*time.Second, probe.Timeout)
 	cfg.Runtime.HealthCheck.ReadinessProbe.StallTimeout = "invalid"
-	require.Nil(t, buildHealthCheckConfig(cfg, 0).ReadinessProbe)
+	require.Nil(t, buildHealthCheckConfig(cfg, nil).ReadinessProbe)
 }
 
 func TestReadinessServeOutputKeepsProgressAfterLog(t *testing.T) {

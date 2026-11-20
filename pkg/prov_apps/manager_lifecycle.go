@@ -304,7 +304,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
-		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, observations: observations,
+		health: buildHealthCheckConfig(prepared.config, declared.Observe), transform: prepared.executionEnvironment, observations: observations,
 	}, nil
 }
 
@@ -1025,12 +1025,9 @@ func sanitizeLogFragment(s string) string {
 	return string(out[start:end])
 }
 
-// buildHealthCheckConfig maps provider config to a health.CheckConfig.
-// port is accepted for symmetry with providers that embed the port in a
-// non-default URL template; the default /health probe uses the instance's
-// bound port at dial time, not a template substitution.
-func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConfig {
+func buildHealthCheckConfig(svcCfg config.ServiceConfig, observe *schema.Observe) health.CheckConfig {
 	hc := health.CheckConfig{
+		Observe:        observe,
 		HTTPHealthPath: "/health",
 		ExpectedStatus: 200,
 	}
@@ -1039,7 +1036,6 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 		return hc
 	}
 
-	hc.ActivityProbe = svcCfg.Runtime.ActivityProbe
 	rc := svcCfg.Runtime.HealthCheck
 	if rc.Path != "" {
 		hc.HTTPHealthPath = rc.Path

@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
@@ -20,12 +21,21 @@ import (
 	pschema "github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
+func shippedProviderSchemas(t *testing.T) (map[string]*pschema.ProviderSchema, []error) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	return pschema.LoadFromFS(templates.AppsFS, "files/providers", apps)
+}
+
 // TestAppsFS_SchemaYAMLMatchesGoSpine walks the embedded templates tree
 // and merges every schema.yaml onto the Go spine. A conflict between a
 // YAML-declared type and the Go-declared kind is a structural bug
 // (plan §4.4) and must surface as a hard error before any binary ships.
 func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
-	_, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	_, errs := shippedProviderSchemas(t)
 	assert.Empty(t, errs, "schema.yaml ↔ Go spine drift: %v", errs)
 }
 
@@ -33,7 +43,7 @@ func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 // never be set: the Go spine and every shipped schema.yaml, which LoadFromFS
 // merges per provider, declare flag names, overlays included.
 func TestDeclaredParametersAreFlagNames(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	require.Subset(t, slices.Collect(maps.Keys(schemas)), slices.Collect(maps.Keys(pschema.Registry)))
 	for provider, declared := range schemas {
@@ -71,7 +81,7 @@ func launchedProviders(t *testing.T) map[string]config.ServiceConfig {
 // A parameter is appended after the runtime's own argv; one that renders a
 // flag the runtime already passes would fight the value zzRouter owns.
 func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	weights := filepath.Join(t.TempDir(), "weights")
 	require.NoError(t, os.WriteFile(weights, nil, 0o600))
@@ -125,7 +135,7 @@ func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
 // launched provider's shipped config sets in a tier, or names in a feature
 // or as its context parameter, is declared for that endpoint.
 func TestShippedConfigNamesOnlyDeclaredParameters(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 
 	for name, svc := range launchedProviders(t) {
@@ -175,7 +185,7 @@ func TestShippedConfigNamesOnlyDeclaredParameters(t *testing.T) {
 // A bool the engine also spells --no-<flag> is one negatable key, so no
 // shipped schema declares that spelling beside it as a second key.
 func TestShippedNegatableBoolsHaveOneKey(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	negatable := 0
 	for name, declared := range schemas {
@@ -200,7 +210,7 @@ func TestShippedNegatableBoolsHaveOneKey(t *testing.T) {
 
 // Each MLX runtime passes only flags its engine defines at the pinned version.
 func TestMLXRuntimesPassOnlyTheirEnginesFlags(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	svc := launchedProviders(t)["mlx"]
 	// Each engine's argparse flags, less the ones its runtime passes itself.
@@ -239,7 +249,7 @@ func TestMLXRuntimesPassOnlyTheirEnginesFlags(t *testing.T) {
 // Shipped shapes take what each pinned engine takes and refuse what it
 // refuses, at the boundaries a schema can state.
 func TestShippedShapesMatchTheirEngines(t *testing.T) {
-	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	for _, tc := range []struct {
 		provider, key, value string
@@ -278,7 +288,7 @@ func TestShippedShapesMatchTheirEngines(t *testing.T) {
 }
 
 func TestAppsFS_DeclaresRecurrentAllocationRows(t *testing.T) {
-	providers, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	providers, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	// vLLM 0.29 sizes its hybrid state pool by max-num-seqs through a version-specific layer grouping; it declares no rows.
 	assert.Nil(t, providers["vllm"].RecurrentStateRows)
@@ -373,4 +383,64 @@ func TestInstallDefaults_CopiesAllFilesAndPreservesEdits(t *testing.T) {
 	got, err := os.ReadFile(target)
 	require.NoError(t, err)
 	assert.Equal(t, "# user edit\n", string(got), "InstallDefaults must not overwrite existing files")
+}
+
+func TestShippedTemplatesMergeEngineObservations(t *testing.T) {
+	merged, failures := shippedProviderSchemas(t)
+	require.Empty(t, failures)
+	want := map[string]pschema.Observe{
+		"vllm":     {Path: "/metrics", Format: "prometheus", Running: "vllm:num_requests_running", Waiting: "vllm:num_requests_waiting", KVCacheUsage: "vllm:kv_cache_usage_perc"},
+		"llamacpp": {Path: "/metrics", Format: "prometheus", Running: "llamacpp:requests_processing", Waiting: "llamacpp:requests_deferred"},
+		"strata":   {Path: "/metrics/prometheus", Format: "prometheus", Running: "vllm:num_requests_running", Waiting: "vllm:num_requests_waiting"},
+		"comfyui":  {Path: "/queue", Format: "json", Busy: []string{"queue_running", "queue_pending"}},
+		"mlx":      {Path: "/metrics", Format: "json", Running: "summary.in_flight", Waiting: "server.request_queue_depth", Runtimes: []string{"mlx-vlm"}},
+	}
+	for provider, dictionary := range merged {
+		observation, declared := want[provider]
+		if declared {
+			require.Equal(t, &observation, dictionary.Observe, provider)
+			delete(want, provider)
+		} else {
+			require.Nil(t, dictionary.Observe, provider)
+		}
+		switch provider {
+		case "vllm", "llamacpp":
+			require.Equal(t, &pschema.Calibration{Output: map[string]any{"ignore_eos": true}}, dictionary.Calibration, provider)
+		default:
+			require.Nil(t, dictionary.Calibration, provider)
+		}
+	}
+	require.Empty(t, want)
+
+	body, err := templates.AppsFS.ReadFile("files/providers/on-demand/llamacpp/config.yaml")
+	require.NoError(t, err)
+	provider, err := config.DecodeProviderBytes(config.KindOnDemand, "llamacpp", body)
+	require.NoError(t, err)
+	require.Equal(t, "true", provider.(*config.OnDemandProvider).Defaults.Parameters["metrics"])
+}
+
+func TestReconcileStripsRetiredActivityProbeBeforeConfigLoad(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	name := filepath.Join(dir, "on-demand", "comfyui", "config.yaml")
+	body, err := os.ReadFile(name)
+	require.NoError(t, err)
+	var tree map[string]any
+	require.NoError(t, yaml.Unmarshal(body, &tree))
+	tree["runtime"].(map[string]any)["activity_probe"] = map[string]any{
+		"path": "/queue", "busy_when_nonempty": []string{"queue_running", "queue_pending"},
+	}
+	body, err = yaml.Marshal(tree)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(name, body, 0600))
+	_, err = config.LoadAppsConfig(dir)
+	require.ErrorContains(t, err, "activity_probe")
+	changed, err := templates.ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Contains(t, changed, "on-demand/comfyui/config.yaml")
+	cfg, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	svc, found := cfg.LookupApp("comfyui")
+	require.True(t, found)
+	require.Equal(t, config.RunScopeNode, svc.RunScope)
 }

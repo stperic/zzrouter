@@ -52,6 +52,11 @@ func (t Target) Ready() Target {
 	return t
 }
 
+// ProcessRunEndpoint addresses the run's own listener, independent of its advertised URL.
+func ProcessRunEndpoint(port int) string {
+	return fmt.Sprintf("http://%s:%d", constants.Localhost, port)
+}
+
 // Host returns the endpoint's host[:port].
 func (t Target) Host() string {
 	u, err := url.Parse(t.base)

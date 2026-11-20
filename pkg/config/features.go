@@ -32,7 +32,7 @@ type FeatureHTTP struct {
 }
 
 func (h FeatureHTTP) valid() bool {
-	return validHTTPPath(h.Path) &&
+	return ValidHTTPPath(h.Path) &&
 		!strings.Contains(h.Path, "..") &&
 		!strings.Contains(h.Path, "//") &&
 		!slices.Contains(strings.Split(h.Field, "."), "")

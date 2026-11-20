@@ -20,7 +20,6 @@ type AppRuntimeConfig struct {
 	DataDir         string             `yaml:"data_dir,omitempty" json:"data_dir,omitempty"`
 	DataSubdirs     []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore      *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
-	ActivityProbe   *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	Listener        *ListenerConfig    `yaml:"listener,omitempty" json:"listener,omitempty"`
 	Browser         *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
@@ -388,30 +387,7 @@ func (prc *AppRuntimeConfig) QueueDepth() int {
 	return constants.DefaultQueueDepthFactor * prc.MaxConcurrentRequests
 }
 
-// ActivityProbe declares queue fields whose observed work protects a run.
-type ActivityProbe struct {
-	Path             string   `yaml:"path" json:"path"`
-	BusyWhenNonempty []string `yaml:"busy_when_nonempty" json:"busy_when_nonempty"`
-}
-
-// Validate restricts the probe to a local path with explicit queue fields.
-func (p *ActivityProbe) Validate() error {
-	if p == nil {
-		return nil
-	}
-	if !validHTTPPath(p.Path) || len(p.BusyWhenNonempty) == 0 {
-		return fmt.Errorf("activity_probe requires a local path and busy_when_nonempty fields")
-	}
-	seen := make(map[string]bool)
-	for _, field := range p.BusyWhenNonempty {
-		if field == "" || seen[field] {
-			return fmt.Errorf("activity_probe has an empty or duplicate queue field")
-		}
-		seen[field] = true
-	}
-	return nil
-}
-
-func validHTTPPath(value string) bool {
+// ValidHTTPPath accepts engine-relative HTTP paths without query or fragment.
+func ValidHTTPPath(value string) bool {
 	return strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") && !strings.ContainsAny(value, "?#\\")
 }

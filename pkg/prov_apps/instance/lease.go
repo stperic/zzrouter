@@ -46,6 +46,7 @@ func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (_ *L
 		return nil, admissionError(ErrStopping)
 	}
 	atomic.AddInt64(&i.activeRequests, 1)
+	i.requestsAdmitted.Add(1)
 	i.mu.Unlock()
 	i.StampActivityWithHints(hints)
 	requestCtx, cancel := context.WithCancel(ctx)

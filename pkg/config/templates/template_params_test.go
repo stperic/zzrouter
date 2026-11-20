@@ -58,7 +58,7 @@ func TestLlamacppPlacementReachesExistingInstall(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "8192", svc.Defaults.Parameters["ctx-size"])
 	assert.Equal(t, []string{"--log-verbosity", "4"}, svc.Runtime.Execution.Args[len(svc.Runtime.Execution.Args)-2:])
-	schemas, errs := schema.LoadFromFS(os.DirFS(dir), ".")
+	schemas, errs := schema.LoadFromFS(os.DirFS(dir), ".", apps)
 	require.Empty(t, errs)
 	placement := schemas["llamacpp"].Parameters["n-gpu-layers"].PlacementLog
 	assert.Equal(t, `offloaded (\d+)/(\d+) layers to GPU`, placement["layers"].String())
@@ -88,7 +88,11 @@ func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
 	require.Equal(t, live, updated)
 	declared, err = schema.LoadYAMLSchema(updated)
 	require.NoError(t, err)
-	merged, errs := schema.Merge("vllm", declared, config.ServiceConfig{})
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	owner, found := apps.LookupApp("vllm")
+	require.True(t, found)
+	merged, errs := schema.Merge("vllm", declared, owner)
 	require.Empty(t, errs)
 	for key, kind := range map[string]schema.ParamKind{"enable-auto-tool-choice": schema.ParamBool, "tool-call-parser": schema.ParamString, "reasoning-parser": schema.ParamString} {
 		require.Equal(t, kind, merged.Parameters[key].Kind)
@@ -100,7 +104,7 @@ func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
 
 // mlx_lm.server takes the template's text, not a path.
 func TestMLXTakesTheTemplateByContent(t *testing.T) {
-	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	assert.Equal(t, schema.AssetPassContent, schemas["mlx"].Parameters["chat-template"].Pass)
 	assert.Empty(t, schemas["llamacpp"].Parameters["chat-template-file"].Pass)
@@ -141,7 +145,7 @@ func TestReconcileStripsRetiredModelDefaults(t *testing.T) {
 }
 
 func TestShippedAutoContextPolicies(t *testing.T) {
-	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	schemas, errs := shippedProviderSchemas(t)
 	require.Empty(t, errs)
 	assert.Equal(t, int64(4096), schemas["vllm"].Parameters["max-model-len"].AutoMinContextTokens)
 	assert.Equal(t, "native", schemas["llamacpp"].Parameters["ctx-size"].AutoContextSource)

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -28,18 +27,6 @@ func offloadFixture(t *testing.T, name string) string {
 	return string(data)
 }
 
-func offloadSchema(t *testing.T) *schema.ProviderSchema {
-	t.Helper()
-	data, err := templates.AppsFS.ReadFile("files/providers/on-demand/llamacpp/schema.yaml")
-	require.NoError(t, err)
-	y, err := schema.LoadYAMLSchema(data)
-	require.NoError(t, err)
-	declared, errs := schema.Merge("llamacpp", y, config.ServiceConfig{})
-	require.Empty(t, errs)
-	declared.Parameters["budget"] = schema.ParamShape{} // the contract rig's providers set it
-	return declared
-}
-
 func offloadWriter(t *testing.T, run *instance.Instance, serve bool) (*health.ReadinessWriter, *health.ReadinessProbe) {
 	t.Helper()
 	probe := &health.ReadinessProbe{Timeout: time.Second, LogPatterns: health.LogPatterns{
@@ -49,7 +36,7 @@ func offloadWriter(t *testing.T, run *instance.Instance, serve bool) (*health.Re
 		probe.Serve = &health.ServeCheck{Path: "/check"}
 	}
 	require.NoError(t, probe.Validate())
-	patterns := offloadSchema(t).Parameters["n-gpu-layers"].PlacementLog
+	patterns := shippedOnDemandSchema(t, "llamacpp").Parameters["n-gpu-layers"].PlacementLog
 	return health.NewReadinessWriter(io.Discard, probe, []*regexp.Regexp{patterns["layers"], patterns["cpu_overrides"], patterns["weights"]},
 		func(index int, values []string) { recordObservation(run, index, values) }), probe
 }
@@ -277,7 +264,7 @@ func TestServedContextAndPlacementConcurrent(t *testing.T) {
 func TestPlacementLaunchAndRestart(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fit", true: "explicit n-gpu-layers"}[explicit], func(t *testing.T) {
-			declared := offloadSchema(t)
+			declared := cacheSchema(t, "llamacpp")
 			r := newContractRig(t, true, WithProviderSchema(func(string) (*schema.ProviderSchema, error) { return declared, nil }))
 			svc, _ := r.m.AppsConfig().LookupApp("generic")
 			svc.Runtime.HealthCheck.ReadinessProbe.LogPatterns.Success = []config.PatternConfig{{Pattern: "listening on http"}}
@@ -317,7 +304,7 @@ func TestPlacementDeclarationScope(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			r := newContractRig(t, true)
 			svc, _ := r.m.AppsConfig().LookupApp("generic")
-			declared := offloadSchema(t)
+			declared := cacheSchema(t, "llamacpp")
 			want := declared.Parameters["n-gpu-layers"].PlacementLog
 			switch scenario {
 			case "other kind":

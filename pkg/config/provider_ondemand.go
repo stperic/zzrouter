@@ -49,7 +49,6 @@ type OnDemandRuntime struct {
 	DataDir               string             `yaml:"data_dir,omitempty" json:"data_dir,omitempty"`
 	DataSubdirs           []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore            *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
-	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	Listener              *ListenerConfig    `yaml:"listener,omitempty" json:"listener,omitempty"`
 	Browser               *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
@@ -85,10 +84,10 @@ func (p *OnDemandProvider) Validate() error {
 	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
-	if err := providerToServiceConfig(p).checkEndpointNames(); err != nil {
+	if err := ProviderServiceConfig(p).checkEndpointNames(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
-	if err := providerToServiceConfig(p).ValidateRunSettings(); err != nil {
+	if err := ProviderServiceConfig(p).ValidateRunSettings(); err != nil {
 		return err
 	}
 	if _, err := p.Runtime.HealthCheck.ReadinessProbe.StallDuration(); err != nil {
@@ -97,7 +96,7 @@ func (p *OnDemandProvider) Validate() error {
 	if err := p.Runtime.FailurePatterns.Compile(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
-	if err := providerToServiceConfig(p).ValidateInstall(); err != nil {
+	if err := ProviderServiceConfig(p).ValidateInstall(); err != nil {
 		return err
 	}
 	if err := validateFeatures(p.Features); err != nil {
@@ -107,9 +106,6 @@ func (p *OnDemandProvider) Validate() error {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := p.validateDataDirectory(); err != nil {
-		return fmt.Errorf("provider %q: %w", p.Name, err)
-	}
-	if err := p.Runtime.ActivityProbe.Validate(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := p.validateBrowser(); err != nil {

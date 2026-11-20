@@ -2934,6 +2934,11 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: Invalid provider schema declaration.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /zzrouter/v1/providers/{name}/models:
     parameters: [{ in: path, name: name, required: true, schema: { type: string } }]
@@ -15788,6 +15793,7 @@ components:
             url: { type: string, format: uri, description: Authenticated native browser URL. Open this URL instead of exposing the engine port. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
+        requests_admitted: { type: integer, minimum: 1, description: Total leases granted since this run started. Omitted until the first grant. }
         memory_commitments_mib:
           type: object
           additionalProperties: { type: integer }
@@ -18064,6 +18070,34 @@ components:
           items: { $ref: '#/components/schemas/ParamError' }
         diagnostics:
           $ref: '#/components/schemas/ProviderDiagnostics'
+        observe:
+          type: object
+          description: Engine evidence read from the run's local port.
+          required: [path, format]
+          additionalProperties: false
+          properties:
+            path: { type: string, description: Engine-relative HTTP path. }
+            format: { type: string, enum: [prometheus, json] }
+            running: { type: string, description: Prometheus series or dotted JSON path for running requests. }
+            waiting: { type: string, description: Prometheus series or dotted JSON path for queued requests. }
+            kv_cache_usage: { type: string, description: Prometheus series or dotted JSON path for cache usage as a fraction. }
+            runtimes:
+              type: array
+              minItems: 1
+              maxItems: 16
+              uniqueItems: true
+              description: Use base for the base engine or names from the provider's feature runtimes. Applies to every runtime when omitted.
+              items: { type: string, maxLength: 128 }
+            busy:
+              type: array
+              description: JSON fields whose non-empty arrays indicate engine activity. Only available with JSON.
+              items: { type: string }
+        calibration:
+          type: object
+          required: [output]
+          additionalProperties: false
+          properties:
+            output: { type: object, minProperties: 1, description: Engine request fields that force full-length output. }
         parameters:
           type: object
           additionalProperties: { $ref: '#/components/schemas/ParameterShape' }

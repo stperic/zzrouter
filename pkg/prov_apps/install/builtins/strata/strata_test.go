@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/interpreter"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -142,7 +144,7 @@ func TestShippedStrataTemplateNamesTheIntendedProject(t *testing.T) {
 	require.NoError(t, err)
 	declared, err := schema.LoadYAMLSchema(dictionary)
 	require.NoError(t, err)
-	merged, conflicts := schema.Merge("strata", declared, config.ServiceConfig{})
+	merged, conflicts := schema.Merge("strata", declared, config.ProviderServiceConfig(&provider))
 	require.Empty(t, conflicts)
 	for name, value := range provider.Defaults.Parameters {
 		require.Nil(t, schema.Check(name, value, merged.Parameters), name)
@@ -314,4 +316,28 @@ def refresh_draft_vocab(rt):
     (rt / "draft_vocab.bin").write_text("vocab")
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "setup.py"), []byte(setup), 0600))
+}
+
+func TestStrataBatchFlagsReachEngineArguments(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	cfg, err := config.LoadAppsConfig(root)
+	require.NoError(t, err)
+	svc, found := cfg.LookupApp("strata")
+	require.True(t, found)
+	dictionary, err := templates.AppsFS.ReadFile("files/providers/on-demand/strata/schema.yaml")
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(dictionary)
+	require.NoError(t, err)
+	merged, conflicts := schema.Merge("strata", declared, svc)
+	require.Empty(t, conflicts)
+	params := map[string]string{"batch": "12", "batch-mtp": "true"}
+	for name, value := range params {
+		require.Nil(t, schema.Check(name, value, merged.Parameters))
+	}
+	launch, err := process.NewCommandBuilder(&svc).Build(process.ResolvedModel{Name: "fixture", Path: "/models/fixture.gguf"}, 8100, params, merged.Parameters)
+	require.NoError(t, err)
+	engineArgs := slices.Index(launch.Args, "--")
+	require.GreaterOrEqual(t, engineArgs, 0)
+	require.Equal(t, []string{"--batch", "12", "--batch-mtp"}, launch.Args[engineArgs+1:])
 }

@@ -72,7 +72,7 @@ func TestModelStoreDataDirPlaceholderRequiresDeclaration(t *testing.T) {
 	p.Runtime.DataDir, p.Runtime.ModelStore = "", nil
 	require.ErrorContains(t, p.Validate(), "${DATA_DIR} requires runtime.data_dir")
 	cfg := &AppsConfig{}
-	require.ErrorContains(t, cfg.AddApp(p.Name, providerToServiceConfig(p)), "${DATA_DIR} requires runtime.data_dir")
+	require.ErrorContains(t, cfg.AddApp(p.Name, ProviderServiceConfig(p)), "${DATA_DIR} requires runtime.data_dir")
 	require.Nil(t, cfg.Find(p.Name))
 }
 
@@ -81,7 +81,7 @@ func TestModelStoreCannotDisappearAcrossKindConversion(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			for _, dataOnly := range []bool{false, true} {
 				cfg := &AppsConfig{}
-				svc := providerToServiceConfig(modelStoreProvider())
+				svc := ProviderServiceConfig(modelStoreProvider())
 				if dataOnly {
 					svc.Runtime.ModelStore = nil
 				}
@@ -90,7 +90,7 @@ func TestModelStoreCannotDisappearAcrossKindConversion(t *testing.T) {
 				require.Nil(t, cfg.Find("studio"))
 			}
 			cfg := &AppsConfig{}
-			require.NoError(t, cfg.AddApp("studio", providerToServiceConfig(modelStoreProvider())))
+			require.NoError(t, cfg.AddApp("studio", ProviderServiceConfig(modelStoreProvider())))
 			require.ErrorContains(t, cfg.UpdateApp("studio", func(s *ServiceConfig) error { s.Mode = mode; return nil }), "on-demand ownership")
 			require.Equal(t, modelStoreProvider(), cfg.GetOnDemand("studio"))
 		})
@@ -141,7 +141,7 @@ func TestModelStoreUpdateSaveReconcileAndSync(t *testing.T) {
 	cfg, err := LoadAppsConfig(dir)
 	require.NoError(t, err)
 	p := modelStoreProvider()
-	view := providerToServiceConfig(p)
+	view := ProviderServiceConfig(p)
 	converted, err := serviceConfigToProvider(p.Name, view)
 	require.NoError(t, err)
 	require.Equal(t, p, converted)

@@ -1,4 +1,5 @@
 provider: comfyui
+observe: {path: /queue, format: json, busy: [queue_running, queue_pending]}
 parameters:
   gpu-reserve-mib:
     type: int

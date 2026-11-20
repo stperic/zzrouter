@@ -166,7 +166,7 @@ func TestMLXVisionReadinessOverlay(t *testing.T) {
 	run, err := m.newRun(req, selection.config, 8090)
 	require.NoError(t, err)
 	require.Contains(t, run.HealthURL, "/v1/models")
-	probe := buildHealthCheckConfig(selected, 8090).ReadinessProbe
+	probe := buildHealthCheckConfig(selected, nil).ReadinessProbe
 	require.Equal(t, 600*time.Second, probe.Timeout)
 	requests := make(chan *http.Request, 1)
 	monitor := health.NewMonitor(nil, health.MonitorConfig{HTTPClient: &http.Client{Transport: readinessTransport(func(req *http.Request) (*http.Response, error) {

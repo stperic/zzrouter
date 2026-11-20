@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // ReadinessProbe defines how to determine if a process is ready.
@@ -163,7 +163,7 @@ func (pm *PatternMatcher) Match(line string) bool {
 
 // CheckConfig holds health check configuration for an instance.
 type CheckConfig struct {
-	ActivityProbe *config.ActivityProbe
+	Observe *schema.Observe
 	// Legacy log patterns
 	LogReadyPatterns []string
 

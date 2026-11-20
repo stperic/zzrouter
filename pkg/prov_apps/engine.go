@@ -12,7 +12,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
-	"github.com/stperic/zzrouter/pkg/constants"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -120,11 +119,7 @@ func (e processEngine) prepare(ctx context.Context, svc config.ServiceConfig, co
 }
 
 func (processEngine) upstream(run *instance.Instance) (string, backend.Upstream, error) {
-	return processRunEndpoint(run.Port), backend.Engine(), nil
-}
-
-func processRunEndpoint(port int) string {
-	return fmt.Sprintf("http://%s:%d", constants.Localhost, port)
+	return protocol.ProcessRunEndpoint(run.Port), backend.Engine(), nil
 }
 
 func (processEngine) outlivesNode() bool { return false }

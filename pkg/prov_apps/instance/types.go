@@ -116,6 +116,7 @@ type InstanceInfo struct {
 	StartedBy             StartedBy         `json:"started_by,omitempty"`
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
+	RequestsAdmitted      uint64            `json:"requests_admitted,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`
 	Parameters            map[string]string `json:"parameters,omitempty"`
 	// ResolvedParameters is what the process actually launched with,

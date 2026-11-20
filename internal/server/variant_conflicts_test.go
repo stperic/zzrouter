@@ -461,7 +461,10 @@ func TestVariants_ColdAndForcedSourceAliasUseCanonicalMetadata(t *testing.T) {
 func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	manager, err := prov_apps.NewProviderAppManager(s.appsConfig(), prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }))
+	manager, err := prov_apps.NewProviderAppManager(s.appsConfig(),
+		prov_apps.WithProviderSchema(providerSchema(s.configStore)),
+		prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }),
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = manager.Stop(t.Context()) })
 	old := s.providers.appMgr

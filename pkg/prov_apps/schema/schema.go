@@ -10,6 +10,7 @@ import (
 	"maps"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -31,6 +32,51 @@ type YAMLSchema struct {
 	Endpoints            map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
 	Diagnostics          *Diagnostics            `yaml:"diagnostics,omitempty"`
 	CacheLog             map[string]string       `yaml:"cache_log,omitempty"`
+	Observe              *Observe                `yaml:"observe,omitempty"`
+	Calibration          *Calibration            `yaml:"calibration,omitempty"`
+}
+
+// Observe declares where an engine reports scheduler, cache or activity evidence.
+type Observe struct {
+	Path         string         `yaml:"path" json:"path"`
+	Format       string         `yaml:"format" json:"format"`
+	Running      string         `yaml:"running,omitempty" json:"running,omitempty"`
+	Waiting      string         `yaml:"waiting,omitempty" json:"waiting,omitempty"`
+	KVCacheUsage string         `yaml:"kv_cache_usage,omitempty" json:"kv_cache_usage,omitempty"`
+	Busy         []string       `yaml:"busy,omitempty" json:"busy,omitempty"`
+	Runtimes     []string       `yaml:"runtimes,omitempty" json:"runtimes,omitempty"`
+	Extra        map[string]any `yaml:",inline" json:"-"`
+}
+
+// Calibration declares request fields that force full-length engine output.
+type Calibration struct {
+	Output map[string]any `yaml:"output" json:"output"`
+}
+
+func (o *Observe) validate(features map[string]config.Feature) error {
+	switch {
+	case o == nil:
+		return nil
+	case len(o.Extra) != 0:
+		return fmt.Errorf("unknown keys %q", slices.Sorted(maps.Keys(o.Extra)))
+	case !config.ValidHTTPPath(o.Path):
+		return fmt.Errorf("path must be engine-relative")
+	case o.Format != "prometheus" && o.Format != "json":
+		return fmt.Errorf("unknown format %q", o.Format)
+	case o.Busy != nil && o.Format != "json":
+		return fmt.Errorf("busy requires json format")
+	case len(o.Busy) == 0 && o.Running == "" && o.Waiting == "" && o.KVCacheUsage == "":
+		return fmt.Errorf("requires at least one observation role")
+	}
+	for i, field := range o.Busy {
+		if field == "" || slices.Contains(o.Busy[:i], field) {
+			return fmt.Errorf("busy contains an empty or duplicate field")
+		}
+	}
+	if o.Runtimes != nil {
+		return config.ValidateRuntimeSelectors(o.Runtimes, features)
+	}
+	return nil
 }
 
 // YAMLParam mirrors ParamShape on disk. Kind is a string so yaml.v3 decodes
@@ -72,12 +118,19 @@ type ProviderSchema struct {
 	Endpoints            map[string]EndpointSchema
 	Diagnostics          *Diagnostics
 	CacheLog             map[string]*regexp.Regexp
+	Observe              *Observe
+	Calibration          *Calibration
 }
 
 // EndpointSchema is the merged shape for one endpoint overlay's params.
 type EndpointSchema struct {
 	Parameters map[string]ParamShape
 }
+
+// HardError marks a required declaration whose failure prevents a launch.
+type HardError struct{ error }
+
+func (e HardError) Unwrap() error { return e.error }
 
 // ForEndpoint returns the shapes that apply to a launch on endpoint: the
 // flat parameters with that endpoint's overlay on top, since an overlay
@@ -104,14 +157,7 @@ func LoadYAMLSchema(data []byte) (*YAMLSchema, error) {
 	return &s, nil
 }
 
-// Merge unions the YAML entries onto the Go spine for one provider. When a
-// parameter is declared in both, the YAML's Kind must match the Go Kind —
-// otherwise it is a shape conflict and merge fails (plan §4.4). YAML-only
-// entries flow through. Go-only entries remain authoritative. Operator declarations
-// apply to the flat shapes before endpoint shapes inherit them.
-//
-// Returns the merged schema plus any conflict errors (collected rather than
-// fail-fast so startup reports all of them).
+// Merge keeps the Go spine authoritative and reports hard declaration errors alongside recoverable shape conflicts.
 func Merge(provider string, y *YAMLSchema, operator config.ServiceConfig) (*ProviderSchema, []error) {
 	out := &ProviderSchema{Parameters: map[string]ParamShape{
 		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Idle time before the run stops; 0 stops on release, negative pins it"},
@@ -129,12 +175,24 @@ func Merge(provider string, y *YAMLSchema, operator config.ServiceConfig) (*Prov
 	if err != nil {
 		slog.Warn("provider cache_log dropped", "provider", provider, "error", err)
 	}
+	if err := y.Observe.validate(operator.Features); err != nil {
+		errs = append(errs, HardError{fmt.Errorf("%s.observe: %w", provider, err)})
+	} else {
+		out.Observe = y.Observe
+	}
+	if c := y.Calibration; c != nil {
+		if _, err := json.Marshal(c.Output); err != nil || len(c.Output) == 0 {
+			errs = append(errs, HardError{fmt.Errorf("%s.calibration.output must be a non-empty JSON object", provider)})
+		} else {
+			out.Calibration = c
+		}
+	}
 	out.AutoContext = y.AutoContext
 	if err := y.AutoContext.validate(); err != nil {
 		errs = append(errs, err)
 	}
 	if err := y.Diagnostics.Validate(); err != nil {
-		errs = append(errs, err)
+		errs = append(errs, HardError{err})
 	} else {
 		out.Diagnostics = y.Diagnostics
 	}
@@ -325,10 +383,8 @@ func parseKind(s string) (ParamKind, error) {
 }
 
 // LoadFromFS reads every providers/<kind>/<name>/schema.yaml under root
-// and returns merged schemas keyed by provider name. Only that exact
-// depth is read: a deeper file, such as an operator's asset named
-// schema.yaml, is never a schema. Providers without one get the Go spine.
-func LoadFromFS(fsys fs.FS, root string) (map[string]*ProviderSchema, []error) {
+// and validates runtime selectors against the supplied provider configs.
+func LoadFromFS(fsys fs.FS, root string, owners *config.AppsConfig) (map[string]*ProviderSchema, []error) {
 	merged := make(map[string]*ProviderSchema)
 	for provider := range Registry {
 		merged[provider], _ = Merge(provider, nil, config.ServiceConfig{})
@@ -350,7 +406,8 @@ func LoadFromFS(fsys fs.FS, root string) (map[string]*ProviderSchema, []error) {
 			errs = append(errs, fmt.Errorf("parse %s: %w", p, perr))
 			continue
 		}
-		m, mergeErrs := Merge(provider, y, config.ServiceConfig{})
+		owner, _ := owners.LookupApp(provider)
+		m, mergeErrs := Merge(provider, y, config.ServiceConfig{Features: owner.Features})
 		errs = append(errs, mergeErrs...)
 		merged[provider] = m
 	}
