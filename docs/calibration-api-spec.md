@@ -523,6 +523,7 @@ Submission validation is synchronous, because every run is already up:
 | 409 | `calibration_unsupported` | A workload on a run whose endpoint has no workload kind, or whose wire endpoints lack the kind's API. |
 | 409 | `calibration_running` | A calibration is already running on that node; the problem names its job. |
 | 503 | | The named worker is unreachable. |
+| 421 | `calibration_wrong_node` | The internal route received a request for another node; the problem names the node it reached. No job is created. |
 
 The identifiers a refusal names are typed fields of the Problem, never only
 prose: `job_id` on `calibration_running`, and `run_id` on every refusal that
