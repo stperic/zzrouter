@@ -843,6 +843,20 @@ func (i *Instance) HasStdinPipe() bool {
 
 // --- Snapshot ---
 
+// CalibrationIdentity reads the pinned revision and counter together, without re-resolving settings.
+func (i *Instance) CalibrationIdentity(hostname string) (string, uint64) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.Status != StatusRunning && i.Status != StatusUnhealthy {
+		return "", 0
+	}
+	return i.targetRevisionLocked(hostname), i.requestsAdmitted.Load()
+}
+
+func (i *Instance) targetRevisionLocked(hostname string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano()))))
+}
+
 // ToInfo creates a read-only InstanceInfo snapshot for API responses.
 // hostname is the externally-reachable name of this node; it replaces the
 // localhost in the stored HealthURL so coordinators (and any cross-node
@@ -853,7 +867,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 
 	activity := i.activitySnapshotLocked(utils.Now())
 	info := InstanceInfo{
-		TargetRevision:    fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano())))),
+		TargetRevision:    i.targetRevisionLocked(hostname),
 		Activity:          &activity,
 		BaseURL:           i.BaseURL,
 		EngineBusy:        i.activityHold,

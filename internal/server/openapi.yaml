@@ -104,6 +104,7 @@ tags:
   - name: Nodes
   - name: Deployments
   - name: Jobs
+  - name: Calibrations
   - name: MCP
     description: Task-level tools for coding agents through the coordinator.
   - name: Keys
@@ -4770,6 +4771,53 @@ paths:
   # Jobs , the async contract every 202 points at.
   # ==========================================================================
 
+  /zzrouter/v1/calibrations:
+    post:
+      tags: [Calibrations]
+      operationId: createCalibration
+      summary: Calibrate live runs on a node
+      description: |
+        Runs synthetic workloads against checked run revisions and samples engine and node
+        resources. One calibration can run per node. Use the returned node with the job
+        read, stream, or cancellation endpoint. Terminal job metadata contains the report.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalibrationRequest' }
+      responses:
+        '202':
+          description: Accepted or replayed with the same Idempotency-Key and body. Follow job_id on the returned node to see the result.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/XRequestID' }
+            X-API-Version: { $ref: '#/components/headers/XAPIVersion' }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [job_id, node]
+                        properties:
+                          job_id: { type: string, example: cal_a1b2c3d4e5f6 }
+                          node: { type: string, example: gpu-1 }
+        '400':
+          description: Invalid workload, context_too_small or concurrency_above_limit.
+          content: &calibrationProblem
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '404': { description: run_not_found on the selected node., content: *calibrationProblem }
+        '409': { description: 'run_not_ready, run_changed, calibration_unsupported or calibration_running.', content: *calibrationProblem }
+        '422': { description: The Idempotency-Key was recorded against a different body. Code is idempotency_key_conflict., content: *calibrationProblem }
+        '503': { description: The node is unreachable or its job registry is unavailable. A full retry store returns idempotency_store_full., content: *calibrationProblem }
+        '504': { description: A duplicate exceeded its wait limit or replay window. Code is idempotency_wait_timeout., content: *calibrationProblem }
+
   /zzrouter/v1/jobs:
     get:
       tags: [Jobs]
@@ -4784,7 +4832,7 @@ paths:
         - in: query
           name: kind
           schema: { type: string }
-          description: Filter by producer, e.g. `install` or `inference_log`.
+          description: Filter by producer, e.g. `install`, `inference_log` or `calibration`. Job lists omit calibration reports.
         - $ref: '#/components/parameters/LimitParam'
       responses:
         '200':
@@ -14845,7 +14893,7 @@ components:
         node:    { type: string }
         kind:
           type: string
-          description: What produced the job (install, upgrade, download, run, service, inference_log, ...).
+          description: What produced the job (install, update, download, run, service, sync, inference_log, calibration, ...).
         phase:   { $ref: '#/components/schemas/JobPhase' }
         percent:
           type: integer
@@ -14874,8 +14922,253 @@ components:
             total: { type: integer, format: int64 }
         meta:
           type: object
-          description: Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
+          description: |
+            Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
+            Calibration progress uses CalibrationProgress. Terminal calibration job item reads and terminal stream events also carry report.
+          anyOf:
+            - $ref: '#/components/schemas/CalibrationProgress'
+            - type: object
+              properties:
+                report: { $ref: '#/components/schemas/CalibrationReport' }
           additionalProperties: true
+
+    CalibrationRequest:
+      type: object
+      additionalProperties: false
+      required: [node, runs]
+      properties:
+        node: { type: string, minLength: 1, description: Name of the node holding every listed run. }
+        step_timeout_seconds: { type: integer, minimum: 1, maximum: 1800, default: 600 }
+        runs:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [run_id]
+            properties:
+              run_id: { type: string, minLength: 1 }
+              target_revision: { type: string, description: Optional precondition obtained from the run snapshot. }
+              workload:
+                type: object
+                additionalProperties: false
+                description: Omit for a resident run. Every step needs at least one active run.
+                required: [input_tokens, concurrency]
+                properties:
+                  input_tokens: { type: integer, minimum: 1 }
+                  output_tokens: { type: integer, minimum: 1, description: Required for chat. Omit for embeddings. }
+                  concurrency:
+                    type: array
+                    minItems: 1
+                    maxItems: 8
+                    items: { type: integer, minimum: 0, maximum: 256 }
+                    description: Zero means idle. All workloads specify the same number of steps.
+                  requests_per_step:
+                    type: integer
+                    minimum: 1
+                    maximum: 1024
+                    description: At least the highest concurrency. Defaults to max(3 times concurrency, 10) in each active step.
+
+    CalibrationDiscovery:
+      type: object
+      required: [workload_kinds, max_runs, max_steps, max_concurrency, max_requests_per_step, max_step_timeout_seconds, default_step_timeout_seconds]
+      properties:
+        workload_kinds: { type: array, items: { type: string, enum: [chat, embeddings] } }
+        max_runs: { type: integer, example: 3 }
+        max_steps: { type: integer, example: 8 }
+        max_concurrency: { type: integer, example: 256 }
+        max_requests_per_step: { type: integer, example: 1024 }
+        max_step_timeout_seconds: { type: integer, example: 1800 }
+        default_step_timeout_seconds: { type: integer, example: 600 }
+
+    CalibrationProgress:
+      type: object
+      additionalProperties: false
+      required: [step, steps, requests_completed, requests_total, sample]
+      properties:
+        step: { type: integer, minimum: 0 }
+        steps: { type: integer, minimum: 1 }
+        requests_completed: { type: object, additionalProperties: { type: integer }, description: Counts keyed by active run ID. }
+        requests_total: { type: object, additionalProperties: { type: integer, nullable: true }, description: Scheduled requests keyed by active run ID. Null means unknown. }
+        sample:
+          type: object
+          additionalProperties: false
+          required: [at, pools]
+          properties:
+            at: { type: string, format: date-time, description: Time when the runner accepted this sample. }
+            pools:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, kind, vendor, total_mib, used_mib, free_mib, available_mib, swap_used_mib, utilization_pct, power_w, cpu_pct, ownership, holders]
+                properties:
+                  id: { type: string }
+                  kind: { type: string, enum: [gpu, host, unified] }
+                  vendor: { type: string, nullable: true }
+                  total_mib: { type: integer, nullable: true }
+                  used_mib: { type: integer, nullable: true }
+                  free_mib: { type: integer, nullable: true }
+                  available_mib: { type: integer, nullable: true }
+                  swap_used_mib: { type: integer, nullable: true }
+                  utilization_pct: { type: number, nullable: true }
+                  power_w: { type: number, nullable: true }
+                  cpu_pct: { type: number, nullable: true }
+                  ownership: { type: string, nullable: true, enum: [verified, shared, null] }
+                  holders: { type: array, nullable: true, items: { $ref: '#/components/schemas/CalibrationPoolHolder' } }
+
+    CalibrationReport:
+      type: object
+      description: Terminal measurement summary. Unknown values are null. Cancellation retains completed steps.
+      required: [outcome, reason, started_at, completed_at, request, sampling_interval_ms, largest_sample_gap_ms, resources, runs, steps]
+      properties:
+        outcome: { type: string, enum: [verified, partial, failed, inconclusive, cancelled] }
+        reason: { $ref: '#/components/schemas/CalibrationReason' }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        request: { $ref: '#/components/schemas/CalibrationRequest' }
+        sampling_interval_ms: { type: integer, example: 500 }
+        largest_sample_gap_ms: { type: number, nullable: true }
+        resources:
+          type: array
+          items:
+            type: object
+            required: [id, kind, total_mib]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [gpu, host, unified] }
+              total_mib: { type: integer, nullable: true }
+              vendor: { type: string, nullable: true }
+              ownership: { type: string, enum: [verified, shared, unknown] }
+              holders: { type: array, nullable: true, items: { $ref: '#/components/schemas/CalibrationPoolHolder' } }
+        runs: { type: array, items: { $ref: '#/components/schemas/CalibrationRun' } }
+        steps: { type: array, items: { $ref: '#/components/schemas/CalibrationStep' } }
+
+    CalibrationPoolHolder:
+      type: object
+      required: [pid, memory_mib, run_id]
+      properties:
+        pid: { type: integer }
+        memory_mib: { type: integer, nullable: true }
+        run_id: { type: string, nullable: true }
+
+    CalibrationReason:
+      type: object
+      nullable: true
+      required: [code, message, next_action]
+      properties:
+        code: { type: string, enum: [target_not_met, requests_failed, run_changed, usage_unavailable, step_timeout, cancelled] }
+        message: { type: string }
+        next_action:
+          type: object
+          required: [code, tool]
+          properties:
+            code: { type: string, nullable: true }
+            tool: { type: string, nullable: true }
+
+    CalibrationRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        endpoint: { type: string }
+        resolved_parameters: { type: object, additionalProperties: { type: string } }
+        parameters_status: { type: string, enum: [current, stale, unknown] }
+        overridden: { type: array, items: { type: string } }
+        served_context_tokens: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true, description: Zero means unlimited. }
+        cache:
+          type: object
+          nullable: true
+          properties:
+            kv_tokens: { type: integer, nullable: true }
+            context_tokens: { type: integer, nullable: true }
+            max_concurrency: { type: number, nullable: true }
+        output_forced: { type: boolean }
+        observed_roles: { type: array, items: { type: string, enum: [running, waiting, kv_cache_usage, busy] } }
+        workload_revision: { type: string, nullable: true }
+
+    CalibrationStep:
+      type: object
+      properties:
+        index: { type: integer }
+        outcome: { type: string, enum: [verified, queued, failed, inconclusive] }
+        reason: { $ref: '#/components/schemas/CalibrationReason' }
+        duration_ms: { type: number }
+        throughput: { type: object, properties: { output_tokens_per_second: { type: number, nullable: true } } }
+        resources:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              peak_used_mib: { type: integer, nullable: true }
+              minimum_free_mib: { type: integer, nullable: true }
+              utilization_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              power_w: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              other_holders_peak_mib: { type: integer, nullable: true }
+              minimum_available_mib: { type: integer, nullable: true }
+              peak_swap_used_mib: { type: integer, nullable: true }
+              cpu_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+        runs:
+          type: array
+          items:
+            type: object
+            properties:
+              run_id: { type: string }
+              outcome: { type: string, enum: [verified, queued, failed, inconclusive] }
+              reason: { $ref: '#/components/schemas/CalibrationReason' }
+              concurrency: { type: integer }
+              requests:
+                type: object
+                properties:
+                  requested: { type: integer }
+                  completed: { type: integer }
+                  failed: { type: integer }
+              public_requests: { type: integer, nullable: true }
+              input_tokens: { $ref: '#/components/schemas/CalibrationTokenRange' }
+              output_tokens: { $ref: '#/components/schemas/CalibrationTokenRange' }
+              concurrent_streams_peak: { type: integer, nullable: true }
+              slot_wait_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              time_to_first_token_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              inter_token_latency_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              throughput:
+                type: object
+                properties:
+                  input_tokens_per_second: { type: number, nullable: true }
+                  output_tokens_per_second: { type: number, nullable: true }
+                  requests_per_second: { type: number, nullable: true }
+              memory_peak_mib: { type: object, additionalProperties: { type: integer, nullable: true } }
+              cpu_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              engine:
+                type: object
+                properties:
+                  running_peak: { type: integer, nullable: true }
+                  waiting_peak: { type: integer, nullable: true }
+                  kv_cache_usage_peak: { type: number, nullable: true }
+
+    CalibrationMeanPeak:
+      type: object
+      nullable: true
+      properties: { mean: { type: number }, peak: { type: number } }
+
+    CalibrationTokenRange:
+      type: object
+      nullable: true
+      properties: { min: { type: integer }, max: { type: integer } }
+
+    CalibrationPercentiles:
+      type: object
+      nullable: true
+      properties:
+        p50: { type: number }
+        p90: { type: number }
+        p99: { type: number }
+        min: { type: number }
+        max: { type: number }
+        count: { type: integer }
 
     ProviderVersionsReport:
       type: object
@@ -15419,6 +15712,7 @@ components:
           type: array
           items: { type: string }
           description: GET routes that answer text/event-stream and hold the connection open.
+        calibration: { $ref: '#/components/schemas/CalibrationDiscovery' }
         endpoint_groups:
           type: object
           additionalProperties:
@@ -15758,6 +16052,7 @@ components:
             url: { type: string, format: uri, description: Authenticated native browser URL. Open this URL instead of exposing the engine port. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
+        target_revision: { type: string, description: Identity of the live target. Pass this as a calibration precondition. }
         requests_admitted: { type: integer, minimum: 1, description: Total leases granted since this run started. Omitted until the first grant. }
         memory_commitments_mib:
           type: object

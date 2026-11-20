@@ -95,6 +95,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// IMPORTANT: Register specific routes BEFORE parameterized routes
 	router.GET("/runs", runsExecutor.HandleInternalListRuns)
 	router.POST("/runs", runsExecutor.HandleInternalLaunchRun)
+	router.POST("/calibrations", s.handleInternalCalibration)
 	router.POST("/runs/preview", runsExecutor.HandleInternalPreviewRun) // Specific route before /runs/:id
 
 	// Parameterized routes come after specific routes

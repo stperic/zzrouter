@@ -446,13 +446,17 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 	w := httptest.NewRecorder()
 	New(d.cfg).ServeHTTP(w, r)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	type inputDescription struct {
+		Description string
+		Properties  map[string]inputDescription
+		Items       *inputDescription
+	}
 	var response struct {
 		Result struct {
 			Tools []struct {
 				Name, Description string
-				InputSchema       struct {
-					Properties map[string]struct{ Description string }
-				}
+				InputSchema       inputDescription
 			}
 		}
 	}
@@ -464,6 +468,16 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 		require.NotContains(t, tool.Description, "—")
 		for field, schema := range tool.InputSchema.Properties {
 			require.NotEmpty(t, schema.Description, tool.Name+"."+field)
+		}
+		if tool.Name == "zz_calibrate" {
+			runs := tool.InputSchema.Properties["runs"].Items
+			require.NotNil(t, runs)
+			for _, field := range []string{"run_id", "target_revision", "workload"} {
+				require.NotEmpty(t, runs.Properties[field].Description, field)
+			}
+			for _, field := range []string{"input_tokens", "output_tokens", "concurrency", "requests_per_step"} {
+				require.NotEmpty(t, runs.Properties["workload"].Properties[field].Description, field)
+			}
 		}
 		if tool.Name == "zz_params_set" {
 			assert.NotContains(t, tool.InputSchema.Properties, "grep")
@@ -819,4 +833,35 @@ func TestParamsGetOperatorAndProblems(t *testing.T) {
 	fields := result["structuredContent"].(map[string]any)
 	assert.Equal(t, true, fields["accepts"].(map[string]any)["future"].(map[string]any)["operator"])
 	assert.Equal(t, "schema.bad", fields["problems"].([]any)[0].(map[string]any)["key"])
+}
+
+func TestCalibrateToolUsesRESTAndChecksSchema(t *testing.T) {
+	calls := 0
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/zzrouter/v1/calibrations", r.URL.Path)
+		require.Equal(t, "cal-retry", r.Header.Get("Idempotency-Key"))
+		payload, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.JSONEq(t, `{"node":"worker","runs":[{"run_id":"run_demo","target_revision":"rev","workload":{"input_tokens":10,"concurrency":[1]}}]}`, string(payload))
+		w.WriteHeader(http.StatusAccepted)
+		writeFixture(t, w, []byte(`{"data":{"job_id":"cal_example","node":"worker"}}`))
+	})
+	args := map[string]any{"idempotency_key": "cal-retry", "node": "worker", "runs": json.RawMessage(`[{"run_id":"run_demo","target_revision":"rev","workload":{"input_tokens":10,"concurrency":[1]}}]`)}
+	result := callAgentTool(t, d, "zz_calibrate", args)
+	require.NotEqual(t, true, result["isError"], result)
+	require.Equal(t, map[string]any{"job_id": "cal_example", "node": "worker"}, result["structuredContent"])
+	for _, invalid := range []struct{ name, runs string }{
+		{"wrong token type", `[{"run_id":"run_demo","workload":{"input_tokens":"not an integer","concurrency":[1]}}]`},
+		{"unknown run field", `[{"run_id":"run_demo","extra":true,"workload":{"input_tokens":10,"concurrency":[1]}}]`},
+		{"unknown workload field", `[{"run_id":"run_demo","workload":{"input_tokens":10,"concurrency":[1],"extra":true}}]`},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			args["runs"] = json.RawMessage(invalid.runs)
+			result := callAgentTool(t, d, "zz_calibrate", args)
+			require.Equal(t, true, result["isError"], result)
+		})
+	}
+	require.Equal(t, 1, calls)
 }

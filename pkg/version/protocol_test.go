@@ -366,3 +366,16 @@ func TestProviderBindingRequiresUpgradedWorkers(t *testing.T) {
 		t.Fatal("protocol-22 workers can reinterpret a trusted provider binding")
 	}
 }
+
+func TestCalibrationProtocolRequiresBothPeersToUse26(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min != 26 || window.Max != 26 {
+		t.Fatalf("calibration protocol window = %+v, want 26 through 26", window)
+	}
+	if err := window.Check(25); err == nil {
+		t.Fatal("legacy peer accepted")
+	}
+	if err := window.Check(26); err != nil {
+		t.Fatalf("protocol 26 rejected: %v", err)
+	}
+}

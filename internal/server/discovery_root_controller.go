@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/calibration"
 )
 
 const apiDiscoveryPrefix = "/zzrouter/v1"
@@ -18,24 +19,25 @@ var apiDiscoveryHidden = map[string]struct{}{
 }
 
 type apiDiscoveryResponse struct {
-	Operations           string              `json:"operations,omitempty"`
-	Connections          string              `json:"connections,omitempty"`
-	InferenceOperations  string              `json:"inference_operations,omitempty"`
-	InferenceConnections string              `json:"inference_connections,omitempty"`
-	Runs                 string              `json:"runs"`
-	MCP                  string              `json:"mcp,omitempty"`
-	InferenceMCP         string              `json:"inference_mcp,omitempty"`
-	APIVersion           string              `json:"api_version"`
-	Authentication       apiAuthentication   `json:"authentication"`
-	Inference            apiInference        `json:"inference"`
-	EndpointGroups       map[string][]string `json:"endpoint_groups"`
-	StreamingGETs        []string            `json:"streaming_gets"`
-	EnabledFeatures      []string            `json:"enabled_features"`
-	Docs                 map[string]string   `json:"docs"`
-	ProviderDiagnostics  string              `json:"provider_diagnostics,omitempty"`
-	ProviderModels       string              `json:"provider_models"`
-	UpdateControl        string              `json:"update_control"`
-	ChatTemplates        string              `json:"chat_templates"`
+	Calibration          *calibrationDiscovery `json:"calibration,omitempty"`
+	Operations           string                `json:"operations,omitempty"`
+	Connections          string                `json:"connections,omitempty"`
+	InferenceOperations  string                `json:"inference_operations,omitempty"`
+	InferenceConnections string                `json:"inference_connections,omitempty"`
+	Runs                 string                `json:"runs"`
+	MCP                  string                `json:"mcp,omitempty"`
+	InferenceMCP         string                `json:"inference_mcp,omitempty"`
+	APIVersion           string                `json:"api_version"`
+	Authentication       apiAuthentication     `json:"authentication"`
+	Inference            apiInference          `json:"inference"`
+	EndpointGroups       map[string][]string   `json:"endpoint_groups"`
+	StreamingGETs        []string              `json:"streaming_gets"`
+	EnabledFeatures      []string              `json:"enabled_features"`
+	Docs                 map[string]string     `json:"docs"`
+	ProviderDiagnostics  string                `json:"provider_diagnostics,omitempty"`
+	ProviderModels       string                `json:"provider_models"`
+	UpdateControl        string                `json:"update_control"`
+	ChatTemplates        string                `json:"chat_templates"`
 }
 
 // chatTemplatesGuide is how a caller fixes a model whose own chat template
@@ -147,18 +149,36 @@ func registerAPIDiscoveryRoute(router *gin.RouterGroup, s *Server) {
 	})
 }
 
+type calibrationDiscovery struct {
+	WorkloadKinds             []string `json:"workload_kinds"`
+	MaxRuns                   int      `json:"max_runs"`
+	MaxSteps                  int      `json:"max_steps"`
+	MaxConcurrency            int      `json:"max_concurrency"`
+	MaxRequestsPerStep        int      `json:"max_requests_per_step"`
+	MaxStepTimeoutSeconds     int      `json:"max_step_timeout_seconds"`
+	DefaultStepTimeoutSeconds int      `json:"default_step_timeout_seconds"`
+}
+
 func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
+	var limits *calibrationDiscovery
 	mcpEndpoint := ""
 	inferenceMCPEndpoint := ""
 	operations, connections, inferenceOperations, inferenceConnections := "", "", "", ""
 	if s.config == nil || !s.config.Cluster.IsWorker() {
+		limits = &calibrationDiscovery{
+			WorkloadKinds: []string{calibration.Chat, calibration.Embeddings},
+			MaxRuns:       calibration.MaxRuns, MaxSteps: calibration.MaxSteps, MaxConcurrency: calibration.MaxConcurrency,
+			MaxRequestsPerStep: calibration.MaxRequestsPerStep, MaxStepTimeoutSeconds: calibration.MaxStepTimeoutSeconds,
+			DefaultStepTimeoutSeconds: calibration.DefaultStepTimeoutSeconds,
+		}
 		mcpEndpoint = "POST /zzrouter/v1/mcp"
 		inferenceMCPEndpoint = "POST /inference/mcp"
 		operations, connections = "GET /zzrouter/v1/operations", "GET /zzrouter/v1/connections"
 		inferenceOperations, inferenceConnections = "GET /inference/v1/operations", "GET /inference/v1/connections"
 	}
 	return apiDiscoveryResponse{
-		Operations: operations, Connections: connections, InferenceOperations: inferenceOperations, InferenceConnections: inferenceConnections,
+		Calibration: limits,
+		Operations:  operations, Connections: connections, InferenceOperations: inferenceOperations, InferenceConnections: inferenceConnections,
 		MCP:                 mcpEndpoint,
 		InferenceMCP:        inferenceMCPEndpoint,
 		APIVersion:          "v1",

@@ -17,6 +17,8 @@ const (
 	KindInferenceLog Kind = "inference_log"
 	KindRun          Kind = "run"
 	KindService      Kind = "service"
+	// KindCalibration measures workloads on one node.
+	KindCalibration Kind = "calibration"
 )
 
 // RingMode selects the event-retention strategy for a kind.
@@ -54,6 +56,7 @@ var kindPrefixes = map[Kind]string{
 	KindInferenceLog: "inflog_",
 	KindRun:          "run_",
 	KindService:      "svc_",
+	KindCalibration:  "cal_",
 }
 
 // idPrefix derives IDs from the same table that decodes them.
@@ -89,8 +92,9 @@ const (
 	// negligible, but the 30s heartbeat accumulates ~2/minute. 300
 	// comfortably covers a 2.5-hour outlier load before dropping
 	// oldest. Real loads are minutes, so 300 is headroom, not a ceiling.
-	defaultRingRun      = 300
-	defaultRingFallback = 100
+	defaultRingRun         = 300
+	defaultRingFallback    = 100
+	defaultRingCalibration = 200
 )
 
 // DefaultRingPolicy returns the ring policy for a kind. Callers can
@@ -109,6 +113,8 @@ func (k Kind) DefaultRingPolicy() RingPolicy {
 		return RingPolicy{Mode: RingFirehose, Size: defaultRingInferenceLog}
 	case KindRun:
 		return RingPolicy{Mode: RingBounded, Size: defaultRingRun}
+	case KindCalibration:
+		return RingPolicy{Mode: RingBounded, Size: defaultRingCalibration}
 	}
 	return RingPolicy{Mode: RingBounded, Size: defaultRingFallback}
 }
@@ -125,6 +131,8 @@ const (
 	// the ceiling is generous to cover outlier loads.
 	inactivityRun      = 2 * time.Hour
 	inactivityFallback = 30 * time.Minute
+	// A warm-up and eight steps can each take 1,800 seconds.
+	inactivityCalibration = 5 * time.Hour
 )
 
 // DefaultInactivityTimeout returns the max-silent-stretch before the
@@ -143,6 +151,8 @@ func (k Kind) DefaultInactivityTimeout() time.Duration {
 		return inactivityInferenceLog
 	case KindRun:
 		return inactivityRun
+	case KindCalibration:
+		return inactivityCalibration
 	}
 	return inactivityFallback
 }

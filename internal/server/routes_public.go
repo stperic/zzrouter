@@ -107,6 +107,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 
 	// Runs: List, launch, stop, load, preview, restart, metrics, config, ports, batch
 	s.controllers.Runs.RegisterPublicRoutes(router, s.idempotent)
+	s.idempotent(router, http.MethodPost, "/calibrations", nil, s.createCalibration)
 
 	// Params: Schema, get/set/delete parameters, ignore
 	s.controllers.Params.RegisterPublicRoutes(router)

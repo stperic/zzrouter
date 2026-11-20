@@ -44,7 +44,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	require.Contains(t, session.InitializeResult().Instructions, "zz_api_search")
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 30)
+	require.Len(t, tools.Tools, 31)
 	if protocol == "2026-07-28" {
 		require.Equal(t, int((5 * time.Minute).Milliseconds()), tools.TTLMs)
 	}
@@ -55,6 +55,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	}
 	require.Contains(t, names, "zz_overview")
 	require.Contains(t, names, "zz_job")
+	require.Contains(t, names, "zz_calibrate")
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError, "%+v", result.Content)

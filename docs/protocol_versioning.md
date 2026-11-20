@@ -31,6 +31,13 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 26 raises both the current version and minimum to 26. The single
+internal run start replaces `env_vars` with `environment` and accepts
+`replace`. The separate `/internal/runs/load` route is removed. Provider schemas add `kv_bytes_parameter` and replace
+`activity_probe` with `observe`. Calibration adds
+`POST /zzrouter/v1/internal/calibrations`. Upgrade the coordinator and every
+worker together, preserving CA and node identity state.
+
 Protocol 25 raises the minimum from 23 to 25. Provider configuration carries
 strict `operations` and `runtime.listener` declarations. Exact-run execution
 rechecks definition and target revisions on the owning worker. Stored Responses
