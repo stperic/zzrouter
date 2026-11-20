@@ -527,21 +527,33 @@ Passed:
   `calibration_running`; a fresh request after cancellation was accepted.
 - **Cluster:** calibrations on the coordinator itself and on a worker.
 
-Not covered live: llama.cpp offload host memory, Strata pinned host RAM
-(not installed on the lab), ComfyUI resident, Windows WDDM ownership, the
-agent campaign scenario, and the console journeys against live data (the
-console needs an operator sign-in; the Chrome journey with fixtures passes).
+Passed later the same day (2026-11-20, build `991feb8`):
+- **llama.cpp offload:** 8 of 28 layers on the GPU; verified, with 5.4 to 6.5 GB
+  of host memory and about 7 cores attributed to the run per step and 1.77 GB
+  on the GPU. With `metrics=true`, `observe` reported running and waiting
+  (no KV series, as declared).
+- **Embeddings:** an Ollama embedding model calibrated as an embeddings run,
+  verified at concurrency 1 and 4.
+- **ComfyUI resident:** listed beside a run with a workload, verified, with
+  its process attributed; its activity went from `unknown` to `idle` at the
+  first poll.
+- **Agent campaign** (`calibrate-two-models`, vLLM on localai, the models
+  absent at the start): Codex and Claude Code (Haiku) each downloaded both
+  models, chose settings, calibrated them together and reported a verified
+  outcome with `zz_*` tools alone, leaving no runs behind. Haiku made three
+  calibrations (each alone, then both) where one suffices; the `zz_calibrate`
+  description now says concurrency 0 keeps a run idle in a step, and the
+  campaign's retry check no longer counts distinct successful calibrations.
+
+Not covered live: Strata pinned host RAM (not installed on the lab),
+llama.cpp on Apple Silicon (not installed on the coordinator), Windows WDDM
+ownership, and the console journeys against live data (the console needs an
+operator sign-in; the Chrome journey with fixtures passes).
 
 ## Follow-ups
 
-- **ComfyUI busy while unobserved** (predates this arc): a run whose
-  `observe.busy` read is unknown, before the first poll or after repeated
-  failures, can be reclaimed while busy. The fix belongs in
-  `instance/eviction.go` (treat unknown as busy for runs that declare
-  `observe.busy`, reason `activity_unknown`).
-- **Ollama embeddings runs report `endpoint: chat`:** a run started through
-  `POST /runs` with `endpoint: embeddings` for an Ollama embedding model
-  reports `chat` in its snapshot, so an embeddings calibration on it is
-  refused as a chat workload missing `output_tokens`.
+- Done (`991feb8`): ComfyUI is no longer reclaimed or idle-expired while its
+  `observe.busy` read is unknown (`activity_unknown`), and served runs report
+  the endpoint the model serves from daemon capability evidence.
 - `zzrouter run` has no endpoint flag, so the CLI cannot start an
-  embeddings run.
+  embeddings run (`POST /runs` with `endpoint` can).
