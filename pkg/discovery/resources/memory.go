@@ -55,7 +55,7 @@ func (p Pool) AsMemoryDevice() (MemoryDevice, bool) {
 	return device, true
 }
 
-// AdmissionTimeout bounds each fresh probe, including process attribution.
+// AdmissionTimeout bounds the fresh probe for memory and holders from the NVIDIA listing.
 const AdmissionTimeout = 10 * time.Second
 
 // MemoryDevices validates a snapshot as a whole before admitting against any device.

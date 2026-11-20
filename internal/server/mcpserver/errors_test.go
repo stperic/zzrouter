@@ -285,6 +285,29 @@ func TestCalibrateToolPreservesRESTProblem(t *testing.T) {
 	require.Equal(t, want, problem)
 }
 
+func TestCalibrateToolPreservesRefusalIDs(t *testing.T) {
+	for _, tc := range []struct{ code, field, id string }{
+		{"calibration_running", "job_id", "cal_active"},
+		{"run_changed", "run_id", "run_target"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusConflict)
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+					"type": "about:blank", "title": "Conflict", "status": 409, "code": tc.code, tc.field: tc.id,
+				}))
+			})
+			result := callAgentTool(t, d, "zz_calibrate", calibrationToolErrorInput())
+			require.Equal(t, true, result["isError"])
+			problem, ok := result["structuredContent"].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tc.code, problem["code"])
+			require.Equal(t, tc.id, problem[tc.field])
+		})
+	}
+}
+
 func TestToolErrorFailedJobIsSuccess(t *testing.T) {
 	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
 		writeFixture(t, w, []byte(`{"data":{"job_id":"j","phase":"failed","err":"launch failed"}}`))

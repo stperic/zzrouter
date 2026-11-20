@@ -17,15 +17,7 @@ import (
 //	utils.GoSafe("worker", func() { defer wg.Done(); worker(ctx) })
 func GoSafe(name string, fn func()) {
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("goroutine panicked",
-					"goroutine", name,
-					"panic", r,
-					"stack", string(debug.Stack()),
-				)
-			}
-		}()
+		defer RecoverAndLog(name)
 		fn()
 	}()
 }
@@ -39,15 +31,13 @@ func GoSafe(name string, fn func()) {
 //	    defer utils.RecoverAndLog("name") // runs FIRST
 //	    work()
 //	}()
-//
-// recover() works only when called directly inside the deferred
-// function, so the body is inlined rather than delegated.
 func RecoverAndLog(name string) {
 	if r := recover(); r != nil {
-		slog.Error("goroutine panicked",
-			"goroutine", name,
-			"panic", r,
-			"stack", string(debug.Stack()),
-		)
+		LogPanic(name, r)
 	}
+}
+
+// LogPanic records diagnostics on the recovering goroutine before it exits.
+func LogPanic(name string, value any) {
+	slog.Error("goroutine panicked", "goroutine", name, "panic", value, "stack", string(debug.Stack()))
 }

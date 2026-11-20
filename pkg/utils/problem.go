@@ -33,6 +33,7 @@ type ProblemDetails struct {
 	Deleted         *int         `json:"deleted,omitempty"`
 	MutationApplied bool         `json:"mutation_applied,omitempty"`
 	RunID           string       `json:"run_id,omitempty"`
+	JobID           string       `json:"job_id,omitempty"`
 	Type            string       `json:"type"`
 	Title           string       `json:"title"`
 	Status          int          `json:"status"`

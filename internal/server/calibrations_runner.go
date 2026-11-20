@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 )
 
@@ -30,18 +30,21 @@ func (r *nodeCalibration) run(job jobs.Handle, request calibration.Request, clai
 	var report *calibration.Report
 	var cause error
 	defer func() {
+		if value := recover(); value != nil {
+			utils.LogPanic("calibration runner", value)
+			cause = calibration.ErrRunnerPanic
+		}
 		claim.Lock()
 		defer claim.Unlock()
+		if report != nil {
+			job.Meta(jobs.Meta{"report": *report})
+		}
+		if cause != nil {
+			job.Fail(cause)
+		} else {
+			job.Done()
+		}
 		claim.jobID = ""
-		if report == nil {
-			return
-		}
-		job.Meta(jobs.Meta{"report": *report})
-		if errors.Is(cause, jobs.ErrCanceled) {
-			job.Fail(jobs.ErrCanceled)
-			return
-		}
-		job.Done()
 	}()
 	job.Progress(0, calibration.Checking, jobs.Bytes{})
 	runner := calibration.Runner{Sender: r, Sampler: r, Clock: clock.System(),

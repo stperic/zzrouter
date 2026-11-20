@@ -1,6 +1,7 @@
 package prov_apps
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -69,9 +70,10 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 }
 
 type launchSelection struct {
-	key    string
-	config config.ServiceConfig
-	model  process.ResolvedModel
+	key                string
+	config             config.ServiceConfig
+	model              process.ResolvedModel
+	replacementWarning *instance.AdmissionWarning
 }
 
 // resolveLaunch resolves the provider config and freezes the runtime a
@@ -104,8 +106,7 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 		weights := m.reserveWeights(ctx, req, selection)
 		inst.SetWeights(weights)
 		inst.SourceRepo = weights.Source
-	}
-	if err == nil {
+		inst.SetAdmissionEffects(instance.AdmissionEffects{Warning: selection.replacementWarning})
 		err = m.instances.Register(inst)
 	}
 	if err != nil {
@@ -259,6 +260,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	argvFeatures := features
 	argvFeatures.Params = maps.Clone(features.Params)
 	_, effects, err := m.admitMemory(ctx, argvFeatures, false, nil)
+	effects.Warning = cmp.Or(effects.Warning, inst.AdmissionWarning())
 	inst.SetAdmissionEffects(effects)
 	var prepared preparedLaunch
 	if err == nil {

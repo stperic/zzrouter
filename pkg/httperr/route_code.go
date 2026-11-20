@@ -65,6 +65,9 @@ const (
 	// CodeCalibrationRunning means a calibration already owns the node claim.
 	CodeCalibrationRunning RouteErrorCode = "calibration_running"
 
+	// CodeCalibrationWrongNode means an internal calibration reached another node.
+	CodeCalibrationWrongNode RouteErrorCode = "calibration_wrong_node"
+
 	// CodeModelSourceAmbiguous requires an exact source id for same-name physical weights.
 	CodeModelSourceAmbiguous RouteErrorCode = "model_source_ambiguous"
 	// CodeModelDetailUnsupported means catalog identity exists without a supported detail reader.

@@ -32,6 +32,7 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeRunChanged":                    "run_changed",
 		"CodeCalibrationUnsupported":        "calibration_unsupported",
 		"CodeCalibrationRunning":            "calibration_running",
+		"CodeCalibrationWrongNode":          "calibration_wrong_node",
 		"CodeRunSettingsDiffer":             "run_settings_differ",
 		"CodeModelSourceAmbiguous":          "model_source_ambiguous",
 		"CodeModelDetailUnsupported":        "model_detail_unsupported",

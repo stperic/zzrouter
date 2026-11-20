@@ -1,8 +1,11 @@
 package calibration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -63,6 +66,36 @@ func startTestRun(ctx context.Context, runner Runner, request Request, targets m
 		done <- runResult{report, err}
 	}()
 	return done
+}
+
+func TestRunnerRecoversRequestWorkerPanics(t *testing.T) {
+	for _, phase := range []string{WarmingUp, Measuring} {
+		t.Run(phase, func(t *testing.T) {
+			const panicValue = "private worker panic fixture"
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			runner, _, targets := runnerFixture(Chat)
+			runner.Sender = senderFunc(func(_ context.Context, now Clock, _, _ string, body map[string]any) Sample {
+				if isWarmup(body) == (phase == WarmingUp) {
+					panic(panicValue)
+				}
+				if isWarmup(body) {
+					return warmupSample(body)
+				}
+				return completedSample(now.Now())
+			})
+			report, err := runner.Run(t.Context(), testRequest(chatWorkload(1)), targets)
+			require.ErrorIs(t, err, ErrRunnerPanic)
+			payload, err := json.Marshal(report)
+			require.NoError(t, err)
+			require.NotContains(t, string(payload), panicValue)
+			require.Contains(t, logs.String(), `"level":"ERROR"`)
+			require.Contains(t, logs.String(), `"panic":"`+panicValue+`"`)
+			require.Contains(t, logs.String(), `"stack":"goroutine `)
+		})
+	}
 }
 
 func TestRunnerInFlightPools(t *testing.T) {

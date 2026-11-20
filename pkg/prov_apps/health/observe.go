@@ -104,7 +104,7 @@ func ReadObservation(ctx context.Context, client *http.Client, run *instance.Ins
 }
 
 func observesRun(observe *schema.Observe, run *instance.Instance) bool {
-	return observe != nil && (observe.Runtimes == nil || observe.Applies(run.Provider, run.Resolved().Runtime))
+	return observe.Applies(run.Provider, run.Resolved().Runtime)
 }
 
 func (o *Observation) combineSeries(family *dto.MetricFamily, maximum bool) *float64 {
