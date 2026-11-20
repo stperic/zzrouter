@@ -183,8 +183,14 @@ observe:
   waiting: <series or path>      # requests queued in the engine
   kv_cache_usage: <series or path> # fraction of the KV pool in use
   busy: [<field>, ...]           # json only: a non-empty array holds the run busy
+  runtimes: [<runtime>, ...]     # optional: base or a feature runtime; absent means every runtime
 ```
 
+- **Runtimes.** A provider whose runtimes serve different engines (MLX: mlx-lm
+  as `base`, mlx-vlm as a feature runtime) scopes the block with `runtimes`,
+  with the same meaning and validation as a provider operation's `runtimes`
+  (`base`, or a feature runtime that exists on the provider), sharing that
+  check. Absent, the block applies to every runtime.
 - **Roles.** Every role is optional.
   - `busy` keeps today's meaning exactly. A listed JSON field holding a
     non-empty array holds the run busy (the eviction hold and the activity
@@ -786,7 +792,7 @@ marked, confirmed on the wire on 2026-11-19:
 | vLLM 0.29.0 (wire) | prometheus `/metrics`: `running` = `vllm:num_requests_running`, `waiting` = `vllm:num_requests_waiting`, `kv_cache_usage` = `vllm:kv_cache_usage_perc` (0 to 1) | `{ignore_eos: true}` (48 of 48 tokens on the wire) | final chunk with `include_usage` | Metrics are on by default. `disable-log-stats: true` leaves the engine series unpopulated, so the form warns and the report reads null. |
 | llama.cpp b10549 (source) | prometheus `/metrics`: `running` = `llamacpp:requests_processing`, `waiting` = `llamacpp:requests_deferred`; no KV usage series exists | `{ignore_eos: true}`; `max_tokens` maps to `n_predict` | final chunk with `include_usage`, plus `timings` | `/metrics` answers 501 without `metrics: true`; the shipped config sets it. |
 | mlx-lm 0.31.3 (wire) | none: no metrics route | none: output reported, not forced (10 of 48 tokens on the wire) | final chunk with `include_usage`, `object` `chat.completion` | Batches only requests without `seed`; `decode-concurrency` 32 and `prompt-concurrency` 8 by default. |
-| mlx-vlm 0.7.6 (source) | json `/metrics`: `running` = `summary.in_flight`, `waiting` = `server.request_queue_depth`; no KV usage | none | final chunk with `include_usage` | Embeddings return usage. |
+| mlx-vlm 0.7.6 (source) | json `/metrics`, `runtimes: [mlx-vlm]` in the MLX schema: `running` = `summary.in_flight`, `waiting` = `server.request_queue_depth`; no KV usage | none | final chunk with `include_usage` | Embeddings return usage. |
 | Strata 0.1.44.1 (source) | prometheus `/metrics/prometheus`: `running` = `vllm:num_requests_running`, `waiting` = `vllm:num_requests_waiting`. Its `vllm:kv_cache_usage_perc` is the running request's share of its context, not KV pool use, so `kv_cache_usage` is not declared. | none: output reported, not forced | always on the final chunk, not gated by `include_usage`, plus `timings` | Serves one request at a time unless the engine gets `--batch N`; see below. No embeddings. `/health` takes no lock, so it answers during a long prefill. |
 | Ollama 0.40.16 (wire) | none: no metrics route; `/api/ps` gives context and residency | none: output reported, not forced (23 of 48 tokens on the wire) | final chunk with `include_usage`, plus `timings` | Embeddings return usage. |
 | ComfyUI | json `/queue`: `busy` = `queue_running`, `queue_pending` | not applicable | not applicable | Resident entries only. |
