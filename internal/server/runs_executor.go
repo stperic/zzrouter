@@ -42,10 +42,7 @@ type RunsExecutor struct {
 	appsConfig          func() *pkgConfig.AppsConfig
 	streamInstanceLogs  func(*gin.Context, string, *logFilter)
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter)
-	// refreshResourceMetrics triggers an immediate re-probe of live
-	// GPU memory/utilization after an unload completes. Mirrors
-	// Ollama's waitForVRAMRecovery pattern: reconcile scheduler
-	// state with actual free VRAM at unload events. Nullable.
+	// refreshResourceMetrics requests a coalesced resource re-probe.
 	refreshResourceMetrics func()
 	// modelInPool reports whether a model is already in the deployed
 	// pool (Cache.LookupModel hit). Used by the auto_deploy=true path
@@ -66,9 +63,7 @@ type RunsExecutor struct {
 	deployGroup singleflight.Group
 }
 
-// NewRunsExecutor creates a new runs executor. refreshResourceMetrics
-// may be nil (tests, non-cluster deployments); production wiring
-// passes a closure over ResourceTracker.CollectNow.
+// NewRunsExecutor wires run execution and optional node metrics publication.
 func NewRunsExecutor(
 	appMgr *prov_apps.ProviderAppManager,
 	getNodename func() string,

@@ -54,13 +54,13 @@ func newReclaimFixture(t *testing.T, enabled bool, keepAlive ...time.Duration) *
 		UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000, UsedMiB: new(int64(9000)),
 		Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(4500))}, {PID: 9000002, MemoryMiB: new(int64(4500))}},
 	}}
-	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device := f.device
 		if old.GetStatus() == instance.StatusStopped || newer.GetStatus() == instance.StatusStopped {
 			device.FreeMiB = 5500
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	return f
 }
 
@@ -109,10 +109,10 @@ func TestMemoryAdmissionReportSkipsReclaimAndUnadmittedCommitment(t *testing.T) 
 	f.features.Commitments = map[string]int64{"GPU-A": 5000}
 	require.True(t, f.older.Evictable())
 	observations := 0
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		observations++
 		return []gpu.MemoryDevice{f.device}, nil
-	}
+	})
 	assessment, effects, err := f.mgr.admitMemory(t.Context(), f.features, false, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "no_fit", assessment.Status)
@@ -138,7 +138,7 @@ func TestMemoryAdmissionReportStillReturnsNonFitErrors(t *testing.T) {
 	assert.Nil(t, effects.Warning)
 
 	f.features.Params["budget"] = "0.5"
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("driver unavailable") }
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("driver unavailable") })
 	_, effects, err = f.mgr.admitMemory(t.Context(), f.features, false, nil)
 	require.ErrorIs(t, err, process.ErrMemoryObservation)
 	assert.Nil(t, effects.Warning)
@@ -190,13 +190,13 @@ func TestMemoryReclaimAutoFractionInsufficientStopsNothing(t *testing.T) {
 	f.features.Params["budget"] = "auto"
 	f.device.TotalMiB, f.device.FreeMiB, f.device.UsedMiB = 20000, 2048, new(int64(17952))
 	*f.device.Processes[0].MemoryMiB, *f.device.Processes[1].MemoryMiB = 1, 0
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device := f.device
 		if f.older.GetStatus() == instance.StatusStopped {
 			device.FreeMiB++
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	evicted, err := f.admit(t)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
@@ -221,14 +221,19 @@ func TestMemoryReclaimDoesNotCreditUnaccountedMemory(t *testing.T) {
 	assert.Equal(t, instance.StatusStopped, f.newer.GetStatus())
 }
 
+func isRecoveryProbe(ctx context.Context) bool {
+	deadline, ok := ctx.Deadline()
+	return ok && time.Until(deadline) <= constants.MemoryRecoveryTimeout
+}
+
 func TestMemoryReclaimWaitsForRecovery(t *testing.T) {
 	for _, recoverMemory := range []bool{true, false} {
 		t.Run(map[bool]string{true: "late", false: "never"}[recoverMemory], func(t *testing.T) {
 			f := newReclaimFixture(t, true)
 			attempts, polls := 0, 0
-			f.mgr.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 				device := f.device
-				if ctx == t.Context() {
+				if !isRecoveryProbe(ctx) {
 					attempts++
 				} else {
 					polls++
@@ -237,7 +242,7 @@ func TestMemoryReclaimWaitsForRecovery(t *testing.T) {
 					device.FreeMiB = 5500
 				}
 				return []gpu.MemoryDevice{device}, nil
-			}
+			})
 			started := utils.Now()
 			_, err := f.admit(t)
 			if recoverMemory {
@@ -323,14 +328,16 @@ func TestIdleReaperUsesEvictable(t *testing.T) {
 func TestMemoryRecoveryUsesDeviceAndBaseline(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	polls := 0
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		polls++
 		free := int64(5000)
 		if polls >= 3 {
 			free = 5500
 		}
-		return []gpu.MemoryDevice{{UUID: "GPU-other", FreeMiB: 10000}, {UUID: "GPU-A", FreeMiB: free}}, nil
-	}
+		device := f.device
+		device.FreeMiB = free
+		return []gpu.MemoryDevice{{UUID: "GPU-other", Index: 1, TotalMiB: 10000, FreeMiB: 10000}, device}, nil
+	})
 	require.NoError(t, f.mgr.waitMemoryRecovery(t.Context(), "GPU-A", 1000+4500-memoryRecoveryToleranceMiB))
 	assert.Equal(t, 3, polls, "wait for held sizes, not merely enough memory for admission")
 }
@@ -389,15 +396,15 @@ func TestMemoryReclaimCancellationBoundsRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	attempts := 0
-	f.mgr.memorySnapshot = func(snapshotCtx context.Context) ([]gpu.MemoryDevice, error) {
-		if snapshotCtx == ctx {
+	f.mgr.memorySnapshot = deviceSnapshot(func(snapshotCtx context.Context) ([]gpu.MemoryDevice, error) {
+		if !isRecoveryProbe(snapshotCtx) {
 			attempts++
 			return []gpu.MemoryDevice{f.device}, nil
 		}
 		cancel()
 		<-snapshotCtx.Done()
 		return nil, snapshotCtx.Err()
-	}
+	})
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
 	_, _, err := f.mgr.admitMemory(ctx, f.features, false, nil)
@@ -517,9 +524,9 @@ func TestMemoryReclaimRetryKeepsSkippedDecision(t *testing.T) {
 	f.newer.SetResolved(instance.Resolved{Commitments: map[string]int64{"GPU-A": 2000}})
 	f.newer.ObserveActivity(true)
 	attempts := 0
-	f.mgr.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 		device := f.device
-		if ctx != t.Context() {
+		if isRecoveryProbe(ctx) {
 			device.FreeMiB = 9000
 			f.newer.ObserveActivity(false)
 		} else {
@@ -530,7 +537,7 @@ func TestMemoryReclaimRetryKeepsSkippedDecision(t *testing.T) {
 			}
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	evicted, err := f.admit(t)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)

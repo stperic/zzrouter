@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	processinfo "github.com/shirou/gopsutil/v4/process"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -488,29 +488,26 @@ func memoryAttribution(device gpu.MemoryDevice, owners []RunRef, stopping string
 	return
 }
 
-// runOwning returns the owning run and whether its ancestry was fully read: engines use children.
-// Unreadable ancestry owns nothing; a fully read foreign ancestry is complete evidence.
+// runOwning keeps the run metadata used for admission and reclaim.
 func runOwning(pid int, owners []RunRef) (RunRef, bool) {
-	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
+	if len(owners) == 0 {
+		return RunRef{}, true
+	}
+	var owner RunRef
+	_, complete := resources.OwningPID(pid, func(candidate int) bool {
 		for _, run := range owners {
-			if run.PID == pid {
-				return run, true
+			if run.PID == candidate {
+				owner = run
+				return true
 			}
 		}
-		seen[pid] = true
-		parent, err := parentPID(int32(pid))
-		if err != nil {
-			return RunRef{}, false
-		}
-		pid = int(parent)
-	}
-	return RunRef{}, pid <= 0 || len(owners) == 0
+		return false
+	}, parentPID)
+	return owner, complete
 }
 
 // parentPID reads a process's parent; tests replace it.
-var parentPID = func(pid int32) (int32, error) {
-	return (&processinfo.Process{Pid: pid}).Ppid()
-}
+var parentPID = resources.ParentPID
 
 func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, value string, allVisible bool) ([]gpu.MemoryDevice, error) {
 	count := 1

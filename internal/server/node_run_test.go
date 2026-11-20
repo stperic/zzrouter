@@ -150,7 +150,7 @@ func TestNodeRunDirectWorkerScalarParameters(t *testing.T) {
 func TestMemoryAdmissionReportWarningOnStartAndRun(t *testing.T) {
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		dir := t.TempDir()
-		script := "#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, 4000' ;;\nesac\n"
+		script := "#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, 4000, 0000:01:00.0, 0, [N/A]' ;;\nesac\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "nvidia-smi"), []byte(script), 0o700))
 		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}

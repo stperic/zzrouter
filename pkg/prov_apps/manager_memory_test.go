@@ -29,7 +29,7 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	smi := filepath.Join(root, "nvidia-smi")
 	writeFree := func(free string) {
 		t.Helper()
-		require.NoError(t, os.WriteFile(smi, []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, "+free+"' ;;\n*) echo 'GPU-A, 42, 3000' ;;\nesac\n"), 0o700))
+		require.NoError(t, os.WriteFile(smi, []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, "+free+", [N/A], 0000:01:00.0, 0, [N/A]' ;;\n*) echo 'GPU-A, 42, 3000' ;;\nesac\n"), 0o700))
 	}
 	writeFree("6000")
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -51,7 +51,7 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+	mgr.memorySnapshot = nvidiaSnapshot
 	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
 	var failure *process.MemoryFitError
 	require.ErrorAs(t, err, &failure)
@@ -87,9 +87,9 @@ func absoluteKVLaunchFixture(t *testing.T, mode string) (*ProviderAppManager, En
 
 func TestAbsoluteKVEnforceRefusalLeavesRunUnresolved(t *testing.T) {
 	mgr, req := absoluteKVLaunchFixture(t, "enforce")
-	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 4000}}, nil
-	}
+	})
 	result, err := mgr.EnsureRun(t.Context(), req)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
@@ -111,7 +111,7 @@ func TestAbsoluteKVReportWarnsWithoutCommitmentOrReclaim(t *testing.T) {
 	require.True(t, mgr.evictable(idle))
 
 	observations := 0
-	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		observations++
 		device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}
 		if idle.GetStatus() == instance.StatusRunning {
@@ -119,7 +119,7 @@ func TestAbsoluteKVReportWarnsWithoutCommitmentOrReclaim(t *testing.T) {
 			device.Processes = []gpu.MemoryProcess{{PID: idle.GetProcessID(), MemoryMiB: new(int64(6000))}}
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	features, err := mgr.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
 	assessment, effects, err := mgr.admitMemory(t.Context(), features, false, nil)
@@ -153,7 +153,7 @@ func newQueueFixture(t *testing.T) queueFixture {
 	root := t.TempDir()
 	smi := filepath.Join(root, "nvidia-smi")
 	setFree := func(free string) {
-		require.NoError(t, os.WriteFile(smi, []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, "+free+"' ;;\nesac\n"), 0o700))
+		require.NoError(t, os.WriteFile(smi, []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, "+free+", [N/A], 0000:01:00.0, 0, [N/A]' ;;\nesac\n"), 0o700))
 	}
 	setFree("6000")
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -177,7 +177,7 @@ func newQueueFixture(t *testing.T) queueFixture {
 	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+	mgr.memorySnapshot = nvidiaSnapshot
 	return queueFixture{mgr: mgr, engine: engine, setFree: setFree}
 }
 
@@ -313,13 +313,13 @@ func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
 			idle.SetStatus(instance.StatusRunning)
 			idle.SetProcessInfo(9000001, 0, 0, nil)
 			require.NoError(t, f.mgr.instances.Register(idle))
-			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				free := int64(1000)
 				if idle.GetStatus() == instance.StatusStopped {
 					free = 6000
 				}
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-			}
+			})
 
 			inst := f.launch(t, "big")
 			want := []instance.EvictedRun{{RunID: idle.ID, Provider: "generic", Model: tc.model, FreedMiB: 5000}}

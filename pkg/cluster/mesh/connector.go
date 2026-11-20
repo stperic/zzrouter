@@ -403,14 +403,6 @@ func (c *Connector) performHealthCheck(ctx context.Context, hostURL string) (*Co
 				data = inner
 			}
 			conn.NodeName = getStr(data, "hostname")
-			if quality == QualityFull {
-				raw, _ := json.Marshal(data["resources"])
-				var resources *ResourceMetrics
-				if json.Unmarshal(raw, &resources) == nil {
-					conn.Resources = resources
-					conn.ResourcesObservedAt = observedAt
-				}
-			}
 			conn.OS = detectOSFromHealth(data)
 			conn.UptimeSeconds = getInt(data, "uptime_seconds")
 			conn.Address = getStr(data, "address")

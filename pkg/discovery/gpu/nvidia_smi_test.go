@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 )
 
 func TestParseNVIDIASMIRows(t *testing.T) {
@@ -121,7 +123,7 @@ func TestParseNVIDIASMIRows(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseNVIDIASMIRows([]byte(tc.body), fields)
+			got := resources.ParseNVIDIARows([]byte(tc.body), fields)
 			if len(got) != len(tc.wantRows) {
 				t.Fatalf("row count: got %d, want %d\ngot: %+v",
 					len(got), len(tc.wantRows), got)
@@ -213,7 +215,7 @@ func TestIsMeaningful(t *testing.T) {
 func TestWrapWithStderr(t *testing.T) {
 	t.Run("plain error passes through unchanged", func(t *testing.T) {
 		base := errors.New("boom")
-		got := wrapWithStderr(base, "nvidia-smi")
+		got := resources.DriverError(base, "nvidia-smi")
 		// Plain (non-ExitError) errors should round-trip with no
 		// added context — there is no Stderr to fold in.
 		if got != base {
@@ -225,7 +227,7 @@ func TestWrapWithStderr(t *testing.T) {
 		base := &exec.ExitError{
 			Stderr: []byte("Failed to initialize NVML: Driver/library version mismatch\n"),
 		}
-		got := wrapWithStderr(base, "nvidia-smi")
+		got := resources.DriverError(base, "nvidia-smi")
 		msg := got.Error()
 		if !strings.Contains(msg, "nvidia-smi") {
 			t.Errorf("expected wrapped message to name the binary, got %q", msg)
@@ -240,7 +242,7 @@ func TestWrapWithStderr(t *testing.T) {
 		// builds, so errors.Is should still walk from the wrapped
 		// error back to the original ExitError.
 		base := &exec.ExitError{Stderr: []byte("anything")}
-		got := wrapWithStderr(base, "nvidia-smi")
+		got := resources.DriverError(base, "nvidia-smi")
 		if !errors.Is(got, base) {
 			t.Errorf("errors.Is should walk through wrapWithStderr to the wrapped *exec.ExitError")
 		}
@@ -248,7 +250,7 @@ func TestWrapWithStderr(t *testing.T) {
 
 	t.Run("ExitError with empty Stderr is left alone", func(t *testing.T) {
 		base := &exec.ExitError{Stderr: nil}
-		got := wrapWithStderr(base, "nvidia-smi")
+		got := resources.DriverError(base, "nvidia-smi")
 		// No stderr → nothing meaningful to add → return the
 		// original error unwrapped so callers' error matching
 		// stays simple.

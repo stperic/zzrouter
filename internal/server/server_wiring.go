@@ -100,8 +100,6 @@ func (s *Server) knownClusterNodes() map[string]bool {
 }
 
 // refreshResourceMetrics requests a coalesced resource re-probe.
-// Nil-safe when cluster tracking is
-// disabled so the load/unload paths can always call through.
 func (s *Server) refreshResourceMetrics() func() {
 	if s.cluster.resources == nil {
 		return nil

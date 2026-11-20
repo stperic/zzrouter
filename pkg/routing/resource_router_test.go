@@ -78,26 +78,26 @@ func TestResourceAwareRouterResourceFiltering(t *testing.T) {
 
 	// Add metrics for nodes
 	router.UpdateNodeMetrics("node-with-resources", &mesh.ResourceMetrics{
-		GPUMemoryTotalMB: 24000,
-		GPUMemoryUsedMB:  4000,
-		GPUMemoryFreeMB:  20000,
-		GPUUtilization:   30,
+		GPUMemoryTotalMB: new(int64(24000)),
+		GPUMemoryUsedMB:  new(int64(4000)),
+		GPUMemoryFreeMB:  new(int64(20000)),
+		GPUUtilization:   new(float64(30)),
 		GPUType:          "nvidia",
 		GPUCount:         1,
-		RAMTotalMB:       64000,
-		RAMAvailableMB:   50000,
+		RAMTotalMB:       new(int64(64000)),
+		RAMAvailableMB:   new(int64(50000)),
 		CollectedAt:      time.Now().Unix(),
 	})
 
 	router.UpdateNodeMetrics("node-low-resources", &mesh.ResourceMetrics{
-		GPUMemoryTotalMB: 8000,
-		GPUMemoryUsedMB:  7500,
-		GPUMemoryFreeMB:  500, // Not enough
-		GPUUtilization:   95,  // Too high
+		GPUMemoryTotalMB: new(int64(8000)),
+		GPUMemoryUsedMB:  new(int64(7500)),
+		GPUMemoryFreeMB:  new(int64(500)),  // Not enough
+		GPUUtilization:   new(float64(95)), // Too high
 		GPUType:          "nvidia",
 		GPUCount:         1,
-		RAMTotalMB:       16000,
-		RAMAvailableMB:   1000,
+		RAMTotalMB:       new(int64(16000)),
+		RAMAvailableMB:   new(int64(1000)),
 		CollectedAt:      time.Now().Unix(),
 	})
 
@@ -259,8 +259,8 @@ func TestResourceAwareRouterFallbackEnabled(t *testing.T) {
 
 	// All nodes have low resources
 	router.UpdateNodeMetrics("node-1", &mesh.ResourceMetrics{
-		GPUMemoryTotalMB: 8000,
-		GPUMemoryFreeMB:  500,
+		GPUMemoryTotalMB: new(int64(8000)),
+		GPUMemoryFreeMB:  new(int64(500)),
 		GPUType:          "nvidia",
 		GPUCount:         1,
 		CollectedAt:      time.Now().Unix(),
@@ -298,8 +298,8 @@ func TestResourceAwareRouterNoFallback(t *testing.T) {
 
 	// All nodes have low resources
 	router.UpdateNodeMetrics("node-1", &mesh.ResourceMetrics{
-		GPUMemoryTotalMB: 8000,
-		GPUMemoryFreeMB:  500,
+		GPUMemoryTotalMB: new(int64(8000)),
+		GPUMemoryFreeMB:  new(int64(500)),
 		GPUType:          "nvidia",
 		GPUCount:         1,
 		CollectedAt:      time.Now().Unix(),
@@ -327,14 +327,14 @@ func TestResourceAwareRouterNoFallback(t *testing.T) {
 
 func TestResourceMetricsHelpers(t *testing.T) {
 	metrics := &mesh.ResourceMetrics{
-		GPUMemoryTotalMB: 24000,
-		GPUMemoryUsedMB:  12000,
-		GPUMemoryFreeMB:  12000,
-		GPUUtilization:   50,
+		GPUMemoryTotalMB: new(int64(24000)),
+		GPUMemoryUsedMB:  new(int64(12000)),
+		GPUMemoryFreeMB:  new(int64(12000)),
+		GPUUtilization:   new(float64(50)),
 		GPUType:          "nvidia",
 		GPUCount:         1,
-		RAMTotalMB:       64000,
-		RAMAvailableMB:   32000,
+		RAMTotalMB:       new(int64(64000)),
+		RAMAvailableMB:   new(int64(32000)),
 	}
 
 	// Test HasGPU
@@ -346,12 +346,6 @@ func TestResourceMetricsHelpers(t *testing.T) {
 	usedPct := metrics.GPUMemoryUsedPercent()
 	if usedPct != 50.0 {
 		t.Errorf("GPUMemoryUsedPercent() = %f, want 50.0", usedPct)
-	}
-
-	// Test RAMUsedPercent
-	ramPct := metrics.RAMUsedPercent()
-	if ramPct != 50.0 {
-		t.Errorf("RAMUsedPercent() = %f, want 50.0", ramPct)
 	}
 
 	// Test CanFitModel
@@ -368,8 +362,8 @@ func TestResourceMetricsNoGPU(t *testing.T) {
 	metrics := &mesh.ResourceMetrics{
 		GPUType:        "none",
 		GPUCount:       0,
-		RAMTotalMB:     64000,
-		RAMAvailableMB: 32000,
+		RAMTotalMB:     new(int64(64000)),
+		RAMAvailableMB: new(int64(32000)),
 	}
 
 	if metrics.HasGPU() {

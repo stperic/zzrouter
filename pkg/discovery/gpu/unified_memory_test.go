@@ -1,8 +1,6 @@
 package gpu
 
 import (
-	"context"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,29 +24,4 @@ func TestUnifiedMemoryObservationKeepsUnknownUsage(t *testing.T) {
 	device, err = UnifiedMemoryDevice(gib, 0)
 	require.NoError(t, err)
 	require.Zero(t, device.FreeMiB, "known zero availability is valid evidence")
-}
-
-func TestMemorySnapshotHonorsCancellationBeforeObserving(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	devices, err := MemorySnapshotContext(ctx)
-	require.ErrorIs(t, err, context.Canceled)
-	require.Nil(t, devices)
-}
-
-func TestAppleMemorySnapshotUsesUnifiedPool(t *testing.T) {
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
-		t.Skip("Apple Silicon memory observation")
-	}
-	t.Setenv("PATH", t.TempDir())
-	devices, err := MemorySnapshotContext(t.Context())
-	require.NoError(t, err)
-	require.Len(t, devices, 1)
-	require.True(t, devices[0].Unified)
-	require.Equal(t, "unified", devices[0].UUID)
-	require.Positive(t, devices[0].TotalMiB)
-	require.GreaterOrEqual(t, devices[0].FreeMiB, int64(0))
-	require.LessOrEqual(t, devices[0].FreeMiB, devices[0].TotalMiB)
-	require.Nil(t, devices[0].UsedMiB)
-	require.NotEmpty(t, devices[0].ProcessReason)
 }

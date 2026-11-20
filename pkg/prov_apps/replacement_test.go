@@ -16,7 +16,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/discovery/hardware"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -49,9 +48,9 @@ func newReplacementRig(t *testing.T, free, held int64, pinned bool, edits ...fun
 		}
 		return nil
 	}))
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-	}
+	})
 	req := r.request()
 	req.Force = false
 	if pinned {
@@ -70,7 +69,7 @@ func newReplacementRig(t *testing.T, free, held int64, pinned bool, edits ...fun
 		{PID: r.old.GetProcessID(), MemoryMiB: new(held)}, {PID: r.other.GetProcessID(), MemoryMiB: new(other)},
 	}}}
 	r.after = []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free + held, UsedMiB: new(other), Processes: r.before[0].Processes[1:]}}
-	r.m.memorySnapshot = r.snapshot
+	r.m.memorySnapshot = deviceSnapshot(r.snapshot)
 	return r
 }
 
@@ -155,13 +154,10 @@ func TestReplacementUnifiedRefusalKeepsOldRunServing(t *testing.T) {
 	r := newContractRig(t, false, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
 	})))
-	r.m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
-	}
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device, err := gpu.UnifiedMemoryDevice(10000*1024*1024, 10000*1024*1024)
 		return []gpu.MemoryDevice{device}, err
-	}
+	})
 	req := EnsureRequest{Provider: "generic", Model: "shared", Parameters: map[string]string{"keep-alive": "-1"}}
 	started, err := r.m.EnsureRun(t.Context(), req)
 	require.NoError(t, err)
@@ -225,7 +221,7 @@ func TestReplacementReserveCreditsUnusedCommitment(t *testing.T) {
 	awaitRunning(t, started.Run)
 	before := started.Run.Resolved()
 	// 2048 MiB is used; the other 6952 MiB of its reservation must also be credited.
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 10000}
 		if started.Run.GetStatus() != instance.StatusStopped {
 			device.FreeMiB = 7952
@@ -233,7 +229,7 @@ func TestReplacementReserveCreditsUnusedCommitment(t *testing.T) {
 			device.Processes = []gpu.MemoryProcess{{PID: started.Run.GetProcessID(), MemoryMiB: new(int64(2048))}, {PID: 9000001, MemoryMiB: new(int64(14576))}}
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	blocker := instance.NewInstance("reserve-blocker", "other", "blocker", 0, -1, 1)
 	blocker.SetStatus(instance.StatusRunning)
 	blocker.SetProcessInfo(9000001, 0, 0, nil)
@@ -277,12 +273,12 @@ func TestReplacementPlansIdleEvictionWithoutStopping(t *testing.T) {
 			lease, err := r.other.Acquire(t.Context(), nil)
 			require.NoError(t, err, "planning must not claim an idle victim")
 			lease.Release()
-			r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+			r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 				if r.other.GetStatus() == instance.StatusStopped {
 					return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 				}
 				return r.snapshot(ctx)
-			}
+			})
 			b.open()
 			got := collect(t, []<-chan outcome{out})[0]
 			require.NoError(t, got.err)
@@ -499,10 +495,10 @@ func TestReplacementBoundCoversIdlePlan(t *testing.T) {
 func TestReplacementUnbudgetedKeepsStopOrder(t *testing.T) {
 	r := newReplacementRig(t, 1000, 2000, false)
 	r.setBudget(nil)
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		t.Error("an unbudgeted engine must not measure memory")
 		return nil, nil
-	}
+	})
 	run, err := r.replace(t)
 	require.NoError(t, err)
 	awaitRunning(t, run)
@@ -609,7 +605,7 @@ func TestReplacementAutoFractionWithZeroCredit(t *testing.T) {
 func TestReplacementInferenceReusesOldRunDuringCheck(t *testing.T) {
 	r := newReplacementRig(t, 1000, 2000, false)
 	b := newBarrier()
-	r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) { b.hold(); return r.snapshot(ctx) }
+	r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) { b.hold(); return r.snapshot(ctx) })
 	out := r.ensure(t.Context(), r.request())
 	b.reached(t)
 	req := r.request()
@@ -629,7 +625,7 @@ func TestReplacementInferenceReusesOldRunDuringCheck(t *testing.T) {
 func TestReplacementConcurrentRestartsOneCheck(t *testing.T) {
 	r := newReplacementRig(t, 1000, 2000, false)
 	b := newBarrier()
-	r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) { b.hold(); return r.snapshot(ctx) }
+	r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) { b.hold(); return r.snapshot(ctx) })
 	ctxs, reqs := same(t.Context(), r.request())
 	outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 	require.Eventually(t, func() bool {
@@ -658,12 +654,12 @@ func TestReplacementLateStealRefusesAfterStop(t *testing.T) {
 	r := newReplacementRig(t, 1000, 5000, true)
 	pins := readPins(t)
 	var post atomic.Int32
-	r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 		if r.old.GetStatus() == instance.StatusStopped && post.Add(1) > 1 {
 			return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000}}, nil
 		}
 		return r.snapshot(ctx)
-	}
+	})
 	_, err := r.replace(t)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
@@ -700,12 +696,12 @@ func TestReplacementStopFailure(t *testing.T) {
 			} else {
 				r.after[0].FreeMiB = 1000
 				if failure == "recovery cancellation" {
-					r.m.memorySnapshot = func(snapshotCtx context.Context) ([]gpu.MemoryDevice, error) {
+					r.m.memorySnapshot = deviceSnapshot(func(snapshotCtx context.Context) ([]gpu.MemoryDevice, error) {
 						if r.old.GetStatus() == instance.StatusStopped {
 							cancel()
 						}
 						return r.snapshot(snapshotCtx)
-					}
+					})
 				}
 			}
 			prepared, err := r.m.prepareStart(ctx, r.request())
@@ -837,7 +833,7 @@ func TestReplacementSizedNeedRefusesBeforeStop(t *testing.T) {
 
 func TestReplacementUnavailableObservationKeepsStopOrder(t *testing.T) {
 	r := newReplacementRig(t, 1000, 2000, false)
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation }
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation })
 	_, err := r.replace(t)
 	assert.ErrorIs(t, err, process.ErrMemoryObservation)
 	assert.Equal(t, instance.StatusStopped, r.old.GetStatus())
@@ -850,7 +846,7 @@ func TestReplacementRecoveryWaitsForEveryDevice(t *testing.T) {
 	second.UUID, second.Index = "GPU-B", 1
 	r.before = append(r.before, second)
 	var recovered atomic.Int32
-	r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 		if r.old.GetStatus() != instance.StatusStopped {
 			return r.snapshot(ctx)
 		}
@@ -860,7 +856,7 @@ func TestReplacementRecoveryWaitsForEveryDevice(t *testing.T) {
 			second.FreeMiB = 1000
 		}
 		return []gpu.MemoryDevice{r.after[0], second}, nil
-	}
+	})
 	req := r.request()
 	req.Parameters = map[string]string{"devices": "2"}
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}
@@ -883,12 +879,12 @@ func TestReplacementLayersKeepsOtherCommitments(t *testing.T) {
 			resolved := r.other.Resolved()
 			resolved.Commitments = map[string]int64{"GPU-A": 6000}
 			r.other.SetResolved(resolved)
-			r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+			r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 				if r.other.GetStatus() == instance.StatusStopped {
 					return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 				}
 				return r.snapshot(ctx)
-			}
+			})
 			if evict {
 				features, err := r.m.ResolveLaunchParameters(t.Context(), r.request())
 				require.NoError(t, err)
@@ -937,7 +933,7 @@ func TestReplacementPlansIdleEvictionsOnBothDevices(t *testing.T) {
 	r.before = append(r.before, gpu.MemoryDevice{UUID: "GPU-B", Index: 1, TotalMiB: 10000, FreeMiB: 1000, UsedMiB: new(int64(9000)), Processes: []gpu.MemoryProcess{
 		{PID: r.old.GetProcessID(), MemoryMiB: new(int64(2000))}, {PID: second.GetProcessID(), MemoryMiB: new(int64(7000))},
 	}})
-	r.m.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(ctx context.Context) ([]gpu.MemoryDevice, error) {
 		devices, err := r.snapshot(ctx)
 		devices = slices.Clone(devices)
 		if r.old.GetStatus() == instance.StatusStopped {
@@ -951,7 +947,7 @@ func TestReplacementPlansIdleEvictionsOnBothDevices(t *testing.T) {
 			}
 		}
 		return devices, err
-	}
+	})
 	req := r.request()
 	req.Parameters = map[string]string{"devices": "2"}
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}
@@ -1166,15 +1162,12 @@ func TestFreshLayersAndUnifiedGPUSelectionWithoutCommitments(t *testing.T) {
 				r := newContractRig(t, false, WithIdleMemoryEviction(evict), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 					return &schema.MemoryBudget{Kind: kind}, nil
 				})))
-				r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 					return []gpu.MemoryDevice{
 						{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 9000, UsedMiB: new(int64(1000))},
 						{UUID: "GPU-B", Index: 1, TotalMiB: 10000, FreeMiB: 9000, UsedMiB: new(int64(1000))},
 					}, nil
-				}
-				r.m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-					return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
-				}
+				})
 				result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "shared"})
 				require.NoError(t, err)
 				awaitRunning(t, result.Run)

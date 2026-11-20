@@ -118,8 +118,7 @@ func (r *ResourceAwareRouter) UpdateNodeMetrics(nodeName string, metrics *mesh.R
 	defer r.mu.Unlock()
 
 	r.nodeMetrics[nodeName] = metrics
-	utils.LogDebugf("[ResourceRouter] Updated metrics for node %s: GPU=%dMB free, RAM=%dMB available",
-		nodeName, metrics.GPUMemoryFreeMB, metrics.RAMAvailableMB)
+	utils.LogDebugf("[ResourceRouter] Updated metrics for node %s", nodeName)
 }
 
 // routingSnapshot holds an immutable copy of the router's mutable state.
@@ -272,7 +271,7 @@ func (r *ResourceAwareRouter) selectByResources(snap *routingSnapshot, decision 
 		}
 		// Tie-breaker: more free memory
 		if available[i].Metrics != nil && available[j].Metrics != nil {
-			return available[i].Metrics.GPUMemoryFreeMB > available[j].Metrics.GPUMemoryFreeMB
+			return measuredMiB(available[i].Metrics.GPUMemoryFreeMB) > measuredMiB(available[j].Metrics.GPUMemoryFreeMB)
 		}
 		// Final tie-breaker: higher priority value = preferred
 		return available[i].Priority > available[j].Priority
@@ -408,6 +407,13 @@ func matchesNodePriority(nodeName, appName string, priority *config.NodePriority
 	return true
 }
 
+func measuredMiB(v *int64) int64 {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
 // hasAvailableResources checks if a candidate has sufficient resources
 func hasAvailableResources(thresholds *config.ResourceThresholds, candidate *CandidateEndpoint, requiredMemoryMB int64) bool {
 	metrics := candidate.Metrics
@@ -416,28 +422,11 @@ func hasAvailableResources(thresholds *config.ResourceThresholds, candidate *Can
 		return true
 	}
 
-	// Check GPU memory if GPU is available
 	if metrics.HasGPU() {
-		if metrics.GPUMemoryFreeMB < requiredMemoryMB {
-			return false
-		}
-		if metrics.GPUUtilization > thresholds.GetMaxGPUUtilization() {
-			return false
-		}
-		if metrics.GPUMemoryFreeMB < thresholds.GetMinFreeGPUMemoryMB() {
-			return false
-		}
-	} else {
-		// CPU inference - check RAM
-		if metrics.RAMAvailableMB < requiredMemoryMB {
-			return false
-		}
-		if metrics.RAMAvailableMB < thresholds.GetMinFreeRAMMB() {
-			return false
-		}
+		return metrics.CanFitModel(max(requiredMemoryMB, thresholds.GetMinFreeGPUMemoryMB()), true) &&
+			(metrics.GPUUtilization == nil || *metrics.GPUUtilization <= thresholds.GetMaxGPUUtilization())
 	}
-
-	return true
+	return metrics.CanFitModel(max(requiredMemoryMB, thresholds.GetMinFreeRAMMB()), false)
 }
 
 // calculateScore computes a ranking score for a candidate.
@@ -455,18 +444,19 @@ func calculateScore(candidate *CandidateEndpoint, _ int64) float64 {
 
 		if metrics.HasGPU() {
 			// GPU memory score (0-30): more free memory = higher score
-			if metrics.GPUMemoryTotalMB > 0 {
-				freeRatio := float64(metrics.GPUMemoryFreeMB) / float64(metrics.GPUMemoryTotalMB)
+			if measuredMiB(metrics.GPUMemoryTotalMB) > 0 {
+				freeRatio := float64(measuredMiB(metrics.GPUMemoryFreeMB)) / float64(measuredMiB(metrics.GPUMemoryTotalMB))
 				score += freeRatio * 30
 			}
 
 			// GPU utilization score (0-30): lower utilization = higher score
-			utilScore := (100.0 - metrics.GPUUtilization) / 100.0 * 30
-			score += utilScore
+			if metrics.GPUUtilization != nil {
+				score += (100 - *metrics.GPUUtilization) / 100 * 30
+			}
 		} else {
 			// RAM score for CPU inference
-			if metrics.RAMTotalMB > 0 {
-				freeRatio := float64(metrics.RAMAvailableMB) / float64(metrics.RAMTotalMB)
+			if metrics.RAMTotalMB != nil && *metrics.RAMTotalMB > 0 && metrics.RAMAvailableMB != nil {
+				freeRatio := float64(*metrics.RAMAvailableMB) / float64(*metrics.RAMTotalMB)
 				score += freeRatio * 60
 			}
 		}

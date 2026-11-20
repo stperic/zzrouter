@@ -89,12 +89,8 @@ func (e *Endpoint) Usable() bool {
 type HealthReport struct {
 	Activity         *instance.Activity
 	ProviderActivity map[string]*instance.Activity
-	// Resources is an optional sample from the existing resource tracker.
-	Resources *ResourceMetrics
-	// ResourcesObservedAt is the local probe start, never a peer clock value.
-	ResourcesObservedAt time.Time
-	ClusterRole         string // "coordinator" | "worker" | "standalone"
-	OS                  string
+	ClusterRole      string // "coordinator" | "worker" | "standalone"
+	OS               string
 
 	UptimeSeconds int
 	Address       string // Worker's self-reported bind address (e.g. "0.0.0.0:9090")
@@ -257,20 +253,20 @@ func (s EndpointStatus) String() string {
 // ResourceMetrics represents real-time resource availability on a node
 type ResourceMetrics struct {
 	// GPU memory metrics (in MB for precision)
-	GPUMemoryTotalMB int64 `json:"gpu_memory_total_mb"`
-	GPUMemoryUsedMB  int64 `json:"gpu_memory_used_mb"`
-	GPUMemoryFreeMB  int64 `json:"gpu_memory_free_mb"`
+	GPUMemoryTotalMB *int64 `json:"gpu_memory_total_mb"`
+	GPUMemoryUsedMB  *int64 `json:"gpu_memory_used_mb"`
+	GPUMemoryFreeMB  *int64 `json:"gpu_memory_free_mb"`
 
 	// GPU utilization (0-100 percentage)
-	GPUUtilization float64 `json:"gpu_utilization"`
+	GPUUtilization *float64 `json:"gpu_utilization"`
 
 	// GPU type and count
 	GPUType  string `json:"gpu_type"`  // "nvidia", "amd", "apple", "none"
 	GPUCount int    `json:"gpu_count"` // Number of GPUs
 
 	// RAM metrics (in MB for consistency)
-	RAMTotalMB     int64 `json:"ram_total_mb"`
-	RAMAvailableMB int64 `json:"ram_available_mb"`
+	RAMTotalMB     *int64 `json:"ram_total_mb"`
+	RAMAvailableMB *int64 `json:"ram_available_mb"`
 
 	// Active model information
 	ActiveModels int `json:"active_models"` // Number of models currently loaded
@@ -287,26 +283,17 @@ func (r *ResourceMetrics) HasGPU() bool {
 
 // GPUMemoryUsedPercent returns the percentage of GPU memory used
 func (r *ResourceMetrics) GPUMemoryUsedPercent() float64 {
-	if r.GPUMemoryTotalMB == 0 {
+	if r.GPUMemoryTotalMB == nil || *r.GPUMemoryTotalMB <= 0 || r.GPUMemoryUsedMB == nil {
 		return 0
 	}
-	return float64(r.GPUMemoryUsedMB) / float64(r.GPUMemoryTotalMB) * 100
-}
-
-// RAMUsedPercent returns the percentage of RAM used
-func (r *ResourceMetrics) RAMUsedPercent() float64 {
-	if r.RAMTotalMB == 0 {
-		return 0
-	}
-	used := r.RAMTotalMB - r.RAMAvailableMB
-	return float64(used) / float64(r.RAMTotalMB) * 100
+	return float64(*r.GPUMemoryUsedMB) / float64(*r.GPUMemoryTotalMB) * 100
 }
 
 // CanFitModel checks if there's enough GPU memory (or RAM for CPU inference) to fit a model
 func (r *ResourceMetrics) CanFitModel(requiredMemoryMB int64, useGPU bool) bool {
+	available := r.RAMAvailableMB
 	if useGPU && r.HasGPU() {
-		return r.GPUMemoryFreeMB >= requiredMemoryMB
+		available = r.GPUMemoryFreeMB
 	}
-	// CPU inference uses RAM
-	return r.RAMAvailableMB >= requiredMemoryMB
+	return available != nil && *available >= requiredMemoryMB
 }

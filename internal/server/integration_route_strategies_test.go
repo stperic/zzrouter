@@ -15,7 +15,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,8 +92,7 @@ func TestIntegrationRouteStrategiesAcrossNodes(t *testing.T) {
 			// Enough total memory for the running model, with little left for a second run.
 			coordinator.observePeerSnapshot("http://"+node+".test:9090", &mesh.Connection{
 				NodeName: node, Quality: mesh.QualityFull, HealthReport: mesh.HealthReport{
-					Resources:           &mesh.ResourceMetrics{NodeName: node, GPUMemoryTotalMB: 96 << 10, GPUMemoryFreeMB: 4778},
-					ResourcesObservedAt: utils.Now(),
+					VRAMTotalGB: 96, VRAMAvailableGB: 4778.0 / 1024,
 				},
 			})
 		}

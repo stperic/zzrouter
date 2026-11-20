@@ -28,15 +28,8 @@
 //   - pkg/discovery/hardware — runtime discovery endpoint.
 //     Consumes Inventory via a thin adapter that reshapes Cards
 //     into the legacy HardwareInfo / GPUInfo contract.
-//   - pkg/cluster/resource_tracker — live runtime metrics
-//     (memory.used, utilization.gpu) via LiveMetricsContext.
 //
-// Every subprocess primitive (nvidia-smi / rocm-smi shell-out,
-// field constants, row parsing) is package-internal by design:
-// callers outside this package consume the typed results, not
-// the raw query helpers. That invariant is load-bearing for
-// the tri-state / inventory / live-metrics semantics the three
-// entry points enforce.
+// Live memory and utilization come from pkg/discovery/resources.
 package gpu
 
 import (

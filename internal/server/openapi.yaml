@@ -1051,6 +1051,8 @@ paths:
         the version and protocol window peers negotiate against, not a
         verdict on the cluster. The one route every node serves,
         coordinator or worker, which is why peer discovery reads it.
+        A native node omits memory_used and memory_used_percent when usage
+        is unknown. Its memory_sample then omits used_bytes.
       parameters:
         - name: detailed
           in: query
@@ -15258,12 +15260,14 @@ components:
         - queue_wait_expired
 
     HealthResponse:
+      allOf:
+        - $ref: '#/components/schemas/NodeMemoryObservation'
       type: object
       description: >
         The payload every health route shares except the liveness probe.
-        The route decides `status` and the HTTP code; the fields do not
-        vary, so peer discovery reading /health sees the same protocol
-        window as a kubelet reading /health/ready.
+        The route decides `status` and the HTTP code. Peer discovery
+        reading /health sees the same protocol window as a kubelet reading
+        /health/ready. Native resource observations are optional.
       required:
         [status, version, api_version, service_type, uptime, capabilities,
          cluster_protocol, min_cluster_protocol, cluster_compatible,
@@ -15608,13 +15612,31 @@ components:
         json_mode:          { type: boolean }
         max_context_tokens: { type: integer, minimum: 1 }
 
+    NodeMemoryObservation:
+      type: object
+      properties:
+        memory_used:
+          type: object
+          description: Observed RAM usage in bytes. Omitted when unknown.
+          properties:
+            value: { type: integer, format: int64, minimum: 0 }
+            display_value: { type: string }
+        memory_used_percent:
+          type: object
+          description: Observed RAM usage as a percentage. Omitted when unknown.
+          properties:
+            value: { type: number, minimum: 0 }
+            display_value: { type: string }
+        memory_sample:
+          $ref: '#/components/schemas/MemorySample'
+
     MemorySample:
       type: object
       description: Measured memory usage. Absence or omitted used_bytes means unknown, never zero. Peer age is anchored to the coordinator probe start; reading inventory does not renew the sample. Stale or unavailable-node readings are last reported.
       required: [total_bytes, age_seconds, observed_at, stale]
       properties:
         total_bytes: { type: integer, format: int64, minimum: 1 }
-        used_bytes: { type: integer, format: int64, minimum: 0 }
+        used_bytes: { type: integer, format: int64, minimum: 0, description: Omitted when usage is unknown. }
         age_seconds: { type: number, minimum: 0 }
         observed_at: { type: string, format: date-time }
         stale: { type: boolean }
@@ -15972,6 +15994,7 @@ components:
           properties:
             count: { type: integer, minimum: 0 }
             type: { type: string }
+            utilization_percent: { type: number, description: Observed GPU utilization. Omitted when unknown. }
             unified_memory: { type: boolean, description: GPU and RAM share one memory pool; do not sum them. }
             gpus:
               type: array
@@ -16031,7 +16054,7 @@ components:
             sample: { $ref: '#/components/schemas/MemorySample' }
             total_gb:     { type: number, description: GiB }
             available_gb: { type: number, description: GiB }
-            used_percent: { type: number }
+            used_percent: { type: number, description: Omitted when usage is unknown. }
         metadata:
           type: object
           additionalProperties: true
@@ -18397,6 +18420,8 @@ components:
         has_rejection: { type: boolean }
 
     SystemInfo:
+      allOf:
+        - $ref: '#/components/schemas/NodeMemoryObservation'
       type: object
       description: |
         Node identity, runtime metrics, and hardware info. Produced by

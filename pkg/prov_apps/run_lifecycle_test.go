@@ -406,9 +406,9 @@ func TestRunLifecycleQueuedRefusalKeepsRequest(t *testing.T) {
 	r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 	})), func(m *ProviderAppManager) {
-		m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 			return []gpu.MemoryDevice{{UUID: "GPU-test", TotalMiB: 10000, FreeMiB: 6000}}, nil
-		}
+		})
 	})
 	before := readPins(t)
 	blocker, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "blocker"})

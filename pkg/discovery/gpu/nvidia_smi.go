@@ -3,44 +3,23 @@ package gpu
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host"
 )
 
-// These helpers own the nvidia-smi subprocess for every path in
-// this package that needs it: install-time Probe on Linux,
-// Inventory per-card enrichment, and LiveMetrics runtime polling.
-// Keeping the shell-out in one file means we only have one place
-// to handle "binary not found", output format quirks, and context
-// propagation.
-//
-// All symbols here are package-internal. Callers outside
-// pkg/discovery/gpu consume Detection / Inventory / LiveMetrics
-// rather than raw nvidia-smi rows — the typed entry points own
-// the error semantics, field-set choice, and cross-format parsing
-// that used to be duplicated at every call site.
-//
-// Darwin never calls into these — NVIDIA no longer ships a macOS
-// driver, so the binary is never present.
-
-// Field names accepted by nvidia-smi --query-gpu. Constants exist
-// for the small set this codebase actually uses; callers can pass
-// any string matching nvidia-smi's documented field list and read
-// the result by the same name from nvidiaRow.
+// Static probes request their own driver fields from the shared CSV parser.
 const (
 	nvidiaFieldName           = "name"
 	nvidiaFieldDriverVersion  = "driver_version"
 	nvidiaFieldMemoryTotalMiB = "memory.total"
-	nvidiaFieldMemoryUsedMiB  = "memory.used"
-	nvidiaFieldMemoryFreeMiB  = "memory.free"
-	nvidiaFieldUtilizationGPU = "utilization.gpu"
-	nvidiaFieldComputeCap     = "compute_cap"
-	nvidiaFieldPCIBusID       = "pci.bus_id"
+
+	nvidiaFieldComputeCap = "compute_cap"
+	nvidiaFieldPCIBusID   = "pci.bus_id"
 	// nvidiaFieldUUID returns the durable per-card identifier
 	// "GPU-abc123-def...". Stable across reboots, card moves, and
 	// driver re-enumeration; the right pin for runtime workload
@@ -63,7 +42,7 @@ const (
 // doesn't support; those values land in the row verbatim and the
 // caller is responsible for treating them as "unknown" (an empty
 // string also works as a sentinel since strconv.Parse* will error).
-type nvidiaRow map[string]string
+type nvidiaRow = map[string]string
 
 // queryNVIDIASMI runs `nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits`
 // and returns one nvidiaRow per GPU. The returned rows are in the
@@ -102,51 +81,9 @@ func queryNVIDIASMI(ctx context.Context, fields ...string) ([]nvidiaRow, error) 
 		// can see "Failed to initialize NVML: Driver/library version
 		// mismatch" instead of a bare "exit status 255". Pure wrap,
 		// so errors.Is(err, context.Canceled) etc. still unwrap.
-		return nil, wrapWithStderr(err, "nvidia-smi")
+		return nil, resources.DriverError(err, "nvidia-smi")
 	}
-	return parseNVIDIASMIRows(out, fields), nil
-}
-
-// wrapWithStderr pulls the Stderr field out of an *exec.ExitError
-// and folds it into the returned error message. Pure wrap — the
-// original err is %w-ed so callers can still errors.Is / errors.As
-// through to the root cause.
-func wrapWithStderr(err error, binary string) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
-		return fmt.Errorf("%s: %w: %s", binary, err, strings.TrimSpace(string(exit.Stderr)))
-	}
-	return err
-}
-
-// parseNVIDIASMIRows converts the CSV body of an nvidia-smi
-// --query-gpu invocation into keyed nvidiaRow values. Pure: no
-// subprocess, no ctx, no error path — every malformed line
-// silently produces a partial row with zero values for missing
-// fields, which matches the caller contract on nvidiaRow.
-//
-// Exposed as package-private so queryNVIDIASMI and its tests can
-// share the parser without either re-implementing it.
-func parseNVIDIASMIRows(out []byte, fields []string) []nvidiaRow {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	rows := make([]nvidiaRow, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, ",")
-		row := make(nvidiaRow, len(fields))
-		for i, name := range fields {
-			if i < len(parts) {
-				row[name] = strings.TrimSpace(parts[i])
-			} else {
-				row[name] = ""
-			}
-		}
-		rows = append(rows, row)
-	}
-	return rows
+	return resources.ParseNVIDIARows(out, fields), nil
 }
 
 // populateNVIDIADetection fills in a Detection from one nvidiaRow.
@@ -173,19 +110,6 @@ func populateNVIDIADetection(d *Detection, row nvidiaRow) {
 	}
 }
 
-// isMeaningful reports whether a nvidia-smi field value carries
-// real data. Empty strings and the literal `[N/A]` placeholder
-// nvidia-smi emits for unsupported fields both count as missing.
-func isMeaningful(v string) bool {
-	if v == "" {
-		return false
-	}
-	if strings.EqualFold(v, "[N/A]") || strings.EqualFold(v, "N/A") {
-		return false
-	}
-	return true
-}
-
 // nvidiaCUDABannerRe matches the "CUDA Version: X.Y" line nvidia-smi
 // prints in its top banner when invoked with no --query-gpu flag.
 // The value is the MAX CUDA runtime the installed driver supports,
@@ -209,7 +133,7 @@ func queryNVIDIACUDAVersion(ctx context.Context) (string, error) {
 		if errors.Is(err, exec.ErrNotFound) {
 			return "", nil
 		}
-		return "", wrapWithStderr(err, "nvidia-smi")
+		return "", resources.DriverError(err, "nvidia-smi")
 	}
 	return parseNVIDIACUDAVersion(out), nil
 }
@@ -226,30 +150,6 @@ func parseNVIDIACUDAVersion(out []byte) string {
 	return string(m[1])
 }
 
-// normalizePCIAddress canonicalizes PCI addresses so the various
-// forms emitted by ghw, nvidia-smi, and sysfs compare equal. The
-// canonical form is lowercase with a 4-digit domain, matching the
-// shape ghw produces — e.g. "0000:01:00.0".
-//
-// nvidia-smi has historically reported either "00000000:01:00.0"
-// (8-digit domain from NVML) or "0000:01:00.0" depending on driver
-// version. Both fold into the canonical form here.
-func normalizePCIAddress(addr string) string {
-	addr = strings.ToLower(strings.TrimSpace(addr))
-	if addr == "" {
-		return ""
-	}
-	parts := strings.SplitN(addr, ":", 2)
-	if len(parts) != 2 {
-		return addr
-	}
-	domain := strings.TrimLeft(parts[0], "0")
-	if domain == "" {
-		domain = "0"
-	}
-	// Pad to 4 hex digits to match ghw's convention.
-	for len(domain) < 4 {
-		domain = "0" + domain
-	}
-	return domain + ":" + parts[1]
-}
+func isMeaningful(value string) bool { return resources.Meaningful(value) }
+
+func normalizePCIAddress(addr string) string { return resources.NormalizePCIAddress(addr) }
