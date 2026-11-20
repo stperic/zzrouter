@@ -138,25 +138,29 @@ func TestGenerator(t *testing.T) {
 }
 
 func TestPromptSizing(t *testing.T) {
+	const longCharacters = 2048
+	promptSize := func(inputTokens int, short, long Sample) (int, *Reason) {
+		return (Workload{InputTokens: inputTokens}).promptSize(nil, short, long, longCharacters)
+	}
 	short := Sample{InputTokens: new(90)}
 	long := Sample{InputTokens: new(538)}
-	size, failure := promptSize(101, short, long)
+	size, failure := promptSize(97, short, long)
 	require.Nil(t, failure)
 	require.Equal(t, 300, size)
 	size, failure = promptSize(20, short, long)
 	require.Nil(t, failure)
 	require.Zero(t, size, "the template alone already exceeds the target")
 
-	size, failure = promptSize(22, Sample{InputTokens: new(20)}, Sample{InputTokens: new(27)})
+	size, failure = promptSize(18, Sample{InputTokens: new(20)}, Sample{InputTokens: new(27)})
 	require.Nil(t, failure)
 	require.Equal(t, 768, size)
-	size, failure = promptSize(22, Sample{InputTokens: new(20)}, Sample{InputTokens: new(25)})
+	size, failure = promptSize(18, Sample{InputTokens: new(20)}, Sample{InputTokens: new(25)})
 	require.Nil(t, failure)
 	require.Equal(t, 973, size, "fractional character counts round up")
 
 	size, failure = promptSize(1, Sample{InputTokens: new(0)}, Sample{InputTokens: new(224)})
 	require.Nil(t, failure)
-	require.Equal(t, 264, size, "zero reported tokens are a measured value")
+	require.Equal(t, 296, size, "zero reported tokens are a measured value")
 
 	for _, sample := range []Sample{{}, {InputTokens: new(-1)}} {
 		_, failure = promptSize(10, sample, long)
@@ -168,6 +172,32 @@ func TestPromptSizing(t *testing.T) {
 	_, failure = promptSize(10, short, Sample{ErrorCode: "upstream_timeout"})
 	require.Equal(t, "requests_failed", failure.Code)
 	require.Contains(t, failure.Message, "upstream_timeout")
+}
+
+func TestPromptTokenMargin(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		workload       Workload
+		context        *int
+		tokensPerChar  int
+		wantCharacters int
+	}{
+		{"four token minimum", Workload{InputTokens: 100}, nil, 1, 104},
+		{"percentage rounded up", Workload{InputTokens: 30_001, OutputTokens: new(256)}, nil, 1, 30_062},
+		{"partial margin at context limit", Workload{InputTokens: 30_001, OutputTokens: new(256)}, new(30_260), 1, 30_004},
+		{"no margin at context limit", Workload{InputTokens: 30_001, OutputTokens: new(256)}, new(30_257), 1, 30_001},
+		{"embeddings use full context", Workload{InputTokens: 100}, new(101), 1, 101},
+		{"character rounding stays within context", Workload{InputTokens: 100, OutputTokens: new(2)}, new(105), 2, 51},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			const longCharacters = 512
+			short := Sample{InputTokens: new(256 * tt.tokensPerChar)}
+			long := Sample{InputTokens: new(longCharacters * tt.tokensPerChar)}
+			characters, failure := tt.workload.promptSize(tt.context, short, long, longCharacters)
+			require.Nil(t, failure)
+			require.Equal(t, tt.wantCharacters, characters)
+		})
+	}
 }
 
 func TestWarmupSizesEmbeddings(t *testing.T) {
@@ -187,8 +217,8 @@ func TestWarmupSizesEmbeddings(t *testing.T) {
 	require.Equal(t, verified, report.Outcome)
 	require.Len(t, inputs, 3)
 	require.Len(t, inputs[0], 256)
-	require.Len(t, inputs[1], 2048)
-	require.Len(t, inputs[2], 736)
-	require.Equal(t, &TokenRange{100, 100}, report.Steps[0].Runs[0].InputTokens)
+	require.Len(t, inputs[1], 640)
+	require.Len(t, inputs[2], 768)
+	require.Equal(t, &TokenRange{104, 104}, report.Steps[0].Runs[0].InputTokens)
 	require.Equal(t, "embeddings-v1", *report.Runs[0].WorkloadRevision)
 }

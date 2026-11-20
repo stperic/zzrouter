@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -561,6 +562,37 @@ func TestRunnerGapExcludesWarmupAndStepBoundaries(t *testing.T) {
 		require.Equal(t, 10_200*time.Millisecond, report.CompletedAt.Sub(report.StartedAt))
 		require.Equal(t, new(200.0), report.LargestSampleGapMS)
 	})
+}
+
+func TestRunnerWarmupFitsAtRequestedInput(t *testing.T) {
+	const inputTokens = 30_001
+	workload := &Workload{InputTokens: inputTokens, OutputTokens: new(256), Concurrency: []int{1}, RequestsPerStep: new(1)}
+	runner, _, targets := runnerFixture(Chat)
+	tokenCount := func(characters int) int {
+		return 24 + characters/4 + int(0.08*math.Sqrt(float64(characters)))
+	}
+	var sizes []int
+	runner.Sender = senderFunc(func(_ context.Context, now Clock, _, _ string, body map[string]any) Sample {
+		messages := body["messages"].([]map[string]string)
+		characters := len(messages[0]["content"])
+		sizes = append(sizes, characters)
+		sample := completedSample(now.Now())
+		sample.InputTokens = new(tokenCount(characters))
+		sample.OutputTokens = new(body["max_tokens"].(int))
+		return sample
+	})
+
+	report, err := runner.Run(t.Context(), testRequest(workload), targets)
+	require.NoError(t, err)
+	require.Len(t, sizes, 3)
+	require.Equal(t, 256, sizes[0])
+	require.Len(t, report.Steps, 1)
+	require.Len(t, report.Steps[0].Runs, 1)
+	measured := report.Steps[0].Runs[0].InputTokens
+	require.NotNil(t, measured)
+	require.GreaterOrEqual(t, measured.Min, inputTokens)
+	require.Equal(t, verified, report.Outcome)
+	require.Equal(t, 86_296, sizes[1], "the short probe reports 89 tokens in 256 characters")
 }
 
 func TestRunnerWarmupSharesOneDeadline(t *testing.T) {

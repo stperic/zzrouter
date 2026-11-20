@@ -229,12 +229,13 @@ func (r Runner) warmup(ctx context.Context, limit time.Duration, runs []prepared
 		workers.Go(func() {
 			defer r.recoverWorker()
 			short := r.warmupRequest(ctx, gen, run.Target, shortWarmupCharacters)
-			long := r.warmupRequest(ctx, gen, run.Target, longWarmupCharacters)
+			longCharacters := longWarmupSize(run.workload.InputTokens, short)
+			long := r.warmupRequest(ctx, gen, run.Target, longCharacters)
 			if context.Cause(ctx) == context.DeadlineExceeded {
 				run.warmupReason = reason(stepTimeout)
 				return
 			}
-			run.characters, run.warmupReason = promptSize(run.workload.InputTokens, short, long)
+			run.characters, run.warmupReason = run.workload.promptSize(run.Run.ServedContextTokens, short, long, longCharacters)
 		})
 	}
 	workers.Wait()
