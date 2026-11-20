@@ -371,7 +371,8 @@ interfaces.
 
 - `request.go`: request types, `Validate`, and the limit constants.
 - `generator.go`: `chat-v1` and `embeddings-v1`, prompt sizing from the
-  warm-up's tokens-per-character ratio, and distinct prefixes. It never sets
+  two warm-up requests' fitted overhead and per-character ratio, and distinct
+  prefixes. It never sets
   `seed`.
 - `schedule.go`: per-step in-flight pools, requests per step, timeouts,
   cancellation.

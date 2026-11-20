@@ -498,8 +498,9 @@ The workload kind follows the run's endpoint: `chat` and `embeddings` in the
 first release. Each kind has a versioned generator (`chat-v1`,
 `embeddings-v1`) in `pkg/calibration`, and a new kind (reranking, images) is a
 new generator, never a new request shape. Limits are named constants
-published in discovery: 3 runs, 8 steps, a request count per step, and a
-maximum step timeout.
+published in discovery: 3 runs, 8 steps, a concurrency of at most 256 and at
+most 1,024 requests per run per step (so the default `3 × concurrency` always
+fits), and a step timeout of at most 1,800 seconds (default 600).
 
 Submission validation is synchronous, because every run is already up:
 
@@ -559,9 +560,14 @@ with `usage_unavailable`.
 1. **Check.** Record each run's identity, resolved parameters,
    `parameters_status`, served context and engine cache report, and the pools
    it holds memory in.
-2. **Warm up.** Send one short request to each run with a workload. It is not
-   measured. Its reported prompt tokens give the tokens-per-character ratio
-   that sizes that run's prompts, with no engine-specific tokenizer.
+2. **Warm up.** Send two unmeasured requests to each run with a workload, a
+   short one and one about eight times longer. Their reported prompt tokens
+   give a line, `tokens = overhead + ratio × characters`, which separates the
+   chat template's fixed tokens from the per-character rate, so long prompts
+   are not sized short. Prompts get
+   `ceil((input_tokens − overhead) / ratio)` characters, with no
+   engine-specific tokenizer. When the longer request does not report more
+   tokens, that run's steps are `inconclusive` with `usage_unavailable`.
 3. **Run the steps.** In step k, every run whose `concurrency[k]` is non-zero
    runs at once. Each keeps `concurrency[k]` requests in flight until its
    requests for the step complete or the step times out. Every request has a
@@ -578,7 +584,9 @@ During checking and measuring, the node takes a resource snapshot
 ([refactor 2](#2-one-resource-snapshot)) and each run's engine observation
 ([refactor 3](#3-one-engine-observation-declaration)) at a fixed interval,
 initially 500 ms. The report includes `sampling_interval_ms` and
-`largest_sample_gap_ms`. A slow snapshot delays the next one rather than
+`largest_sample_gap_ms`, the largest gap between consecutive samples within
+checking or within measuring; the pause for warm-up is not a gap. A slow
+snapshot delays the next one rather than
 overlapping it. On the RTX PRO 6000 one NVIDIA snapshot takes about 145 ms
 (two nvidia-smi calls of about 72 ms each), idle or with a model loaded, so
 500 ms leaves headroom.
@@ -716,8 +724,12 @@ verified when every run active in it is verified.
 |---|---|
 | `verified` | Every step is verified. |
 | `partial` | At least one step is verified, but not all. |
-| `failed` | No step is verified, and requests failed. |
-| `inconclusive` | No step is verified, and a step was cut short. |
+| `failed` | No step is verified, and requests failed or every measured step queued (the target concurrency was never reached; reason `target_not_met`). |
+| `inconclusive` | No step is verified, no request failed, and a step was cut short. |
+
+A run step that both had a failed request and was cut short is `failed`: an
+error is a finding. For the same reason `failed` takes precedence over
+`inconclusive` overall.
 | `cancelled` | A cancellation was requested. |
 
 Every outcome except `verified` carries a `reason`: a `code`, a `message`, and
