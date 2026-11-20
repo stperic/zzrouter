@@ -229,70 +229,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.blocksNavigationMessage(msg) {
 		return m, nil
 	}
-	// --- View-switching messages from children. These construct the
-	// target view and push it onto root, regardless of current pane. ---
 	switch msg := msg.(type) {
 	case menuLogoTickMsg:
-		if m.pane == paneMenu && m.menuWelcome && m.menuLogoFrame < menuLogoFrames {
-			m.menuLogoFrame++
-			if m.menuLogoFrame < menuLogoFrames {
-				return m, menuLogoTick()
-			}
-		}
-		return m, nil
-
-	// tui.NavToMsg from any source must reach root even if pane just
-	// flipped to paneMenu (e.g. NavBack + NavTo in the same tea.Batch).
-	// Forward verbatim so OnPop callbacks are preserved.
-	case tui.NavToMsg:
-		if msg.View == nil {
-			return m, nil
-		}
-		m.search.Deactivate()
-		m.pane = paneRoot
-		updated, cmd := m.root.Update(msg)
-		m.root, _ = updated.(*tui.Root)
-		return m, cmd
-	case tui.LaunchChatMsg:
-		return m, m.enterChat(msg.Model, msg.Node)
-	case tui.SwitchToModelsMsg:
-		// Leaving search for models: reset search state so re-entry
-		// from the menu shows a fresh list, not a stale detail view.
-		m.search.State = search.StateList
-		m.search.PullStatus = ""
-		return m, m.pushOnRoot(m.newModelsView())
-	case tui.OpenParamsEditorMsg:
-		return m, m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model, msg.Node))
-	case tui.LaunchRunLogsMsg:
-		return m, m.pushOnRoot(views.NewRunlogsViewModel(m.client, m.styles, msg.Filter))
-
-	// --- Quickstart hand-off. The wizard launches sibling views that
-	// must report completion when popped. Use NavToWithPop. ---
-	case tui.QsLaunchViewMsg:
-		view := m.viewForKind(msg.View)
-		if view == nil {
-			return m, nil
-		}
-		step := msg.Step
-		return m, tui.NavToWithPop(view, func() tea.Cmd {
-			return func() tea.Msg { return tui.QsStepDoneMsg{Step: step} }
-		})
-	case tui.QsEnterMenuMsg:
-		if m.pane == paneRoot {
-			return m, m.forwardToRoot(tui.NavMenuMsg{})
-		}
-		m.search.Deactivate()
-		m.pane = paneMenu
-		return m, nil
-
-	// --- Search-only signal. Search is off-stack, so it emits the
-	// classic tuiBackMsg; host catches it and switches pane. ---
-	case tui.TuiBackMsg:
-		if m.pane == paneSearch {
-			m.search.Deactivate()
-			m.pane = paneMenu
-		}
-		return m, nil
+		return m, m.advanceMenuLogo()
 
 	// --- Cluster nodes refresh. nodeCount/nodeHealth feed several
 	// child views, plus the off-stack search singleton. ---
@@ -306,53 +245,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.nodeHealth = shared.BuildNodeHealthMap(msg)
 		return m, nil
 
-	// --- Window resize. Search is informed even when not active so it
-	// can size its viewport for re-entry. ---
 	case tea.WindowSizeMsg:
-		m.termWidth = msg.Width
-		m.termHeight = msg.Height
-		m.search.TermWidth = msg.Width
-		m.search.TermHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
-		// Forward to both search and root regardless of active pane so
-		// inactive-pane views have a known size cached for activation.
-		// Without this, a view pushed from paneMenu (e.g. chat launched
-		// from the menu) misses its first WindowSizeMsg and renders
-		// stuck on its "not ready" placeholder until the terminal is
-		// resized.
-		updated, searchCmd := m.search.Update(msg)
-		m.search = updated.(*search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
-		// Forward directly to root (not via forwardToRoot) so an empty
-		// root stack doesn't flip the active pane back to paneMenu —
-		// paneSearch uses the search singleton while root is empty.
-		rootUpdated, rootCmd := m.root.Update(msg)
-		m.root = rootUpdated.(*tui.Root) //nolint:errcheck // bubbletea Update contract always returns same model type
-		return m, tea.Batch(searchCmd, rootCmd)
+		return m, m.resize(msg)
 
-	// --- Mouse breadcrumb click. The host computes the level and
-	// dispatches a synthetic BreadcrumbClickMsg into the active pane.
-	// Chat (no breadcrumb) is excluded by the pane check. ---
-	case tea.MouseClickMsg:
-		if m.pane == paneMenu {
-			return m, m.menuMouseClick(msg)
-		}
-		if msg.Button == tea.MouseLeft && msg.Y == 2 && !m.activeIsChat() {
-			if cmd := m.dispatchBreadcrumbClick(msg.X); cmd != nil {
-				return m, cmd
-			}
-		}
-		return m, m.forwardToActive(msg)
-
-	case tea.MouseWheelMsg:
-		if m.pane == paneMenu {
-			return m, m.menuMouseWheel(msg)
-		}
-		return m, m.forwardToActive(msg)
-
-	case tea.KeyPressMsg:
-		if m.pane == paneMenu {
-			return m, m.updateMenu(msg)
-		}
-		return m, m.forwardToActive(msg)
+	case tea.MouseClickMsg, tea.MouseWheelMsg, tea.KeyPressMsg:
+		return m, m.updateInput(msg)
+	}
+	if cmd, handled := m.updateNavigation(msg); handled {
+		return m, cmd
 	}
 
 	// --- Default: forward to active pane (data load messages, etc). ---
@@ -360,6 +260,118 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, m.forwardToActive(msg)
+}
+
+// updateNavigation handles the view-switching messages children emit. These
+// construct the target view and push it onto root, regardless of current
+// pane. handled is false for any other message.
+func (m *tuiModel) updateNavigation(msg tea.Msg) (cmd tea.Cmd, handled bool) {
+	switch msg := msg.(type) {
+	// tui.NavToMsg from any source must reach root even if pane just
+	// flipped to paneMenu (e.g. NavBack + NavTo in the same tea.Batch).
+	// Forward verbatim so OnPop callbacks are preserved.
+	case tui.NavToMsg:
+		if msg.View == nil {
+			return nil, true
+		}
+		m.search.Deactivate()
+		m.pane = paneRoot
+		updated, cmd := m.root.Update(msg)
+		m.root, _ = updated.(*tui.Root)
+		return cmd, true
+	case tui.LaunchChatMsg:
+		return m.enterChat(msg.Model, msg.Node), true
+	case tui.SwitchToModelsMsg:
+		// Leaving search for models: reset search state so re-entry
+		// from the menu shows a fresh list, not a stale detail view.
+		m.search.State = search.StateList
+		m.search.PullStatus = ""
+		return m.pushOnRoot(m.newModelsView()), true
+	case tui.OpenParamsEditorMsg:
+		return m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model, msg.Node)), true
+	case tui.LaunchRunLogsMsg:
+		return m.pushOnRoot(views.NewRunlogsViewModel(m.client, m.styles, msg.Filter)), true
+
+	// --- Quickstart hand-off. The wizard launches sibling views that
+	// must report completion when popped. Use NavToWithPop. ---
+	case tui.QsLaunchViewMsg:
+		view := m.viewForKind(msg.View)
+		if view == nil {
+			return nil, true
+		}
+		step := msg.Step
+		return tui.NavToWithPop(view, func() tea.Cmd {
+			return func() tea.Msg { return tui.QsStepDoneMsg{Step: step} }
+		}), true
+	case tui.QsEnterMenuMsg:
+		if m.pane == paneRoot {
+			return m.forwardToRoot(tui.NavMenuMsg{}), true
+		}
+		m.search.Deactivate()
+		m.pane = paneMenu
+		return nil, true
+
+	// --- Search-only signal. Search is off-stack, so it emits the
+	// classic tuiBackMsg; host catches it and switches pane. ---
+	case tui.TuiBackMsg:
+		if m.pane == paneSearch {
+			m.search.Deactivate()
+			m.pane = paneMenu
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
+// resize records the terminal size. Search is informed even when not active
+// so it can size its viewport for re-entry.
+func (m *tuiModel) resize(msg tea.WindowSizeMsg) tea.Cmd {
+	m.termWidth = msg.Width
+	m.termHeight = msg.Height
+	m.search.TermWidth = msg.Width
+	m.search.TermHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
+	// Forward to both search and root regardless of active pane so
+	// inactive-pane views have a known size cached for activation.
+	// Without this, a view pushed from paneMenu (e.g. chat launched
+	// from the menu) misses its first WindowSizeMsg and renders
+	// stuck on its "not ready" placeholder until the terminal is
+	// resized.
+	updated, searchCmd := m.search.Update(msg)
+	m.search = updated.(*search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
+	// Forward directly to root (not via forwardToRoot) so an empty
+	// root stack doesn't flip the active pane back to paneMenu —
+	// paneSearch uses the search singleton while root is empty.
+	rootUpdated, rootCmd := m.root.Update(msg)
+	m.root = rootUpdated.(*tui.Root) //nolint:errcheck // bubbletea Update contract always returns same model type
+	return tea.Batch(searchCmd, rootCmd)
+}
+
+// updateInput routes key and mouse input: the menu handles its own, every
+// other pane gets it forwarded.
+func (m *tuiModel) updateInput(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	// --- Mouse breadcrumb click. The host computes the level and
+	// dispatches a synthetic BreadcrumbClickMsg into the active pane.
+	// Chat (no breadcrumb) is excluded by the pane check. ---
+	case tea.MouseClickMsg:
+		if m.pane == paneMenu {
+			return m.menuMouseClick(msg)
+		}
+		if msg.Button == tea.MouseLeft && msg.Y == 2 && !m.activeIsChat() {
+			if cmd := m.dispatchBreadcrumbClick(msg.X); cmd != nil {
+				return cmd
+			}
+		}
+	case tea.MouseWheelMsg:
+		if m.pane == paneMenu {
+			return m.menuMouseWheel(msg)
+		}
+	case tea.KeyPressMsg:
+		if m.pane == paneMenu {
+			return m.updateMenu(msg)
+		}
+	}
+	return m.forwardToActive(msg)
 }
 
 // forwardToActive routes a message to whichever pane is currently active
