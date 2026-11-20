@@ -304,6 +304,7 @@ Merge this into an existing `[features]` table rather than declaring it twice.
 | Provider installation | `zz_provider_install` |
 | Model discovery, download and deletion | `zz_model_search`, `zz_model_files`, `zz_model_download`, `zz_model_delete`, `zz_models` |
 | Run lifecycle | `zz_run_preview`, `zz_run_start`, `zz_runs`, `zz_run_restart`, `zz_run_stop` |
+| Measure running models | `zz_calibrate`, `zz_runs`, `zz_job` |
 | Smoke test and diagnosis | `zz_chat`, `zz_logs` |
 | Follow or cancel work | `zz_job`, `zz_job_cancel` |
 | Parameters | `zz_params_get`, `zz_params_set` |
@@ -347,8 +348,9 @@ Use `zz_nodes` to select placement for a model you still need to download.
 
 `parameters` and `environment` together state the request tier. Without either,
 a start replays any pin and can reuse the run. On `run_settings_differ`, pass
-`replace: true` and the complete intended tier. A reused start returns its
-owning `node` and its existing `job_id` while the job is retained.
+`replace: true` and the complete intended tier if you want to replace the run
+named by the error's `run_id`. A reused start returns its owning `node` and
+its existing `job_id` while the job is retained.
 
 `details.features.tools` is `present`, `available`, `unsupported` or `unknown`.
 Only present projects to `/v1/models` `capabilities.tools: true`; false does not
@@ -484,12 +486,62 @@ with the same key. Inspect the catalog before starting a new operation. Other
 failures remain retryable. Replay has the same bounded, in-memory lifetime as
 job-starting operations below.
 
+## Calibrate running models
+
+Use `zz_runs` with `node` and `status: "running"` to find the runs on one
+node. Copy each `run_id` and, to guard against a restart or replacement,
+its `target_revision` into `zz_calibrate`. Pass the owning node name as
+`node`. Each entry in `runs` can have a `workload`, or can be listed as a
+resident run with no workload to account for the resources it holds.
+
+A workload takes `input_tokens`, `output_tokens` for chat only, a
+`concurrency` array with one count per step, and optional
+`requests_per_step`. Use zero concurrency to keep that run idle for a step.
+All workloads need the same number of steps and each step needs at least
+one active run. The default sample count is the greater of 10 or three
+times that step's concurrency. Optional `step_timeout_seconds` applies to
+warm-up and each measurement step. Use `idempotency_key` to retry the same
+submission. See the REST contract for [limits and report fields](api.md#calibration).
+
+Use `zz_params_get` to inspect settings. To save settings at the intended
+provider, model or node tier, use `zz_params_set` with `restart_affected: true`
+and follow `runs.restart_job_id` with `zz_job` when present. To try settings
+on the live run, use `zz_run_start` with `replace: true`, the same node and
+endpoint, and the complete intended `parameters` and `environment`. To read
+the live endpoint, use `zz_api_get` on `/zzrouter/v1/runs/{id}` with the node
+query. Once the run is ready, get its current ID and revision with `zz_runs`
+before submitting again.
+
+`zz_calibrate` returns `job_id` and `node`. Pass both to `zz_job` and read
+`result.report` when the job is terminal. To abort the workload, pass `job_id`
+and `node` to `zz_job_cancel`. The cancelled job ends in `failed` and keeps
+measured steps in its report. Read `outcome` and `reason.next_action` in the
+report for the measurement result and suggested tool. The `done` job state
+means the report is ready.
+
+- `invalid_value` identifies an invalid request field. Correct it and call
+  `zz_calibrate` again.
+- `context_too_small` and `concurrency_above_limit` call for a smaller
+  workload or a settings change with `zz_params_set`. For concurrency,
+  check `max_concurrent_requests` before restarting.
+- `run_not_found`, `run_not_ready` and `run_changed` call for a fresh
+  `zz_runs` read on the selected node.
+- `calibration_unsupported` means the target cannot serve the workload.
+  Choose a supported run or list this run as a resident.
+- `calibration_running` names the active job in the Problem detail. Read
+  it with `zz_job` on that node. If the node is unreachable or times out,
+  check it with `zz_nodes`.
+
+The report's reason codes and their next tools are listed in the
+[calibration report error codes](agent_error_codes.md#calibration-report-reasons).
+
 ## Follow jobs
 
 Job-starting tools return IDs immediately. `zz_run_start`, `zz_run_restart`,
-`zz_model_download`, `zz_provider_install` (including `preflight_only: true`)
-and `zz_update_apply` replay successful REST responses when retried with the
-same `idempotency_key`, body and query on the same route by the same caller.
+`zz_model_download`, `zz_provider_install` (including `preflight_only: true`),
+`zz_calibrate` and `zz_update_apply` replay successful REST responses when
+retried with the same `idempotency_key`, body and query on the same route by
+the same caller.
 Replay uses a bounded, in-memory cache for up to 24 hours from request arrival and does not survive
 server restarts. Only an accepted request is retained, and replay returns that acceptance:
 for a job-creating tool, the same `job_id`, even if that job later failed.

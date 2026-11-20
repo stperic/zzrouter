@@ -33,8 +33,10 @@ Cluster connection direction, enrollment and replication are described in
 providers, and optional `parameters`, `environment`, and `replace`.
 Omit `node` to resolve the model's owner as preview does. Starts never
 broadcast. If there is no owner or a download needs placement, pass a node
-name. `POST /zzrouter/v1/runs/preview` accepts `parameters` and `environment` and can
-broadcast a preview when the catalog has no owner.
+name to resolve `400 run_node_required`. `POST /zzrouter/v1/runs/preview`
+accepts `parameters` and `environment` and can broadcast a preview when the
+catalog has no owner. The former `POST /zzrouter/v1/runs/load` now answers
+`405 method_not_allowed`.
 
 A successful start returns HTTP 202 with `id` and the owning `node`.
 A provider that can serve without a run returns an empty `id`. Follow
@@ -42,6 +44,92 @@ A provider that can serve without a run returns an empty `id`. Follow
 is absent or equivalent after pin replay. Different settings return
 `run_settings_differ` and the current `run_id`. Send the complete intended
 request tier with `replace: true` to replace it.
+
+## Calibration
+
+`POST /zzrouter/v1/calibrations` is an admin operation that measures synthetic
+chat or embeddings workloads against existing ready runs on one named node.
+Read run IDs and `target_revision` from `GET /zzrouter/v1/runs?node={node}`
+or the run item. Submit `node` and distinct entries in `runs`, each with
+`run_id` and an optional `target_revision` precondition. Omit `workload` for a
+resident run whose resource usage you want to observe.
+
+An active `workload` requires `input_tokens` and a `concurrency` array. Supply
+`output_tokens` for chat and omit it for embeddings. Chat uses it as the
+output budget. The result requires that exact length only when the provider
+declares `calibration.output`. Each array entry is a step's concurrency, with
+zero leaving that run idle. All workloads have the same step count, and at
+least one run must be active in each step. Optional
+`requests_per_step` must be at least the highest concurrency for that run.
+If omitted, each active step schedules the greater of 10 or three times its
+concurrency. `step_timeout_seconds` applies to warm-up and each step.
+
+`GET /zzrouter/v1` publishes the limits in `data.calibration`. The current
+`workload_kinds` are `chat` and `embeddings`. `max_runs` is 3 including
+residents, `max_steps` is 8, `max_concurrency` is 256 per run and step, and
+`max_requests_per_step` is 1024 per run and step. The timeout limits are
+`default_step_timeout_seconds` (600) and `max_step_timeout_seconds` (1800).
+`GET /zzrouter/v1/providers/{name}/schema` exposes the provider's `observe`
+roles and any `calibration.output` fields.
+
+The response is `202` with `data.job_id` and `data.node`. Use the returned
+node in subsequent job requests. A node runs one calibration at a time.
+Identical submissions while it is active reuse that job. A different valid
+submission receives `calibration_running`. Use `Idempotency-Key` with the
+same body to replay an accepted submission, including after completion within
+the replay window.
+
+- `GET /zzrouter/v1/jobs?node={node}&kind=calibration` lists retained jobs of
+  kind `calibration` without their reports.
+- `GET /zzrouter/v1/jobs/{id}?node={node}` reads the job.
+  `GET /zzrouter/v1/jobs/{id}/stream?node={node}` streams events and closes at
+  the terminal event. The job's `step` label progresses through `checking`,
+  `warming_up` and `measuring`. When a sample is available, `meta` carries
+  the zero-based `step`, total `steps`, `requests_completed` and
+  `requests_total` keyed by active run ID, and `sample` with `at` and `pools`.
+  Pools are `gpu`, `host` or `unified` and carry memory, utilization, power,
+  CPU and ownership observations. Unknown totals and unavailable measurements
+  are null.
+- `DELETE /zzrouter/v1/jobs/{id}?node={node}` requests cancellation with a
+  nonblocking `202` acknowledgement. In-flight calibration requests are
+  aborted. The terminal job has `phase: failed`, a cancellation message in
+  `err`, and a `cancelled` report with the steps already measured.
+
+The terminal item and stream event carry `meta.report`. It contains the
+submitted `request`, `started_at`, `completed_at`, `sampling_interval_ms`,
+`largest_sample_gap_ms`, initial `resources`, the runs and settings checked,
+and `steps`. Each step includes `index`, `outcome`, `duration_ms`, `throughput`,
+per-pool `resources` and active `runs`. A run's step includes `concurrency`,
+`requests`, input and output token ranges, latency percentiles and observed
+engine metrics. `public_requests` records admissions outside the calibration.
+Unknown measurements are null. GPU ownership may be `verified`, `shared` or
+`unknown`. Unified memory appears once without per-run attribution. The
+report keeps summaries and redacted settings.
+
+Read the report's `outcome` (`verified`, `partial`, `failed`, `inconclusive`
+or `cancelled`) and `reason` independently of the job phase. A published
+measurement normally finishes in `done`. The reason carries a code, message
+and any suggested next action. The terminal job's `expires_at` is 24 hours
+after completion or its latest ID hand-out, whichever is later. Jobs and
+reports are in memory and disappear when the owning node restarts.
+
+Submission errors use Problem Details.
+
+- `400 bad_request` for malformed JSON or unknown keys, or `400 invalid_value`
+  with a field error for invalid request values. `context_too_small` and
+  `concurrency_above_limit` are also `400` and identify a live run limit.
+- `401 unauthorized` for missing or rejected credentials, or `403 forbidden`
+  for a caller without admin access.
+- `404 run_not_found` when a run ID is missing on the chosen node.
+- `409 run_not_ready`, `run_changed`, `calibration_unsupported` or
+  `calibration_running` for a run or node state conflict.
+- `422 idempotency_key_conflict` if the key was used with a different body.
+- `503 node_unreachable` or `upstream_timeout` if the node does not answer,
+  `service_unavailable` if calibration jobs are unavailable, or
+  `idempotency_store_full` if the replay store is full.
+- `504 idempotency_wait_timeout` if a duplicate exceeds its wait or replay window.
+
+See the [closed error and report reason codes](agent_error_codes.md#calibration-report-reasons).
 
 ## Provider operations and endpoint discovery
 
