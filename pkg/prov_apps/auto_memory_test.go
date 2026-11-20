@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -53,7 +52,7 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}
 	isolateProviderRoot(t)
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000'; echo 'GPU-B, 1, 5000, 2500' ;;\nesac\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, [N/A], 0000:01:00.0, 0, [N/A]'; echo 'GPU-B, 1, 5000, 2500, [N/A], 0000:02:00.0, 0, [N/A]' ;;\nesac\n"), 0700))
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A,GPU-B")
 	engine := filepath.Join(root, "engine")
@@ -66,8 +65,7 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}, "parameters:\n  dtype: {}\n")))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
-	mgr.memoryInventory = gpu.LiveCardMetricsContext
+	mgr.memorySnapshot = nvidiaSnapshot
 	preview, err := processEngine{mgr}.prepare(t.Context(), svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
@@ -117,10 +115,9 @@ func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
 	}
 	isolateProviderRoot(t)
 	mgr, svc, dir := featureLaunchFixture(t)
-	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
-	mgr.memoryInventory = gpu.LiveCardMetricsContext
+	mgr.memorySnapshot = nvidiaSnapshot
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 9500' ;;\nesac\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 9500, [N/A], 0000:01:00.0, 0, [N/A]' ;;\nesac\n"), 0700))
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
 	require.NoError(t, os.Truncate(filepath.Join(dir, "weights.gguf"), 1024*1024*1024))

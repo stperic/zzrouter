@@ -300,16 +300,60 @@ func TestModelInstanceProviderMatchIsShared(t *testing.T) {
 	}
 }
 
+func TestLaunchRoutesByModelWithoutBroadcast(t *testing.T) {
+	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"})
+	for _, tc := range []struct {
+		name   string
+		nodes  []map[string]any
+		want   string
+		status int
+	}{
+		{"worker", []map[string]any{replicaItem("worker", "llamacpp")}, "worker", http.StatusAccepted},
+		{"coordinator", []map[string]any{replicaItem("worker", "llamacpp"), replicaItem("coord", "llamacpp")}, "coord", http.StatusAccepted},
+		{"ambiguous", []map[string]any{replicaItem("one", "llamacpp"), replicaItem("two", "llamacpp")}, "", http.StatusConflict},
+		{"no owner", nil, "", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := routingCatalog(t, s, tc.nodes)
+			router := &launchBroadcastRouter{fakeRouter: fakeRouter{perPath: map[string]struct {
+				status int
+				body   []byte
+			}{
+				"/zzrouter/v1/internal/runs": {status: http.StatusAccepted, body: []byte(`{"node":"` + tc.want + `","id":"run"}`)},
+			}}}
+			s.cluster.router = router
+			runs := NewRunsService(router).WithModelRouter(s, s.appsConfig)
+			ctrl := NewRunsController(runs, nil, nil, nil, nil)
+			c, w := postJSON(t, `{"model":"qwen","provider":"llamacpp"}`)
+			ctrl.LaunchRun(c)
+			require.Equal(t, tc.status, w.Code, w.Body.String())
+			require.Equal(t, 1, client.calls)
+			switch tc.status {
+			case http.StatusAccepted:
+				require.Len(t, router.calls, 1)
+				require.Equal(t, tc.want, router.calls[0].Node)
+			case http.StatusConflict:
+				require.Empty(t, router.calls)
+				require.Contains(t, w.Body.String(), "model_node_ambiguous")
+				require.Contains(t, w.Body.String(), "qwen@one, qwen@two")
+			default:
+				require.Empty(t, router.calls)
+				require.Contains(t, w.Body.String(), "run_node_required")
+			}
+		})
+	}
+}
+
 // launchBroadcastRouter records ordinary routing, without starting a model process.
 type launchBroadcastRouter struct{ fakeRouter }
 
 func (r *launchBroadcastRouter) Broadcast(_ context.Context, path, method string, body []byte) (*routing.Response, error) {
 	r.calls = append(r.calls, routing.Request{Path: path, Method: method, Body: body})
-	response := `{"model":"unknown","provider":"llamacpp","instance_id":"fixture-run","status":"loading","node":"worker"}`
+	response := `{"model":"unknown","provider":"llamacpp","id":"fixture-run","status":"loading","node":"worker"}`
 	return &routing.Response{StatusCode: http.StatusOK, Body: []byte(response)}, nil
 }
 
-func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
+func TestRunRoutesDegradedCatalogUsesInferenceRule(t *testing.T) {
 	for _, unscoped := range []bool{false, true} {
 		t.Run(map[bool]string{false: "named node failure", true: "unscoped broadcast failure"}[unscoped], func(t *testing.T) {
 			s := createTestNodeWithDefaults(t)
@@ -320,14 +364,20 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 			require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 			router := &launchBroadcastRouter{}
 			s.cluster.router = router
-			svc := NewLoadService(s, router).WithAppsConfig(s.appsConfig)
+			runs := NewRunsService(router).WithModelRouter(s, s.appsConfig)
 			for _, name := range []string{"unknown", "qwen"} {
 				wantError := name == "qwen" && !unscoped
 				resolved, inferenceErr := s.ResolveModel(t.Context(), resolver.Reference{Model: name})
-				req := &LoadModelRequest{ModelName: name, Provider: "llamacpp"}
-				_, previewErr := svc.PreviewRun(t.Context(), req)
-				_, loadErr := svc.LoadModel(t.Context(), req)
-				for _, err := range []error{inferenceErr, previewErr, loadErr} {
+				req := &LaunchRunRequest{Model: name, Provider: "llamacpp"}
+				_, previewErr := runs.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: name, Provider: req.Provider})
+				_, startErr := runs.LaunchRun(t.Context(), req)
+				errs := []error{inferenceErr, previewErr}
+				if wantError {
+					errs = append(errs, startErr)
+				} else {
+					require.ErrorIs(t, startErr, errRunNodeRequired)
+				}
+				for _, err := range errs {
 					if wantError {
 						response := httptest.NewRecorder()
 						c, _ := gin.CreateTestContext(response)
@@ -344,12 +394,12 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 					require.Empty(t, req.Parameters)
 				}
 			}
-			expected := 2
+			expected := 1
 			if unscoped {
-				expected = 4
+				expected = 2
 			}
 			require.Len(t, router.calls, expected, "only ordinary unknown-name routing reaches broadcast")
-			require.Equal(t, 2, client.calls, "preview/load must not retry catalog failure or invent a new rule")
+			require.Equal(t, 2, client.calls, "preview/start must not retry catalog failure or invent a new rule")
 		})
 	}
 }

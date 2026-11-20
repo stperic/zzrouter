@@ -54,6 +54,24 @@ func drainContextRead(t *testing.T, run *instance.Instance) {
 	require.NoError(t, run.WaitForGoroutines(ctx))
 }
 
+func TestServedContextUsesRunKeyEndpoint(t *testing.T) {
+	r := servedContextRig(t, "base_context", serviceProbeTransport(func(req *http.Request) (*http.Response, error) {
+		assert.Equal(t, "/v1/models", req.URL.Path)
+		return contextReply(`{"data":[{"id":"engine-name","chat_context":32768,"embedding_context":8192}]}`), nil
+	}), WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
+		return &schema.ProviderSchema{Endpoints: map[string]schema.EndpointSchema{
+			"chat":       {Parameters: map[string]schema.ParamShape{"context": {Served: "chat_context"}}},
+			"embeddings": {Parameters: map[string]schema.ParamShape{"context": {Served: "embedding_context"}}},
+		}}, nil
+	}))
+	run := instance.NewInstance("context-read", "generic", "catalog-name", 8740, 0, 0)
+	t.Cleanup(run.Cancel)
+	run.KeyEndpoint, run.Endpoint = "chat", "embeddings"
+	run.WireModel = "engine-name"
+	r.m.readServedContext(run)
+	assert.Equal(t, 32768, run.Loaded().ContextLength)
+}
+
 func TestServedContextRead(t *testing.T) {
 	for _, tc := range []struct {
 		name, field, body string

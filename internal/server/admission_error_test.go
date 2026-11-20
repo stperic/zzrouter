@@ -52,7 +52,7 @@ func TestAdmissionErrorWire(t *testing.T) {
 				t.Run(dialect.name, func(t *testing.T) {
 					w := httptest.NewRecorder()
 					req := routedRequest(httptest.NewRequest(http.MethodPost, dialect.path, nil))
-					s.proxyToInstance(w, req, inst, true)
+					s.proxyToInstance(w, req, newInstanceRequest(req, nil), inst, true)
 					assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 					assert.Equal(t, "5", w.Header().Get("Retry-After"))
 					assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
@@ -74,7 +74,7 @@ func TestAdmissionErrorWire(t *testing.T) {
 				openEventStream(w)
 				req := routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
 				streamer := &admissionStreamRecorder{InBandStreamer: openaiproto.New()}
-				s.streamFromInstance(w, req, inst, streamer)
+				s.streamFromInstance(w, req, newInstanceRequest(req, nil), inst, streamer)
 				assert.Equal(t, http.StatusOK, w.Code)
 				assert.Empty(t, w.Result().Header.Get("Retry-After"))
 				assert.Equal(t, http.StatusServiceUnavailable, streamer.failure.Status)

@@ -104,6 +104,7 @@ tags:
   - name: Nodes
   - name: Deployments
   - name: Jobs
+  - name: Calibrations
   - name: MCP
     description: Task-level tools for coding agents through the coordinator.
   - name: Keys
@@ -1051,6 +1052,8 @@ paths:
         the version and protocol window peers negotiate against, not a
         verdict on the cluster. The one route every node serves,
         coordinator or worker, which is why peer discovery reads it.
+        A native node omits memory_used and memory_used_percent when usage
+        is unknown. Its memory_sample then omits used_bytes.
       parameters:
         - name: detailed
           in: query
@@ -1352,16 +1355,33 @@ paths:
       operationId: getApiHealth
       summary: Cluster-wide health aggregated across nodes
       description: |
-        Health of this node behind the admin key, in the management
-        envelope. `GET /health` is the unauthenticated probe a load balancer
-        should use; this one is for a client that already holds a key and
-        wants the same answer in the shape the rest of the API returns.
+        Cluster-wide health in the management envelope. `GET /health` is
+        the unauthenticated probe for load balancers checking a single node.
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          cluster_health: { type: string, enum: [healthy, degraded] }
+                          total_nodes: { type: integer }
+                          nodes:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                ram_total_gb: { type: number, description: Total RAM in GiB when reported. }
+                                ram_used_gb:
+                                  type: number
+                                  minimum: 0
+                                  description: Measured RAM usage in GiB. Omitted when usage is unknown.
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
 
   /zzrouter/v1/server/version:
@@ -1739,17 +1759,21 @@ paths:
       operationId: createRun
       summary: Make a model ready or start an asynchronous run
       description: |
-        Cataloged external OpenAI and cloud models return 200 ready without
-        a run or job. A model absent from this provider's node catalog returns
-        404; download or register it, using POST /zzrouter/v1/deployments for
-        a cloud model. Ollama endpoints load through their model API and
-        return 200 without a run; an unavailable endpoint returns 503.
-        auto_deploy never downloads for external OpenAI or cloud providers.
+        Starts or reuses a run on one node. Without a node, model starts use
+        preview's model selection, preferring the coordinator and otherwise a
+        unique worker. Starts never broadcast. A missing owner returns
+        run_node_required. Downloading a missing model requires an explicit
+        node. A node-scoped provider with no node targets the coordinator.
+        Cataloged external OpenAI and cloud models can be ready without a run
+        or job. Ollama loads through its model API and reports a served run.
 
         Before starting the provider process, a schema-declared fraction_total GPU
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
+        With vLLM's `kv-cache-memory-bytes` set, the fraction is the startup
+        requirement. A separate per-GPU check adds the weights share, fixed KV
+        bytes and safety margin. Unknown weights leave only the startup check.
         Before a replacement stop, the same memory admission checks a simulated stop:
         cloned devices lose the old run's processes, its owner entry and commitments
         are removed, and free memory increases by its release bound on each device.
@@ -1789,8 +1813,8 @@ paths:
         targets attributed holdings only, excluding unaccounted use, and caller
         cancellation aborts. Recovery timeout continues to fresh admission, which can
         still refuse without a kept_run claim. Idle claims revalidate after the stop.
-        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (pinned, busy,
-        in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
+        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (`pinned`, `busy`,
+        `activity_unknown`, `in use` or `not idle`) from the reclaim decision. Unused commitments omit `pid`.
         Refused observations or device selections retain their 503 class. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and
@@ -1808,6 +1832,10 @@ paths:
         unpinned idle runs to make room when true. The node
         `gpu.evict_idle_on_memory_pressure` is the fallback when absent. The launch names them in its run's
         `evicted_runs` and in its job's `meta.evicted_runs`.
+
+        `memory-admission` defaults to `enforce`. With `report`, a memory-fit
+        refusal becomes `admission_warning` and the launch skips idle reclaim.
+        A queued launch exposes the warning on the run after admission.
 
         Returns 202 immediately with a pkg/jobs handle ID when available.
         Reused runs omit an expired or absent job ID; inspect `zz_runs`.
@@ -1828,13 +1856,8 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
-        '200':
-          description: Model ready without a run or job.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '202':
-          description: Launch accepted; watch job_id for readiness.
+          description: Start accepted or reused. Follow job_id when present.
           headers:
             X-Request-ID:  { $ref: '#/components/headers/XRequestID' }
             X-API-Version: { $ref: '#/components/headers/XAPIVersion' }
@@ -1847,7 +1870,7 @@ paths:
                     properties:
                       data:
                         type: object
-                        required: [accepted, id, provider, status, port]
+                        required: [accepted, id, provider, status, port, node]
                         properties:
                           accepted: { type: boolean }
                           id:       { type: string, description: "Instance ID" }
@@ -1863,8 +1886,9 @@ paths:
                           port:     { type: integer }
                           parameters: { type: object, additionalProperties: { type: string }, description: The accepted or reused run's own request overrides, including a replayed pin. }
                           pinned: { type: boolean, description: The run's resolved pin setting. }
+                          admission_warning: { $ref: '#/components/schemas/AdmissionWarning' }
                           health_url: { type: string, description: "Node-local probe URL; may use the serving node's loopback and is not reachable from the coordinator." }
-                          node:     { type: string }
+                          node:     { type: string, description: Name of the node that owns the run. }
         '400':
           description: >
             Invalid request fields, an endpoint the provider does not serve, a required
@@ -1874,22 +1898,23 @@ paths:
             for the endpoint: errors[] holds one entry per key (unknown_flag, wrong_type,
             out_of_range, coercion_failed, invalid_value, duplicate_flag, excluded_by_runtime)
             whose message names the tier.
-            Retrying the same body cannot succeed.
+            With run_node_required, use zz_models or zz_nodes to choose a node and pass it explicitly.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
-          description: Provider not configured, or model absent from this provider's node catalog; download or register it. Use POST /zzrouter/v1/deployments for a cloud model.
+          description: Returns not_found if the provider is not configured or the model is absent from its node catalog. Download or register a missing model. Use POST /zzrouter/v1/deployments for a cloud model.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
           description: >
-            The launch conflicts with current state: this model is
-            already loaded, an instance already holds the port, or the
-            model's local weights are incomplete and must be
-            re-downloaded before it can start. A configured variant name
+            Differing request settings return run_settings_differ with the existing run_id.
+            Call zz_run_start with replace set to true and the complete settings to apply them.
+            Several remote owners return model_node_ambiguous with name@node choices.
+            Other conflicts include a port already held by an instance or incomplete
+            model weights that must be downloaded before launch. A configured variant name
             that also identifies real weights conflicts until the variant
             is renamed or its from definition is removed. A fraction_total GPU budget
             exceeding fresh free device memory is refused before process start;
@@ -1914,6 +1939,11 @@ paths:
         '422':
           description: >
             The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: The upstream response could not be used. A reply missing its owning node has code upstream_shape.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -2282,7 +2312,8 @@ paths:
         data.assessment uses the same capacity policy as nodes/compatible and
         returns fit, no_fit or unknown with a reason. Unknown is not confirmed fit.
         It evaluates cloned parameters against selected device totals without
-        launching, evicting or reserving memory. Current load can still refuse
+        launching, evicting or reserving memory. `memory-admission: report` still
+        returns `no_fit` for a capacity shortfall. Current load can still refuse
         a subsequent launch. Workers without this field yield explicit unknown.
 
         `provider` is required. Preview renders one provider's launch
@@ -2328,74 +2359,6 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
-
-  /zzrouter/v1/runs/load:
-    post:
-      tags: [Runs]
-      operationId: createRunsLoad
-      summary: Load a model (async for local launches; idempotent warm-up)
-      description: |
-        Ensures a model is running on the target node. Three paths:
-
-        - **Ready without a run**: cataloged external OpenAI and cloud models
-          return 200 without a run or job. Ollama endpoints load through their
-          model API and return 200 without a run. An unavailable endpoint is 503.
-          Models absent from this provider's catalog return 404; download or
-          register them, using POST /zzrouter/v1/deployments for a cloud model.
-        - **Already running / already starting** , returns 409 with the
-          live instance's `job_id` when still readable. When the job has expired or
-          is absent, `job_id` is omitted; inspect the run with `zz_runs`.
-          Retries are idempotent.
-        - **Fresh launch** , returns 202 with `job_id`. Subscribe via
-          `/jobs/{job_id}/stream` for readiness.
-
-        Which of the three you get is decided on the resolved model
-        name, so a caller that launched a model by one of its aliases
-        reaches its own run rather than a second copy of it. `force`
-        turns the second path into the third: the running instance is
-        stopped and replaced.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/LoadModelRequest' }
-      responses:
-        '200':
-          description: Model ready; external and cloud models may have no run or job.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
-        '202':
-          description: Launch accepted; subscribe to job_id.
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessEnvelope'
-                  - type: object
-                    properties:
-                      data: { $ref: '#/components/schemas/Run' }
-        '400':
-          description: Invalid request fields or provider parameters.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '503':
-          description: Provider endpoint unavailable.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '404':
-          description: Provider not configured, or model absent from this provider's node catalog; download or register it. Use POST /zzrouter/v1/deployments for a cloud model.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '409':
-          description: Model already running/starting (dedupe hit).
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
 
   /zzrouter/v1/runs/capabilities:
     get:
@@ -2931,6 +2894,11 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: No such provider.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: Invalid provider schema declaration.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -4820,6 +4788,55 @@ paths:
   # Jobs , the async contract every 202 points at.
   # ==========================================================================
 
+  /zzrouter/v1/calibrations:
+    post:
+      tags: [Calibrations]
+      operationId: createCalibration
+      summary: Calibrate live runs on a node
+      description: |
+        Runs synthetic workloads against checked run revisions and samples engine and node
+        resources. One calibration can run per node. Use the returned node with the job
+        read, stream, or cancellation endpoint. Terminal job metadata contains the report.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CalibrationRequest' }
+      responses:
+        '202':
+          description: Accepted or replayed with the same Idempotency-Key and body. Follow job_id on the returned node to see the result.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/XRequestID' }
+            X-API-Version: { $ref: '#/components/headers/XAPIVersion' }
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [job_id, node]
+                        properties:
+                          job_id: { type: string, example: cal_a1b2c3d4e5f6 }
+                          node: { type: string, example: gpu-1 }
+        '400':
+          description: Invalid workload, context_too_small or concurrency_above_limit.
+          content: &calibrationProblem
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { description: run_not_found on the selected node., content: *calibrationProblem }
+        '409': { description: 'run_not_ready, run_changed, calibration_unsupported or calibration_running.', content: *calibrationProblem }
+        '421': { description: calibration_wrong_node identifies the node that received a misdirected calibration., content: *calibrationProblem }
+        '422': { description: The Idempotency-Key was recorded against a different body. Code is idempotency_key_conflict., content: *calibrationProblem }
+        '503': { description: The node is unreachable or its job registry is unavailable. A full retry store returns idempotency_store_full., content: *calibrationProblem }
+        '504': { description: A duplicate exceeded its wait limit or replay window. Code is idempotency_wait_timeout., content: *calibrationProblem }
+
   /zzrouter/v1/jobs:
     get:
       tags: [Jobs]
@@ -4834,7 +4851,7 @@ paths:
         - in: query
           name: kind
           schema: { type: string }
-          description: Filter by producer, e.g. `install` or `inference_log`.
+          description: Filter by producer, e.g. `install`, `inference_log` or `calibration`. Job lists omit calibration reports.
         - $ref: '#/components/parameters/LimitParam'
       responses:
         '200':
@@ -14895,7 +14912,7 @@ components:
         node:    { type: string }
         kind:
           type: string
-          description: What produced the job (install, upgrade, download, run, service, inference_log, ...).
+          description: What produced the job (install, update, download, run, service, sync, inference_log, calibration, ...).
         phase:   { $ref: '#/components/schemas/JobPhase' }
         percent:
           type: integer
@@ -14903,9 +14920,9 @@ components:
         step:
           type: string
           description: Human-readable description of the current step.
-        error:
+        err:
           type: string
-          description: Present only when phase is `failed`.
+          description: Error or cancellation message when a failed job supplies one.
         warning:
           type: string
           description: Non-fatal warning; a successful job may carry this field.
@@ -14924,8 +14941,252 @@ components:
             total: { type: integer, format: int64 }
         meta:
           type: object
-          description: Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
+          description: |
+            Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
+            Calibration events begin without meta. When a report is available, the terminal event adds it to the last progress metadata.
+          anyOf:
+            - $ref: '#/components/schemas/CalibrationProgress'
+            - type: object
           additionalProperties: true
+
+    CalibrationRequest:
+      type: object
+      additionalProperties: false
+      required: [node, runs]
+      properties:
+        node: { type: string, minLength: 1, description: Name of the node holding every listed run. }
+        step_timeout_seconds: { type: integer, minimum: 1, maximum: 1800, default: 600 }
+        runs:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required: [run_id]
+            properties:
+              run_id: { type: string, minLength: 1 }
+              target_revision: { type: string, description: Optional precondition obtained from the run snapshot. }
+              workload:
+                type: object
+                additionalProperties: false
+                description: Omit for a resident run. Every step needs at least one active run.
+                required: [input_tokens, concurrency]
+                properties:
+                  input_tokens: { type: integer, minimum: 1 }
+                  output_tokens: { type: integer, minimum: 1, description: Required for chat. Omit for embeddings. }
+                  concurrency:
+                    type: array
+                    minItems: 1
+                    maxItems: 8
+                    items: { type: integer, minimum: 0, maximum: 256 }
+                    description: Zero means idle. All workloads specify the same number of steps.
+                  requests_per_step:
+                    type: integer
+                    minimum: 1
+                    maximum: 1024
+                    description: At least the highest concurrency. Defaults to max(3 times concurrency, 10) in each active step.
+
+    CalibrationDiscovery:
+      type: object
+      required: [workload_kinds, max_runs, max_steps, max_concurrency, max_requests_per_step, max_step_timeout_seconds, default_step_timeout_seconds]
+      properties:
+        workload_kinds: { type: array, items: { type: string, enum: [chat, embeddings] } }
+        max_runs: { type: integer, example: 3 }
+        max_steps: { type: integer, example: 8 }
+        max_concurrency: { type: integer, example: 256 }
+        max_requests_per_step: { type: integer, example: 1024 }
+        max_step_timeout_seconds: { type: integer, example: 1800 }
+        default_step_timeout_seconds: { type: integer, example: 600 }
+
+    CalibrationProgress:
+      type: object
+      additionalProperties: false
+      properties:
+        step: { type: integer, minimum: 0 }
+        steps: { type: integer, minimum: 0 }
+        report: { $ref: '#/components/schemas/CalibrationReport' }
+        requests_completed: { type: object, additionalProperties: { type: integer }, description: Counts keyed by active run ID. }
+        requests_total: { type: object, additionalProperties: { type: integer, nullable: true }, description: Scheduled requests keyed by active run ID. Null means unknown. }
+        sample:
+          type: object
+          additionalProperties: false
+          required: [at, pools]
+          properties:
+            at: { type: string, format: date-time, description: Time when the runner accepted this sample. }
+            pools:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [id, kind, vendor, total_mib, used_mib, free_mib, available_mib, swap_used_mib, utilization_pct, power_w, cpu_pct, ownership, holders]
+                properties:
+                  id: { type: string }
+                  kind: { type: string, enum: [gpu, host, unified] }
+                  vendor: { type: string, nullable: true }
+                  total_mib: { type: integer, nullable: true }
+                  used_mib: { type: integer, nullable: true }
+                  free_mib: { type: integer, nullable: true }
+                  available_mib: { type: integer, nullable: true }
+                  swap_used_mib: { type: integer, nullable: true }
+                  utilization_pct: { type: number, nullable: true }
+                  power_w: { type: number, nullable: true }
+                  cpu_pct: { type: number, nullable: true }
+                  ownership: { type: string, nullable: true, enum: [verified, shared, null] }
+                  holders: { type: array, nullable: true, items: { $ref: '#/components/schemas/CalibrationPoolHolder' } }
+
+    CalibrationReport:
+      type: object
+      description: Terminal measurement summary. Unknown values are null. Cancellation retains completed steps.
+      required: [outcome, reason, started_at, completed_at, request, sampling_interval_ms, largest_sample_gap_ms, resources, runs, steps]
+      properties:
+        outcome: { type: string, enum: [verified, partial, failed, inconclusive, cancelled] }
+        reason: { $ref: '#/components/schemas/CalibrationReason' }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+        request: { $ref: '#/components/schemas/CalibrationRequest' }
+        sampling_interval_ms: { type: integer, example: 500 }
+        largest_sample_gap_ms: { type: number, nullable: true }
+        resources:
+          type: array
+          items:
+            type: object
+            required: [id, kind, total_mib]
+            properties:
+              id: { type: string }
+              kind: { type: string, enum: [gpu, host, unified] }
+              total_mib: { type: integer, nullable: true }
+              vendor: { type: string, nullable: true }
+              ownership: { type: string, enum: [verified, shared, unknown] }
+              holders: { type: array, nullable: true, items: { $ref: '#/components/schemas/CalibrationPoolHolder' } }
+        runs: { type: array, items: { $ref: '#/components/schemas/CalibrationRun' } }
+        steps: { type: array, items: { $ref: '#/components/schemas/CalibrationStep' } }
+
+    CalibrationPoolHolder:
+      type: object
+      required: [pid, memory_mib, run_id]
+      properties:
+        pid: { type: integer }
+        memory_mib: { type: integer, nullable: true }
+        run_id: { type: string, nullable: true }
+
+    CalibrationReason:
+      type: object
+      nullable: true
+      required: [code, message, next_action]
+      properties:
+        code: { type: string, enum: [target_not_met, requests_failed, run_changed, usage_unavailable, step_timeout, cancelled] }
+        message: { type: string }
+        next_action:
+          type: object
+          required: [code, tool]
+          properties:
+            code: { type: string, nullable: true }
+            tool: { type: string, nullable: true }
+
+    CalibrationRun:
+      type: object
+      properties:
+        run_id: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        endpoint: { type: string }
+        resolved_parameters: { type: object, additionalProperties: { type: string } }
+        redacted_parameters: { type: array, items: { type: string }, description: Keys whose resolved values were redacted. Exclude these keys when saving the tested settings. }
+        parameters_status: { type: string, enum: [current, stale, unknown] }
+        overridden: { type: array, items: { type: string }, description: Canonical parameter keys and environment paths held by the run's request tier. }
+        served_context_tokens: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true, description: Zero means unlimited. }
+        cache:
+          type: object
+          nullable: true
+          properties:
+            kv_tokens: { type: integer, nullable: true }
+            context_tokens: { type: integer, nullable: true }
+            max_concurrency: { type: number, nullable: true }
+        output_forced: { type: boolean }
+        observed_roles: { type: array, items: { type: string, enum: [running, waiting, kv_cache_usage, busy] } }
+        workload_revision: { type: string, nullable: true }
+
+    CalibrationStep:
+      type: object
+      properties:
+        index: { type: integer }
+        outcome: { type: string, enum: [verified, queued, failed, inconclusive] }
+        reason: { $ref: '#/components/schemas/CalibrationReason' }
+        duration_ms: { type: number }
+        throughput: { type: object, properties: { output_tokens_per_second: { type: number, nullable: true } } }
+        resources:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              peak_used_mib: { type: integer, nullable: true }
+              minimum_free_mib: { type: integer, nullable: true }
+              utilization_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              power_w: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              other_holders_peak_mib: { type: integer, nullable: true }
+              minimum_available_mib: { type: integer, nullable: true }
+              peak_swap_used_mib: { type: integer, nullable: true }
+              cpu_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+        runs:
+          type: array
+          items:
+            type: object
+            properties:
+              run_id: { type: string }
+              outcome: { type: string, enum: [verified, queued, failed, inconclusive] }
+              reason: { $ref: '#/components/schemas/CalibrationReason' }
+              concurrency: { type: integer }
+              requests:
+                type: object
+                properties:
+                  requested: { type: integer }
+                  completed: { type: integer }
+                  failed: { type: integer }
+              public_requests: { type: integer, nullable: true }
+              input_tokens: { $ref: '#/components/schemas/CalibrationTokenRange' }
+              output_tokens: { $ref: '#/components/schemas/CalibrationTokenRange' }
+              concurrent_streams_peak: { type: integer, nullable: true }
+              slot_wait_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              time_to_first_token_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              inter_token_latency_ms: { $ref: '#/components/schemas/CalibrationPercentiles' }
+              throughput:
+                type: object
+                properties:
+                  input_tokens_per_second: { type: number, nullable: true }
+                  output_tokens_per_second: { type: number, nullable: true }
+                  requests_per_second: { type: number, nullable: true }
+              memory_peak_mib: { type: object, additionalProperties: { type: integer, nullable: true } }
+              cpu_pct: { $ref: '#/components/schemas/CalibrationMeanPeak' }
+              engine:
+                type: object
+                properties:
+                  running_peak: { type: integer, nullable: true }
+                  waiting_peak: { type: integer, nullable: true }
+                  kv_cache_usage_peak: { type: number, nullable: true }
+
+    CalibrationMeanPeak:
+      type: object
+      nullable: true
+      properties: { mean: { type: number }, peak: { type: number } }
+
+    CalibrationTokenRange:
+      type: object
+      nullable: true
+      properties: { min: { type: integer }, max: { type: integer } }
+
+    CalibrationPercentiles:
+      type: object
+      nullable: true
+      properties:
+        p50: { type: number }
+        p90: { type: number }
+        p99: { type: number }
+        min: { type: number }
+        max: { type: number }
+        count: { type: integer }
 
     ProviderVersionsReport:
       type: object
@@ -15149,10 +15410,13 @@ components:
           example: 'not_found'
         node:
           type: string
-          description: The cluster node a routed request targeted, when applicable.
+          description: The cluster node a routed request targeted, or the receiving node for calibration_wrong_node.
         run_id:
           type: string
-          description: The run holding physical weights that deletion refused.
+          description: The run identified by run_not_found, run_not_ready, run_changed, calibration_unsupported, context_too_small or concurrency_above_limit, or the run holding physical weights that deletion refused.
+        job_id:
+          type: string
+          description: The job already running on the node for calibration_running.
         deleted:
           type: integer
           minimum: 0
@@ -15310,12 +15574,14 @@ components:
         - queue_wait_expired
 
     HealthResponse:
+      allOf:
+        - $ref: '#/components/schemas/NodeMemoryObservation'
       type: object
       description: >
         The payload every health route shares except the liveness probe.
-        The route decides `status` and the HTTP code; the fields do not
-        vary, so peer discovery reading /health sees the same protocol
-        window as a kubelet reading /health/ready.
+        The route decides `status` and the HTTP code. Peer discovery
+        reading /health sees the same protocol window as a kubelet reading
+        /health/ready. Native resource observations are optional.
       required:
         [status, version, api_version, service_type, uptime, capabilities,
          cluster_protocol, min_cluster_protocol, cluster_compatible,
@@ -15467,6 +15733,7 @@ components:
           type: array
           items: { type: string }
           description: GET routes that answer text/event-stream and hold the connection open.
+        calibration: { $ref: '#/components/schemas/CalibrationDiscovery' }
         endpoint_groups:
           type: object
           additionalProperties:
@@ -15660,13 +15927,31 @@ components:
         json_mode:          { type: boolean }
         max_context_tokens: { type: integer, minimum: 1 }
 
+    NodeMemoryObservation:
+      type: object
+      properties:
+        memory_used:
+          type: object
+          description: Observed RAM usage in bytes. Omitted when unknown.
+          properties:
+            value: { type: integer, format: int64, minimum: 0 }
+            display_value: { type: string }
+        memory_used_percent:
+          type: object
+          description: Observed RAM usage as a percentage. Omitted when unknown.
+          properties:
+            value: { type: number, minimum: 0 }
+            display_value: { type: string }
+        memory_sample:
+          $ref: '#/components/schemas/MemorySample'
+
     MemorySample:
       type: object
       description: Measured memory usage. Absence or omitted used_bytes means unknown, never zero. Peer age is anchored to the coordinator probe start; reading inventory does not renew the sample. Stale or unavailable-node readings are last reported.
       required: [total_bytes, age_seconds, observed_at, stale]
       properties:
         total_bytes: { type: integer, format: int64, minimum: 1 }
-        used_bytes: { type: integer, format: int64, minimum: 0 }
+        used_bytes: { type: integer, format: int64, minimum: 0, description: Omitted when usage is unknown. }
         age_seconds: { type: number, minimum: 0 }
         observed_at: { type: string, format: date-time }
         stale: { type: boolean }
@@ -15787,14 +16072,16 @@ components:
             name: { type: string }
             url: { type: string, format: uri, description: Authenticated native browser URL. Open this URL instead of exposing the engine port. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
-        engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
+        engine_busy: { type: boolean, description: Positive queue hold. With a declared busy probe, unknown activity also protects the run from idle expiry and memory reclaim. }
+        target_revision: { type: string, description: Identity of the live target. Pass this as a calibration precondition. }
+        requests_admitted: { type: integer, minimum: 1, description: Total leases granted since this run started. Omitted until the first grant. }
         memory_commitments_mib:
           type: object
           additionalProperties: { type: integer }
           description: Per-device reservations retained for the run.
 
         started:  { type: string, format: date-time }
-        endpoint: { type: string }
+        endpoint: { type: string, description: Serving endpoint. Shared daemon runs use model capabilities when known and fall back to the requested endpoint or chat. }
         parameters:
           type: object
           additionalProperties: { type: string }
@@ -15825,7 +16112,7 @@ components:
           enum: [api, request]
           description: |
             What started the run: `api` for a run start (`POST /runs`,
-            `/runs/ensure`, `/runs/load`), `request` for an inference request
+            `/runs/ensure`), `request` for an inference request
             to a model that had no run. A restart or a reuse keeps the
             original value. Absent for a model zzRouter did not launch
             (one an endpoint provider such as Ollama loaded itself).
@@ -15853,6 +16140,8 @@ components:
                 type: integer
                 format: int64
                 description: GPU memory the driver attributed to the run when it was stopped.
+        admission_warning:
+          $ref: '#/components/schemas/AdmissionWarning'
         failure:
           type: object
           description: Optional diagnostic snapshot captured by the failed run lifecycle; does not require a logs request.
@@ -15868,6 +16157,36 @@ components:
               description: Last diagnostic error lines, at most 8 KiB in total, redacted before retention; request payload and environment dump lines are excluded.
               items: { type: string }
             truncated: { type: boolean }
+
+    AdmissionWarning:
+      type: object
+      description: Memory-fit evidence for a launch accepted under memory-admission report.
+      required: [message, parameter, device, required_mib, free_mib, holders]
+      properties:
+        message: { type: string }
+        kept_run: { type: string }
+        credited_mib: { type: integer, format: int64 }
+        budget_kind: { type: string }
+        parameter: { type: string }
+        device: { type: string }
+        required_mib: { type: integer, format: int64 }
+        free_mib: { type: integer, format: int64 }
+        attribution_reason: { type: string }
+        holders:
+          type: array
+          nullable: true
+          items:
+            type: object
+            required: [ownership]
+            properties:
+              pid: { type: integer }
+              memory_mib: { type: integer, format: int64 }
+              run: { type: string }
+              model: { type: string }
+              provider: { type: string }
+              ownership: { type: string, enum: [zzrouter, other_or_untracked] }
+              unused_commitment_mib: { type: integer, format: int64 }
+              reclaim_skipped_reason: { type: string, description: Reason the holder was skipped during reclaim. A missing or expired declared busy observation reports activity_unknown after any positive hold clears. }
 
     Provider:
       type: object
@@ -15991,6 +16310,7 @@ components:
           properties:
             count: { type: integer, minimum: 0 }
             type: { type: string }
+            utilization_percent: { type: number, description: Observed GPU utilization. Omitted when unknown. }
             unified_memory: { type: boolean, description: GPU and RAM share one memory pool; do not sum them. }
             gpus:
               type: array
@@ -16050,7 +16370,7 @@ components:
             sample: { $ref: '#/components/schemas/MemorySample' }
             total_gb:     { type: number, description: GiB }
             available_gb: { type: number, description: GiB }
-            used_percent: { type: number }
+            used_percent: { type: number, description: Omitted when usage is unknown. }
         metadata:
           type: object
           additionalProperties: true
@@ -16241,6 +16561,13 @@ components:
             chains the launch. Returns 202 with both `deploy_job_id`
             (download progress) and `job_id` (launch readiness).
             Refused for cloud providers.
+        replace:
+          type: boolean
+          description: Replace the run holding this key with the requested settings.
+        environment:
+          type: object
+          additionalProperties: { type: string }
+          description: Request-scoped environment overrides, applied above provider tiers.
         parameters:
           type: object
           description: |
@@ -16249,8 +16576,10 @@ components:
             Negative keep-alive (for example -1) pins against router idle expiry and
             pressure reclaim for the admitted run's lifetime. Positive or zero overrides
             a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
-            Force replacement and restart remain available; restart replays this tier.
+            Replacement and restart remain available; restart replays this tier.
             Pins do not autostart runs after a node restart.
+            Set memory-admission to enforce (default) or report. With report,
+            the router warns on a fit refusal and skips idle reclaim.
           additionalProperties:
             oneOf:
               - { type: string }
@@ -16347,7 +16676,6 @@ components:
         model_name: { type: string, description: Same as `model`. }
         node:       { type: string }
         endpoint:   { type: string, enum: [chat, embeddings, reranking] }
-        force:      { type: boolean }
         parameters:
           type: object
           description: |
@@ -16356,8 +16684,10 @@ components:
             Negative keep-alive (for example -1) pins against router idle expiry and
             pressure reclaim for the admitted run's lifetime. Positive or zero overrides
             a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
-            Force replacement and restart remain available; restart replays this tier.
+            Replacement and restart remain available; restart replays this tier.
             Pins do not autostart runs after a node restart.
+            Set memory-admission to enforce or report. Capacity assessment
+            reports the same verdict in either mode.
           additionalProperties:
             oneOf:
               - { type: string }
@@ -16366,48 +16696,6 @@ components:
         environment:
           type: object
           additionalProperties: { type: string }
-
-    LoadModelRequest:
-      type: object
-      description: |
-        Model fields are required for model-scoped providers and omitted for node-scoped providers.
-        `model_name` is resolved to the name this node knows the model
-        by before the request is keyed on it, so the canonical name and
-        any SourceID alias the catalog carries for it (a HuggingFace
-        repo id, say) reach the same run.
-      properties:
-        model_name: { type: string }
-        provider:   { type: string }
-        node:       { type: string }
-        endpoint:
-          type: string
-          enum: [chat, embeddings, reranking]
-          description: |
-            Which wire endpoint the instance serves. Empty means
-            `chat`; anything outside the enum is a 400. Providers whose
-            config declares no `endpoints` overlay run one instance per
-            (provider, model) whatever is passed.
-        force:
-          type: boolean
-          description: |
-            Stop the run already serving this model and launch a
-            replacement. Without it, a model that is already running or
-            starting answers 409 instead.
-        parameters:
-          type: object
-          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
-          additionalProperties:
-            oneOf:
-              - { type: string }
-              - { type: number }
-              - { type: boolean }
-        environment:
-          type: object
-          additionalProperties: { type: string }
-          description: |
-            Environment variables for the launched process. Same
-            precedence as `parameters`: request-scoped, above every
-            tier configured on the provider.
 
     Key:
       type: object
@@ -18064,6 +18352,34 @@ components:
           items: { $ref: '#/components/schemas/ParamError' }
         diagnostics:
           $ref: '#/components/schemas/ProviderDiagnostics'
+        observe:
+          type: object
+          description: Engine evidence read from the run's local port.
+          required: [path, format]
+          additionalProperties: false
+          properties:
+            path: { type: string, description: Engine-relative HTTP path. }
+            format: { type: string, enum: [prometheus, json] }
+            running: { type: string, description: Prometheus series or dotted JSON path for running requests. }
+            waiting: { type: string, description: Prometheus series or dotted JSON path for queued requests. }
+            kv_cache_usage: { type: string, description: Prometheus series or dotted JSON path for cache usage as a fraction. }
+            runtimes:
+              type: array
+              minItems: 1
+              maxItems: 16
+              uniqueItems: true
+              description: Use base for the base engine or names from the provider's feature runtimes. Applies to every runtime when omitted.
+              items: { type: string, maxLength: 128 }
+            busy:
+              type: array
+              description: JSON fields whose non-empty arrays indicate engine activity. Only available with JSON.
+              items: { type: string }
+        calibration:
+          type: object
+          required: [output]
+          additionalProperties: false
+          properties:
+            output: { type: object, minProperties: 1, description: Engine request fields that force full-length output. }
         parameters:
           type: object
           additionalProperties: { $ref: '#/components/schemas/ParameterShape' }
@@ -18099,6 +18415,7 @@ components:
             kind: { type: string, enum: [fraction_total, layers, unified, external] }
             parameter: { type: string }
             device_count_parameter: { type: string }
+            kv_bytes_parameter: { type: string, description: Parameter for positive fixed KV bytes per GPU in a fraction_total budget. }
             auto_safety_margin_mib:
               type: integer
               format: int64
@@ -18419,6 +18736,8 @@ components:
         has_rejection: { type: boolean }
 
     SystemInfo:
+      allOf:
+        - $ref: '#/components/schemas/NodeMemoryObservation'
       type: object
       description: |
         Node identity, runtime metrics, and hardware info. Produced by

@@ -422,6 +422,8 @@ type schemaResponse struct {
 	Problems    []utils.ParamError           `json:"problems,omitempty"`
 	Install     json.RawMessage              `json:"install,omitempty"`
 	Diagnostics *schema.Diagnostics          `json:"diagnostics,omitempty"`
+	Observe     *schema.Observe              `json:"observe,omitempty"`
+	Calibration *schema.Calibration          `json:"calibration,omitempty"`
 	Parameters  map[string]schemaParamDTO    `json:"parameters"`
 	Environment map[string]schemaParamDTO    `json:"environment"`
 	Endpoints   map[string]endpointSchemaDTO `json:"endpoints,omitempty"`
@@ -436,10 +438,16 @@ func (e *ParamsExecutor) HandleSchema(c *gin.Context) {
 		NotFound(c, err.Error())
 		return
 	}
-	merged := loadProviderSchema(e.configStore, provider)
+	merged, err := providerSchema(e.configStore)(provider)
+	if err != nil {
+		InternalNodeError(c, err.Error())
+		return
+	}
 	resp := schemaResponse{
 		Problems:    merged.Problems,
 		Diagnostics: merged.Diagnostics,
+		Observe:     merged.Observe,
+		Calibration: merged.Calibration,
 		Parameters:  paramShapeMapToDTO(merged.Parameters),
 		Environment: make(map[string]schemaParamDTO),
 	}

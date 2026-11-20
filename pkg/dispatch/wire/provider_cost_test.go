@@ -59,7 +59,7 @@ func TestProviderCostPresence(t *testing.T) {
 				body := `{"choices":[],"usage":{"cost":0}}`
 				w := httptest.NewRecorder()
 				if stream {
-					CopyStream(t.Context(), w, strings.NewReader("data: "+body+"\n\ndata: [DONE]\n\n"), rec, nil)
+					CopyStream(t.Context(), w, strings.NewReader("data: "+body+"\n\ndata: [DONE]\n\n"), RecorderObserver(rec), nil)
 				} else {
 					resp := buildJSONResp(200, body, nil)
 					defer resp.Body.Close()
@@ -95,7 +95,7 @@ func TestStreamCostMergePresence(t *testing.T) {
 			assert.Equal(t, CostSourceProvider, u.CostSource)
 			rec := llm.NewInferenceRecorder(t.Context(), "m", "p")
 			stream := "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":19,\"completion_tokens\":3,\"cost\":0.01}}\n\ndata: " + tc.body + "\n\ndata: [DONE]\n\n"
-			CopyStream(t.Context(), httptest.NewRecorder(), strings.NewReader(stream), rec, nil)
+			CopyStream(t.Context(), httptest.NewRecorder(), strings.NewReader(stream), RecorderObserver(rec), nil)
 			assert.Equal(t, tc.want, rec.Snapshot().Cost)
 			assert.Equal(t, "provider", rec.Snapshot().CostSource)
 		})
@@ -142,7 +142,7 @@ func TestOpenRouterRecordedShapeStream(t *testing.T) {
 			norms.CleanChatUsage = func() bool { return true }
 			rec := llm.NewInferenceRecorder(t.Context(), "gpt-4o", "openrouter")
 			w := httptest.NewRecorder()
-			result := CopyStream(t.Context(), w, reader, rec, NewStreamTransform(norms.Stream("openrouter"), RoutingMetadata{}, rec).Func())
+			result := CopyStream(t.Context(), w, reader, RecorderObserver(rec), NewStreamTransform(norms.Stream("openrouter"), RoutingMetadata{}, rec).Func())
 			require.Equal(t, Completed, result.Outcome)
 			assert.Equal(t, prefix+"data: "+final+suffix, w.Body.String())
 			assert.EqualValues(t, 3, rec.Snapshot().TokensOut)
@@ -170,7 +170,7 @@ func TestNormalizationFramingSplitReads(t *testing.T) {
 			norms.CleanChatUsage = func() bool { return true }
 			rec := llm.NewInferenceRecorder(t.Context(), "m", "p")
 			w := httptest.NewRecorder()
-			result := CopyStream(t.Context(), w, r, rec, NewStreamTransform(norms.Stream("p"), RoutingMetadata{}, rec).Func())
+			result := CopyStream(t.Context(), w, r, RecorderObserver(rec), NewStreamTransform(norms.Stream("p"), RoutingMetadata{}, rec).Func())
 			require.Equal(t, Completed, result.Outcome)
 			assert.Equal(t, want, w.Body.String())
 			assert.Equal(t, "provider", rec.Snapshot().CostSource)

@@ -23,7 +23,7 @@ func TestOperatorSchemaConfigRoundTrip(t *testing.T) {
 			p, err := DecodeProviderBytes(tc.kind, "eng", []byte(tc.body+block))
 			require.NoError(t, err)
 			require.NoError(t, p.Validate(), "semantic declarations never fail provider load")
-			view := providerToServiceConfig(p)
+			view := ProviderServiceConfig(p)
 			require.Len(t, view.Schema, 4)
 			assert.Equal(t, "invented", *view.Schema["bad"].Type)
 			restored, err := serviceConfigToProvider("eng", view)
@@ -31,7 +31,7 @@ func TestOperatorSchemaConfigRoundTrip(t *testing.T) {
 			copy, err := cloneProvider(restored)
 			require.NoError(t, err)
 			assert.Equal(t, restored, copy)
-			copied := providerToServiceConfig(copy)
+			copied := ProviderServiceConfig(copy)
 			*copied.Schema["future"].Min = 3
 			(*copied.Schema["future"].Enum)[0] = "4"
 			assert.Equal(t, 1.0, *view.Schema["future"].Min)

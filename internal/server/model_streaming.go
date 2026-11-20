@@ -28,7 +28,7 @@ import (
 
 // HandleLocalModel handles requests for local models. endpoint is the
 // per-request endpoint label ("chat" for callers that don't know).
-func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, resolved *resolver.Resolved, endpoint string) error {
+func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, body []byte, resolved *resolver.Resolved, endpoint string) error {
 	model, providerType := resolved.ModelName, resolved.Provider
 	if err := s.validateModel(req.Context(), model); err != nil {
 		writeModelAdmissionError(w, req, err)
@@ -37,11 +37,12 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	if endpoint == "" {
 		endpoint = "chat"
 	}
+	runRequest := newInstanceRequest(req, body)
 
 	// A bound running model may be absent from the catalog.
 	existingInstance, found := s.modelInstance(resolved, endpoint)
 	if found && existingInstance.GetStatus() == instance.StatusRunning {
-		s.proxyToInstance(w, req, existingInstance, true)
+		s.proxyToInstance(w, req, runRequest, existingInstance, true)
 		return nil
 	}
 
@@ -65,7 +66,6 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	// A provider without runs is forwarded to; every other one serves through a run.
 	if !s.hasRuns(providerType) {
 		if resolved, ok := s.backend.Resolve(providerType); ok {
-			body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
 			affinity.Observe(req.Context(), affinity.Origin{ProviderKey: providerType, ConnectionRevision: resolved.Revision, Model: wire.ModelFromBody(body)})
 			target := resolved.InferenceTarget(req.URL.Path, req.URL.RawQuery)
 			s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
@@ -79,11 +79,9 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	// ollamaStreamRequested on its own dispatch path — do not "unify"
 	// the two readings.
 	isStreaming := false
-	if originalBody, ok := req.Context().Value(CtxKeyOriginalBody).([]byte); ok {
-		var reqBody map[string]any
-		if json.Unmarshal(originalBody, &reqBody) == nil {
-			isStreaming, _ = reqBody["stream"].(bool)
-		}
+	var reqBody map[string]any
+	if json.Unmarshal(runRequest.OriginalBody, &reqBody) == nil {
+		isStreaming, _ = reqBody["stream"].(bool)
 	}
 
 	// A streaming request whose instance is cold used to answer 200 +
@@ -174,12 +172,12 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	// Forward to instance
 	if sseStarted {
 		streamer.StreamStatus(w, "model_ready", "Model loaded. Generating response...")
-		s.streamFromInstance(w, req, inst, streamer)
+		s.streamFromInstance(w, req, runRequest, inst, streamer)
 	} else {
 		// Including a streaming request whose load beat the grace: it
 		// takes the same path a warm one does, which is also the path
 		// that records an inference-log entry.
-		s.proxyToInstance(w, req, inst, false)
+		s.proxyToInstance(w, req, runRequest, inst, false)
 	}
 	return nil
 }
@@ -262,20 +260,21 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 // already committed (200 + text/event-stream). Errors travel inside the
 // stream through streamer. Only called from HandleLocalModel after the
 // SSE preamble, which only an in-band streamer opens.
-func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
+func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, runRequest instanceRequest, inst *instance.Instance, streamer httperr.InBandStreamer) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
 	ctx, attempt := llm.StartAttempt(req.Context(), inst.Provider, model)
 	defer attempt.End()
 	req = req.WithContext(ctx)
+	runRequest.Context = ctx
 	rec := requestRecorder(req.Context(), model, inst.Provider)
-	lease, target, up, ok := s.openRun(req, inst, rec, func(e httperr.Error) { attempt.SetError(e.Code, nil); streamer.StreamError(w, e) })
+	lease, target, up, ok := s.openRun(runRequest, inst, rec, func(e httperr.Error) { attempt.SetError(e.Code, nil); streamer.StreamError(w, e) })
 	if !ok {
 		return
 	}
 	defer lease.Release()
 	attempt.SetTarget(target.String())
 
-	body, answerAs := s.instanceRequest(req, inst)
+	body, answerAs := s.instanceRequest(runRequest, inst)
 	rec.SetUpstreamRequestData(body)
 	rec.SetServer(target.Hostname(), portFromURL(target))
 
@@ -284,7 +283,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		inst.Provider, model, target.Hostname())
 	defer proxy.DecInflight(req.Context(), inflightToken)
 
-	resp, err := s.sendToInstance(req, lease, body, target, up)
+	resp, err := s.sendToInstance(runRequest, lease, body, target, up)
 	if err != nil {
 		attempt.SetError("transport_failure", err)
 		streamer.StreamError(w, instanceSendFailure(rec, err))
@@ -304,7 +303,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	}
 
 	meta := s.localRoutingMetadata(req, inst, s.GetNodename(), answerAs)
-	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	result := wire.CopyStream(req.Context(), w, resp.Body, wire.RecorderObserver(rec), wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 	result.ObserveAttempt(attempt)
 	endBrokenStream(w, req, result)
 }

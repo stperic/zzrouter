@@ -11,8 +11,12 @@ import (
 
 // Reserved run parameters belong to zzRouter, never to an engine's command line.
 const (
-	KeepAliveParameter = "keep-alive"
-	EvictIdleParameter = "evict-idle-on-memory-pressure"
+	KeepAliveParameter       = "keep-alive"
+	EvictIdleParameter       = "evict-idle-on-memory-pressure"
+	MemoryAdmissionParameter = "memory-admission"
+
+	MemoryAdmissionEnforce = "enforce"
+	MemoryAdmissionReport  = "report"
 )
 
 // Auto is the reserved value asking zzRouter to choose a parameter's value.
@@ -42,6 +46,7 @@ type Settings struct {
 	KeepAliveExplicit bool
 	EvictIdle         bool
 	EvictIdleExplicit bool
+	MemoryAdmission   string
 }
 
 // Parse validates reserved parameters keyed by flag name, with the legacy
@@ -52,12 +57,18 @@ func Parse(params map[string]string, evictDefault bool) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	s := Settings{KeepAlive: duration, KeepAliveExplicit: explicit, EvictIdle: evictDefault}
+	s := Settings{KeepAlive: duration, KeepAliveExplicit: explicit, EvictIdle: evictDefault, MemoryAdmission: MemoryAdmissionEnforce}
 	if raw, ok := params[EvictIdleParameter]; ok {
 		if raw != "true" && raw != "false" {
 			return Settings{}, fmt.Errorf("%s must be true or false", EvictIdleParameter)
 		}
 		s.EvictIdle, s.EvictIdleExplicit = raw == "true", true
+	}
+	if raw, ok := params[MemoryAdmissionParameter]; ok {
+		if raw != MemoryAdmissionEnforce && raw != MemoryAdmissionReport {
+			return Settings{}, fmt.Errorf("%s must be %s or %s", MemoryAdmissionParameter, MemoryAdmissionEnforce, MemoryAdmissionReport)
+		}
+		s.MemoryAdmission = raw
 	}
 	return s, nil
 }
@@ -81,5 +92,5 @@ func Duration(raw string) (time.Duration, error) {
 
 // IsParameter recognizes a reserved name, keyed by flag name.
 func IsParameter(key string) bool {
-	return key == KeepAliveParameter || key == EvictIdleParameter
+	return key == KeepAliveParameter || key == EvictIdleParameter || key == MemoryAdmissionParameter
 }

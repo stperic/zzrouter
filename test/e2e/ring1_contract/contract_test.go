@@ -298,6 +298,79 @@ func TestRing1_AuthMatrix(t *testing.T) {
 	t.Logf("auth-matrix exercised: %d routes (%d in catalog)", count, len(routes))
 }
 
+func TestRing1_CreateCalibration(t *testing.T) {
+	cluster, routes := suite(t)
+	const path = "/zzrouter/v1/calibrations"
+	found := false
+	for _, r := range routes {
+		if r.Method == http.MethodPost && r.Path == path {
+			found = true
+			if r.Surface != "admin" || r.Auth != "admin" || !r.Async || r.Retired {
+				t.Fatalf("unexpected catalog entry: %+v", r)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("POST %s missing from the route catalog", path)
+	}
+
+	coord := cluster.Coordinator()
+	// An absent run lets the authorized request reach target validation without a model fixture.
+	body := fmt.Appendf(nil, `{"node":%q,"runs":[{"run_id":"ring1-missing","workload":{"input_tokens":32,"output_tokens":1,"concurrency":[1]}}]}`, coord.Name())
+	for _, tc := range []struct {
+		name   string
+		tier   harness.StaticTier
+		body   []byte
+		status int
+		code   string
+	}{
+		{"no_key", harness.TierNone, body, http.StatusUnauthorized, "unauthorized"},
+		{"wrong_tier", harness.TierAPI, body, http.StatusForbidden, "forbidden"},
+		{"correct_tier", harness.TierAdmin, body, http.StatusNotFound, "run_not_found"},
+		{"invalid_body", harness.TierAdmin, []byte(`{`), http.StatusBadRequest, "bad_request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := assert.Diagnostics(t, cluster)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			client := harness.NewClient(coord, tc.tier)
+			resp, err := client.POST(ctx, path, nil, harness.RawBody("application/json", tc.body))
+			assert.MustOK(t, err)
+			d.RecordRequest(&harness.RequestRecord{Method: http.MethodPost, URL: coord.BaseURL() + path})
+			d.RecordResponse(&resp)
+			assert.Status(t, resp, tc.status)
+			assert.Headers(t, resp, "X-Request-ID", "X-API-Version")
+			p := assert.Problem(t, resp, tc.code)
+			if p.Status != tc.status || p.Type == "" || p.Title == "" || p.Detail == "" {
+				t.Errorf("incomplete Problem envelope: %+v", p)
+			}
+		})
+	}
+}
+
+func TestRing1_RunsLoadRemoved(t *testing.T) {
+	cluster, routes := suite(t)
+	const path = "/zzrouter/v1/runs/load"
+	for _, r := range routes {
+		if r.Path == path {
+			t.Fatalf("removed path still appears in the route catalog: %+v", r)
+		}
+	}
+
+	coord := cluster.Coordinator()
+	d := assert.Diagnostics(t, cluster)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := harness.NewClient(coord, harness.TierAdmin)
+	resp, err := client.POST(ctx, path, nil)
+	assert.MustOK(t, err)
+	d.RecordRequest(&harness.RequestRecord{Method: http.MethodPost, URL: coord.BaseURL() + path})
+	d.RecordResponse(&resp)
+	// The path still matches GET and DELETE /runs/:id, so POST gets a method error.
+	assert.Status(t, resp, http.StatusMethodNotAllowed)
+	assert.Problem(t, resp, "method_not_allowed")
+}
+
 // TestRing1_AuthMatrix_FalsePositiveImmunity proves the auth-matrix
 // assertion catches a credential bug. A meta-test: stand up a fake
 // always-200 handler in front of a "private" path and assert the

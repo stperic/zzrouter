@@ -606,7 +606,7 @@ func TestEnsureRunContract(t *testing.T) {
 
 	t.Run("10 two budgeted models queue", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000' ;;\nesac\n"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, [N/A], 0000:01:00.0, 0, [N/A]' ;;\nesac\n"), 0o700))
 		t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 		reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
@@ -615,7 +615,7 @@ func TestEnsureRunContract(t *testing.T) {
 		r := newContractRig(t, true, WithJobsRegistry(reg), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 			return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 		})))
-		r.m.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+		r.m.memorySnapshot = nvidiaSnapshot
 		budgeted := func(model string) *instance.Instance {
 			t.Helper()
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: model})})[0]
@@ -773,6 +773,8 @@ type fakeDaemon struct {
 	unreachable   bool
 	psErr         bool
 	psHook        func()
+	showReplies   map[string]string
+	shows         atomic.Int32
 	beforeRequest func(*http.Request)
 	stale         map[string]bool
 	unloadHold    chan struct{} // an unload drops the model, then answers once this closes
@@ -789,6 +791,9 @@ func daemonReply(status int, body string) *http.Response {
 }
 
 func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Path == "/api/show" {
+		d.shows.Add(1)
+	}
 	d.mu.Lock()
 	unreachable, before := d.unreachable, d.beforeRequest
 	d.mu.Unlock()
@@ -804,6 +809,19 @@ func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 	case "/api/ps":
 		d.set(func(d *fakeDaemon) { d.psAuth = append(d.psAuth, req.Header.Get("Authorization")) })
 		return d.ps()
+	case "/api/show":
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		d.mu.Lock()
+		showReply := d.showReplies[body.Model]
+		d.mu.Unlock()
+		if req.Method == http.MethodPost && showReply != "" {
+			return daemonReply(http.StatusOK, showReply), nil
+		}
 	case "/api/embed", "/api/generate":
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -1068,6 +1086,136 @@ func modelSourceBarrier(b *barrier, gate *atomic.Bool) Option {
 	})
 }
 
+func TestServedRunReportsRequestedEndpointAndRetainsSharedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply             string
+		requested, reused, want Endpoint
+	}{
+		{"embedding request on completion model", `{"capabilities":["completion"]}`, EndpointEmbeddings, EndpointChat, EndpointChat},
+		{"embedding request on dual-capability model", `{"capabilities":["embedding","completion"]}`, EndpointEmbeddings, EndpointChat, EndpointChat},
+		{"default request on embedding model", `{"capabilities":["embedding"]}`, "", EndpointEmbeddings, EndpointEmbeddings},
+		{"missing evidence", `{}`, EndpointEmbeddings, EndpointChat, EndpointEmbeddings},
+		{"malformed evidence", `{"capabilities":["embedding",null]}`, EndpointChat, EndpointEmbeddings, EndpointChat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.set(func(d *fakeDaemon) { d.showReplies = map[string]string{servedLoaded: tc.reply} })
+			r.daemon.holdLoads()
+			t.Cleanup(r.daemon.release)
+			req := EnsureRequest{Provider: "ollama", Model: servedModel, Endpoint: tc.requested}
+			first, err := r.m.EnsureRun(t.Context(), req)
+			require.NoError(t, err)
+			require.True(t, first.Started)
+			run := first.Run
+			r.daemon.waitEntered(t)
+			key := instance.NewKey("ollama", servedLoaded, string(EndpointChat))
+			require.Equal(t, instance.StatusStarting, run.GetStatus())
+			require.Equal(t, string(EndpointOrDefault(tc.requested)), run.ToInfo("node").Endpoint)
+			require.Zero(t, r.daemon.shows.Load(), "metadata must wait for a successful registered load")
+			require.Equal(t, key, run.Key())
+			r.daemon.release()
+			awaitRunning(t, run)
+			require.Equal(t, string(tc.want), run.ToInfo("node").Endpoint)
+			require.EqualValues(t, 1, r.daemon.shows.Load())
+
+			req.Endpoint = tc.reused
+			result, err := r.m.EnsureRun(t.Context(), req)
+			require.NoError(t, err)
+			require.False(t, result.Started)
+			require.Same(t, run, result.Run)
+			require.Equal(t, string(tc.want), result.Run.ToInfo("node").Endpoint)
+			require.EqualValues(t, 1, r.daemon.shows.Load(), "reuse reads the registered endpoint")
+			require.Equal(t, 1, r.daemon.count(false))
+			for _, endpoint := range []Endpoint{EndpointChat, EndpointEmbeddings} {
+				found, ok := r.m.GetInstanceByCanonicalModel("ollama", servedLoaded, endpoint)
+				require.True(t, ok)
+				require.Same(t, run, found)
+			}
+
+			r.daemon.set(func(d *fakeDaemon) { d.showReplies = nil })
+			next, err := r.m.RestartInstance(t.Context(), run.ID)
+			require.NoError(t, err)
+			awaitRunning(t, next)
+			require.NotEqual(t, run.ID, next.ID)
+			require.Equal(t, string(EndpointOrDefault(tc.requested)), next.ToInfo("node").Endpoint)
+			require.Equal(t, key, next.Key())
+			require.Equal(t, 2, r.daemon.count(false))
+			require.Equal(t, 1, r.daemon.count(true))
+		})
+	}
+}
+
+func TestServedRegistrationRefusalSkipsCapabilities(t *testing.T) {
+	barrier := newBarrier()
+	r := newServedRig(t, modelSourceBarrier(barrier, nil))
+	started := r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: servedModel})
+	barrier.reached(t)
+	holder := instance.NewInstance("competing-run", "ollama", servedLoaded, 0, neverExpires, 0)
+	require.NoError(t, r.m.instances.Register(holder))
+	barrier.open()
+	out := collect(t, []<-chan outcome{started})[0]
+	require.ErrorIs(t, out.err, instance.ErrModelAlreadyLoaded)
+	require.Zero(t, r.daemon.shows.Load())
+	require.Zero(t, r.daemon.count(false))
+}
+
+func TestAdoptedRunReportsDaemonEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply string
+		endpoint    Endpoint
+	}{
+		{"embedding", `{"capabilities":["embedding"]}`, EndpointEmbeddings},
+		{"completion", `{"capabilities":["completion"]}`, EndpointChat},
+		{"both", `{"capabilities":["embedding","completion"]}`, EndpointChat},
+		{"missing capabilities", `{}`, EndpointChat},
+		{"unrelated capability", `{"capabilities":["vision"]}`, EndpointChat},
+		{"unsupported show", "", EndpointChat},
+		{"malformed capabilities", `{"capabilities":["embedding",null]}`, EndpointChat},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.loadExternally(servedLoaded, time.Time{})
+			r.daemon.set(func(d *fakeDaemon) { d.showReplies = map[string]string{servedLoaded: tc.reply} })
+			r.m.reconcileServed(t.Context(), "ollama")
+			r.m.reconcileServed(t.Context(), "ollama")
+			key := instance.NewKey("ollama", servedLoaded, string(EndpointChat))
+			run, ok := r.m.instances.GetByKey(key)
+			require.True(t, ok)
+			require.Equal(t, instance.StartedByExternal, run.StartedBy)
+			require.Equal(t, string(tc.endpoint), run.ToInfo("node").Endpoint)
+			require.Equal(t, tc.endpoint, restartRequest(run).Endpoint)
+			require.Zero(t, r.daemon.count(false))
+		})
+	}
+	for _, changed := range []string{"daemon moved", "cancelled"} {
+		t.Run(changed+" during capability read", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.loadExternally(servedLoaded, time.Time{})
+			r.tick(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var shows atomic.Int32
+			r.daemon.set(func(d *fakeDaemon) {
+				d.showReplies = map[string]string{servedLoaded: `{"capabilities":["embedding"]}`}
+				d.beforeRequest = func(req *http.Request) {
+					if req.URL.Path != "/api/show" {
+						return
+					}
+					shows.Add(1)
+					if changed == "daemon moved" {
+						r.edit(t, func(svc *config.ServiceConfig) { svc.Runtime.Endpoint = "http://another-daemon:11434" })
+					} else {
+						cancel()
+					}
+				}
+			})
+			r.m.reconcileServed(ctx, "ollama")
+			require.Equal(t, int32(1), shows.Load())
+			require.Empty(t, r.m.instances.List())
+		})
+	}
+}
+
 func TestEnsureRunContractServed(t *testing.T) {
 	served := EnsureRequest{Provider: "ollama", Model: servedModel}
 
@@ -1118,6 +1266,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 				defer cancel()
 				require.NoError(t, run.WaitForGoroutines(ctx))
 				require.Error(t, run.FailureCause(), "every holder reads the load's cause")
+				assert.Zero(t, r.daemon.shows.Load(), "a failed load never reads serving capabilities")
 				assert.Equal(t, instance.StatusFailed, run.GetStatus())
 				assert.Empty(t, r.m.instances.List(), "a failed load leaves no run")
 				assert.Equal(t, int32(1), r.attempts.Load())
@@ -1457,6 +1606,26 @@ func TestEnsureRunContractServed(t *testing.T) {
 		assert.Zero(t, r.daemon.count(true), "zzRouter sends no unload")
 	})
 
+	t.Run("a served run reuses absent and equal request settings", func(t *testing.T) {
+		r := newServedRig(t)
+		pinned := served
+		pinned.Parameters = map[string]string{"keep-alive": "-1"}
+		run := r.running(t, pinned)
+		same := served
+		same.Parameters = map[string]string{"keep_alive": "-1"}
+		for _, req := range []EnsureRequest{served, same} {
+			result, err := r.m.EnsureRun(t.Context(), req)
+			require.NoError(t, err)
+			assert.Same(t, run, result.Run)
+			assert.False(t, result.Started)
+		}
+		different := served
+		different.Parameters = map[string]string{"keep-alive": "30m"}
+		_, err := r.m.EnsureRun(t.Context(), different)
+		require.ErrorIs(t, err, ErrRunSettingsDiffer)
+		assert.Equal(t, 1, r.daemon.count(false))
+	})
+
 	t.Run("S13 a model a process provider holds refuses a served start", func(t *testing.T) {
 		r := newServedRig(t)
 		held := instance.NewInstance("held", "generic", servedLoaded, 0, 0, 0)
@@ -1547,6 +1716,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			start := r.ensure(t.Context(), served)
 			b.reached(t)
 			r.tick(t)
+			assert.Zero(t, r.daemon.shows.Load(), "adoption cannot probe a model with a start already in flight")
 			b.open()
 			o := collect(t, []<-chan outcome{start})[0]
 			require.NoError(t, o.err)
@@ -1910,6 +2080,7 @@ func TestEnsureRunContractServedRaces(t *testing.T) {
 		r.daemon.release()
 		require.Eventually(t, func() bool { return r.daemon.count(true) == 1 }, contractWait, time.Millisecond)
 		require.NoError(t, o.result.Run.WaitForGoroutines(t.Context()))
+		assert.Zero(t, r.daemon.shows.Load(), "retirement during load prevents a capability read")
 		assert.False(t, r.daemon.isLoaded(servedLoaded))
 		assert.Equal(t, instance.StatusFailed, o.result.Run.GetStatus())
 		for len(r.m.auditEvents) > 0 {
@@ -2054,9 +2225,9 @@ func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
 			r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 				return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 			})))
-			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
-			}
+			})
 			edit := func(limit string) {
 				fresh := &config.AppsConfig{}
 				r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {

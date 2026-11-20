@@ -8,7 +8,6 @@ package server
 type Services struct {
 	Runs         *RunsService         // Runs lifecycle management
 	RunsUtility  *RunsUtilityService  // Runs local utility queries
-	Load         *LoadService         // Model loading operations
 	Deployments  *DeploymentsService  // Model placement (deploy) operations
 	Apps         *AppsService         // Apps management
 	Nodes        *NodesService        // Nodes management

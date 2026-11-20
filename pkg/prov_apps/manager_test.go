@@ -625,7 +625,7 @@ func TestMergeStringMaps(t *testing.T) {
 func TestBuildHealthCheckConfig(t *testing.T) {
 	t.Run("nil runtime", func(t *testing.T) {
 		svcCfg := config.ServiceConfig{}
-		hc := buildHealthCheckConfig(svcCfg, 8000)
+		hc := buildHealthCheckConfig(svcCfg, nil)
 		assert.Equal(t, "/health", hc.HTTPHealthPath)
 		assert.Equal(t, 200, hc.ExpectedStatus)
 	})
@@ -638,7 +638,7 @@ func TestBuildHealthCheckConfig(t *testing.T) {
 				},
 			},
 		}
-		hc := buildHealthCheckConfig(svcCfg, 8000)
+		hc := buildHealthCheckConfig(svcCfg, nil)
 		assert.Equal(t, "/v1/models", hc.HTTPHealthPath)
 	})
 
@@ -652,7 +652,7 @@ func TestBuildHealthCheckConfig(t *testing.T) {
 				},
 			},
 		}
-		hc := buildHealthCheckConfig(svcCfg, 8000)
+		hc := buildHealthCheckConfig(svcCfg, nil)
 		assert.Equal(t, 30*time.Second, hc.Interval)
 		assert.Equal(t, 5*time.Second, hc.Timeout)
 		assert.Equal(t, 5, hc.MaxRetries)

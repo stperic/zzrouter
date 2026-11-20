@@ -102,7 +102,7 @@ func (m *ProviderAppManager) ExecuteOperation(ctx context.Context, id string, re
 		return nil, operationError(http.StatusConflict, "operation_target_stale", "The run was replaced during admission")
 	}
 	// A run owns its local port. Advertised BaseURL can name an interface the engine never bound.
-	target := protocol.NewTarget(processRunEndpoint(run.Port), backend.Engine()).Ready()
+	target := protocol.NewTarget(protocol.ProcessRunEndpoint(run.Port), backend.Engine()).Ready()
 	runCtx := lease.Context()
 	result, err := target.ReadJSON(runCtx, client, definition.Binding.Method, definition.Binding.Path, request.Input)
 	if err != nil {

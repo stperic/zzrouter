@@ -120,19 +120,19 @@ func TestInternalAPI(t *testing.T) {
 	})
 
 	t.Run("LaunchRun_InvalidModel", func(t *testing.T) {
-		body := map[string]any{"model_name": "nonexistent-model-12345"}
+		body := map[string]any{"model_name": "nonexistent-model-12345", "provider": "ollama", "launch_mode": "native"}
 		resp := internal("POST", "/zzrouter/v1/internal/runs", body)
 		srv.AssertStatusOneOf(t, resp, []int{http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity})
 	})
 
-	t.Run("LoadModel_MissingModel", func(t *testing.T) {
-		resp := internal("POST", "/zzrouter/v1/internal/runs/load", map[string]any{})
+	t.Run("StartRun_MissingModel", func(t *testing.T) {
+		resp := internal("POST", "/zzrouter/v1/internal/runs", map[string]any{})
 		assert.Equal(t, http.StatusBadRequest, resp.Code)
 	})
 
-	t.Run("LoadModel_InvalidModel", func(t *testing.T) {
-		body := map[string]any{"model_name": "nonexistent-model-12345"}
-		resp := internal("POST", "/zzrouter/v1/internal/runs/load", body)
+	t.Run("StartRun_InvalidModel", func(t *testing.T) {
+		body := map[string]any{"model_name": "nonexistent-model-12345", "provider": "ollama", "launch_mode": "native"}
+		resp := internal("POST", "/zzrouter/v1/internal/runs", body)
 		srv.AssertStatusOneOf(t, resp, []int{http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity})
 	})
 

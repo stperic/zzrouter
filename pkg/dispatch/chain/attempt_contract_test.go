@@ -63,7 +63,7 @@ func TestTraceAttemptPanicClosesBodyAndReleasesLease(t *testing.T) {
 	}
 	p := newProxyWithFake(&panicShapeDeps{deps})
 	require.Panics(t, func() {
-		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), []byte(`{"model":"group"}`), nil, "group", "", false)
+		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 	})
 	require.True(t, closed)
 	assert.Zero(t, inst.GetActiveRequests())
@@ -97,7 +97,7 @@ func TestTraceAttemptEndsBeforeBackoffAndCancellation(t *testing.T) {
 		p := newProxyWithFake(deps)
 		done := make(chan attemptDisposition, 1)
 		go func() {
-			_, disposition := p.tryDeployment(c, dep, []byte(`{"model":"group"}`), nil, leaseGroup([]pfallback.Candidate{dep}), 1, routeMetaCtx{decisionStart: utils.Now()})
+			_, disposition := p.tryDeployment(c, dep, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, leaseGroup([]pfallback.Candidate{dep}), 1, routeMetaCtx{decisionStart: utils.Now()})
 			done <- disposition
 		}()
 		synctest.Wait()
@@ -127,7 +127,7 @@ func TestTraceAttemptRejectedLease(t *testing.T) {
 	c.Request = c.Request.WithContext(ctx)
 	dep := pfallback.Candidate{Name: "local", App: "engine", Model: "m", OnDemand: true}
 	p := newProxyWithFake(deps)
-	_ = p.tryOnce(c, dep, []byte(`{"model":"group"}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()}, 0, 0)
+	_ = p.tryOnce(c, dep, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()}, 0, 0)
 	assert.Zero(t, deps.forwardCalls.Load())
 	require.Len(t, spans.Ended(), 1)
 	assert.Equal(t, codes.Error, spans.Ended()[0].Status().Code)
@@ -150,7 +150,7 @@ func TestTraceAttemptRawStatus(t *testing.T) {
 	c.Request = c.Request.WithContext(ctx)
 	dep := pfallback.Candidate{Name: "actual", App: "engine", Model: "m"}
 	p := newProxyWithFake(deps)
-	outcome := p.tryOnce(c, dep, []byte(`{"model":"group","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now(), attemptsSoFar: []pfallback.Attempt{
+	outcome := p.tryOnce(c, dep, testInstanceRequest(c, []byte(`{"model":"group","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`)), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now(), attemptsSoFar: []pfallback.Attempt{
 		{Outcome: pfallback.OutcomeOnDemandSkip}, {Outcome: pfallback.OutcomeCooldownSkip},
 	}}, 0, 0)
 	assert.Equal(t, 400, w.Code)
@@ -183,7 +183,7 @@ func TestTraceRetryAttemptsAreSiblings(t *testing.T) {
 		original := c.Request
 		dep := pfallback.Candidate{Name: "replica", App: "engine", Model: "m"}
 		p := newProxyWithFake(deps)
-		_, disposition := p.tryDeployment(c, dep, []byte(`{"model":"group"}`), nil, leaseGroup([]pfallback.Candidate{dep}), 1, routeMetaCtx{decisionStart: utils.Now()})
+		_, disposition := p.tryDeployment(c, dep, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, leaseGroup([]pfallback.Candidate{dep}), 1, routeMetaCtx{decisionStart: utils.Now()})
 		require.Equal(t, attemptCommitted, disposition)
 		require.Equal(t, 200, w.Code)
 		require.Same(t, original, c.Request)

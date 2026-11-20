@@ -10,12 +10,22 @@ import (
 	"net/url"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 )
+
+func withInferenceBody(req *http.Request, body []byte) *http.Request {
+	c := gin.Context{Request: req}
+	replaceRequestBody(&c, body)
+	return c.Request
+}
 
 // instanceFor builds an instance pointed at a stub engine, speaking the
 // given wire token.
@@ -35,9 +45,32 @@ func instanceFor(t *testing.T, engine *httptest.Server, model, wireModel string)
 func requestWithBody(t *testing.T, body string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(body)))
-	ctx := context.WithValue(req.Context(), CtxKeyOriginalBody, []byte(body))
-	ctx = context.WithValue(ctx, CtxKeyModel, "org/model")
-	return req.WithContext(ctx)
+	ctx := context.WithValue(req.Context(), CtxKeyModel, "org/model")
+	return withInferenceBody(req.WithContext(ctx), []byte(body))
+}
+
+func TestInstanceRequestUsesTranslatedPathAndAnswersAsClientModel(t *testing.T) {
+	s, run := instanceStreamTestServer()
+	t.Cleanup(run.Cancel)
+	run.MarkRunning(false, nil)
+	run.WireModel = "engine-id"
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{"model":"model","messages":[],"stream":true,"keep_alive":"30s"}`)
+	ctx := context.WithValue(t.Context(), CtxKeyClientModel, "model@local")
+	ctx = context.WithValue(ctx, CtxKeyRequestHints, keepalive.Parse(body))
+	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/messages?verbose=0", nil)
+	restore := asChatRequest(c, body)
+	defer restore()
+	body = requestUsageCounts(c, body)
+	req := newInstanceRequest(c.Request, body)
+	prepared, answerAs := s.instanceRequest(req, run)
+	assert.Equal(t, "model@local", answerAs)
+	assert.JSONEq(t, `{"model":"engine-id","messages":[],"stream":true,"keep_alive":"30s","stream_options":{"include_usage":true}}`, string(prepared))
+	lease, target, _, ok := s.openRun(req, run, nil, func(e httperr.Error) { t.Errorf("open run: %v", e) })
+	require.True(t, ok)
+	defer lease.Release()
+	assert.Equal(t, chatCompletionsPath+"?verbose=0", target.RequestURI())
+	assert.Equal(t, 30*time.Second, run.GetKeepAlive())
 }
 
 // TestProxyToInstance_TranslatesModelForPathEngines locks the contract for
@@ -64,7 +97,9 @@ func TestProxyToInstance_TranslatesModelForPathEngines(t *testing.T) {
 
 		s := createTestNodeWithDefaults(t)
 		rec := httptest.NewRecorder()
-		s.proxyToInstance(rec, requestWithBody(t, `{"model":"org/model","messages":[]}`),
+		const body = `{"model":"org/model","messages":[]}`
+		req := requestWithBody(t, body)
+		s.proxyToInstance(rec, req, newInstanceRequest(req, []byte(body)),
 			instanceFor(t, engine, "org/model", weightsPath), true)
 
 		assert.Equal(t, weightsPath, seen, "engine must be addressed by the token it keys on")
@@ -93,7 +128,9 @@ func TestProxyToInstance_TranslatesModelForPathEngines(t *testing.T) {
 
 		s := createTestNodeWithDefaults(t)
 		rec := httptest.NewRecorder()
-		s.proxyToInstance(rec, requestWithBody(t, `{"model":"org/model","stream":true,"messages":[]}`),
+		const body = `{"model":"org/model","stream":true,"messages":[]}`
+		req := requestWithBody(t, body)
+		s.proxyToInstance(rec, req, newInstanceRequest(req, []byte(body)),
 			instanceFor(t, engine, "org/model", weightsPath), true)
 
 		out := rec.Body.String()
@@ -122,7 +159,9 @@ func TestProxyToInstance_LeavesNameEnginesAlone(t *testing.T) {
 
 	s := createTestNodeWithDefaults(t)
 	rec := httptest.NewRecorder()
-	s.proxyToInstance(rec, requestWithBody(t, `{"model":"org/model","messages":[]}`),
+	const body = `{"model":"org/model","messages":[]}`
+	req := requestWithBody(t, body)
+	s.proxyToInstance(rec, req, newInstanceRequest(req, []byte(body)),
 		instanceFor(t, engine, "org/model", "org/model"), true)
 
 	assert.Equal(t, "org/model", seen)

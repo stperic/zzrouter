@@ -18,7 +18,7 @@ func TestProviderBrowserObservationsUseServingOrigin(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	ctrl := NewRunsController(nil, nil, nil, nil, nil, s.providerBrowserURL)
+	ctrl := NewRunsController(nil, nil, nil, nil, s.providerBrowserURL)
 	info := instance.InstanceInfo{ID: "run-a", Node: "local", Browser: &instance.BrowserInfo{Name: "Fixture", URL: "https://untrusted.example/"}}
 	ctrl.annotateBrowserURL(&info)
 	require.Empty(t, info.Browser.URL, "a worker cannot provide the public origin")

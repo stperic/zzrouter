@@ -27,7 +27,7 @@ import (
 // This pins three things that would otherwise break silently:
 //  1. ExternalProvider.Defaults is nil on factory output — the yaml marshal
 //     path must accept that AND the loader must round-trip it.
-//  2. providerToServiceConfig → AddApp → serviceConfigToProvider converter
+//  2. ProviderServiceConfig → AddApp → serviceConfigToProvider converter
 //     symmetry preserves Protocol, Runtime.Endpoint, and Runtime.API.Token.
 //  3. The file lands under external/<name>.yaml, matching the kind
 //     subdirectory layout the loader walks.

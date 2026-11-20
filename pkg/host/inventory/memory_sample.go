@@ -31,6 +31,14 @@ func NewMemorySample(total int64, used *int64, observedAt time.Time) *MemorySamp
 	return sample.Current(utils.Now(), false)
 }
 
+// UsedPercent reports a percentage only when usage was observed.
+func (s *MemorySample) UsedPercent() *float64 {
+	if s == nil || s.TotalBytes <= 0 || s.UsedBytes == nil {
+		return nil
+	}
+	return new(float64(*s.UsedBytes) / float64(s.TotalBytes) * 100)
+}
+
 // Clone returns an independently mutable observation without renewing its age.
 func (s *MemorySample) Clone() *MemorySample {
 	if s == nil {

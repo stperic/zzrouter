@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net/url"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
 )
@@ -25,9 +26,19 @@ type NodeDiskInfo struct {
 
 // NodeMemoryInfo represents memory information
 type NodeMemoryInfo struct {
-	TotalGB     float64 `json:"total_gb"`
-	AvailableGB float64 `json:"available_gb"`
-	UsedPercent float64 `json:"used_percent"`
+	TotalGB     float64           `json:"total_gb"`
+	AvailableGB float64           `json:"available_gb"`
+	UsedPercent *float64          `json:"used_percent,omitempty"`
+	Sample      *NodeMemorySample `json:"sample,omitempty"`
+}
+
+// NodeMemorySample preserves absent usage separately from measured zero.
+type NodeMemorySample struct {
+	TotalBytes int64     `json:"total_bytes"`
+	UsedBytes  *int64    `json:"used_bytes,omitempty"`
+	AgeSeconds float64   `json:"age_seconds"`
+	ObservedAt time.Time `json:"observed_at"`
+	Stale      bool      `json:"stale"`
 }
 
 // NodeWithProviders represents a host with its available providers and resource info

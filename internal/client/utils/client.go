@@ -239,10 +239,12 @@ func (c *Client) doWith(
 func ReadResponse(resp *http.Response, target any, operation string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(resp.Body)
+		message, _, code := parseErrorEnvelope(errBody)
 		return &APIError{
 			Operation:  operation,
 			StatusCode: resp.StatusCode,
-			Message:    parseErrorResponse(errBody),
+			Message:    message,
+			Code:       code,
 		}
 	}
 	switch t := target.(type) {
@@ -265,22 +267,23 @@ func ReadResponse(resp *http.Response, target any, operation string) error {
 
 // parseErrorResponse attempts to parse a JSON error response and extract user-friendly message
 func parseErrorResponse(body []byte) string {
-	msg, _ := parseErrorEnvelope(body)
+	msg, _, _ := parseErrorEnvelope(body)
 	return msg
 }
 
 // parseErrorEnvelope also returns the OpenAI error `type`. Callers that
 // surface the failure to a person want it: the message alone cannot
 // distinguish a throttled provider from a broken one.
-func parseErrorEnvelope(body []byte) (message, errType string) {
+func parseErrorEnvelope(body []byte) (message, errType, code string) {
 	var errResp ErrorResponse
 	if err := json.Unmarshal(body, &errResp); err == nil {
 		if msg := errResp.ErrorMessage(); msg != "" {
-			return msg, errResp.ErrorType()
+			return msg, errResp.ErrorType(), errResp.Code
 		}
+		return string(body), "", errResp.Code
 	}
 	// If JSON parsing fails, return the raw body
-	return string(body), ""
+	return string(body), "", ""
 }
 
 // GetInstance retrieves detailed information for a specific instance
@@ -329,7 +332,7 @@ func (c *Client) GetInstanceLogs(instanceID, host string, lines int, follow bool
 // StreamInstanceLogs streams logs for a specific instance in real-time (V2)
 // GET /zzrouter/runs/:id/logs?follow=true
 // Prints logs to stdout as they arrive. Press Ctrl+C to stop.
-func (c *Client) StreamInstanceLogs(instanceID, host string) error {
+func (c *Client) StreamInstanceLogs(ctx context.Context, instanceID, host string) error {
 	path := apipath.RunLogs(instanceID) + "?follow=true&node=" + url.QueryEscape(host) // V2 endpoint
 
 	// Use a client with no overall timeout but with a response header timeout
@@ -339,8 +342,7 @@ func (c *Client) StreamInstanceLogs(instanceID, host string) error {
 	// Build full URL
 	fullURL := c.baseURL + path
 
-	// TODO: Thread context from callers for proper cancellation support
-	req, err := http.NewRequestWithContext(context.Background(), "GET", fullURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -614,7 +616,7 @@ func (c *Client) ChatCompletionsStream(ctx context.Context, req ChatRequest, cal
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		msg, errType := parseErrorEnvelope(body)
+		msg, errType, _ := parseErrorEnvelope(body)
 		return &ChatError{StatusCode: resp.StatusCode, Message: msg, Type: errType}
 	}
 

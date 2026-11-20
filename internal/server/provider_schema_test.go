@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
+	"github.com/stperic/zzrouter/pkg/apipath"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -331,6 +334,7 @@ diagnostics:
 `), 0600))
 	merged, err := providerSchema(store)("vllm")
 	require.ErrorContains(t, err, "unknown memory budget")
+	require.ErrorAs(t, err, new(schema.HardError))
 	require.NotNil(t, merged)
 	assert.Nil(t, merged.Diagnostics)
 	assert.Equal(t, schema.ParamInt, merged.Parameters["long-tail"].Kind)
@@ -401,6 +405,40 @@ capabilities:
 			assert.Equal(t, instance.StatusRunning, result.Run.GetStatus())
 			assert.Nil(t, result.Run.ToInfo("").Cache)
 			assert.Equal(t, "7", result.Run.Resolved().Parameters["long-tail"])
+		})
+	}
+}
+
+func TestBadObservePreventsLaunch(t *testing.T) {
+	for _, tc := range []struct{ name, path, format string }{
+		{"path", "//other/queue", "json"},
+		{"format", "/queue", "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := createSeededTestNode(t, seededTestNodeConfig{
+				TestNodeConfig: DefaultTestNodeConfig(),
+				providers:      []string{"comfyui"},
+				enabled:        []string{"comfyui"},
+				prepareProviders: func(dir string) {
+					file := filepath.Join(dir, "on-demand", "comfyui", "schema.yaml")
+					raw, err := os.ReadFile(file)
+					require.NoError(t, err)
+					declared, err := schema.LoadYAMLSchema(raw)
+					require.NoError(t, err)
+					require.NotNil(t, declared.Observe)
+					declared.Observe.Path, declared.Observe.Format = tc.path, tc.format
+					raw, err = yaml.Marshal(declared)
+					require.NoError(t, err)
+					require.NoError(t, os.WriteFile(file, raw, 0600))
+				},
+			})
+			run, err := s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "comfyui"})
+			require.ErrorAs(t, err, new(schema.HardError))
+			require.ErrorContains(t, err, "comfyui.observe")
+			require.Nil(t, run.Run)
+			require.Empty(t, s.providers.appMgr.Instances().List())
+			resp := assetRequest(t, s, http.MethodGet, apipath.ProviderSchema("comfyui"), nil)
+			require.Equal(t, http.StatusInternalServerError, resp.Code, resp.Body.String())
 		})
 	}
 }

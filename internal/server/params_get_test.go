@@ -39,3 +39,30 @@ func TestParamsGetShippedDictionaryIsBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderSchemaProjectsObservationAndCalibration(t *testing.T) {
+	s := createSeededTestNode(t, seededTestNodeConfig{
+		TestNodeConfig: DefaultTestNodeConfig(),
+		providers:      []string{"comfyui", "vllm", "mlx"},
+	})
+	for _, tc := range []struct {
+		provider, observe, calibration string
+	}{
+		{"comfyui", `{"path":"/queue","format":"json","busy":["queue_running","queue_pending"]}`, ""},
+		{"vllm", `{"path":"/metrics","format":"prometheus","running":"vllm:num_requests_running","waiting":"vllm:num_requests_waiting","kv_cache_usage":"vllm:kv_cache_usage_perc"}`, `{"output":{"ignore_eos":true}}`},
+		{"mlx", `{"path":"/metrics","format":"json","running":"summary.in_flight","waiting":"server.request_queue_depth","runtimes":["mlx-vlm"]}`, ""},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			resp := assetRequest(t, s, http.MethodGet, apipath.ProviderSchema(tc.provider), nil)
+			require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+			var wire map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &wire))
+			require.JSONEq(t, tc.observe, string(wire["observe"]))
+			if tc.calibration == "" {
+				require.NotContains(t, wire, "calibration")
+			} else {
+				require.JSONEq(t, tc.calibration, string(wire["calibration"]))
+			}
+		})
+	}
+}

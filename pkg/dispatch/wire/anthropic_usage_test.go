@@ -36,7 +36,7 @@ func captureCompletion(t *testing.T) *llm.InferenceLogData {
 
 func TestParseUsageExtended_AnthropicMessage(t *testing.T) {
 	u := ParseUsageExtended([]byte(readFixture(t, "anthropic_messages_llamacpp.json")))
-	assert.Equal(t, UsageData{In: 59, Out: 40, Model: "Qwen3.8-27B-Q8_0"}, u)
+	assert.Equal(t, UsageData{In: 59, Out: 40, HasInput: true, HasOutput: true, Model: "Qwen3.8-27B-Q8_0"}, u)
 }
 
 // Anthropic counts cache reads and writes outside input_tokens; In must
@@ -54,7 +54,7 @@ func TestParseUsageExtended_AnthropicCacheTokensCountAsInput(t *testing.T) {
 func TestParseUsageExtended_AnthropicMessageStartNestsUsage(t *testing.T) {
 	frame := `{"type":"message_start","message":{"model":"m","usage":{"cache_read_input_tokens":55,"input_tokens":4,"output_tokens":0}}}`
 	u := ParseUsageExtended([]byte(frame))
-	assert.Equal(t, UsageData{In: 59, CachedTokens: 55, Model: "m"}, u)
+	assert.Equal(t, UsageData{In: 59, HasInput: true, HasOutput: true, CachedTokens: 55, Model: "m"}, u)
 }
 
 // The Responses API shares the input_tokens name but already counts the
@@ -63,7 +63,7 @@ func TestParseUsageExtended_ResponsesCachedIsSubsetOfInput(t *testing.T) {
 	body := `{"model":"m","usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":40},` +
 		`"output_tokens":9,"output_tokens_details":{"reasoning_tokens":3}}}`
 	u := ParseUsageExtended([]byte(body))
-	assert.Equal(t, UsageData{In: 100, Out: 9, CachedTokens: 40, ReasoningTokens: 3, Model: "m"}, u)
+	assert.Equal(t, UsageData{In: 100, Out: 9, HasInput: true, HasOutput: true, CachedTokens: 40, ReasoningTokens: 3, Model: "m"}, u)
 }
 
 func TestParseUsageExtended_BothVocabulariesReadAsChat(t *testing.T) {
@@ -82,7 +82,7 @@ func TestCopyStream_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	// One byte per read puts message_start and message_delta in
 	// separate frames, as a live upstream does.
-	CopyStream(context.Background(), w, iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
+	CopyStream(context.Background(), w, iotest.OneByteReader(strings.NewReader(stream)), RecorderObserver(rec), nil)
 
 	assert.Equal(t, stream, w.Body.String(),
 		"an Anthropic stream must reach the client byte for byte, with no [DONE] appended")
@@ -97,7 +97,7 @@ func TestCopyStream_AnthropicStreamMergesStartAndDelta(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "Qwen3.8-27B-Q8_0", "llamacpp")
 
 	w := httptest.NewRecorder()
-	CopyStream(t.Context(), w, iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
+	CopyStream(t.Context(), w, iotest.OneByteReader(strings.NewReader(stream)), RecorderObserver(rec), nil)
 	assert.Equal(t, stream, w.Body.String())
 	assert.Equal(t, int64(59), captured.TokensIn)
 	assert.Equal(t, int64(20), captured.TokensOut)
@@ -124,7 +124,7 @@ func TestCopyStream_PartialDeltaDoesNotShrinkInput(t *testing.T) {
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "llamacpp")
 
-	CopyStream(t.Context(), httptest.NewRecorder(), iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
+	CopyStream(t.Context(), httptest.NewRecorder(), iotest.OneByteReader(strings.NewReader(stream)), RecorderObserver(rec), nil)
 
 	assert.Equal(t, int64(59), captured.TokensIn)
 	assert.Equal(t, int64(20), captured.TokensOut)

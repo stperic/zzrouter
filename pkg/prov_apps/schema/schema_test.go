@@ -110,7 +110,7 @@ func TestLoadFromFS_ReadsOnlyProviderSchemas(t *testing.T) {
 		"root/on-demand/llamacpp/assets/vllm.schema.yaml":   {Data: inject},
 		"root/on-demand/llamacpp/assets/broken.schema.yaml": {Data: []byte(":\n:not yaml")},
 	}
-	merged, errs := LoadFromFS(fsys, "root")
+	merged, errs := LoadFromFS(fsys, "root", nil)
 	if len(errs) != 0 {
 		t.Fatalf("only provider schemas may be parsed: %v", errs)
 	}
@@ -138,7 +138,7 @@ func TestLoadFromFS_ProviderNamedAssets(t *testing.T) {
 	fsys := fstest.MapFS{
 		"root/external/assets/schema.yaml": {Data: []byte("parameters:\n  flag: {type: string}\n")},
 	}
-	merged, errs := LoadFromFS(fsys, "root")
+	merged, errs := LoadFromFS(fsys, "root", nil)
 	if len(errs) != 0 {
 		t.Fatalf("errs: %v", errs)
 	}
@@ -182,7 +182,7 @@ func TestLoadFromFS_ShapeConflictSurfaces(t *testing.T) {
 			"provider: vllm\nparameters:\n  max-model-len: {type: string}\n",
 		)},
 	}
-	_, errs := LoadFromFS(fsys, "root")
+	_, errs := LoadFromFS(fsys, "root", nil)
 	if len(errs) == 0 {
 		t.Fatal("expected conflict surfaced through FS walker")
 	}
@@ -201,7 +201,7 @@ func TestLoadFromFS_EndpointsSurviveTheWalk(t *testing.T) {
 				"      pooling: {type: string, enum: [none, mean, cls, last, rank]}\n",
 		)},
 	}
-	merged, errs := LoadFromFS(fsys, "root")
+	merged, errs := LoadFromFS(fsys, "root", nil)
 	if len(errs) != 0 {
 		t.Fatalf("unexpected load errors: %v", errs)
 	}

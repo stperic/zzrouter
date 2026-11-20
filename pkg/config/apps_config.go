@@ -115,7 +115,7 @@ func (c *AppsConfig) UpdateApp(name string, mutate func(*ServiceConfig) error) e
 	if err != nil {
 		return fmt.Errorf("UpdateApp(%q): %w", name, err)
 	}
-	sc := providerToServiceConfig(cp)
+	sc := ProviderServiceConfig(cp)
 	if err := mutate(&sc); err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (c *AppsConfig) LookupApp(name string) (ServiceConfig, bool) {
 // view is p as this tree's node reads it: declared values, with enable
 // questions answered for that node.
 func (c *AppsConfig) view(p Provider) ServiceConfig {
-	sc := providerToServiceConfig(p)
+	sc := ProviderServiceConfig(p)
 	sc.node = c.node
 	return sc
 }

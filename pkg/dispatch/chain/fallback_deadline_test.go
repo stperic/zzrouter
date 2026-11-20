@@ -55,7 +55,7 @@ func TestChainLocalStreamUsesLeaseDeadline(t *testing.T) {
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: chainStallBody{deps.forwardedContext, strings.NewReader(chainDeadlineFrame)}}, nil
 				}
 				p := newProxyWithFake(deps)
-				result := p.tryOnce(c, dep, []byte(`{"model":"group","stream":true}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()}, 0, 1)
+				result := p.tryOnce(c, dep, testInstanceRequest(c, []byte(`{"model":"group","stream":true}`)), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()}, 0, 1)
 				if firstByte {
 					assert.ErrorIs(t, result.attempt.Err, instance.ErrFirstByteTimeout)
 					assert.Equal(t, http.StatusGatewayTimeout, result.attempt.StatusCode)
@@ -100,7 +100,7 @@ func TestChainFirstByteTimeoutIsNotRetried(t *testing.T) {
 		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
 			{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)},
 			{Name: "next", App: "next", Model: "m"},
-		}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", "", false)
+		}), testInstanceRequest(c, []byte(`{"model":"group","stream":true}`)), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", "", false)
 		assert.EqualValues(t, 1, deps.forwardCalls.Load(), "no same-replica retry or second replica")
 		assert.True(t, p.cooldowns.InCooldown("local"), "a stalled replica is not replayed, but it is unhealthy")
 		assert.True(t, p.providerCooldowns.InCooldown("engine"))
@@ -125,7 +125,7 @@ func TestChainLocalNonStreamHasNoLeaseDeadline(t *testing.T) {
 				return nil, deps.forwardedContext.Err()
 			}
 		}
-		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), []byte(`{"model":"group","stream":false}`), nil, "group", "", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), testInstanceRequest(c, []byte(`{"model":"group","stream":false}`)), nil, "group", "", false)
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Zero(t, inst.GetActiveRequests())
 	})

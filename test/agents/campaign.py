@@ -1198,17 +1198,16 @@ def check_tool_endpoint(ctx):
 
 
 def fit_settings(args):
-    """Compare request settings, ignoring operation identity and preview's environment spelling."""
-    return {k: args.get(k) or {} if k in ("parameters", "env_vars") else args.get(k) or ""
-            for k in ("model", "node", "provider", "endpoint", "parameters", "env_vars")} | {
-                "env_vars": args.get("env_vars") or args.get("environment") or {}}
+    """Compare the requested run settings."""
+    return {k: args.get(k) or {} if k in ("parameters", "environment") else args.get(k) or ""
+            for k in ("model", "node", "provider", "endpoint", "parameters", "environment")}
 
 
 def preview_covers(preview_args, start_args):
     """A preview speaks for a start that keeps its settings and only adds non-sizing ones (keep-alive)."""
     p, s = fit_settings(preview_args), fit_settings(start_args)
     return all(p[k] == s[k] for k in ("model", "node", "provider", "endpoint")) and all(
-        p[k].items() <= s[k].items() for k in ("parameters", "env_vars"))
+        p[k].items() <= s[k].items() for k in ("parameters", "environment"))
 
 
 def check_explainable_fit(ctx):

@@ -86,7 +86,8 @@ func TestOllamaRerankRefusalHTTP(t *testing.T) {
 	r := newServedServerRig(t)
 	run := r.served(t)
 	w := httptest.NewRecorder()
-	err := r.s.HandleLocalModel(w, inference("/v1/rerank", []byte(`{"model":"m","query":"ping","documents":["ping"]}`)), &resolver.Resolved{Provider: "ollama", ModelName: servedClientModel}, "reranking")
+	body := []byte(`{"model":"m","query":"ping","documents":["ping"]}`)
+	err := r.s.HandleLocalModel(w, inference("/v1/rerank", body), body, &resolver.Resolved{Provider: "ollama", ModelName: servedClientModel}, "reranking")
 	require.ErrorIs(t, err, prov_apps.ErrParameterValidation)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "invalid_request_error")
@@ -198,7 +199,7 @@ func TestChainColdEndpointPendingHTTP(t *testing.T) {
 	engine := gin.New()
 	engine.Use(httperr.AttachResponder(openaiproto.New()))
 	engine.POST("/v1/embeddings", func(c *gin.Context) {
-		proxy.ProxyWithFallback(c, resolved, []byte(`{"model":"group","input":"ping"}`), nil, "group", "embeddings", false)
+		proxy.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, []byte(`{"model":"group","input":"ping"}`)), nil, "group", "embeddings", false)
 	})
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/embeddings", nil))

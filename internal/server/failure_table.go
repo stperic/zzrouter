@@ -54,8 +54,6 @@ var failureTable = []failureRow{
 	// Half-downloaded weights: the caller must repair the model, which 409 says and 400 does not.
 	{sentinel: prov_apps.ErrModelIncomplete, status: http.StatusConflict, code: "model_incomplete"},
 
-	{sentinel: errAutoDetectModelNotFound, status: http.StatusNotFound, code: ""},
-	{sentinel: errAutoDetectMultipleProviders, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrProviderNotFound, status: http.StatusNotFound, code: ""},
 	{sentinel: prov_apps.ErrInstanceNotFound, status: http.StatusNotFound, code: ""},
 
@@ -66,6 +64,16 @@ var failureTable = []failureRow{
 	{sentinel: prov_apps.ErrServiceDisabled, status: http.StatusConflict, code: ""},
 	{sentinel: install.ErrStalePlan, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrRunHeldByOtherProvider, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrRunSettingsDiffer, status: http.StatusConflict, code: string(httperr.CodeRunSettingsDiffer), message: "This run has different request settings. To apply the requested settings, call zz_run_start with replace set to true.", extra: runSettingsDifferExtra},
+	{status: http.StatusNotFound, code: string(httperr.CodeRunNotFound), resolve: calibrationFailure(httperr.CodeRunNotFound, "run_id", "Check the run ID and node with zz_runs.")},
+	{status: http.StatusBadRequest, code: string(httperr.CodeContextTooSmall), resolve: calibrationFailure(httperr.CodeContextTooSmall, "run_id", "Increase the context with zz_params_set and restart the run, or reduce the token counts with zz_calibrate.")},
+	{status: http.StatusBadRequest, code: string(httperr.CodeConcurrencyAboveLimit), resolve: calibrationFailure(httperr.CodeConcurrencyAboveLimit, "run_id", "Change max_concurrent_requests with zz_params_set and restart the run, or lower concurrency with zz_calibrate.")},
+	{status: http.StatusConflict, code: string(httperr.CodeRunNotReady), resolve: calibrationFailure(httperr.CodeRunNotReady, "run_id", "Check readiness with zz_runs.")},
+	{status: http.StatusConflict, code: string(httperr.CodeRunChanged), resolve: calibrationFailure(httperr.CodeRunChanged, "run_id", "Read the latest target_revision with zz_runs.")},
+	{status: http.StatusConflict, code: string(httperr.CodeCalibrationUnsupported), resolve: calibrationFailure(httperr.CodeCalibrationUnsupported, "run_id", "Check the run endpoint with zz_runs, or list this run without a workload.")},
+	{status: http.StatusConflict, code: string(httperr.CodeCalibrationRunning), resolve: calibrationFailure(httperr.CodeCalibrationRunning, "job_id", "Follow that job with zz_job.")},
+	{status: http.StatusBadRequest, resolve: resolveCalibrationFields},
+	{sentinel: errRunNodeRequired, status: http.StatusBadRequest, code: string(httperr.CodeRunNodeRequired), message: "Select one node. Use zz_models to find where the model is available or zz_nodes to choose a download target, then pass node to zz_run_start."},
 	{sentinel: prov_apps.ErrInstancesRunning, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrPinRunActive, status: http.StatusConflict, code: "pin_run_active"},
 	{sentinel: prov_apps.ErrProviderNotManaged, status: http.StatusConflict, code: ""},
@@ -213,7 +221,21 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 	if memory.KeptRun != "" && memory.BudgetKind == "" {
 		hint = "Lower the request with zz_params_set and zz_run_preview, or stop other holders with zz_run_stop; stop kept_run first only when holders include other_or_untracked memory zzRouter could not attribute, then zz_run_start. When holders show unused_commitment_mib, only stopping those holders with zz_run_stop helps."
 	}
+	for _, holder := range memory.Holders {
+		if holder.ReclaimSkippedReason == instance.EvictionActivityUnknown {
+			hint += " For an activity_unknown holder, use zz_runs with its run_id to inspect activity. Use zz_run_stop with that run_id to free memory."
+			break
+		}
+	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
+}
+
+func runSettingsDifferExtra(err error, _ httperr.Error) map[string]any {
+	var conflict *prov_apps.RunSettingsDifferError
+	if errors.As(err, &conflict) {
+		return map[string]any{"run_id": conflict.RunID}
+	}
+	return nil
 }
 
 // resolveParameterIssues repeats the per-key code when every refused parameter shares it.

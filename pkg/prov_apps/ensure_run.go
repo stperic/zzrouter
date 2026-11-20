@@ -34,7 +34,7 @@ func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart)
 
 func runView(run *instance.Instance) *RunView {
 	cfg := run.SnapshotConfig()
-	view := &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load(), Failure: run.FailureCause()}
+	view := &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load(), Failure: run.FailureCause(), Parameters: cfg.Parameters, Environment: cfg.EnvVars}
 	if view.Failure == nil && view.Status.IsTerminal() {
 		view.Failure = fmt.Errorf("run %s is %s: %s", run.ID, view.Status, run.GetErrorMessage())
 	}
@@ -319,9 +319,11 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 	}
 	if replace := prepared.decision.Replace; replace != "" {
 		check := &replacementCheck{run: replace, recovery: make(map[string]int64)}
-		if _, _, err = m.admitMemory(ctx, launch.parameters, false, check); err != nil {
+		_, effects, err := m.admitMemory(ctx, launch.parameters, false, check)
+		if err != nil {
 			return result, err
 		}
+		prepared.selection.replacementWarning = effects.Warning
 		if err = m.stopInstance(ctx, replace, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			return result, err
 		}

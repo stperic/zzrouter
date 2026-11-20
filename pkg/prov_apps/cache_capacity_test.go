@@ -37,13 +37,24 @@ func cacheFixture(t *testing.T, name string) string {
 
 func cacheSchema(t *testing.T, provider string) *schema.ProviderSchema {
 	t.Helper()
-	data, err := templates.AppsFS.ReadFile("files/providers/on-demand/" + provider + "/schema.yaml")
+	declared := shippedOnDemandSchema(t, provider)
+	declared.Parameters["budget"] = schema.ParamShape{} // the contract rig's providers set it
+	return declared
+}
+
+func shippedOnDemandSchema(t *testing.T, provider string) *schema.ProviderSchema {
+	t.Helper()
+	dir := "files/providers/on-demand/" + provider + "/"
+	rawConfig, err := templates.AppsFS.ReadFile(dir + "config.yaml")
+	require.NoError(t, err)
+	owner, err := config.DecodeProviderBytes(config.KindOnDemand, provider, rawConfig)
+	require.NoError(t, err)
+	data, err := templates.AppsFS.ReadFile(dir + "schema.yaml")
 	require.NoError(t, err)
 	y, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
-	declared, errs := schema.Merge(provider, y, config.ServiceConfig{})
+	declared, errs := schema.Merge(provider, y, config.ProviderServiceConfig(owner))
 	require.Empty(t, errs)
-	declared.Parameters["budget"] = schema.ParamShape{} // the contract rig's providers set it
 	return declared
 }
 
@@ -298,9 +309,9 @@ func TestCacheCaptureIsIndependentOfMemoryBudget(t *testing.T) {
 				declared.Diagnostics = &schema.Diagnostics{Memory: &schema.MemoryBudget{Kind: kind, Parameter: "budget"}}
 			}
 			r := newContractRig(t, true)
-			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 100000}}, nil
-			}
+			})
 			svc, _ := r.m.AppsConfig().LookupApp("generic")
 			req := EnsureRequest{Provider: "generic", Model: "engine-name"}
 			run := instance.NewInstance("r", "generic", req.Model, 8740, 0, 0)
@@ -320,9 +331,9 @@ func TestCacheCaptureIsIndependentOfMemoryBudget(t *testing.T) {
 
 func TestRunCapacityDoesNotChangeLaunchDecisions(t *testing.T) {
 	r := newContractRig(t, true)
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 100000}}, nil
-	}
+	})
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
 	req := EnsureRequest{Provider: "generic", Model: "engine-name"}
 	declared := cacheSchema(t, "vllm")

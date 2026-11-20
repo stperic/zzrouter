@@ -32,6 +32,37 @@ func TestColdLoadMemoryDiagnosticExtensionsContract(t *testing.T) {
 	assert.Equal(t, management.Title, wire.Title)
 }
 
+func TestMemoryRefusalGuidesUnknownActivityHolder(t *testing.T) {
+	for _, reason := range []string{"activity_unknown", "pinned"} {
+		t.Run(reason, func(t *testing.T) {
+			fit := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5500, FreeMiB: 1000,
+				Holders: []process.MemoryHolder{{Run: "comfy", Ownership: "zzrouter", ReclaimSkippedReason: reason}}}
+			w := httptest.NewRecorder()
+			writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", nil)), failureWire(fit, http.StatusInternalServerError))
+			require.Equal(t, http.StatusConflict, w.Code)
+			var problem struct {
+				Code   string `json:"code"`
+				Errors []struct {
+					Got  process.MemoryFitError `json:"got"`
+					Hint string                 `json:"hint"`
+				} `json:"errors"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &problem))
+			require.Equal(t, "out_of_range", problem.Code)
+			require.Len(t, problem.Errors, 1)
+			issue := problem.Errors[0]
+			require.Equal(t, fit.Holders, issue.Got.Holders)
+			if reason == "activity_unknown" {
+				assert.Contains(t, issue.Hint, "activity_unknown")
+				assert.Contains(t, issue.Hint, "zz_runs with its run_id to inspect activity")
+				assert.Contains(t, issue.Hint, "zz_run_stop with that run_id to free memory")
+			} else {
+				assert.NotContains(t, issue.Hint, "activity_unknown")
+			}
+		})
+	}
+}
+
 func TestColdLoadExplicitWireExtensionsContract(t *testing.T) {
 	want := httperr.Error{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "specific_failure", Message: "try later", Title: "Specific failure", RetryAfter: 1500 * time.Millisecond, Extra: map[string]any{"run_id": "r", "job_id": "j"}}
 	got := loadFailureWire(fmt.Errorf("wrapped: %w", want))
@@ -53,12 +84,40 @@ func TestOpenRunCanceledCallerWritesNothingContract(t *testing.T) {
 			require.ErrorIs(t, ctx.Err(), reason)
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 			called := false
-			lease, target, _, ok := s.openRun(req, run, nil, func(httperr.Error) { called = true })
+			lease, target, _, ok := s.openRun(newInstanceRequest(req, nil), run, nil, func(httperr.Error) { called = true })
 			assert.False(t, ok)
 			assert.False(t, called)
 			assert.Nil(t, lease)
 			assert.Nil(t, target)
 			assert.Zero(t, run.GetActiveRequests())
+		})
+	}
+}
+
+func TestOpenRunRejectsIncompleteInstanceRequest(t *testing.T) {
+	raw := httptest.NewRequestWithContext(t.Context(), http.MethodPost, chatCompletionsPath, nil)
+	for _, field := range []string{"context", "header", "method", "path"} {
+		t.Run(field, func(t *testing.T) {
+			req := newInstanceRequest(raw, nil)
+			switch field {
+			case "context":
+				req.Context = nil
+			case "header":
+				req.Header = nil
+			case "method":
+				req.Method = ""
+			case "path":
+				req.Path = ""
+			}
+			s, run := instanceStreamTestServer()
+			t.Cleanup(run.Cancel)
+			var failure httperr.Error
+			lease, target, _, ok := s.openRun(req, run, nil, func(e httperr.Error) { failure = e })
+			assert.False(t, ok)
+			assert.Nil(t, lease)
+			assert.Nil(t, target)
+			assert.Equal(t, "instance_unavailable", failure.Code)
+			assert.Zero(t, run.ToInfo("test-node").RequestsAdmitted)
 		})
 	}
 }

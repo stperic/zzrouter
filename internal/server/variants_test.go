@@ -189,6 +189,13 @@ func TestVariants_RequestDefaultsApplyToTheAddressedName(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
 
+	run := instance.NewInstance("defaults", "llamacpp", qwenModel, 0, 0, 1)
+	prepare := func(path string, raw []byte) []byte {
+		req := newInstanceRequest(httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil), raw)
+		req.Synthetic = true
+		prepared, _ := s.instanceRequest(req, run)
+		return prepared
+	}
 	body := func(model string, extra map[string]any) map[string]any {
 		b := map[string]any{"model": model, "messages": []any{}}
 		for k, v := range extra {
@@ -197,7 +204,7 @@ func TestVariants_RequestDefaultsApplyToTheAddressedName(t *testing.T) {
 		raw, err := json.Marshal(b)
 		require.NoError(t, err)
 		var out map[string]any
-		require.NoError(t, json.Unmarshal(s.applyRequestDefaults(context.Background(), "llamacpp", model, "/v1/chat/completions", raw), &out))
+		require.NoError(t, json.Unmarshal(prepare("/v1/chat/completions", raw), &out))
 		return out
 	}
 	got := body(variantAgent, nil)
@@ -213,8 +220,8 @@ func TestVariants_RequestDefaultsApplyToTheAddressedName(t *testing.T) {
 
 	// A route that does not generate text gets no sampling fields.
 	raw := []byte(`{"model":"` + variantChat + `","input":"x"}`)
-	assert.Equal(t, raw, s.applyRequestDefaults(context.Background(), "llamacpp", variantChat, "/v1/embeddings", raw))
-	assert.Contains(t, string(s.applyRequestDefaults(context.Background(), "llamacpp", variantChat, "/v1/messages", raw)), "temperature")
+	assert.Equal(t, raw, prepare("/v1/embeddings", raw))
+	assert.Contains(t, string(prepare("/v1/messages", raw)), "temperature")
 }
 
 // request merges per RFC 7396; from: null turns a variant back into a
@@ -444,10 +451,10 @@ func TestVariants_ColdStreamSendsWhatTheWarmPathSends(t *testing.T) {
 	body := []byte(`{"model":"` + variantChat + `","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(string(body)))
 	ctx := context.WithValue(req.Context(), CtxKeyModel, variantChat)
-	req = req.WithContext(context.WithValue(ctx, CtxKeyOriginalBody, body))
+	req = withInferenceBody(req.WithContext(ctx), body)
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	s.streamFromInstance(w, req, inst, dialectOf(req).(httperr.InBandStreamer))
+	s.streamFromInstance(w, req, newInstanceRequest(req, body), inst, dialectOf(req).(httperr.InBandStreamer))
 
 	require.NotNil(t, seen, "the engine was reached")
 	assert.Equal(t, 0.7, seen["temperature"], "the variant's request defaults")
@@ -493,7 +500,7 @@ func TestVariants_FallbackUsesServingInstancesWireModel(t *testing.T) {
 	rec := llm.NewInferenceRecorder(c.Request.Context(), "agent-group", "")
 	resolved := &resolver.Resolved{OriginalName: "agent-group", GroupName: "agent-group", Strategy: "priority",
 		Candidates: []fallback.Candidate{{Name: "variant", App: "llamacpp", Model: variantChat, Node: s.node.Nodename(), OnDemand: true}}}
-	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "agent-group", "", false)
+	s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, raw), rec, "agent-group", "", false)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	sent := <-seen
 	assert.Equal(t, wireName, sent["model"])

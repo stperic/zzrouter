@@ -360,13 +360,21 @@ func TestBuildParameterArgsLiteralFlagSpelling(t *testing.T) {
 }
 
 func TestShippedComfyUIFP8LiteralFlags(t *testing.T) {
-	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	raw, err := templates.AppsFS.ReadFile("files/providers/on-demand/comfyui/schema.yaml")
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(raw)
+	require.NoError(t, err)
+	body, err := templates.AppsFS.ReadFile("files/providers/on-demand/comfyui/config.yaml")
+	require.NoError(t, err)
+	owner, err := config.DecodeProviderBytes(config.KindOnDemand, "comfyui", body)
+	require.NoError(t, err)
+	merged, errs := schema.Merge("comfyui", declared, config.ProviderServiceConfig(owner))
 	require.Empty(t, errs)
 	cfg := config.ServiceConfig{Runtime: &config.AppRuntimeConfig{Execution: config.ExecutionConfig{Type: "cli", Command: "comfyui"}}}
 	for _, literal := range []string{"fp8_e4m3fn-unet", "fp8_e5m2-unet", "fp8_e8m0fnu-unet", "fp8_e4m3fn-text-enc", "fp8_e5m2-text-enc"} {
 		name := strings.ReplaceAll(literal, "_", "-")
-		require.Nil(t, schema.Check(name, "true", schemas["comfyui"].Parameters))
-		launch, err := NewCommandBuilder(&cfg).Build(ResolvedModel{}, 1, map[string]string{name: "true"}, schemas["comfyui"].Parameters)
+		require.Nil(t, schema.Check(name, "true", merged.Parameters))
+		launch, err := NewCommandBuilder(&cfg).Build(ResolvedModel{}, 1, map[string]string{name: "true"}, merged.Parameters)
 		require.NoError(t, err)
 		require.Equal(t, []string{"--" + literal}, launch.Args)
 	}

@@ -12,26 +12,19 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-type activityObserver interface{ ObserveActivity(bool) }
-
-func observeFixture(t *testing.T, run *instance.Instance) activityObserver {
-	t.Helper()
-	observer, ok := any(run).(activityObserver)
-	require.True(t, ok, "instance must accept observed engine activity")
-	return observer
-}
 
 func TestActivityHoldProtectsIdleAndLeavesSlotsFree(t *testing.T) {
 	run := instance.NewInstance("busy", "studio", "", 0, time.Minute, 0)
 	run.MarkRunning(false, nil)
 	run.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1})
-	observer := observeFixture(t, run)
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	require.Zero(t, run.GetActiveRequests())
 	require.False(t, run.Evictable())
 	require.False(t, Expired(run.IdleSnapshot(), utils.Now().Add(time.Hour)))
@@ -44,13 +37,13 @@ func TestActivityHoldProtectsIdleAndLeavesSlotsFree(t *testing.T) {
 	now := utils.Now().Add(time.Hour)
 	restore := utils.SetClock(utils.FixedClock(now))
 	defer restore()
-	observer.ObserveActivity(false)
+	run.ObserveActivity(false)
 	require.Equal(t, now, run.GetLastActivity())
 	require.False(t, Expired(run.IdleSnapshot(), now.Add(time.Minute-time.Nanosecond)))
 	require.True(t, Expired(run.IdleSnapshot(), now.Add(time.Minute)))
-	observer.ObserveActivity(false)
+	run.ObserveActivity(false)
 	require.Equal(t, now, run.GetLastActivity())
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	run.MarkFailed("dead engine")
 	require.True(t, run.IdleSnapshot().Leased == false)
 	run.Cancel()
@@ -60,12 +53,11 @@ func TestObservedBusyAndIdleClaimAreSerialized(t *testing.T) {
 	for range 100 {
 		run := instance.NewInstance("race", "studio", "", 0, time.Minute, 0)
 		run.MarkRunning(false, nil)
-		observer := observeFixture(t, run)
 		start := make(chan struct{})
 		holds := make(chan struct{})
 		claims := make(chan bool)
 		done := make(chan struct{})
-		go func() { <-start; observer.ObserveActivity(true); close(holds) }()
+		go func() { <-start; run.ObserveActivity(true); close(holds) }()
 		go func() {
 			<-start
 			release, _ := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
@@ -92,8 +84,8 @@ func TestObservedBusyAndIdleClaimAreSerialized(t *testing.T) {
 
 func TestActivityHoldPreventsPressureEviction(t *testing.T) {
 	f := newReclaimFixture(t, true)
-	observeFixture(t, f.older).ObserveActivity(true)
-	observeFixture(t, f.newer).ObserveActivity(true)
+	f.older.ObserveActivity(true)
+	f.newer.ObserveActivity(true)
 	evicted, err := f.admit(t)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
@@ -110,6 +102,73 @@ func TestActivityHoldPreventsPressureEviction(t *testing.T) {
 	require.False(t, f.older.IdleSnapshot().Leased)
 }
 
+func TestUnknownActivityPreventsPressureEvictionAndIdleExpiry(t *testing.T) {
+	for _, state := range []string{"unobserved", "expired", "failed", "idle", "undeclared"} {
+		t.Run(state, func(t *testing.T) {
+			f := newReclaimFixture(t, true)
+			run := f.older
+			f.newer.ObserveActivity(true)
+			now := utils.Now()
+			restore := utils.SetClock(utils.FixedClock(now))
+			t.Cleanup(restore)
+			if state != "undeclared" {
+				run.ConfigureActivityObservation(time.Minute)
+			}
+			switch state {
+			case "expired":
+				run.ObserveActivity(false)
+				now = now.Add(time.Minute)
+				t.Cleanup(utils.SetClock(utils.FixedClock(now)))
+			case "failed":
+				run.ObserveActivity(true)
+				run.ActivityUnknown(true)
+			case "idle":
+				run.ObserveActivity(false)
+			}
+			require.False(t, run.ToInfo("node").EngineBusy)
+			idle := run.IdleSnapshot()
+			idleDeadline := idle.Activity.Add(idle.KeepAlive)
+			evicted, err := f.admit(t)
+			if state == "idle" || state == "undeclared" {
+				require.NoError(t, err)
+				require.Len(t, evicted, 1)
+				require.Equal(t, run.ID, evicted[0].RunID)
+				require.True(t, Expired(idle, idleDeadline))
+				return
+			}
+			require.False(t, Expired(idle, idleDeadline))
+			require.Empty(t, evicted)
+			f.assertOriginalFit(t, err, map[string]string{run.ID: "activity_unknown", f.newer.ID: "busy"})
+			require.Contains(t, err.Error(), "reclaim skipped: activity_unknown")
+			require.Equal(t, "unknown", run.ToInfo("node").Activity.State)
+			release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: idle.Activity, Idle: &idle}})
+			if release != nil {
+				release()
+			}
+			require.Equal(t, &instance.IdleStopRefusal{RunID: run.ID, Reason: "activity_unknown"}, refusal)
+			require.NoError(t, f.mgr.StopInstance(t.Context(), run.ID))
+		})
+	}
+}
+
+func TestIdleReaperResumesAfterFreshIdleObservation(t *testing.T) {
+	f := newReclaimFixture(t, false)
+	f.mgr.Start(t.Context())
+	f.newer.ConfigureActivityObservation(time.Minute)
+	zero := time.Duration(0)
+	for _, run := range []*instance.Instance{f.newer, f.older} {
+		lease, err := run.Acquire(t.Context(), nil)
+		require.NoError(t, err)
+		run.StampActivityWithHints(&keepalive.Override{Duration: &zero})
+		lease.Release()
+	}
+	eventually(t, func() bool { return !f.mgr.instances.Has(f.older.ID) }, "undeclared idle run must expire")
+	require.Equal(t, "activity_unknown", f.newer.EvictionBlockedReason())
+	require.True(t, f.mgr.instances.Has(f.newer.ID))
+	f.newer.ObserveActivity(false)
+	eventually(t, func() bool { return !f.mgr.instances.Has(f.newer.ID) }, "fresh idle evidence must wake the reaper")
+}
+
 type directQueueTransport struct{}
 
 func (directQueueTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -123,17 +182,32 @@ func (directQueueTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 func TestManagerStopDrainsObservedBusySampler(t *testing.T) {
 	r := reservationRig(t, true)
-	fresh := &config.AppsConfig{}
-	svc, _ := r.m.AppsConfig().LookupApp("generic")
-	svc.Runtime.ActivityProbe = &config.ActivityProbe{Path: "/queue", BusyWhenNonempty: []string{"queue_running", "queue_pending"}}
-	require.NoError(t, fresh.AddApp("generic", svc))
-	r.m.ReloadConfig(fresh)
+	loadSchema := r.m.providerSchema
+	declared, err := schema.LoadYAMLSchema([]byte("observe: {path: /queue, format: json, busy: [queue_running, queue_pending]}"))
+	require.NoError(t, err)
+	contract, conflicts := schema.Merge("generic", declared, config.ServiceConfig{})
+	require.Empty(t, conflicts)
+	r.m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+		base, err := loadSchema(provider)
+		if err != nil {
+			return nil, err
+		}
+		merged := *base
+		merged.Observe = contract.Observe
+		return &merged, nil
+	}
 	r.m.healthMon = health.NewMonitor(r.m.instances, health.MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: 3, HTTPClient: &http.Client{Transport: directQueueTransport{}}})
+	r.m.seams.beforeLaunch = func() {
+		for _, run := range r.m.instances.List() {
+			assert.Equal(t, "unknown", run.ToInfo("node").Activity.State)
+		}
+	}
 	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
 	require.NoError(t, err)
 	awaitRunning(t, result.Run)
 	require.Eventually(t, func() bool { return result.Run.ToInfo("node").EngineBusy }, contractWait, time.Millisecond)
 	require.Zero(t, result.Run.GetActiveRequests())
+	require.Equal(t, "active", result.Run.ToInfo("node").Activity.State)
 	ctx, cancel := context.WithTimeout(t.Context(), contractWait)
 	defer cancel()
 	require.NoError(t, r.m.StopInstance(ctx, result.Run.ID))
@@ -146,7 +220,6 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	run := instance.NewInstance("submission-race", "studio", "", 0, time.Minute, 0)
 	run.MarkRunning(false, nil)
 	defer run.Cancel()
-	observer := observeFixture(t, run)
 	old := run.GetLastActivity()
 	restore := utils.SetClock(utils.FixedClock(old.Add(time.Second)))
 	defer restore()
@@ -159,7 +232,7 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	require.NotNil(t, release, "ensure has no lease over a direct submission after it returns")
 	require.Nil(t, refusal)
 	defer release()
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	require.False(t, run.IdleSnapshot().Leased, "a later busy sample cannot revoke a stop already claimed")
 }
 

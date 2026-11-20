@@ -238,7 +238,7 @@ func (svc *RunsUtilityService) BatchLaunch(ctx context.Context, instances []Laun
 	var launched, failed []map[string]any
 
 	for _, req := range instances {
-		if err := validateParameterMaps(req.Parameters, req.EnvVars); err != nil {
+		if err := validateParameterMaps(req.Parameters, req.Environment); err != nil {
 			failed = append(failed, map[string]any{
 				"provider": req.Provider,
 				"error":    fmt.Sprintf("invalid parameters: %v", err),

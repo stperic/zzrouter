@@ -4,15 +4,13 @@ import (
 	"context"
 	"io"
 	"net/http"
-
-	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
 // CopyStream relays a stream with immediate flushing and reports how it ended. It never writes a
 // terminal frame of its own: ending a broken stream is the caller's, per dialect.
-func CopyStream(ctx context.Context, w http.ResponseWriter, r io.Reader, recorder *llm.InferenceRecorder, transform func([]byte) []byte) Result {
+func CopyStream(ctx context.Context, w io.Writer, r io.Reader, observer StreamObserver, transform func([]byte) []byte) Result {
 	flusher, canFlush := w.(http.Flusher)
-	meter := streamMeter{recorder: recorder}
+	meter := streamMeter{observer: observer}
 	emit := func(frame []byte) error {
 		if len(frame) == 0 {
 			return nil

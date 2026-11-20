@@ -3,6 +3,7 @@ package security
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -60,6 +61,26 @@ func RedactJSON(raw []byte) []byte {
 		return []byte(RedactedPlaceholder)
 	}
 	return []byte(RedactSensitive(strings.TrimSuffix(buf.String(), "\n")))
+}
+
+// RedactStringFields copies flat settings and returns the sorted keys it redacted.
+func RedactStringFields(fields map[string]string) (map[string]string, []string) {
+	out := make(map[string]string, len(fields))
+	keys := []string{}
+	for key, value := range fields {
+		redacted := isJSONSensitiveKey(key)
+		if redacted {
+			value = RedactedPlaceholder
+		} else {
+			value, redacted = redactSensitive(value)
+		}
+		if redacted {
+			keys = append(keys, key)
+		}
+		out[key] = value
+	}
+	slices.Sort(keys)
+	return out, keys
 }
 
 func redactValue(v any) any {

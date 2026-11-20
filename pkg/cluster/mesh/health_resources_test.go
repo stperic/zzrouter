@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,5 +25,10 @@ func TestMalformedHealthResourcesRemainUnknown(t *testing.T) {
 	conn, err := c.performHealthCheck(t.Context(), srv.URL)
 	require.NoError(t, err)
 	require.Equal(t, QualityFull, conn.Quality)
-	require.Nil(t, conn.Resources, "a malformed resource sample must not become partial numeric evidence")
+	require.Equal(t, "A", conn.NodeName)
+	require.Zero(t, conn.VRAMAvailableGB)
+	wire, err := json.Marshal(conn)
+	require.NoError(t, err)
+	require.NotContains(t, string(wire), `"Resources"`)
+	require.NotContains(t, string(wire), `"ResourcesObservedAt"`)
 }

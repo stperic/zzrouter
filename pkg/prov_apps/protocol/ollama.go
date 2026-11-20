@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/connectivity"
 	"github.com/stperic/zzrouter/pkg/constants"
+	ollamawire "github.com/stperic/zzrouter/pkg/protocol/ollama"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol/formatting"
@@ -201,6 +204,20 @@ func (p *OllamaProvider) UnloadModel(ctx context.Context, t Target, model string
 		return fmt.Errorf("ollama unload failed (status %d): %s", resp.StatusCode, string(resp.Body))
 	}
 	return nil
+}
+
+// ModelEndpoint reports the workload supported by explicit Ollama model capabilities.
+func (p *OllamaProvider) ModelEndpoint(ctx context.Context, daemon *backend.Resolved, model string) string {
+	ctx, cancel := context.WithTimeout(ctx, constants.HTTPShortTimeout)
+	defer cancel()
+	capabilities, _ := ollamawire.ModelCapabilities(ctx, p.httpClient, daemon, model)
+	if slices.Contains(capabilities, "completion") {
+		return "chat"
+	}
+	if slices.Contains(capabilities, "embedding") {
+		return "embeddings"
+	}
+	return ""
 }
 
 const (

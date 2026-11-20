@@ -33,10 +33,9 @@ func TestLaunchedEngineReceivesNoCallerKey(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+TestUserKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-	ctx := context.WithValue(req.Context(), CtxKeyOriginalBody, body)
-	req = req.WithContext(context.WithValue(ctx, CtxKeyModel, "org/model"))
+	req = withInferenceBody(req.WithContext(context.WithValue(req.Context(), CtxKeyModel, "org/model")), body)
 
-	s.proxyToInstance(httptest.NewRecorder(), req, instanceFor(t, engine, "org/model", ""), true)
+	s.proxyToInstance(httptest.NewRecorder(), req, newInstanceRequest(req, body), instanceFor(t, engine, "org/model", ""), true)
 
 	require.NotNil(t, got, "the engine was not reached")
 	for _, h := range nodeAPIKeyHeaders {
@@ -63,12 +62,11 @@ func TestColdStreamSendsWhatTheWarmPathSends(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 	req.Header = callerRequestHeaders()
 	req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
-	ctx := context.WithValue(req.Context(), CtxKeyOriginalBody, body)
-	req = req.WithContext(context.WithValue(ctx, CtxKeyModel, "org/model"))
+	req = withInferenceBody(req.WithContext(context.WithValue(req.Context(), CtxKeyModel, "org/model")), body)
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
 
-	s.streamFromInstance(w, req, instanceFor(t, engine, "org/model", ""), dialectOf(req).(httperr.InBandStreamer))
+	s.streamFromInstance(w, req, newInstanceRequest(req, body), instanceFor(t, engine, "org/model", ""), dialectOf(req).(httperr.InBandStreamer))
 
 	require.NotNil(t, got, "the engine was not reached")
 	for _, h := range nodeAPIKeyHeaders {

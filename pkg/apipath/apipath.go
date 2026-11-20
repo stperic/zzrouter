@@ -61,7 +61,6 @@ const (
 	ProvidersCatalog   = Providers + "/catalog"
 	ProvidersInstances = Providers + "/instances"
 
-	RunsLoad    = Runs + "/load"
 	RunsPreview = Runs + "/preview"
 
 	PricingOverrides = Base + "/pricing/overrides"

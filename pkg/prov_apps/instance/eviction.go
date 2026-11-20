@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// EvictionActivityUnknown identifies a missing or expired busy observation.
+const EvictionActivityUnknown = "activity_unknown"
+
 // EvictionBlockedReason records why a snapshot cannot be reclaimed, or is empty when idle.
 func (s IdleState) EvictionBlockedReason() string {
 	switch {
@@ -16,6 +19,8 @@ func (s IdleState) EvictionBlockedReason() string {
 		return "pinned"
 	case s.Busy:
 		return "busy"
+	case s.ActivityUnknown:
+		return EvictionActivityUnknown
 	case s.Leased:
 		return "in use"
 	default:

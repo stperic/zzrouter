@@ -34,6 +34,7 @@ import (
 // Owning them means a fix to a launch argument or a readiness probe reaches
 // existing installs on the next start. Without that, every engine-level fix
 // would need a bespoke migration, and installs would drift apart silently.
+// activity_probe is retired and stays here so reconciliation removes it from installed configs.
 var managedSpineKeys = []string{"execution", "exclude_parameters", "failure_patterns", "health_check", "activity_probe", "max_concurrent_requests", "queue_timeout", "data_dir", "data_subdirs", "model_store", "browser", "listener"}
 
 // managedTopLevelKeys are managed sections that sit outside any section.

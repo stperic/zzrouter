@@ -109,7 +109,6 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		DataDir:               rt.DataDir,
 		DataSubdirs:           rt.DataSubdirs,
 		ModelStore:            rt.ModelStore,
-		ActivityProbe:         rt.ActivityProbe,
 		Browser:               rt.Browser,
 		Listener:              rt.Listener,
 		PortRange:             rt.PortRange,

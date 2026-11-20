@@ -19,6 +19,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -630,4 +631,36 @@ func TestToolsFeatureSync(t *testing.T) {
 	if !ok || len(feature.RequiresParameters) != 1 || feature.RequiresParameters[0] != "tool-mode" || feature.HTTP == nil || feature.HTTP.Path != "/props" || feature.HTTP.Field != "caps.tools" {
 		t.Fatalf("lost tools declaration in sync: %+v", feature)
 	}
+}
+
+func TestProviderSyncValidatesObserveAgainstInboundFeatureRuntimes(t *testing.T) {
+	worker := createSeededTestNode(t, seededTestNodeConfig{
+		TestNodeConfig: TestNodeConfig{ClusterMode: pkgConfig.ClusterModeWorker},
+		providers:      []string{"ollama"},
+	})
+	base := "files/providers/on-demand/mlx/"
+	config, err := templates.AppsFS.ReadFile(base + "config.yaml")
+	require.NoError(t, err)
+	shipped, err := templates.AppsFS.ReadFile(base + "schema.yaml")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name     string
+		schema   []byte
+		wantCode int
+	}{
+		{"unknown runtime", []byte("observe: {path: /metrics, format: json, running: count, runtimes: [unknown]}"), http.StatusBadRequest},
+		{"shipped mlx-vlm", shipped, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, response := mutationContext(t, http.MethodPost, "/zzrouter/v1/internal/sync/providers/mlx", ProviderSyncBody{
+				Kind: pkgConfig.KindOnDemand, ConfigYAML: config, SchemaYAML: tc.schema,
+			})
+			c.Params = gin.Params{{Key: "name", Value: "mlx"}}
+			worker.HandleProviderSync(c)
+			require.Equal(t, tc.wantCode, response.Code, response.Body.String())
+		})
+	}
+	merged, err := providerSchema(worker.configStore)("mlx")
+	require.NoError(t, err)
+	require.Equal(t, []string{"mlx-vlm"}, merged.Observe.Runtimes)
 }

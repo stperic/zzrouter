@@ -9,16 +9,19 @@ export function workloadSelection(value = '') {
 }
 export const ownedPath = (kind, node, id) => `/${kind}${id ? '/' + encodeURIComponent(id) : ''}?node=${encodeURIComponent(node)}`;
 export const stoppedRun = row => row.record_only === true || row.status === 'stopped';
+export const readyRun = row => row.status === 'running' && !row.record_only;
+export const workloadPageSize = 25;
 
 // Explicit node requests disclose failures that broadcast aggregation can omit.
-export async function readWorkloadPages(p, nodes, kind, offsets = new Map()) {
+export async function readWorkloadPages(p, nodes, collection, offsets = new Map(), kind) {
   const pending = [...nodes], results = [];
   await Promise.all(Array.from({ length: Math.min(3, pending.length) }, async () => {
     while (pending.length && p.current()) {
       const node = pending.shift();
       const startedAt = performance.now();
       try {
-        const response = await p.api.request('/zzrouter/v1' + ownedPath(kind, node) + (kind === 'jobs' ? `&limit=25&offset=${offsets.get(node) || 0}` : ''), { signal: p.scope.signal, timeoutMs: 45000 });
+        const page = collection === 'jobs' ? `&limit=${workloadPageSize}&offset=${offsets.get(node) || 0}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}` : '';
+        const response = await p.api.request('/zzrouter/v1' + ownedPath(collection, node) + page, { signal: p.scope.signal, timeoutMs: 45000 });
         if (!Array.isArray(response.data)) throw new Error('The server returned an invalid workload list.');
         const rows = response.data.map(value => ({ ...value, node }));
         for (const row of rows) observeActivity(row.activity, startedAt);

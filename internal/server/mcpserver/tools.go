@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/calibration"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 
@@ -50,6 +51,31 @@ type nodeHealth struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 }
+type calibrateInput struct {
+	calibration.Request
+	retryInput
+}
+
+type calibrationOutput struct {
+	JobID string `json:"job_id"`
+	Node  string `json:"node"`
+}
+
+func (out calibrationOutput) summary() string {
+	return "Calibration accepted. Read the result with zz_job on the returned node."
+}
+
+func (d dispatcher) calibrate(ctx context.Context, in calibrateInput) (calibrationOutput, error) {
+	var out struct {
+		Data calibrationOutput `json:"data"`
+	}
+	err := d.call(ctx, request{
+		method: http.MethodPost, path: routePrefix("/zzrouter/v1/calibrations").path(),
+		jsonBody: in.Request, contentType: "application/json", idempotencyKey: in.IdempotencyKey,
+	}, &out)
+	return out.Data, err
+}
+
 type jobInput struct {
 	pageInput
 	JobID       string `json:"job_id,omitempty" jsonschema:"Optional job id. Omit to list recent jobs on the coordinator or selected node; supply it to read or wait for one job."`
@@ -115,6 +141,11 @@ func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Omit job_id to list recent jobs on the coordinator or selected node, with limit and offset; this is not a cluster-wide list. Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. " + jobRetentionDescription + " Job-not-found hints name an outcome tool. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"listJobs", "getJob"}, dispatcher.job)
+	registerTool(s, cfg, bindings, &mcp.Tool{
+		Name: "zz_calibrate", OutputSchema: objectSchema[calibrationOutput]{},
+		Description: "Measure chat or embeddings on running models on one node. Get run_id and target_revision from zz_runs. Supply workloads and request concurrency for each step, or list a resident run without a workload. Change settings with zz_params_set and restart_affected, or zz_run_start and replace. Read the terminal report with zz_job using job_id and node. " + jobRetentionDescription,
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: new(bool)},
+	}, []string{"createCalibration"}, dispatcher.calibrate)
 	registerAgentTools(s, cfg, bindings, jobRetentionDescription)
 	registerAPITools(s, cfg, bindings)
 	registerProviderTools(s, cfg, bindings, false)

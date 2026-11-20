@@ -31,7 +31,7 @@ func streamWithUsageInject(
 	recorder *llm.InferenceRecorder,
 ) wire.Result {
 	w.WriteHeader(resp.StatusCode)
-	result := wire.CopyStream(req.Context(), w, resp.Body, recorder,
+	result := wire.CopyStream(req.Context(), w, resp.Body, wire.RecorderObserver(recorder),
 		wire.NewStreamTransform(normalizers.Stream(provider), meta, recorder).Func())
 	endBrokenStream(w, req, result)
 	return result

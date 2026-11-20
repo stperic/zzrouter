@@ -29,7 +29,7 @@ func (m *ModelsViewModel) actionStartStop() tea.Cmd {
 		model := r.RawModel
 		provider := r.Provider
 		return func() tea.Msg {
-			_, err := client.LoadModelWithProviderForceParamsAndEnv(node, model, provider, false, nil, nil)
+			_, err := client.StartRun(ctx, pkgClient.StartRunRequest{Node: node, Model: model, Provider: provider})
 			return modelsActionMsg{ctx: ctx, action: "start", err: err}
 		}
 	}

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // Activity is observed work, independent of the protective engine-busy hold.
@@ -19,26 +18,28 @@ type Activity struct {
 	Stale           bool      `json:"stale"`
 }
 
-type activityProbe struct {
-	enabled  bool
+type activityObservation struct {
 	known    bool
-	busy     bool
 	at       time.Time
 	validFor time.Duration
 }
 
-// ConfigureActivityProbe declares expected evidence before the first probe.
-func (i *Instance) ConfigureActivityProbe(validFor time.Duration) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.activityProbe = activityProbe{enabled: true, validFor: validFor}
+func (o activityObservation) unknown(now time.Time) bool {
+	return o.validFor > 0 && (!o.known || !now.Before(o.at.Add(o.validFor)))
 }
 
-// ActivityUnknown invalidates display evidence without prematurely dropping a hold.
+// ConfigureActivityObservation declares expected evidence before the first probe.
+func (i *Instance) ConfigureActivityObservation(validFor time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.activityObservation = activityObservation{validFor: validFor}
+}
+
+// ActivityUnknown invalidates probe evidence and retains the positive hold until requested otherwise.
 func (i *Instance) ActivityUnknown(releaseHold bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.activityProbe.known = false
+	i.activityObservation.known = false
 	if releaseHold {
 		i.observeActivityHoldLocked(false)
 	}
@@ -57,16 +58,16 @@ func (i *Instance) activitySnapshotLocked(now time.Time) Activity {
 		return result
 	}
 	result.ActiveRequests = i.GetActiveRequests()
-	probe := i.activityProbe
-	remaining := probe.at.Add(probe.validFor).Sub(now).Seconds()
-	if probe.enabled {
-		if !probe.known || remaining <= 0 {
+	probe := i.activityObservation
+	if probe.validFor > 0 {
+		if probe.unknown(now) {
 			result.State, result.ValidForSeconds = "unknown", 0
 		} else {
+			remaining := probe.at.Add(probe.validFor).Sub(now).Seconds()
 			result.ValidForSeconds = math.Min(result.ValidForSeconds, remaining)
 			result.ObservedAt = probe.at.UTC()
 			result.AgeSeconds = math.Max(0, now.Sub(probe.at).Seconds())
-			if probe.busy {
+			if i.activityHold {
 				result.BusyEngines = 1
 			}
 		}
@@ -141,14 +142,4 @@ func SummarizeActivity(values []Activity, now time.Time) Activity {
 	}
 	result.AgeSeconds = math.Max(0, now.Sub(result.ObservedAt).Seconds())
 	return result
-}
-
-func (i *Instance) observeActivityProbeLocked(busy bool) {
-	i.activityProbe.enabled = true
-	i.activityProbe.known = true
-	i.activityProbe.busy = busy
-	i.activityProbe.at = utils.Now()
-	if i.activityProbe.validFor <= 0 {
-		i.activityProbe.validFor = 2 * constants.HealthCheckInterval
-	}
 }

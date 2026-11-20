@@ -64,3 +64,21 @@ func TestRunSettingsReadFlagNames(t *testing.T) {
 	sc.Defaults.Parameters["keep_alive"] = "soon"
 	require.ErrorContains(t, sc.ValidateRunSettings(), `invalid keep_alive duration "soon"`)
 }
+
+func TestMemoryAdmissionSettingResolvesByTier(t *testing.T) {
+	svc := ServiceConfig{
+		Defaults: &AppDefaultsConfig{Parameters: map[string]string{"memory_admission": "report"}},
+		Models:   map[string]ModelSpec{"m": {Parameters: map[string]string{MemoryAdmissionParameter: "enforce"}}},
+	}
+	require.NoError(t, svc.ValidateRunSettings())
+	for model, want := range map[string]string{"other": "report", "m": "enforce"} {
+		settings, err := ParseRunSettings(FlattenParameters(svc.Resolve("", model).Parameters), false)
+		require.NoError(t, err)
+		assert.Equal(t, want, settings.MemoryAdmission)
+	}
+	settings, err := ParseRunSettings(nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, "enforce", settings.MemoryAdmission)
+	svc.Defaults.Parameters["memory_admission"] = ""
+	require.ErrorContains(t, svc.ValidateRunSettings(), MemoryAdmissionParameter)
+}

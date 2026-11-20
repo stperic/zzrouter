@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/protocol"
@@ -207,10 +208,10 @@ func RewriteModelInMultipart(body []byte, boundary, newModel string) []byte {
 // not already carry, and leaves every field the client sent as sent:
 // a model's request defaults are defaults, not overrides. A field the
 // client sent in another case counts as sent, since an engine decoding
-// JSON case-insensitively would read both as one. A body that is not a
-// JSON object, or that already has every field, is returned as is.
-func SetDefaultFields(body []byte, defaults map[string]any) []byte {
-	if len(defaults) == 0 {
+// JSON case-insensitively would read both as one. Names in omit are
+// removed from the body and skipped in defaults, regardless of case.
+func SetDefaultFields(body []byte, defaults map[string]any, omit ...string) []byte {
+	if len(defaults) == 0 && len(omit) == 0 {
 		return body
 	}
 	var raw map[string]json.RawMessage
@@ -218,12 +219,19 @@ func SetDefaultFields(body []byte, defaults map[string]any) []byte {
 		return body
 	}
 	sent := make(map[string]bool, len(raw))
-	for k := range raw {
-		sent[strings.ToLower(k)] = true
+	omitted := func(key string) bool {
+		return slices.ContainsFunc(omit, func(name string) bool { return strings.EqualFold(name, key) })
 	}
 	changed := false
+	for k := range raw {
+		if omitted(k) {
+			delete(raw, k)
+			changed = true
+		}
+		sent[strings.ToLower(k)] = true
+	}
 	for k, v := range defaults {
-		if sent[strings.ToLower(k)] {
+		if sent[strings.ToLower(k)] || omitted(k) {
 			continue
 		}
 		encoded, err := json.Marshal(v)

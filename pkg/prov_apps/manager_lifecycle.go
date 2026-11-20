@@ -1,6 +1,7 @@
 package prov_apps
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -69,9 +70,10 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 }
 
 type launchSelection struct {
-	key    string
-	config config.ServiceConfig
-	model  process.ResolvedModel
+	key                string
+	config             config.ServiceConfig
+	model              process.ResolvedModel
+	replacementWarning *instance.AdmissionWarning
 }
 
 // resolveLaunch resolves the provider config and freezes the runtime a
@@ -104,8 +106,7 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 		weights := m.reserveWeights(ctx, req, selection)
 		inst.SetWeights(weights)
 		inst.SourceRepo = weights.Source
-	}
-	if err == nil {
+		inst.SetAdmissionEffects(instance.AdmissionEffects{Warning: selection.replacementWarning})
 		err = m.instances.Register(inst)
 	}
 	if err != nil {
@@ -121,10 +122,10 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 	if err != nil {
 		return nil, err
 	}
-	endpoint := req.Key().Endpoint
-	id := instance.GenerateID(req.Provider, req.Model, endpoint)
+	keyEndpoint := req.Key().Endpoint
+	id := instance.GenerateID(req.Provider, req.Model, keyEndpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, port, settings.KeepAlive, 0)
-	inst.Endpoint = endpoint
+	inst.Endpoint = keyEndpoint
 	inst.StartedBy = instance.StartedByAPI
 	if req.Origin == OriginRequest {
 		inst.StartedBy = instance.StartedByRequest
@@ -259,6 +260,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	argvFeatures := features
 	argvFeatures.Params = maps.Clone(features.Params)
 	_, effects, err := m.admitMemory(ctx, argvFeatures, false, nil)
+	effects.Warning = cmp.Or(effects.Warning, inst.AdmissionWarning())
 	inst.SetAdmissionEffects(effects)
 	var prepared preparedLaunch
 	if err == nil {
@@ -304,7 +306,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
-		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, observations: observations,
+		health: buildHealthCheckConfig(prepared.config, declared.Observe), transform: prepared.executionEnvironment, observations: observations,
 	}, nil
 }
 
@@ -432,6 +434,7 @@ func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest
 
 // startRun spawns an admitted run's lifecycle: launch, reaper, health monitor.
 func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) {
+	m.healthMon.ConfigureActivity(inst, run.health)
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
@@ -1025,12 +1028,9 @@ func sanitizeLogFragment(s string) string {
 	return string(out[start:end])
 }
 
-// buildHealthCheckConfig maps provider config to a health.CheckConfig.
-// port is accepted for symmetry with providers that embed the port in a
-// non-default URL template; the default /health probe uses the instance's
-// bound port at dial time, not a template substitution.
-func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConfig {
+func buildHealthCheckConfig(svcCfg config.ServiceConfig, observe *schema.Observe) health.CheckConfig {
 	hc := health.CheckConfig{
+		Observe:        observe,
 		HTTPHealthPath: "/health",
 		ExpectedStatus: 200,
 	}
@@ -1039,7 +1039,6 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 		return hc
 	}
 
-	hc.ActivityProbe = svcCfg.Runtime.ActivityProbe
 	rc := svcCfg.Runtime.HealthCheck
 	if rc.Path != "" {
 		hc.HTTPHealthPath = rc.Path
@@ -1103,7 +1102,7 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 		EnvVars:    cfg.EnvVars,
 	}
 	if req.Endpoint == "" {
-		req.Endpoint = Endpoint(inst.Endpoint)
+		req.Endpoint = Endpoint(inst.ServingEndpoint())
 	}
 	if inst.StartedBy == instance.StartedByRequest {
 		req.Origin = OriginRequest

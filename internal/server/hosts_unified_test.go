@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +20,16 @@ func TestUnifiedMemoryLocalAndLegacySnapshotAgree(t *testing.T) {
 			if typ != "none" {
 				inv.Cards = []gpu.Card{{Vendor: gpu.Vendor(typ), Name: "fixture GPU", MemoryMiB: 1024}}
 			}
-			local := inventory.GatherGPU(t.Context(), inv, inventory.NewCache(time.Minute))
+			cache := inventory.NewCacheWithProbe(time.Minute, func(ctx context.Context, previous *resources.Snapshot) resources.Snapshot {
+				snapshot := resources.Sample(ctx, nil, previous)
+				if typ == "apple" {
+					system, _ := snapshot.SystemPool()
+					system.Kind, system.ID = resources.Unified, "unified"
+					snapshot.Pools = []resources.Pool{system}
+				}
+				return snapshot
+			})
+			local := inventory.GatherGPU(inv, cache.GetSnapshot(t.Context()))
 			assert.Equal(t, typ == "apple", local.UnifiedMemory)
 			snap := mesh.EndpointSnapshot{HealthReport: mesh.HealthReport{GPUType: typ, GPUCount: local.Count, VRAMTotalGB: local.MemoryTotalGB}}
 			for _, detailed := range []bool{false, true} {

@@ -236,6 +236,7 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 		"zz_provider_install": {"provider": "p"}, "zz_run_preview": {"model": "m", "provider": "p"},
 		"zz_run_start": {"model": "m", "provider": "p"}, "zz_run_restart": {"run_id": "r"}, "zz_run_stop": {"run_id": "r"},
 		"zz_chat": {"model": "m", "message": "hi"}, "zz_job": {"job_id": "j"}, "zz_job_cancel": {"job_id": "j"},
+		"zz_calibrate":  calibrationToolErrorInput(),
 		"zz_params_get": {"provider": "p"}, "zz_params_set": {"provider": "p", "patch": map[string]any{}},
 		"zz_api_search": {"query": "runs"}, "zz_api_get": {"path": "/zzrouter/v1/models"}, "zz_api": {"method": "POST", "path": "/zzrouter/v1/runs"},
 		"zz_operations": {}, "zz_operation": {"operation_id": "p.inspect"}, "zz_connections": {},
@@ -263,6 +264,46 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 				require.Equal(t, 400, problem.Status)
 				require.Equal(t, "wrong_type", problem.Code)
 			}
+		})
+	}
+}
+
+func calibrationToolErrorInput() map[string]any {
+	return map[string]any{"node": "n", "runs": []map[string]any{
+		{"run_id": "r", "workload": map[string]any{"input_tokens": 10, "concurrency": []int{1}}},
+	}}
+}
+
+func TestCalibrateToolPreservesRESTProblem(t *testing.T) {
+	d, want := problemFixture(t)
+	result := callAgentTool(t, d, "zz_calibrate", calibrationToolErrorInput())
+	require.Equal(t, true, result["isError"])
+	raw, err := json.Marshal(result["structuredContent"])
+	require.NoError(t, err)
+	var problem utils.ProblemDetails
+	require.NoError(t, json.Unmarshal(raw, &problem))
+	require.Equal(t, want, problem)
+}
+
+func TestCalibrateToolPreservesRefusalIDs(t *testing.T) {
+	for _, tc := range []struct{ code, field, id string }{
+		{"calibration_running", "job_id", "cal_active"},
+		{"run_changed", "run_id", "run_target"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusConflict)
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+					"type": "about:blank", "title": "Conflict", "status": 409, "code": tc.code, tc.field: tc.id,
+				}))
+			})
+			result := callAgentTool(t, d, "zz_calibrate", calibrationToolErrorInput())
+			require.Equal(t, true, result["isError"])
+			problem, ok := result["structuredContent"].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tc.code, problem["code"])
+			require.Equal(t, tc.id, problem[tc.field])
 		})
 	}
 }

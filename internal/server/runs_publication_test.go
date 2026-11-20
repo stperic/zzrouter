@@ -145,7 +145,7 @@ func TestRunStopPublishesBeforeImageAdmission(t *testing.T) {
 				path := "/zzrouter/v1/internal/runs/" + run.ID
 				if routed {
 					public := gin.New()
-					ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, nil, nil, nil, nil)
+					ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, nil, nil, nil)
 					public.DELETE("/runs/:id", ctrl.StopRun)
 					engine, path = public, "/runs/"+run.ID+"?node="+location
 				}
@@ -254,7 +254,7 @@ func TestRunMutationWaitsForPublication(t *testing.T) {
 				engine := internal
 				if routed {
 					engine = gin.New()
-					ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
+					ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
 					handlers := map[string]gin.HandlerFunc{"stop": ctrl.StopRun, "restart": ctrl.RestartRun, "launch": ctrl.LaunchRun}
 					engine.Handle(method, pattern, handlers[operation])
 				} else {
@@ -332,7 +332,8 @@ func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 				engine := internal
 				if routed {
 					engine = gin.New()
-					ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
+					service := NewRunsService(&lifecycleRouter{engine: internal}).WithModelRouter(reader, reader.appsConfig)
+					ctrl := NewRunsController(service, nil, nil, nil, nil)
 					publicHandler := ctrl.LaunchRun
 					if operation == "restart" {
 						publicHandler = ctrl.RestartRun
@@ -358,6 +359,9 @@ func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 					launch = response.Data
 				}
 				require.NotEmpty(t, launch.JobID)
+				if operation == "launch" {
+					require.Equal(t, "worker", launch.Node)
+				}
 				require.NoError(t, gate.SetDeadline(time.Now().Add(5*time.Second)))
 				child, err := gate.Accept()
 				require.NoError(t, err)

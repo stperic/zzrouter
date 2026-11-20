@@ -77,9 +77,9 @@ func TestContextAutoUsesFreeMemoryMinusMargin(t *testing.T) {
 		require.Empty(t, errs)
 		return declared, nil
 	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 9500}}, nil
-	}
+	})
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	model := process.ResolveModel(svc, req.Model)
 	need, known := process.ModelMemoryNeed(model, svc, svc.Defaults.Parameters, schema.AutoContext{}, nil)

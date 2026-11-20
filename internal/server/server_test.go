@@ -18,11 +18,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // nilAppsConfig is a test helper that returns a nil-returning appsConfig accessor.
@@ -650,33 +650,23 @@ func TestErrModelNotFound(t *testing.T) {
 // Helpers Tests
 // ============================================================================
 
-func TestFindMatchingModels(t *testing.T) {
-	models := []*metadata.ModelMetadata{
-		{Name: "llama2-7b"},
-		{Name: "llama2-13b"},
-		{Name: "llama3-8b"},
-		{Name: "mistral-7b"},
-	}
-
-	tests := []struct {
-		pattern   string
-		wantCount int
+func TestStartCatalogMatchesExplicitPatterns(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	routingCatalog(t, s, []map[string]any{
+		{"name": "llama2-7b", "node": "worker", "assigned_app": "llamacpp"},
+		{"name": "llama2-13b", "node": "worker", "assigned_app": "llamacpp"},
+		{"name": "llama3-8b", "node": "worker", "assigned_app": "llamacpp"},
+		{"name": "mistral-7b", "node": "worker", "assigned_app": "llamacpp"},
+	})
+	for _, tc := range []struct {
+		pattern string
+		count   int
 	}{
-		{"", 4},            // Empty pattern returns all
-		{"llama2", 2},      // Matches llama2-*
-		{"llama", 3},       // Matches llama*
-		{"mistral", 1},     // Exact contains match
-		{"nonexistent", 0}, // No matches
-		{"7b", 2},          // Matches *-7b
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.pattern, func(t *testing.T) {
-			matches := findMatchingModels(tt.pattern, models)
-			if len(matches) != tt.wantCount {
-				t.Errorf("findMatchingModels(%q) returned %d matches, want %d", tt.pattern, len(matches), tt.wantCount)
-			}
-		})
+		{"", 4}, {"llama2*", 2}, {"llama*", 3}, {"mistral-7b", 1}, {"nonexistent", 0}, {"*7b", 2},
+	} {
+		results, err := s.ListModels(t.Context(), "", "", "", tc.pattern)
+		require.NoError(t, err)
+		assert.Len(t, results, tc.count, tc.pattern)
 	}
 }
 
@@ -1278,10 +1268,6 @@ func (m *mockModelCache) LookupModel(ctx context.Context, name string) (*cache.C
 }
 
 func (m *mockModelCache) Invalidate() {}
-
-func (m *mockModelCache) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
-	return nil, nil
-}
 
 func (m *mockModelCache) ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
 	if m.err != nil {

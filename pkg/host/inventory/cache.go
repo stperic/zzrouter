@@ -6,72 +6,60 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Cache is a TTL-invalidated wrapper over pkg/discovery/hardware. Hardware
-// state (hot-plugged disk, memory pressure) is not observable from in-
-// process events, so TTL is the correct freshness signal.
-//
-// Disk and memory refresh per TTL; CPU info is populated once on first
-// call and served for the lifetime of the process (CPU model and core
-// count don't change at runtime). The /health handler and /hosts refresh
-// loop both read through this cache so each physical hardware query runs
-// at most once per TTL window regardless of handler concurrency.
+// Cache shares one completed resource probe per TTL alongside disk and static CPU inventory.
 type Cache struct {
 	mu       sync.RWMutex
 	diskInfo []hardware.DiskInfo
-	memInfo  *hardware.HardwareInfo
-	cpuInfo  *hardware.HardwareInfo // Cached once at first call.
+	cpuInfo  *hardware.HardwareInfo
 	diskAt   time.Time
-	memoryAt time.Time
 	ttl      time.Duration
 
-	// gpuCards is live per-card VRAM. It carries its own stamp because it
-	// refreshes on a different trigger than disk and memory: every health
-	// scrape wants it, and each refresh costs an nvidia-smi subprocess.
-	gpuCards   []gpu.CardMetrics
-	gpuCardsAt time.Time
+	resourceMu sync.Mutex
+	snapshot   resources.Snapshot
+	sequence   uint64
+	probe      func(context.Context, *resources.Snapshot) resources.Snapshot
 }
 
-// NewCache creates a new hardware inventory cache with the supplied TTL.
+// NewCache creates a node cache using the local resource sampler.
 func NewCache(ttl time.Duration) *Cache {
-	return &Cache{ttl: ttl}
+	return NewCacheWithProbe(ttl, resources.SampleNode)
 }
 
-// GetGPUCardMetrics returns live per-card VRAM, refreshing at most once per
-// TTL window. Every /health and /hosts caller reads through here so a node
-// with three handlers polling at once runs one nvidia-smi, not three — and
-// so a hung driver blocks one probe rather than one per request.
-//
-// A nil result means no card was measured this window; callers must render
-// that as unknown, never as zero free.
-func (c *Cache) GetGPUCardMetrics(ctx context.Context) ([]gpu.CardMetrics, time.Time) {
-	c.mu.RLock()
-	if !c.gpuCardsAt.IsZero() && time.Since(c.gpuCardsAt) < c.ttl {
-		cards := copyCardMetrics(c.gpuCards)
-		at := c.gpuCardsAt
-		c.mu.RUnlock()
-		return cards, at
+// NewCacheWithProbe lets snapshot consumers exercise the cache with a controlled resource probe.
+func NewCacheWithProbe(ttl time.Duration, probe func(context.Context, *resources.Snapshot) resources.Snapshot) *Cache {
+	return &Cache{ttl: ttl, probe: probe}
+}
+
+// GetSnapshot keeps concurrent views on the same source sample until its TTL expires.
+func (c *Cache) GetSnapshot(ctx context.Context) resources.Snapshot {
+	snapshot, _ := c.readSnapshot(ctx, false)
+	return snapshot
+}
+
+// RefreshSnapshot forces a probe and returns the cached observation with its sequence.
+func (c *Cache) RefreshSnapshot(ctx context.Context) (resources.Snapshot, uint64) {
+	return c.readSnapshot(ctx, true)
+}
+
+func (c *Cache) readSnapshot(ctx context.Context, refresh bool) (resources.Snapshot, uint64) {
+	c.resourceMu.Lock()
+	defer c.resourceMu.Unlock()
+	if (refresh || time.Since(c.snapshot.At) >= c.ttl) && ctx.Err() == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		snapshot := c.probe(probeCtx, &c.snapshot)
+		if ctx.Err() == nil {
+			snapshot.At = utils.Now()
+			c.snapshot = snapshot
+			c.sequence++
+		}
 	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check in case another goroutine refreshed while we waited.
-	if !c.gpuCardsAt.IsZero() && time.Since(c.gpuCardsAt) < c.ttl {
-		cards := copyCardMetrics(c.gpuCards)
-		return cards, c.gpuCardsAt
-	}
-
-	c.gpuCardsAt = utils.Now()
-	c.gpuCards = gpu.LiveCardMetricsContext(ctx)
-
-	cards := copyCardMetrics(c.gpuCards)
-	return cards, c.gpuCardsAt
+	return c.snapshot.Clone(), c.sequence
 }
 
 // GetDiskInfo returns cached disk info or refreshes if expired.
@@ -104,35 +92,6 @@ func (c *Cache) GetDiskInfo(ctx context.Context) []hardware.DiskInfo {
 	result := make([]hardware.DiskInfo, len(diskInfo))
 	copy(result, diskInfo)
 	return result
-}
-
-// GetMemoryInfo returns cached memory info or refreshes if expired.
-func (c *Cache) GetMemoryInfo(ctx context.Context) (*hardware.HardwareInfo, time.Time) {
-	c.mu.RLock()
-	if time.Since(c.memoryAt) < c.ttl && c.memInfo != nil {
-		memInfo := copyMemoryInfo(c.memInfo)
-		at := c.memoryAt
-		c.mu.RUnlock()
-		return memInfo, at
-	}
-	c.mu.RUnlock()
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if time.Since(c.memoryAt) < c.ttl && c.memInfo != nil {
-		memInfo := copyMemoryInfo(c.memInfo)
-		return memInfo, c.memoryAt
-	}
-
-	c.memoryAt = utils.Now()
-	memInfo, _ := hardware.DiscoverMemory(ctx)
-	c.memInfo = &memInfo
-
-	totalGB := float64(memInfo.TotalRAM) / constants.BytesPerGB
-	utils.LogDebugf("🔄 Memory cache refreshed: %.1f GB total", totalGB)
-
-	return copyMemoryInfo(c.memInfo), c.memoryAt
 }
 
 // GetCPUInfo returns cached CPU info, populating it on first call. Unlike
@@ -180,30 +139,4 @@ func Default() *Cache {
 		defaultCache = NewCache(constants.HealthCheckInterval)
 	})
 	return defaultCache
-}
-
-// Optional readings are copied too; callers cannot mutate the retained cache.
-func copyMemoryInfo(info *hardware.HardwareInfo) *hardware.HardwareInfo {
-	result := *info
-	if info.UsedRAM != nil {
-		value := *info.UsedRAM
-		result.UsedRAM = &value
-	}
-	return &result
-}
-
-func copyCardMetrics(values []gpu.CardMetrics) []gpu.CardMetrics {
-	result := make([]gpu.CardMetrics, len(values))
-	for index, value := range values {
-		result[index] = value
-		if value.UsedMemoryMiB != nil {
-			copy := *value.UsedMemoryMiB
-			result[index].UsedMemoryMiB = &copy
-		}
-		if value.FreeMemoryMiB != nil {
-			copy := *value.FreeMemoryMiB
-			result[index].FreeMemoryMiB = &copy
-		}
-	}
-	return result
 }

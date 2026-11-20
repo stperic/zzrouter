@@ -188,7 +188,7 @@ func defaultGhwCards() ([]ghwCard, error) {
 // library crash, nvidia-smi kernel-module mismatch) land in
 // Detection.Diagnostic via ProbeContext for callers that want
 // to log them. Callers must branch on state / card count, not
-// on an error return — same contract LiveMetricsContext uses.
+// on an error return in static inventory.
 func InventoryContext(ctx context.Context) Inventory {
 	// Honor a ctx-scoped inventory cache — preflight-then-install
 	// flows wrap their ctx with WithCachedInventory so both the

@@ -227,7 +227,7 @@ func TestMCPPreviewProviderErrorsBelongToREST(t *testing.T) {
 		require.Contains(t, problem["detail"], tc.detail)
 		require.Contains(t, problem["detail"], tc.next)
 		require.NotContains(t, problem["detail"], tc.absent)
-		_, err := s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: tc.provider, ModelName: "model"})
+		_, err := s.newRunsExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: tc.provider, ModelName: "model"})
 		require.Error(t, err)
 		require.Equal(t, http.StatusBadRequest, answeredStatus(err))
 		require.Equal(t, problem["detail"], err.Error())
@@ -235,7 +235,7 @@ func TestMCPPreviewProviderErrorsBelongToREST(t *testing.T) {
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/preview", strings.NewReader(`{"provider":"`+tc.provider+`","model_name":"model"}`))
-		s.newLoadExecutor().HandleInternalPreviewRun(c)
+		s.newRunsExecutor().HandleInternalPreviewRun(c)
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), `"code":"bad_request"`)
 		result := callMCPWireTool(t, s, "zz_run_preview", map[string]any{"provider": tc.provider, "model": "model"})
@@ -277,7 +277,7 @@ func TestMCPPreviewRecoveryUsesTargetInventory(t *testing.T) {
 	cfg.ClusterMode = config.ClusterModeWorker
 	cfg.NodeName = "preview-worker"
 	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
-	coordinator.services.Load.router = &previewWorkerRouter{worker: buildInternalEngine(worker)}
+	coordinator.services.Runs.router = &previewWorkerRouter{worker: buildInternalEngine(worker)}
 	for _, tc := range []struct{ localVersion, workerVersion, next, absent string }{
 		{"1.2.3", "", "POST /zzrouter/v1/providers/llamacpp/install", "PATCH"},
 		{"", "1.2.3", "PATCH /zzrouter/v1/providers/llamacpp with enabled=true", "POST"},

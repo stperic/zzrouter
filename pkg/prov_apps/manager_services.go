@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1066,7 +1067,9 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 	if !ok {
 		return
 	}
-	run, _, err := servedEngine{m}.servedRun(ctx, EnsureRequest{Provider: provider, Model: model.Name, Endpoint: EndpointChat}, svc, key, observed)
+	req := EnsureRequest{Provider: provider, Model: model.Name}
+	req.keyEndpoint, _ = runEndpoint(svc, req.Endpoint)
+	run, _, err := servedEngine{m}.servedRun(ctx, req, svc, key, observed)
 	if err != nil {
 		slog.Warn("Failed to adopt a served model", "provider", provider, "model", model.Name, "error", err)
 		return
@@ -1078,7 +1081,7 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 	registered := false
 	m.mu.Lock()
 	m.flightsMu.Lock()
-	if !m.holds(model.Name) && !m.flying(model.Name) && !m.stopping.Load() {
+	if ctx.Err() == nil && !m.stopping.Load() && !m.flying(model.Name) && !m.holds(model.Name) {
 		registered = m.instances.Register(run) == nil
 	}
 	m.flightsMu.Unlock()
@@ -1087,10 +1090,27 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 		_ = os.Remove(run.LogFilePath)
 		return
 	}
-	m.publishRunning(run, false, "adopted (loaded by another client)")
+	m.publishServed(ctx, run, "adopted (loaded by another client)")
 }
 
 // holds reports a run of any provider and endpoint for a name the daemon lists, case aside.
 func (m *ProviderAppManager) holds(name string) bool {
 	return slices.ContainsFunc(m.instances.List(), func(run *instance.Instance) bool { return strings.EqualFold(run.Model, name) })
+}
+
+// CalibrationDaemon reads the model inventory of a managed daemon on the run's endpoint.
+func (m *ProviderAppManager) CalibrationDaemon(ctx context.Context, run *instance.Instance) (int, []string) {
+	name, _, found := m.resolveConfigKey(run.Provider)
+	if !found {
+		return 0, nil
+	}
+	status, err := m.ProviderServiceStatus(ctx, name)
+	if err != nil || !status.Managed || !status.Running || status.Supervisor == "external" || status.PID <= 0 {
+		return 0, nil
+	}
+	held, endpoint, ok := m.daemonHolds(ctx, name)
+	if !ok || !backend.SameEndpoint(run.Weights().Backend, endpoint) {
+		return status.PID, nil
+	}
+	return status.PID, slices.Collect(maps.Keys(held))
 }
