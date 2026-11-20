@@ -44,6 +44,21 @@ func postReplayProxy(t *testing.T, client *http.Client, endpoint string) (*chain
 	}}
 }
 
+func TestFallbackKeepsExplicitNilBody(t *testing.T) {
+	sent := false
+	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
+		sent = true
+		assert.Equal(t, http.NoBody, req.Body)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+	})}
+	p, group := postReplayProxy(t, client, "http://engine.test")
+	c, w := streamEndContext(t, openaiproto.New())
+	replaceRequestBody(c, []byte(`{"model":"stale","stream":true}`))
+	p.ProxyWithFallback(c, group, newInstanceRequest(c.Request, nil), nil, "group", "", false)
+	assert.True(t, sent)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestPostNotReplayedAfterRequestWritten(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +78,7 @@ func TestPostNotReplayedAfterRequestWritten(t *testing.T) {
 	p, group := postReplayProxy(t, upstream.Client(), upstream.URL)
 	c, w := streamEndContext(t, openaiproto.New())
 	c.Request.Header.Set("Content-Type", "application/json")
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"bill this"}]}`), nil, "group", "", false)
+	p.ProxyWithFallback(c, group, newInstanceRequest(c.Request, []byte(`{"model":"group","messages":[{"role":"user","content":"bill this"}]}`)), nil, "group", "", false)
 	assert.EqualValues(t, 1, hits.Load(), "the upstream may already have executed this POST")
 	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
@@ -113,7 +128,7 @@ func TestPostWrittenTraceStopsChain(t *testing.T) {
 	transport := &replayTraceTransport{hook: "request"}
 	p, group := postReplayProxy(t, &http.Client{Transport: transport}, "http://engine.test")
 	c, w := streamEndContext(t, openaiproto.New())
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group"}`), nil, "group", "", false)
+	p.ProxyWithFallback(c, group, newInstanceRequest(c.Request, []byte(`{"model":"group"}`)), nil, "group", "", false)
 	assert.EqualValues(t, 1, transport.calls.Load())
 	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
@@ -157,7 +172,7 @@ func TestPostRefusedDialMovesToNextReplica(t *testing.T) {
 	c, w := streamEndContext(t, openaiproto.New())
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"hi"}]}`), nil, "group", "", false)
+	p.ProxyWithFallback(c, group, newInstanceRequest(c.Request, []byte(`{"model":"group","messages":[{"role":"user","content":"hi"}]}`)), nil, "group", "", false)
 
 	assert.EqualValues(t, 1, hits.Load(), "the refused POST never ran, so the next replica serves it")
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())

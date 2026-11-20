@@ -94,7 +94,7 @@ func TestProxyToInstance_CutBodyAnswersDialectError(t *testing.T) {
 		s, inst := instanceStreamTestServer()
 		closed := false
 		s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: cutBufferedBody, cut: true, contentType: "application/json", closed: &closed}}
-		s.proxyToInstance(c.Writer, c.Request, inst, true)
+		s.proxyToInstance(c.Writer, c.Request, newInstanceRequest(c.Request, nil), inst, true)
 		assert.True(t, closed)
 	})
 }

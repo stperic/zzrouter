@@ -164,7 +164,7 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 	rec := llm.NewInferenceRecorder(c.Request.Context(), "group", "")
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []fallback.Candidate{{Name: "variant", App: "llamacpp", Model: variantChat, OnDemand: true}}}
-	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "group", "", false)
+	s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, raw), rec, "group", "", false)
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 	require.Zero(t, calls.Load())
@@ -185,9 +185,9 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 			return
 		}
 		c, _ := gin.CreateTestContext(w)
-		c.Request = r.WithContext(context.WithValue(r.Context(), CtxKeyOriginalBody, raw))
+		c.Request = r
 		httperr.AttachResponder(s.responders.openai)(c)
-		_ = s.HandleLocalModel(w, c.Request, &resolver.Resolved{ModelName: body.Model, Provider: "llamacpp"}, "chat")
+		_ = s.HandleLocalModel(w, c.Request, raw, &resolver.Resolved{ModelName: body.Model, Provider: "llamacpp"}, "chat")
 	}))
 	defer worker.Close()
 	req := httptest.NewRequest(http.MethodPost, worker.URL+"/v1/chat/completions", strings.NewReader(`{"model":"`+variantChat+`"}`))

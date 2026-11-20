@@ -96,12 +96,11 @@ func (d *chainServerDeps) RunUpstream(inst *instance.Instance) (string, backend.
 	return d.s.providers.appMgr.Upstream(inst)
 }
 
-func (d *chainServerDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+func (d *chainServerDeps) LeaseInstance(req instanceRequest, inst *instance.Instance) (*instance.Lease, error) {
 	return d.s.openInstance(req, inst)
 }
 
-func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte {
-	req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
+func (d *chainServerDeps) InstanceBody(req instanceRequest, lease *instance.Lease) []byte {
 	prepared, _ := d.s.instanceRequest(req, lease.Instance())
 	return prepared
 }

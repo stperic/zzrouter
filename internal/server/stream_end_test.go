@@ -169,7 +169,7 @@ func TestStreamFromInstance_CutStreamEndsWithDialectError(t *testing.T) {
 			closed := false
 			s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: partialChatStream, cut: cut, closed: &closed, contentType: "text/event-stream"}}
 			c, rec := streamEndContext(t, openaiproto.New())
-			s.streamFromInstance(c.Writer, c.Request, inst, openaiproto.New())
+			s.streamFromInstance(c.Writer, c.Request, newInstanceRequest(c.Request, nil), inst, openaiproto.New())
 			assert.True(t, closed)
 			assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
 			assert.NotContains(t, rec.Body.String(), "[DONE]")
@@ -185,7 +185,7 @@ func TestProxyToInstance_CutStreamEndsWithDialectError(t *testing.T) {
 			closed := false
 			s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: partialChatStream, cut: cut, closed: &closed, contentType: "text/event-stream"}}
 			c, rec := streamEndContext(t, openaiproto.New())
-			s.proxyToInstance(c.Writer, c.Request, inst, true)
+			s.proxyToInstance(c.Writer, c.Request, newInstanceRequest(c.Request, nil), inst, true)
 			assert.True(t, closed)
 			assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
 			assert.NotContains(t, rec.Body.String(), "[DONE]")
@@ -231,7 +231,9 @@ func TestProxyToInstance_ClientWriteFailureAborts(t *testing.T) {
 		return resp, err
 	})}
 	c, rec := streamEndContext(t, openaiproto.New())
-	assert.PanicsWithValue(t, http.ErrAbortHandler, func() { s.proxyToInstance(failingStreamWriter{rec}, c.Request, inst, true) })
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() {
+		s.proxyToInstance(failingStreamWriter{rec}, c.Request, newInstanceRequest(c.Request, nil), inst, true)
+	})
 	assert.Empty(t, rec.Body.String())
 }
 
@@ -245,7 +247,7 @@ func TestProxyToInstance_CancelledStreamAborts(t *testing.T) {
 		cancel()
 		return streamTestTransport{body: partialChatStream, cut: true, contentType: "text/event-stream"}.RoundTrip(req)
 	})}
-	assert.PanicsWithValue(t, http.ErrAbortHandler, func() { s.proxyToInstance(c.Writer, c.Request, inst, true) })
+	assert.PanicsWithValue(t, http.ErrAbortHandler, func() { s.proxyToInstance(c.Writer, c.Request, newInstanceRequest(c.Request, nil), inst, true) })
 	assert.NotContains(t, rec.Body.String(), "upstream_stream_interrupted")
 }
 
@@ -309,7 +311,7 @@ func TestProxyToInstance_SeparatesCutFrame(t *testing.T) {
 	s, inst := instanceStreamTestServer()
 	s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: `data: {"choices":`, cut: true, contentType: "text/event-stream"}}
 	c, rec := streamEndContext(t, openaiproto.New())
-	s.proxyToInstance(c.Writer, c.Request, inst, true)
+	s.proxyToInstance(c.Writer, c.Request, newInstanceRequest(c.Request, nil), inst, true)
 	assert.Contains(t, rec.Body.String(), `data: {"choices":`+"\n\ndata: {\"error\":")
 }
 

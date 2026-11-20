@@ -121,18 +121,15 @@ func requestUsageCounts(c *gin.Context, body []byte) []byte {
 	if bytes.Equal(forced, body) {
 		return body
 	}
-	// Leaving the stash on the pre-forced bytes put the caller's original
-	// stream_options back on the wire. The engine then sent no usage
-	// frame and a local streaming request logged 0 in / 0 out while
-	// looking perfectly healthy.
+	// Stale bytes once restored the caller's original stream_options on the wire.
+	// The engine sent no usage frame and the local streaming request logged 0 in / 0 out while looking healthy.
+	// HTTP relays must see the same forced usage setting as typed dispatch.
 	replaceRequestBody(c, forced)
 	return forced
 }
 
-// replaceRequestBody makes body the request's outbound bytes in both
-// places dispatch reads them: c.Request.Body, and the context stash that
-// proxyToInstance rebuilds the outbound body from. Updating only the
-// first puts the old bytes on the wire.
+// replaceRequestBody keeps c.Request.Body and the original-body stash in sync.
+// Updating only c.Request.Body previously put the old bytes on the wire when dispatch read the stash.
 func replaceRequestBody(c *gin.Context, body []byte) {
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 	c.Request = c.Request.WithContext(
@@ -273,7 +270,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		// fallback proxy itself — it has the per-deployment view and
 		// can tag remote/local/no_backend after the chain settles.
 		span.SetAttributes(llm.RoutingDecision(llm.RoutingDecisionFallback))
-		s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
+		s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, body), recorder,
 			callerModel(c.Request.Context(), resolved), endpoint, suppressUsageFrameFromContext(c.Request.Context()))
 		llm.SetSpanOK(span)
 		return
@@ -308,7 +305,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 	recorder.SetRouting(llm.RoutingDecisionLocal, s.node.Nodename())
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal, provider, operation)
-	if err := s.HandleLocalModel(c.Writer, c.Request, resolved, endpoint); err != nil {
+	if err := s.HandleLocalModel(c.Writer, c.Request, body, resolved, endpoint); err != nil {
 		llm.SetSpanError(span, err)
 		return
 	}
@@ -368,7 +365,7 @@ func (s *Server) dispatchTo(c *gin.Context, resolved *resolver.Resolved, modelNa
 	ctx := c.Request.Context()
 	if s.providers.fallback != nil && len(resolved.Candidates) > 0 {
 		recorder, _ := ctx.Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
-		served := s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
+		served := s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, body), recorder,
 			callerModel(ctx, resolved), endpoint, false)
 		s.stashServingProvider(c, served)
 		return
@@ -389,7 +386,7 @@ func (s *Server) dispatchTo(c *gin.Context, resolved *resolver.Resolved, modelNa
 
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal, provider, operation)
-	_ = s.HandleLocalModel(c.Writer, c.Request, resolved, endpoint)
+	_ = s.HandleLocalModel(c.Writer, c.Request, body, resolved, endpoint)
 }
 
 // resolvedRequestBody canonicalizes engine tokens while keeping a shared variant's request defaults.
