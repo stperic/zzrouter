@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/discovery/resources"
@@ -228,7 +229,7 @@ func TestResourceTrackerPreservesNullAndMeasuredZeroInGPUFields(t *testing.T) {
 func TestResourceTrackerReprobesWithinCacheTTL(t *testing.T) {
 	for _, trigger := range []string{"tick", "collect now", "refresh request"} {
 		t.Run(trigger, func(t *testing.T) {
-			const ttl = 250 * time.Millisecond
+			const ttl = time.Minute
 			var calls atomic.Int64
 			interval := time.Hour
 			if trigger == "tick" {
@@ -247,7 +248,8 @@ func TestResourceTrackerReprobesWithinCacheTTL(t *testing.T) {
 			switch trigger {
 			case "tick":
 				tracker.Start(t.Context())
-				initial := *tracker.GetMetrics().GPUMemoryFreeMB
+				defer tracker.Stop()
+				initial := *before.Pools[0].FreeMiB + 1
 				select {
 				case <-ticked:
 				case <-time.After(2 * time.Second):
@@ -266,12 +268,32 @@ func TestResourceTrackerReprobesWithinCacheTTL(t *testing.T) {
 					return *tracker.GetMetrics().GPUMemoryFreeMB > initial
 				}, time.Second, time.Millisecond)
 			}
+			probes := calls.Load()
 			after := tracker.cache.GetSnapshot(t.Context())
-			require.True(t, after.At.After(before.At))
-			require.Equal(t, calls.Load(), *after.Pools[0].FreeMiB)
+			require.Equal(t, probes, calls.Load(), "ordinary read must reuse the observation within the TTL")
+			require.Greater(t, *after.Pools[0].FreeMiB, *before.Pools[0].FreeMiB)
+			require.Equal(t, probes, *after.Pools[0].FreeMiB)
 			require.Equal(t, after.Pools[0].FreeMiB, tracker.GetMetrics().GPUMemoryFreeMB)
 		})
 	}
+}
+
+func TestResourceTrackerKeepsNewestProbeWithEqualTimestamps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		tracker := NewResourceTracker("node", 0)
+		var probes int64
+		tracker.cache = inventory.NewCacheWithProbe(time.Minute, func(context.Context, *resources.Snapshot) resources.Snapshot {
+			probes++
+			return resources.Snapshot{Pools: []resources.Pool{{Kind: resources.GPU, Vendor: "nvidia", FreeMiB: new(probes)}}}
+		})
+		older, olderSequence := tracker.cache.RefreshSnapshot(t.Context())
+		newer, newerSequence := tracker.cache.RefreshSnapshot(t.Context())
+		require.Equal(t, older.At, newer.At)
+
+		tracker.publishMetrics(resourceMetrics(tracker.nodeName, newer), newerSequence)
+		tracker.publishMetrics(resourceMetrics(tracker.nodeName, older), olderSequence)
+		require.Equal(t, new(int64(2)), tracker.GetMetrics().GPUMemoryFreeMB)
+	})
 }
 
 func TestResourceTrackerPreservesUnknownRAMAndUtilization(t *testing.T) {
