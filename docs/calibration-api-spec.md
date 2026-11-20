@@ -713,7 +713,7 @@ Definitions:
 | `verified` | Every request completed, with measured input at or above `input_tokens`; output equal to `output_tokens` when output is forced; and, for chat, `concurrent_streams_peak` reaching the step's concurrency. |
 | `queued` | Every request completed at the requested lengths, but fewer ran at once than requested, for example a step above the engine's sequence limit. Throughput and latency are still valid. |
 | `failed` | A request errored, or a length was not reached. |
-| `inconclusive` | The step timed out, or the run stopped, restarted or was replaced during it. |
+| `inconclusive` | The step timed out before this run completed its requests, or the run stopped, restarted or was replaced during it. A run that completed every request keeps its own outcome when another run in the step times out. |
 
 Embeddings have no output stream, so an embeddings run is verified when every
 request succeeded at the requested input length. Public traffic does not
