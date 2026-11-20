@@ -262,13 +262,9 @@ func TestClientConfigSavePublishesCompleteSnapshots(t *testing.T) {
 				return
 			default:
 			}
-			data, err := os.ReadFile(cm.GetClientConfigPath())
+			// The lock-free production read races the saves, as another process would.
+			got, err := cm.LoadClientConfig()
 			if err != nil {
-				done <- err
-				return
-			}
-			var got ClientConfig
-			if err := yaml.Unmarshal(data, &got); err != nil {
 				done <- err
 				return
 			}
