@@ -1750,6 +1750,9 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
+        With vLLM's `kv-cache-memory-bytes` set, the fraction is the startup
+        requirement. A separate per-GPU check adds the weights share, fixed KV
+        bytes and safety margin. Unknown weights leave only the startup check.
         Before a replacement stop, the same memory admission checks a simulated stop:
         cloned devices lose the old run's processes, its owner entry and commitments
         are removed, and free memory increases by its release bound on each device.
@@ -1809,6 +1812,10 @@ paths:
         `gpu.evict_idle_on_memory_pressure` is the fallback when absent. The launch names them in its run's
         `evicted_runs` and in its job's `meta.evicted_runs`.
 
+        `memory-admission` defaults to `enforce`. With `report`, a memory-fit
+        refusal becomes `admission_warning` and the launch skips idle reclaim.
+        A queued launch exposes the warning on the run after admission.
+
         Returns 202 immediately with a pkg/jobs handle ID when available.
         Reused runs omit an expired or absent job ID; inspect `zz_runs`.
         Auto-deploy returns 503 when its download job is unavailable, with
@@ -1863,6 +1870,7 @@ paths:
                           port:     { type: integer }
                           parameters: { type: object, additionalProperties: { type: string }, description: The accepted or reused run's own request overrides, including a replayed pin. }
                           pinned: { type: boolean, description: The run's resolved pin setting. }
+                          admission_warning: { $ref: '#/components/schemas/AdmissionWarning' }
                           health_url: { type: string, description: "Node-local probe URL; may use the serving node's loopback and is not reachable from the coordinator." }
                           node:     { type: string }
         '400':
@@ -2282,7 +2290,8 @@ paths:
         data.assessment uses the same capacity policy as nodes/compatible and
         returns fit, no_fit or unknown with a reason. Unknown is not confirmed fit.
         It evaluates cloned parameters against selected device totals without
-        launching, evicting or reserving memory. Current load can still refuse
+        launching, evicting or reserving memory. `memory-admission: report` still
+        returns `no_fit` for a capacity shortfall. Current load can still refuse
         a subsequent launch. Workers without this field yield explicit unknown.
 
         `provider` is required. Preview renders one provider's launch
@@ -15853,6 +15862,8 @@ components:
                 type: integer
                 format: int64
                 description: GPU memory the driver attributed to the run when it was stopped.
+        admission_warning:
+          $ref: '#/components/schemas/AdmissionWarning'
         failure:
           type: object
           description: Optional diagnostic snapshot captured by the failed run lifecycle; does not require a logs request.
@@ -15868,6 +15879,36 @@ components:
               description: Last diagnostic error lines, at most 8 KiB in total, redacted before retention; request payload and environment dump lines are excluded.
               items: { type: string }
             truncated: { type: boolean }
+
+    AdmissionWarning:
+      type: object
+      description: Memory-fit evidence for a launch accepted under memory-admission report.
+      required: [message, parameter, device, required_mib, free_mib, holders]
+      properties:
+        message: { type: string }
+        kept_run: { type: string }
+        credited_mib: { type: integer, format: int64 }
+        budget_kind: { type: string }
+        parameter: { type: string }
+        device: { type: string }
+        required_mib: { type: integer, format: int64 }
+        free_mib: { type: integer, format: int64 }
+        attribution_reason: { type: string }
+        holders:
+          type: array
+          nullable: true
+          items:
+            type: object
+            required: [ownership]
+            properties:
+              pid: { type: integer }
+              memory_mib: { type: integer, format: int64 }
+              run: { type: string }
+              model: { type: string }
+              provider: { type: string }
+              ownership: { type: string, enum: [zzrouter, other_or_untracked] }
+              unused_commitment_mib: { type: integer, format: int64 }
+              reclaim_skipped_reason: { type: string }
 
     Provider:
       type: object
@@ -16251,6 +16292,8 @@ components:
             a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
             Force replacement and restart remain available; restart replays this tier.
             Pins do not autostart runs after a node restart.
+            Set memory-admission to enforce (default) or report. With report,
+            the router warns on a fit refusal and skips idle reclaim.
           additionalProperties:
             oneOf:
               - { type: string }
@@ -16358,6 +16401,8 @@ components:
             a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
             Force replacement and restart remain available; restart replays this tier.
             Pins do not autostart runs after a node restart.
+            Set memory-admission to enforce or report. Capacity assessment
+            reports the same verdict in either mode.
           additionalProperties:
             oneOf:
               - { type: string }
@@ -18099,6 +18144,7 @@ components:
             kind: { type: string, enum: [fraction_total, layers, unified, external] }
             parameter: { type: string }
             device_count_parameter: { type: string }
+            kv_bytes_parameter: { type: string, description: Parameter for positive fixed KV bytes per GPU in a fraction_total budget. }
             auto_safety_margin_mib:
               type: integer
               format: int64

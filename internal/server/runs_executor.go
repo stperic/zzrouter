@@ -412,6 +412,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		FilesMounted:      len(req.Files),
 		ParametersApplied: len(cfg.Parameters),
 		Parameters:        cfg.Parameters,
+		AdmissionWarning:  inst.AdmissionWarning(),
 		Pinned:            inst.IdleSnapshot().Pinned,
 		Node:              e.getNodename(),
 	})

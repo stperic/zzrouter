@@ -390,7 +390,15 @@ func (i *Instance) SetAdmissionEffects(effects AdmissionEffects) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	effects.EvictedRuns = slices.Clone(effects.EvictedRuns)
+	effects.Warning = effects.Warning.clone()
 	i.admissionEffects = effects
+}
+
+// AdmissionWarning returns the evidence from a waived fit refusal.
+func (i *Instance) AdmissionWarning() *AdmissionWarning {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.admissionEffects.Warning.clone()
 }
 
 // EvictedRuns returns the idle runs this launch stopped to be admitted.
@@ -869,6 +877,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
 		EvictedRuns:           slices.Clone(i.admissionEffects.EvictedRuns),
+		AdmissionWarning:      i.admissionEffects.Warning.clone(),
 		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),

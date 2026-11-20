@@ -193,10 +193,11 @@ func TestBrowserReceiptAcceptsReleasedTuningAndInactiveOperatorFlag(t *testing.T
 		merged, errs := schema.Merge(provider, declared, svc)
 		return merged, errors.Join(errs...)
 	}
-	req := EnsureRequest{Provider: "comfyui", Parameters: map[string]string{"enable-manager-legacy-u": "false", "default-device": "-1", "keep-alive": "-1", "max-upload-size": "100"}, EnvVars: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}}
+	req := EnsureRequest{Provider: "comfyui", Parameters: map[string]string{"enable-manager-legacy-u": "false", "default-device": "-1", "keep-alive": "-1", "max-upload-size": "100", "memory-admission": "report"}, EnvVars: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}}
 	admitted, err := m.prepareRun(t.Context(), run, req, launchSelection{key: "comfyui", config: svc, model: process.ResolveModel(svc, "")}, requireLaunchSchema(t, m, "comfyui"))
 	require.NoError(t, err)
 	require.NotContains(t, admitted.args, "--enable-manager-legacy-u")
+	require.NotContains(t, admitted.args, "--memory-admission")
 	require.Contains(t, admitted.args, "--default-device")
 	require.Contains(t, admitted.args, "-1")
 	require.NotNil(t, run.Resolved().Browser)

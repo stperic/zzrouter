@@ -23,3 +23,20 @@ func TestAdmissionEffectsSeparateServingFromReclaimedMemory(t *testing.T) {
 	view[0].FreedMiB = 0
 	require.Equal(t, int64(1024), run.ToInfo("").EvictedRuns[0].FreedMiB)
 }
+
+func TestAdmissionWarningSnapshotKeepsItsEvidence(t *testing.T) {
+	run := NewInstance("tenant", "provider", "", 0, 0, 0)
+	defer run.Cancel()
+	warning := &AdmissionWarning{Parameter: "budget", CreditedMiB: new(int64(10)), Holders: []MemoryHolder{{Run: "held", MemoryMiB: new(int64(900))}}}
+	run.SetAdmissionEffects(AdmissionEffects{Warning: warning})
+	*warning.CreditedMiB = 0
+	warning.Holders[0].Run = ""
+	*warning.Holders[0].MemoryMiB = 0
+	view := run.AdmissionWarning()
+	require.Equal(t, int64(10), *view.CreditedMiB)
+	require.Equal(t, "held", view.Holders[0].Run)
+	require.Equal(t, int64(900), *view.Holders[0].MemoryMiB)
+	*view.Holders[0].MemoryMiB = 1
+	require.Equal(t, int64(900), *run.ToInfo("").AdmissionWarning.Holders[0].MemoryMiB)
+	require.False(t, run.ChangesCatalog())
+}

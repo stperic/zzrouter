@@ -88,6 +88,30 @@ func TestPreviewCapacityHasNoSideEffects(t *testing.T) {
 	assert.Equal(t, 1, observations)
 }
 
+func TestReportPreviewAndCapacityStillShowNoFit(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization", KVBytesParameter: "kv-cache-memory-bytes"}, nil
+	}, "parameters:\n  kv-cache-memory-bytes: {type: int, min: 1}\n")
+	req.Parameters = map[string]string{
+		"memory-admission": "report", "gpu-memory-utilization": "0.1", "kv-cache-memory-bytes": "9663676416",
+	}
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+	require.NoError(t, err)
+	assert.Equal(t, "no_fit", preview.Assessment.Status)
+	assert.Contains(t, preview.Assessment.Reason, "kv-cache-memory-bytes")
+	assert.Equal(t, preview.Assessment, m.AssessCapacity(t.Context(), req))
+	assert.Contains(t, preview.Args, "--kv-cache-memory-bytes")
+	assert.NotContains(t, preview.Args, "--memory-admission")
+	assert.Empty(t, m.instances.List())
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, effects, err := m.admitMemory(t.Context(), features, true, nil)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	assert.Nil(t, effects.Warning)
+}
+
 func TestPreviewLaunchPreservesPartialResultOnPrepareError(t *testing.T) {
 	m, req, _ := capacityFixture(t)
 	cause := errors.New("schema unavailable")

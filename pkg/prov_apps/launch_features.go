@@ -338,7 +338,7 @@ func (e *ParameterError) ParamIssues() []utils.ParamError {
 
 func (e *ParameterError) hint(code string, requested bool) string {
 	if e.Served && code == string(httperr.CodeUnknownFlag) {
-		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only %s and %s.", e.Provider, runsettings.KeepAliveParameter, runsettings.EvictIdleParameter)
+		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only %s, %s and %s.", e.Provider, runsettings.KeepAliveParameter, runsettings.EvictIdleParameter, runsettings.MemoryAdmissionParameter)
 	}
 	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
 	if requested {

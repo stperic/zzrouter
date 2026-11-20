@@ -118,6 +118,30 @@ func TestReplacementRefusalKeepsOldRunServing(t *testing.T) {
 	assert.Equal(t, pins, readPins(t))
 }
 
+func TestReplacementReportUsesFreshWarningAndSkipsIdleReclaim(t *testing.T) {
+	r := newReplacementRig(t, 1000, 2000, false)
+	r.m.idleEvictionDefault = true
+	r.other = replaceIdleHolder(t, r)
+	require.True(t, r.other.Evictable())
+	req := r.request()
+	req.Parameters = map[string]string{"memory-admission": "report"}
+	result, err := r.m.EnsureRun(t.Context(), req)
+	require.NoError(t, err)
+	require.True(t, result.Started)
+	require.NotEqual(t, r.old.ID, result.Run.ID)
+	awaitRunning(t, result.Run)
+	assert.Equal(t, int32(1), r.checks.Load(), "replacement still checks before stopping")
+	assert.Equal(t, instance.StatusStopped, r.old.GetStatus())
+	assert.Equal(t, instance.StatusRunning, r.other.GetStatus())
+	info := result.Run.ToInfo("")
+	require.NotNil(t, info.AdmissionWarning)
+	assert.Equal(t, int64(3000), info.AdmissionWarning.FreeMiB)
+	assert.Empty(t, info.AdmissionWarning.KeptRun)
+	assert.Nil(t, info.AdmissionWarning.CreditedMiB)
+	assert.Empty(t, info.EvictedRuns)
+	assert.Empty(t, info.MemoryCommitments)
+}
+
 func TestReplacementUnifiedRefusalKeepsOldRunServing(t *testing.T) {
 	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 	t.Setenv("CUDA_VISIBLE_DEVICES", "unified")

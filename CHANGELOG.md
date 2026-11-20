@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Check vLLM's startup fraction and an independent per-GPU hold when
+  `kv-cache-memory-bytes` is set. Expert launches can use
+  `memory-admission: report` to surface a fit refusal as an admission warning
+  and skip idle reclaim.
+
 - Keep running worker models eligible for route selection when their GPUs
   have little free memory. The serving node handles memory admission for new runs.
 

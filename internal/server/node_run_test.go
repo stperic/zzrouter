@@ -52,7 +52,8 @@ func nodeRunFixture(t *testing.T, options ...prov_apps.Option) (*prov_apps.Provi
 		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	})
-	mgr, err := prov_apps.NewProviderAppManager(cfg, append(options, seed, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
+	options = append([]prov_apps.Option{seed}, options...)
+	mgr, err := prov_apps.NewProviderAppManager(cfg, append(options, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
 		t.Error("node run used the model catalog")
 		return false, nil
 	}))...)
@@ -144,6 +145,70 @@ func TestNodeRunDirectWorkerScalarParameters(t *testing.T) {
 	require.Equal(t, "-1", run.Resolved().Parameters["keep-alive"])
 	require.Equal(t, "9007199254740993", run.Resolved().Parameters["seed"])
 	require.Equal(t, "false", run.Resolved().Parameters["evict-idle-on-memory-pressure"])
+}
+
+func TestMemoryAdmissionReportWarningOnStartAndRun(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, 4000' ;;\nesac\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "nvidia-smi"), []byte(script), 0o700))
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+	mgr, cfg := nodeRunFixture(t, prov_apps.WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
+		declared := &schema.YAMLSchema{
+			Parameters: map[string]schema.YAMLParam{"budget": {Type: "float"}},
+			Diagnostics: &schema.Diagnostics{
+				Runtime: "studio", Runtimes: map[string]schema.RuntimeChecks{"studio": {Kernels: "unknown"}},
+				Memory: &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"},
+			},
+		}
+		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
+		return merged, errors.Join(errs...)
+	}))
+	executor := NewRunsExecutor(mgr, func() string { return "worker" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
+	worker := gin.New()
+	worker.POST("/zzrouter/v1/internal/runs", executor.HandleInternalLaunchRun)
+	worker.GET("/zzrouter/v1/internal/runs/:id", executor.HandleInternalGetRun)
+	service := NewRunsService(&previewWorkerRouter{worker: worker}).WithAutoDeploy(nil, nil, func() *config.AppsConfig { return cfg }, nil)
+	controller := &RunsController{service: service}
+	coordinator := gin.New()
+	coordinator.POST("/zzrouter/v1/runs", controller.LaunchRun)
+	coordinator.GET("/zzrouter/v1/runs/:id", controller.GetRun)
+	launch := func(budget string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", bytes.NewBufferString(`{"provider":"studio","node":"worker","parameters":{"budget":`+budget+`,"memory-admission":"report"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		coordinator.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := launch("0")
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	require.Empty(t, mgr.Instances().List())
+
+	rec = launch("1")
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	var accepted struct {
+		Data LaunchRunResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &accepted))
+	start := accepted.Data
+	require.NotNil(t, start.AdmissionWarning)
+	require.Equal(t, "budget", start.AdmissionWarning.Parameter)
+	require.Greater(t, start.AdmissionWarning.RequiredMiB, start.AdmissionWarning.FreeMiB)
+	require.Contains(t, start.AdmissionWarning.Message, "cannot fit")
+
+	detail := httptest.NewRecorder()
+	coordinator.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/zzrouter/v1/runs/"+start.ID+"?node=worker", nil))
+	require.Equal(t, http.StatusOK, detail.Code, detail.Body.String())
+	var response struct {
+		Data instance.InstanceInfo `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(detail.Body.Bytes(), &response))
+	run := response.Data
+	require.Equal(t, start.AdmissionWarning, run.AdmissionWarning)
+	require.Empty(t, run.MemoryCommitments)
+	require.Empty(t, run.EvictedRuns)
 }
 
 func (r *previewWorkerRouter) Route(ctx context.Context, req *routing.Request) (*routing.Response, error) {

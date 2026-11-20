@@ -288,6 +288,9 @@ func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, con
 	if settings.EvictIdleExplicit {
 		params[config.EvictIdleParameter] = fmt.Sprint(settings.EvictIdle)
 	}
+	if _, explicit := read[config.MemoryAdmissionParameter]; explicit {
+		params[config.MemoryAdmissionParameter] = settings.MemoryAdmission
+	}
 	return preparedLaunch{
 		launch:     process.Launch{WireModel: req.Model}, // runModel named it as the daemon does
 		parameters: LaunchParameters{Params: params, Config: svc},
