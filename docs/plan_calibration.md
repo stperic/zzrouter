@@ -17,8 +17,8 @@ These are the plan's defaults. Change them before the briefs go out.
 
 1. **`memory-admission: report` also skips reclaim.** The operator waived the
    check that reclaim would satisfy (refactor 7).
-2. **A start with no `node` routes by model**, the same rule as preview
-   (refactor 1).
+2. **A start with no `node` routes by model** through preview's resolution,
+   but never broadcasts: no owner is a refusal asking for `node` (refactor 1).
 3. **The absolute-KV path records no commitment**, like every vLLM launch today.
    Recording one would change how commitment-only refusals are classified for
    other runs (refactor 6).
@@ -108,8 +108,9 @@ against its base.
    - `RunsService.PreviewRun`, which takes the model router, and
      `RunsExecutor.PreviewLocalRun` with its internal handler.
    - The controller calls the runs service.
-5. **Start routing.** A start with no `node` uses the model router, as preview
-   does.
+5. **Start routing.** A start with no `node` uses preview's model resolution
+   (holder, else the coordinator when it resolves a provider) and never
+   broadcasts; no owner is a closed-code refusal asking for `node`.
 6. **Client.**
    - Add `StartRun` and its response type (`id` replaces `instance_id`).
    - Switch `internal/cli/clientcli/run.go` and

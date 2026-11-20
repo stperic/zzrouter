@@ -96,8 +96,12 @@ tiers say `environment`.
     settings, is refused too; today it silently gets the other start's run.
   - Served runs (Ollama) pass through the same rule, so tests that re-ensure a
     warm run with different settings are checked first.
-- **One routing rule.** A start with no `node` routes by model, as preview
-  does, rather than to the coordinator.
+- **One routing rule.** A start with no `node` goes to the node preview's
+  model resolution picks (the holder, else the coordinator when the
+  coordinator resolves a provider), rather than always to the coordinator. A
+  start never broadcasts: when resolution names no owner, it is refused with a
+  closed code that asks for `node`. Only preview, which is read-only, keeps
+  its broadcast fallback.
 - **MCP.** `zz_run_start` gains `replace` and documents the refusal.
 - **Terminal client.** `zzrouter run` and the TUI start through `POST /runs`.
   - `zzrouter run --force` currently means both "pick the first match" and
