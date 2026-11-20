@@ -143,16 +143,26 @@ func TestStateExportRefusesItsOutput(t *testing.T) {
 	require.ErrorContains(t, exportBackup(t.Context(), dir, "b1", filepath.Join(dir, "copy.tar.gz")), "inside the installation")
 	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o700))
 	require.ErrorContains(t, exportBackup(t.Context(), dir, "b1", filepath.Join(dir, "sub", "copy.tar.gz")), "inside the installation")
-	outside := t.TempDir()
-	if os.Symlink(filepath.Join(dir, "sub"), filepath.Join(outside, "link")) == nil { // link/.. is the installation
-		require.ErrorContains(t, exportBackup(t.Context(), dir, "b1", outside+"/link/../dotdot.tar.gz"), "inside the installation")
-	}
 	if upper := strings.ToUpper(dir); upper != dir {
 		if _, err := os.Stat(upper); err == nil { // a case-insensitive disk
 			require.ErrorContains(t, exportBackup(t.Context(), dir, "b1", filepath.Join(upper, "copy.tar.gz")), "inside the installation")
 		}
 	}
 	require.Zero(t, requests.Load())
+	// Through a link, link/.. is the installation where the kernel resolves
+	// the link first. Windows drops ".." from the spelling before it opens
+	// anything, so there the check and the write both land beside the link.
+	outside := t.TempDir()
+	if os.Symlink(filepath.Join(dir, "sub"), filepath.Join(outside, "link")) == nil {
+		err := exportBackup(t.Context(), dir, "b1", outside+"/link/../dotdot.tar.gz")
+		if runtime.GOOS == "windows" {
+			require.NoError(t, err)
+			require.Equal(t, exportArchive, readFile(t, filepath.Join(outside, "dotdot.tar.gz")))
+		} else {
+			require.ErrorContains(t, err, "inside the installation")
+		}
+		require.NoFileExists(t, filepath.Join(dir, "dotdot.tar.gz"))
+	}
 }
 
 // resetServer serves a backup create, a preview of backup "b1" and the reset;

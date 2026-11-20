@@ -33,7 +33,7 @@ func TestCopyToPurgesDeletedContent(t *testing.T) {
 	require.NoError(t, err)
 	marker := []byte(strings.Repeat("purge-this-value-", 16))
 	require.True(t, bytes.Contains(data, marker), "source must still contain deleted bytes for this test to prove purging")
-	dst := filepath.Join(dir, "absent ?#%.sqlite")
+	dst := filepath.Join(dir, "absent"+uriSpecial()+".sqlite")
 	require.NoError(t, db.CopyTo(t.Context(), dst))
 	ownerOnly(t, dst)
 	copy := openDB(t, dst, s)

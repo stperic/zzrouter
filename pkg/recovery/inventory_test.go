@@ -3,6 +3,7 @@ package recovery
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -20,6 +21,8 @@ import (
 )
 
 // tree maps every path under dir to its content's digest, "/" for a directory.
+// A lock file maps to its size: a held lock is unreadable on Windows, and its
+// content is never data.
 func tree(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	files := make(map[string]string)
@@ -28,7 +31,12 @@ func tree(t *testing.T, dir string) map[string]string {
 			return err
 		}
 		content := "/"
-		if !entry.IsDir() {
+		switch {
+		case strings.HasSuffix(path, ".lock"):
+			info, err := entry.Info()
+			require.NoError(t, err)
+			content = fmt.Sprintf("lock %d bytes", info.Size())
+		case !entry.IsDir():
 			content = digest(readBytes(t, path))
 		}
 		files[path] = content

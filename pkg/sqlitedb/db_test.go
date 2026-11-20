@@ -71,8 +71,17 @@ func ownerOnly(t *testing.T, path string) {
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm(), path)
 }
 
+// uriSpecial holds the characters a file: URI must escape, among those the
+// platform allows in a file name: Windows refuses '?'.
+func uriSpecial() string {
+	if runtime.GOOS == "windows" {
+		return " #%'"
+	}
+	return " ?#%'"
+}
+
 func TestConnectionSettingsSurviveReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "data ?#%' file.sqlite")
+	path := filepath.Join(t.TempDir(), "data"+uriSpecial()+" file.sqlite")
 	s := testSchema(t)
 	db := createDB(t, path, s)
 	require.NoError(t, db.Close())

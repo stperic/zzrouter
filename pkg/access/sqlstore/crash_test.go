@@ -184,6 +184,18 @@ func startCrash(t *testing.T, name string, c crashSetup) (*exec.Cmd, *bufio.Scan
 	return child, lines
 }
 
+// kill kills child and reaps it. A kill that loses the race with the child's
+// own exit is not a failure (Windows refuses to terminate an exited process);
+// a wait that reports anything but an exit is.
+func kill(t *testing.T, child *exec.Cmd) {
+	t.Helper()
+	_ = child.Process.Kill()
+	if err := child.Wait(); err != nil {
+		var exit *exec.ExitError
+		require.ErrorAs(t, err, &exit)
+	}
+}
+
 // TestKillMidCommit kills a process while it commits each crash op; the store
 // reopens with all of the commit or none of it, its audit rows and meta included.
 func TestKillMidCommit(t *testing.T) {
@@ -203,8 +215,7 @@ func TestKillMidCommit(t *testing.T) {
 				c := prepareCrash(t, op)
 				child, _ := startCrash(t, name, c)
 				time.Sleep(rand.N(window))
-				require.NoError(t, child.Process.Kill())
-				_ = child.Wait()
+				kill(t, child)
 
 				reopened := openStore(t, c.dir, contractOptions)
 				revision, sequence := versions(reopened)
