@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +60,7 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 						require.NoError(t, err)
 						s.services.Runs.router = &mockRouter{response: &routing.Response{StatusCode: http.StatusOK, Body: body}}
 					}
+					started := utils.Now()
 					rest := makeAuthRequest(t, s, http.MethodGet, path, TestAdminKey, nil)
 					require.Equal(t, http.StatusOK, rest.Code, string(rest.Body))
 					var body map[string]any
@@ -92,7 +96,15 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 					if want == nil {
 						assert.NotContains(t, fields, "cache")
 					}
+					if location == "local" {
+						finished := utils.Now()
+						assertRunCacheActivity(t, row["activity"], started, finished)
+						assertRunCacheActivity(t, fields["activity"], started, finished)
+					}
 					for key, value := range row {
+						if key == "activity" {
+							continue
+						}
 						if key == "id" {
 							assert.Equal(t, value, fields["run_id"])
 						} else if _, ok := fields[key]; ok {
@@ -111,4 +123,25 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 			})
 		}
 	}
+}
+
+func assertRunCacheActivity(t *testing.T, value any, started, finished time.Time) {
+	t.Helper()
+	activity, ok := value.(map[string]any)
+	require.True(t, ok, "activity must be present")
+	for key, want := range map[string]any{"state": "idle", "active_requests": float64(0), "busy_engines": float64(0), "stale": false} {
+		assert.Equal(t, want, activity[key], key)
+	}
+	require.IsType(t, "", activity["observed_at"])
+	observed, err := time.Parse(time.RFC3339Nano, activity["observed_at"].(string))
+	require.NoError(t, err)
+	assert.WithinRange(t, observed, started, finished)
+	require.IsType(t, float64(0), activity["age_seconds"])
+	age := activity["age_seconds"].(float64)
+	assert.GreaterOrEqual(t, age, float64(0))
+	assert.LessOrEqual(t, age, finished.Sub(started).Seconds())
+	require.IsType(t, float64(0), activity["valid_for_seconds"])
+	validFor := activity["valid_for_seconds"].(float64)
+	assert.Positive(t, validFor)
+	assert.LessOrEqual(t, validFor, (2 * constants.HealthCheckInterval).Seconds())
 }

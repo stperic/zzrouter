@@ -301,7 +301,8 @@ gpu:
 The default is off. Enable it on each node that may stop idle zzRouter runs to
 admit a launch whose GPU budget cannot fit. Restart the node after changing it.
 Only unpinned running or unhealthy instances with no activity hold, active request
-lease, claimed stop or queued launch waiting on them qualify. Oldest activity goes
+lease, claimed stop or queued launch waiting on them qualify. A run that declares
+a busy probe also needs a fresh idle observation. Oldest activity goes
 first, and nothing is stopped unless the eligible holders cover the memory shortfall. Unknown holder
 sizes count as zero. Other processes are never reclaimed.
 

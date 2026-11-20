@@ -12,9 +12,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,6 +102,73 @@ func TestActivityHoldPreventsPressureEviction(t *testing.T) {
 	require.False(t, f.older.IdleSnapshot().Leased)
 }
 
+func TestUnknownActivityPreventsPressureEvictionAndIdleExpiry(t *testing.T) {
+	for _, state := range []string{"unobserved", "expired", "failed", "idle", "undeclared"} {
+		t.Run(state, func(t *testing.T) {
+			f := newReclaimFixture(t, true)
+			run := f.older
+			f.newer.ObserveActivity(true)
+			now := utils.Now()
+			restore := utils.SetClock(utils.FixedClock(now))
+			t.Cleanup(restore)
+			if state != "undeclared" {
+				run.ConfigureActivityObservation(time.Minute)
+			}
+			switch state {
+			case "expired":
+				run.ObserveActivity(false)
+				now = now.Add(time.Minute)
+				t.Cleanup(utils.SetClock(utils.FixedClock(now)))
+			case "failed":
+				run.ObserveActivity(true)
+				run.ActivityUnknown(true)
+			case "idle":
+				run.ObserveActivity(false)
+			}
+			require.False(t, run.ToInfo("node").EngineBusy)
+			idle := run.IdleSnapshot()
+			idleDeadline := idle.Activity.Add(idle.KeepAlive)
+			evicted, err := f.admit(t)
+			if state == "idle" || state == "undeclared" {
+				require.NoError(t, err)
+				require.Len(t, evicted, 1)
+				require.Equal(t, run.ID, evicted[0].RunID)
+				require.True(t, Expired(idle, idleDeadline))
+				return
+			}
+			require.False(t, Expired(idle, idleDeadline))
+			require.Empty(t, evicted)
+			f.assertOriginalFit(t, err, map[string]string{run.ID: "activity_unknown", f.newer.ID: "busy"})
+			require.Contains(t, err.Error(), "reclaim skipped: activity_unknown")
+			require.Equal(t, "unknown", run.ToInfo("node").Activity.State)
+			release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: idle.Activity, Idle: &idle}})
+			if release != nil {
+				release()
+			}
+			require.Equal(t, &instance.IdleStopRefusal{RunID: run.ID, Reason: "activity_unknown"}, refusal)
+			require.NoError(t, f.mgr.StopInstance(t.Context(), run.ID))
+		})
+	}
+}
+
+func TestIdleReaperResumesAfterFreshIdleObservation(t *testing.T) {
+	f := newReclaimFixture(t, false)
+	f.mgr.Start(t.Context())
+	f.newer.ConfigureActivityObservation(time.Minute)
+	zero := time.Duration(0)
+	for _, run := range []*instance.Instance{f.newer, f.older} {
+		lease, err := run.Acquire(t.Context(), nil)
+		require.NoError(t, err)
+		run.StampActivityWithHints(&keepalive.Override{Duration: &zero})
+		lease.Release()
+	}
+	eventually(t, func() bool { return !f.mgr.instances.Has(f.older.ID) }, "undeclared idle run must expire")
+	require.Equal(t, "activity_unknown", f.newer.EvictionBlockedReason())
+	require.True(t, f.mgr.instances.Has(f.newer.ID))
+	f.newer.ObserveActivity(false)
+	eventually(t, func() bool { return !f.mgr.instances.Has(f.newer.ID) }, "fresh idle evidence must wake the reaper")
+}
+
 type directQueueTransport struct{}
 
 func (directQueueTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -128,6 +197,11 @@ func TestManagerStopDrainsObservedBusySampler(t *testing.T) {
 		return &merged, nil
 	}
 	r.m.healthMon = health.NewMonitor(r.m.instances, health.MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: 3, HTTPClient: &http.Client{Transport: directQueueTransport{}}})
+	r.m.seams.beforeLaunch = func() {
+		for _, run := range r.m.instances.List() {
+			assert.Equal(t, "unknown", run.ToInfo("node").Activity.State)
+		}
+	}
 	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
 	require.NoError(t, err)
 	awaitRunning(t, result.Run)

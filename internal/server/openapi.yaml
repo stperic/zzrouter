@@ -1813,8 +1813,8 @@ paths:
         targets attributed holdings only, excluding unaccounted use, and caller
         cancellation aborts. Recovery timeout continues to fresh admission, which can
         still refuse without a kept_run claim. Idle claims revalidate after the stop.
-        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (pinned, busy,
-        in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
+        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (`pinned`, `busy`,
+        `activity_unknown`, `in use` or `not idle`) from the reclaim decision. Unused commitments omit `pid`.
         Refused observations or device selections retain their 503 class. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and
@@ -16072,7 +16072,7 @@ components:
             name: { type: string }
             url: { type: string, format: uri, description: Authenticated native browser URL. Open this URL instead of exposing the engine port. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
-        engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
+        engine_busy: { type: boolean, description: Positive queue hold. With a declared busy probe, unknown activity also protects the run from idle expiry and memory reclaim. }
         target_revision: { type: string, description: Identity of the live target. Pass this as a calibration precondition. }
         requests_admitted: { type: integer, minimum: 1, description: Total leases granted since this run started. Omitted until the first grant. }
         memory_commitments_mib:
@@ -16081,7 +16081,7 @@ components:
           description: Per-device reservations retained for the run.
 
         started:  { type: string, format: date-time }
-        endpoint: { type: string }
+        endpoint: { type: string, description: Serving endpoint. Shared daemon runs use model capabilities when known and fall back to the requested endpoint or chat. }
         parameters:
           type: object
           additionalProperties: { type: string }
@@ -16186,7 +16186,7 @@ components:
               provider: { type: string }
               ownership: { type: string, enum: [zzrouter, other_or_untracked] }
               unused_commitment_mib: { type: integer, format: int64 }
-              reclaim_skipped_reason: { type: string }
+              reclaim_skipped_reason: { type: string, description: Reason the holder was skipped during reclaim. A missing or expired declared busy observation reports activity_unknown after any positive hold clears. }
 
     Provider:
       type: object

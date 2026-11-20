@@ -89,9 +89,7 @@ type InstanceInfo struct {
 	Provider          string           `json:"provider"`
 	LaunchMode        string           `json:"launch_mode,omitempty"`
 	Model             string           `json:"model,omitempty"`
-	// Endpoint is the per-request endpoint label this instance serves
-	// ("chat", "embeddings", "reranking"). Empty defaults to chat.
-	// Surfaced so run listings can distinguish multi-endpoint launches for one model.
+	// Endpoint is the serving label reported to callers; shared daemon runs keep a separate key.
 	Endpoint              string            `json:"endpoint,omitempty"`
 	SourceRepo            string            `json:"source_repo,omitempty"`
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
