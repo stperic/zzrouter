@@ -28,13 +28,16 @@ type Lease struct {
 }
 
 // Acquire waits for a slot within the queue timeout and stamps activity with hints.
-func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (_ *Lease, err error) {
+func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (*Lease, error) {
 	start := utils.Now()
-	defer func() {
-		proxy.RecordAdmissionWait(ctx, i.Provider, i.Model, admissionOutcome(err), utils.Now().Sub(start))
-	}()
-	err = i.acquireSlot(ctx)
-	if err != nil {
+	lease, err := i.AcquireSynthetic(ctx, hints)
+	proxy.RecordAdmissionWait(ctx, i.Provider, i.Model, admissionOutcome(err), utils.Now().Sub(start))
+	return lease, err
+}
+
+// AcquireSynthetic uses ordinary request admission without publishing its wait.
+func (i *Instance) AcquireSynthetic(ctx context.Context, hints *keepalive.Override) (*Lease, error) {
+	if err := i.acquireSlot(ctx); err != nil {
 		return nil, err
 	}
 	i.mu.Lock()

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,15 +21,11 @@ func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 	capacity, ok := knownFailure(&instance.AdmissionError{Reason: instance.ErrQueueFull, RetryAfter: instance.AdmissionRetryAfter})
 	require.True(t, ok)
 
-	streaming := func(path string) *http.Request {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		ctx := context.WithValue(req.Context(), CtxKeyOriginalBody, []byte(`{"stream":true}`))
-		return routedRequest(req.WithContext(ctx))
-	}
+	streaming := []byte(`{"stream":true}`)
 
 	t.Run("openai streams the failure", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		failBeforeBackend(w, streaming("/v1/chat/completions"), capacity)
+		failBeforeBackend(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), streaming, capacity)
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
@@ -41,7 +36,7 @@ func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 
 	t.Run("anthropic answers with the status", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		failBeforeBackend(w, streaming("/v1/messages"), capacity)
+		failBeforeBackend(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/messages", nil)), streaming, capacity)
 
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 		assert.Equal(t, "5", w.Header().Get("Retry-After"))
@@ -58,7 +53,7 @@ func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 
 	t.Run("a non-streaming request always gets the status", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		failBeforeBackend(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), capacity)
+		failBeforeBackend(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), nil, capacity)
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	})
 }

@@ -141,7 +141,7 @@ func TestAdmissionStatusGuard(t *testing.T) {
 		assert.Equal(t, admission.RetryAfter, failure.RetryAfter)
 		w := httptest.NewRecorder()
 		req := routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
-		failBeforeBackend(w, req, failure)
+		failBeforeBackend(w, req, nil, failure)
 		assert.Equal(t, "2", w.Header().Get("Retry-After"))
 	}
 	for _, err := range []error{context.Canceled, context.DeadlineExceeded, instance.ErrAtCapacity} {

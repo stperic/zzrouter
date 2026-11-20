@@ -53,12 +53,40 @@ func TestOpenRunCanceledCallerWritesNothingContract(t *testing.T) {
 			require.ErrorIs(t, ctx.Err(), reason)
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 			called := false
-			lease, target, _, ok := s.openRun(req, run, nil, func(httperr.Error) { called = true })
+			lease, target, _, ok := s.openRun(newInstanceRequest(req, nil), run, nil, func(httperr.Error) { called = true })
 			assert.False(t, ok)
 			assert.False(t, called)
 			assert.Nil(t, lease)
 			assert.Nil(t, target)
 			assert.Zero(t, run.GetActiveRequests())
+		})
+	}
+}
+
+func TestOpenRunRejectsIncompleteInstanceRequest(t *testing.T) {
+	raw := httptest.NewRequestWithContext(t.Context(), http.MethodPost, chatCompletionsPath, nil)
+	for _, field := range []string{"context", "header", "method", "path"} {
+		t.Run(field, func(t *testing.T) {
+			req := newInstanceRequest(raw, nil)
+			switch field {
+			case "context":
+				req.Context = nil
+			case "header":
+				req.Header = nil
+			case "method":
+				req.Method = ""
+			case "path":
+				req.Path = ""
+			}
+			s, run := instanceStreamTestServer()
+			t.Cleanup(run.Cancel)
+			var failure httperr.Error
+			lease, target, _, ok := s.openRun(req, run, nil, func(e httperr.Error) { failure = e })
+			assert.False(t, ok)
+			assert.Nil(t, lease)
+			assert.Nil(t, target)
+			assert.Equal(t, "instance_unavailable", failure.Code)
+			assert.Zero(t, run.ToInfo("test-node").RequestsAdmitted)
 		})
 	}
 }

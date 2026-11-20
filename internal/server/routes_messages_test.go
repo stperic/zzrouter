@@ -84,13 +84,13 @@ func TestMessagesThroughInstance_PassesStreamAndMeters(t *testing.T) {
 
 	body := []byte(`{"model":"org/model","max_tokens":20,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 	req := routedRequest(httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body)))
-	ctx := context.WithValue(req.Context(), CtxKeyOriginalBody, body)
-	ctx = context.WithValue(ctx, CtxKeyModel, "org/model")
+	req = withInferenceBody(req, body)
+	ctx := context.WithValue(req.Context(), CtxKeyModel, "org/model")
 	ctx = context.WithValue(ctx, CtxKeyInferenceRecorder, llm.NewInferenceRecorder(ctx, "org/model", ""))
 	req = req.WithContext(ctx)
 
 	rec := httptest.NewRecorder()
-	s.proxyToInstance(rec, req, instanceFor(t, engine, "org/model", ""), true)
+	s.proxyToInstance(rec, req, newInstanceRequest(req, body), instanceFor(t, engine, "org/model", ""), true)
 
 	got, _ := io.ReadAll(rec.Result().Body)
 	assert.Equal(t, "/v1/messages", gotPath, "the engine must be asked on the client's path")

@@ -184,7 +184,7 @@ func TestStreamMeter_UsageRecordedOnceOnEveryOutcome(t *testing.T) {
 			if tc.outcome == ClientGone {
 				w = &failingWriter{buf: &bytes.Buffer{}}
 			}
-			result := CopyStream(t.Context(), w, reader, rec, nil)
+			result := CopyStream(t.Context(), w, reader, RecorderObserver(rec), nil)
 			assert.Equal(t, tc.outcome, result.Outcome)
 			calls := spy.snapshot()
 			require.Len(t, calls, 1)
@@ -244,7 +244,7 @@ func TestCopyStream_ClosedBodyUnblocksRead(t *testing.T) {
 	source := &blockingBody{started: make(chan struct{}), closed: make(chan struct{})}
 	result := make(chan Result, 1)
 	go func() {
-		result <- CopyStream(ctx, httptest.NewRecorder(), source, llm.NewInferenceRecorder(ctx, "m", "openai"), nil)
+		result <- CopyStream(ctx, httptest.NewRecorder(), source, RecorderObserver(llm.NewInferenceRecorder(ctx, "m", "openai")), nil)
 	}()
 	<-source.started
 	cancel()
@@ -267,7 +267,7 @@ func TestStreamMeter_TTFTWaitsForWholeFrame(t *testing.T) {
 			}
 		},
 	}
-	result := CopyStream(t.Context(), httptest.NewRecorder(), reader, rec, nil)
+	result := CopyStream(t.Context(), httptest.NewRecorder(), reader, RecorderObserver(rec), nil)
 	assert.Equal(t, Completed, result.Outcome)
 }
 
@@ -289,7 +289,7 @@ func TestStreamMeter_DataAndErrorInSameRead(t *testing.T) {
 		rec := llm.NewInferenceRecorder(t.Context(), "m", "openai")
 		reader := &finalRead{data: []byte(usageStream), err: readErr}
 		w := httptest.NewRecorder()
-		result := CopyStream(t.Context(), w, reader, rec, nil)
+		result := CopyStream(t.Context(), w, reader, RecorderObserver(rec), nil)
 		assert.Equal(t, usageStream, w.Body.String())
 		assert.Equal(t, Completed, result.Outcome)
 		calls := spy.snapshot()

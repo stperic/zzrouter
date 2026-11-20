@@ -70,7 +70,7 @@ func (s *Server) forwardResponseOrigin(c *gin.Context, origin affinity.Origin, b
 	if origin.RunID != "" {
 		if run, ok := s.providers.appMgr.Instances().Get(origin.RunID); ok && run.Provider == origin.ProviderKey && run.GetStatus() == instance.StatusRunning {
 			c.Request = c.Request.WithContext(affinity.WithExpected(c.Request.Context(), origin))
-			s.forwardToRun(c.Writer, c.Request, run)
+			s.forwardToRun(c.Writer, c.Request, body, run)
 			return
 		}
 	} else if target, ok := s.backend.Resolve(origin.ProviderKey); ok && target.Revision == origin.ConnectionRevision && origin.ConnectionRevision != "" {
