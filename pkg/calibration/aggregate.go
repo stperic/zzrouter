@@ -177,6 +177,7 @@ func (s requestStats) throughput() RunRates {
 type stepObservations struct {
 	snapshots []Snapshot
 	through   time.Time
+	revisions map[string]string
 }
 
 func summarizeRun(run stepRun, observed stepObservations, changed, stepTimedOut bool) (RunStep, *float64) {
@@ -186,6 +187,7 @@ func summarizeRun(run stepRun, observed stepObservations, changed, stepTimedOut 
 		admittedThrough: observed.through,
 	}
 	for _, sample := range run.requests {
+		changed = changed || (!sample.sentAt.IsZero() && sample.TargetRevision != run.TargetRevision)
 		stats.observe(sample, chat)
 	}
 	result := RunStep{
@@ -288,7 +290,9 @@ func summarizeStep(index int, window time.Duration, runs []stepRun, observed ste
 	totalOutput := 0.0
 	hasOutput, knownOutput := false, true
 	for _, run := range runs {
-		result, output := summarizeRun(run, observed, changed[run.Run.RunID], timedOut)
+		revision, read := observed.revisions[run.Run.RunID]
+		didChange := changed[run.Run.RunID] || (read && revision != run.TargetRevision)
+		result, output := summarizeRun(run, observed, didChange, timedOut)
 		report.Runs = append(report.Runs, result)
 		if run.Run.Endpoint == Chat {
 			hasOutput = true
@@ -306,12 +310,13 @@ func summarizeStep(index int, window time.Duration, runs []stepRun, observed ste
 	return report
 }
 
-func checkPools(pools []PoolSample, targets map[string]Target) []PoolReport {
+// DescribePools projects the sampled pool identity and holder attribution.
+func DescribePools(pools []PoolSample, targets map[string]Target) []PoolReport {
 	report := make([]PoolReport, len(pools))
 	for i, pool := range pools {
 		result := PoolReport{ID: pool.ID, Kind: pool.Kind, TotalMiB: pool.TotalMiB}
 		if pool.Kind == "gpu" {
-			result.GPUIdentity = &GPUIdentity{Vendor: pool.Vendor, Ownership: gpuOwnership(pool, targets), Holders: slices.Clone(pool.Holders)}
+			result.GPUIdentity = &GPUIdentity{Vendor: pool.Vendor, Ownership: new(gpuOwnership(pool, targets)), Holders: slices.Clone(pool.Holders)}
 		}
 		report[i] = result
 	}
@@ -327,7 +332,7 @@ func gpuOwnership(pool PoolSample, targets map[string]Target) string {
 		if holder.MemoryMiB == nil {
 			return "unknown"
 		}
-		if _, listed := targets[holderRunID(holder)]; !listed {
+		if _, listed := targets[holderRunID(holder)]; !listed && len(holder.ListedRuns) == 0 {
 			ownership = "shared"
 		}
 	}
@@ -347,7 +352,11 @@ func gpuMemory(pool PoolSample, include func(string) bool) *int64 {
 	}
 	var sum int64
 	for _, h := range pool.Holders {
-		if include(holderRunID(h)) {
+		matches := include(holderRunID(h))
+		if len(h.ListedRuns) != 0 {
+			matches = slices.ContainsFunc(h.ListedRuns, include)
+		}
+		if matches {
 			if h.MemoryMiB == nil {
 				return nil
 			}

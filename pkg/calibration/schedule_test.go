@@ -17,12 +17,15 @@ var epoch = time.Date(2026, 11, 19, 15, 0, 0, 0, time.UTC)
 type senderFunc func(context.Context, Clock, string, string, map[string]any) Sample
 
 func (f senderFunc) Send(ctx context.Context, clock Clock, id, revision string, body map[string]any) Sample {
-	return f(ctx, clock, id, revision, body)
+	sample := f(ctx, clock, id, revision, body)
+	sample.TargetRevision = revision
+	return sample
 }
 
 type samplerFunc func(context.Context) Snapshot
 
-func (f samplerFunc) Sample(ctx context.Context) Snapshot { return f(ctx) }
+func (f samplerFunc) Sample(ctx context.Context) Snapshot         { return f(ctx) }
+func (f samplerFunc) Revisions(context.Context) map[string]string { return nil }
 
 func runnerFixture(endpoint string) (Runner, *clocktest.FakeClock, map[string]Target) {
 	clock := clocktest.NewFakeClock(epoch)
@@ -90,6 +93,8 @@ func TestRunnerInFlightPools(t *testing.T) {
 				return sample
 			}
 		})
+		var finalProgress Progress
+		runner.Progress = func(p Progress) { finalProgress = p }
 		done := startTestRun(ctx, runner, request, targets)
 		totals := map[string]int{}
 		for _, want := range []map[string]int{
@@ -129,6 +134,10 @@ func TestRunnerInFlightPools(t *testing.T) {
 		require.Equal(t, RequestCounts{Requested: 10, Completed: 10}, step.Runs[0].Requests)
 		require.Equal(t, RequestCounts{Requested: 7, Completed: 7}, step.Runs[1].Requests)
 		require.Equal(t, 680.0, *step.Throughput.OutputTokensPerSecond)
+		require.Equal(t, map[string]RequestCounts{
+			"a": {Requested: 10, Completed: 10},
+			"b": {Requested: 7, Completed: 7},
+		}, finalProgress.Runs)
 	})
 }
 
@@ -270,9 +279,12 @@ func TestRunnerSamplingCadence(t *testing.T) {
 		require.Equal(t, 5, samples, "the final sample closes the public request counter window")
 		require.Equal(t, int64(500), result.report.SamplingIntervalMS)
 		require.Equal(t, 1200.0, *result.report.LargestSampleGapMS)
-		require.Len(t, progress, 3)
-		require.Equal(t, Progress{Step: 0, Steps: 1, RequestsTotal: 1}, progress[0])
-		require.Equal(t, Progress{Step: 0, Steps: 1, RequestsTotal: 1, RequestsCompleted: 1}, progress[2])
+		require.Len(t, progress, 6)
+		require.Equal(t, Progress{Phase: Checking, Steps: 1, SampleAt: epoch}, progress[0])
+		require.Equal(t, Progress{Phase: WarmingUp, Steps: 1, SampleAt: epoch}, progress[1])
+		require.Equal(t, Progress{Phase: Measuring, Steps: 1, SampleAt: epoch, RequestsTotal: 1, Runs: map[string]RequestCounts{"a": {Requested: 1}}}, progress[2])
+		require.Equal(t, epoch.Add(1200*time.Millisecond), progress[3].SampleAt)
+		require.Equal(t, Progress{Phase: Measuring, Steps: 1, SampleAt: epoch.Add(1200 * time.Millisecond), RequestsTotal: 1, RequestsCompleted: 1, Runs: map[string]RequestCounts{"a": {Requested: 1, Completed: 1}}}, progress[5])
 	})
 }
 
@@ -471,7 +483,7 @@ func TestRunnerDiscardsCancelledProbeAndKeepsPublicCount(t *testing.T) {
 		require.Equal(t, new(uint64(5)), run.PublicRequests)
 		require.Equal(t, new(1), run.Engine.Running)
 		require.Equal(t, new(500.0), result.report.LargestSampleGapMS)
-		require.Len(t, progress, 1)
+		require.Len(t, progress, 4)
 	})
 }
 

@@ -25,6 +25,7 @@ type Sender interface {
 
 // Sample holds lease and token measurements from the supplied clock, including any lease granted before cancellation.
 type Sample struct {
+	TargetRevision    string // Empty if the checked run was gone or replaced.
 	LeaseGranted      time.Time
 	SlotWait          *time.Duration
 	FirstContentToken time.Time
@@ -38,6 +39,8 @@ type Sample struct {
 type Sampler interface {
 	// Sample returns promptly when ctx ends, at which point any partial snapshot is discarded.
 	Sample(ctx context.Context) Snapshot
+	// Revisions reads every listed run's identity without sampling hardware.
+	Revisions(ctx context.Context) map[string]string
 }
 
 // Snapshot contains one node resource sample and corresponding run observations.
@@ -74,10 +77,22 @@ type Target struct {
 
 // Progress supplies counts and the latest snapshot on the runner's sampling cadence.
 type Progress struct {
+	Phase                            string
 	Step, Steps                      int
 	RequestsCompleted, RequestsTotal int
+	Runs                             map[string]RequestCounts
+	SampleAt                         time.Time
 	Snapshot                         Snapshot
 }
+
+const (
+	// Checking is the initial resource and run check.
+	Checking = "checking"
+	// WarmingUp fits input sizes before measurement.
+	WarmingUp = "warming_up"
+	// Measuring reports a step's progress and resource observations.
+	Measuring = "measuring"
+)
 
 // Runner schedules calibration using the node's sender, sampler and clock.
 type Runner struct {
@@ -137,11 +152,13 @@ func (r Runner) Run(ctx context.Context, request Request, targets map[string]Tar
 	gen := newGenerator()
 	series := sampleSeries{}
 	previous := make(map[string]RunSample, len(targets))
+	runs, steps := prepareRuns(request, targets, &report)
 	if snapshot, ok := series.sample(ctx, r); ok {
 		maps.Copy(previous, snapshot.Runs)
-		report.Resources = checkPools(snapshot.Pools, targets)
+		report.Resources = DescribePools(snapshot.Pools, targets)
+		r.publish(Progress{Phase: Checking, Steps: steps, SampleAt: series.previous.UTC(), Snapshot: snapshot})
+		r.publish(Progress{Phase: WarmingUp, Steps: steps, SampleAt: series.previous.UTC(), Snapshot: snapshot})
 	}
-	runs, steps := prepareRuns(request, targets, &report)
 	limit := request.stepTimeout()
 	r.warmup(ctx, limit, runs, gen)
 	for i := 0; i < steps && ctx.Err() == nil; i++ {
@@ -240,14 +257,17 @@ func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Du
 	nextSample := started.Add(SamplingInterval)
 	series.previous = time.Time{}
 	var snapshots []Snapshot
+	runs, total := stepPoolsFor(prepared, index)
+	progress := Progress{Phase: Measuring, Step: index, Steps: steps, RequestsTotal: total}
+	completed := make([]atomic.Int64, len(runs))
 	if first, ok := series.sample(stepCtx, r); ok {
 		snapshots = append(snapshots, first)
+		r.publishStep(progress, first, series.previous, runs, completed)
 	}
 	probeCtx, stopProbes := context.WithCancel(stepCtx)
 	defer stopProbes()
-	var completed atomic.Int64
 	var workers sync.WaitGroup
-	runs, total := r.startPools(stepCtx, &workers, prepared, gen, index, &completed)
+	r.startPools(stepCtx, &workers, runs, gen, completed)
 	finished := make(chan stepFinish, 1)
 	go func() {
 		workers.Wait()
@@ -266,14 +286,20 @@ func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Du
 			nextSample = r.Clock.Now().Add(SamplingInterval)
 			if snapshot, ok := series.sample(probeCtx, r); ok {
 				snapshots = append(snapshots, snapshot)
-				r.publish(index, steps, int(completed.Load()), total, snapshot)
+				r.publishStep(progress, snapshot, series.previous, runs, completed)
 			}
 		}
 	}
 	end := <-finished
+	if ctx.Err() != nil {
+		return nil
+	}
+	identityCtx, stopIdentity := context.WithTimeout(ctx, time.Second)
+	revisions := r.Sampler.Revisions(identityCtx)
+	stopIdentity()
 	if last, ok := series.sample(stepCtx, r); ok {
 		snapshots = append(snapshots, last)
-		r.publish(index, steps, int(completed.Load()), total, last)
+		r.publishStep(progress, last, series.previous, runs, completed)
 	}
 	if context.Cause(ctx) != nil {
 		return nil
@@ -283,17 +309,29 @@ func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Du
 	if timedOut {
 		window = limit
 	}
-	observed := stepObservations{snapshots: snapshots, through: series.previous}
+	observed := stepObservations{snapshots: snapshots, through: series.previous, revisions: revisions}
 	return new(summarizeStep(index, window, runs, observed, previous, timedOut, targets))
 }
 
-func (r Runner) publish(index, steps, completed, total int, snapshot Snapshot) {
+func (r Runner) publish(progress Progress) {
 	if r.Progress != nil {
-		r.Progress(Progress{Step: index, Steps: steps, RequestsCompleted: completed, RequestsTotal: total, Snapshot: snapshot})
+		r.Progress(progress)
 	}
 }
 
-func (r Runner) startPools(ctx context.Context, workers *sync.WaitGroup, prepared []preparedRun, gen *generator, index int, completed *atomic.Int64) ([]stepRun, int) {
+func (r Runner) publishStep(p Progress, snapshot Snapshot, sampledAt time.Time, runs []stepRun, completed []atomic.Int64) {
+	p.SampleAt = sampledAt.UTC()
+	p.Snapshot = snapshot
+	p.Runs = make(map[string]RequestCounts, len(runs))
+	for i, run := range runs {
+		count := int(completed[i].Load())
+		p.Runs[run.Run.RunID] = RequestCounts{Requested: len(run.requests), Completed: count}
+		p.RequestsCompleted += count
+	}
+	r.publish(p)
+}
+
+func stepPoolsFor(prepared []preparedRun, index int) ([]stepRun, int) {
 	runs := make([]stepRun, 0, len(prepared))
 	total := 0
 	for _, run := range prepared {
@@ -303,17 +341,21 @@ func (r Runner) startPools(ctx context.Context, workers *sync.WaitGroup, prepare
 		}
 		concurrency := w.Concurrency[index]
 		count := w.requestCount(concurrency)
-		requests := make([]measuredRequest, count)
-		runs = append(runs, stepRun{preparedRun: run, concurrency: concurrency, requests: requests})
+		runs = append(runs, stepRun{preparedRun: run, concurrency: concurrency, requests: make([]measuredRequest, count)})
 		total += count
+	}
+	return runs, total
+}
+
+func (r Runner) startPools(ctx context.Context, workers *sync.WaitGroup, runs []stepRun, gen *generator, completed []atomic.Int64) {
+	for i, run := range runs {
 		if run.warmupReason == nil {
 			var next atomic.Int64
-			for range concurrency {
-				workers.Go(func() { r.sendPool(ctx, run, gen, requests, &next, completed) })
+			for range run.concurrency {
+				workers.Go(func() { r.sendPool(ctx, run.preparedRun, gen, run.requests, &next, &completed[i]) })
 			}
 		}
 	}
-	return runs, total
 }
 
 func (r Runner) sendPool(ctx context.Context, run preparedRun, gen *generator, requests []measuredRequest, next, completed *atomic.Int64) {
