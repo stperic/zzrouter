@@ -212,8 +212,18 @@ observe:
     explicitly.
   - The local-path rule is `activity_probe`'s, exported from `pkg/config`
     rather than copied.
-- **Credentials.** Requests go through `engineRequest`, the engine request path
-  the activity probe uses today, so a credential rule is never written twice.
+- **One bounded engine read.** The read goes through `pkg/prov_apps/protocol`'s
+  `Target`, the bounded read provider operations use: the run's own port
+  (`processRunEndpoint`, never its advertised URL), `backend.Engine()`
+  credentials, no redirects and a 1 MiB cap. JSON uses `ReadJSON`; Prometheus
+  text gets a sibling read in the same package. The health monitor's
+  `engineRequest` and its private size-limited read go, so there is one engine
+  read and one credential rule.
+- **Not a provider operation.** Operations are schema-checked JSON diagnostics
+  an administrator executes. `observe` is a node-internal poll whose fields
+  drive the eviction hold and calibration, and it reads Prometheus text. The
+  two share the binding rule (a fixed engine-relative path) and the read, not
+  the declaration.
 - **llama.cpp** serves `/metrics` only with `--metrics`, so its shipped config
   sets `metrics: true`. An operator who turns it off gets null engine figures,
   and the calibration form says why.
@@ -272,8 +282,11 @@ stream reading, without publishing.
 snapshot as `requests_admitted` beside `active_requests`. A calibration
 subtracts its own leases from a step's increase to report public traffic.
 `active_requests` is a gauge and would miss short requests between samples. A
-restart creates a new instance whose count starts again, so a calibration
-treats a changed run or a count that went backwards as `run_changed`.
+restart creates a new instance whose count starts again. A calibration binds
+each run to its `target_revision`, the run snapshot revision provider
+operations already check (node, run ID, provider, model, runtime, execution
+and start time). A changed revision, or a count that went backwards, is
+`run_changed`.
 
 ### 6. An absolute KV budget for vLLM
 
@@ -351,15 +364,16 @@ lets its users load past its estimate. Add a reserved run setting beside
 
 ### 8. Cluster protocol
 
-The protocol is 24, with a minimum of 23 (`pkg/version/protocol.go`). This
-arc changes what older peers would misread:
+The protocol is 25, with a minimum of 25 (`pkg/version/protocol.go`), since
+provider operations landed. This arc changes what older peers would misread:
 - refactor 1 renames and removes internal start fields and a route;
 - older workers' strict diagnostics decode rejects refactor 6's
   `kv_bytes_parameter`;
-- refactor 3 moves ComfyUI's eviction hold into `observe`;
+- refactor 3 moves ComfyUI's eviction hold into `observe`, a new strict
+  provider field, which like `operations` must reach only peers that read it;
 - calibration adds an internal route.
 
-Under the policy in `protocol.go`, bump to 25 and raise the minimum to 25, so
+Under the policy in `protocol.go`, bump to 26 and raise the minimum to 26, so
 there is no older-worker code path. Optional reply fields such as
 `requests_admitted` and `admission_warning` would not need a bump on their
 own. The number lives only in `pkg/version/protocol.go`.
@@ -426,8 +440,11 @@ The job is the record. There is a new job kind, `calibration`, with ID prefix
 ### MCP
 
 `zz_calibrate` on the admin surface takes the `POST /calibrations` body and
-returns the job, dispatching into the gin engine like every `zz_*` tool. Its
-description says how to get `run_id`s (`zz_runs`), change settings
+returns the job, dispatching into the gin engine like every `zz_*` tool. It
+registers through the schema-checked tool path (`mcpserver/tools.go`): input
+is validated against its schema before dispatch, and the job comes back as
+structured content. Its description says how to get `run_id`s and
+`target_revision`s (`zz_runs`), change settings
 (`zz_params_set` with `restart_affected`, or `zz_run_start` with `replace`)
 and read the result (`zz_job`). `zz_job` returns a job's `Meta` only once the
 job ends, so agents see the report then. The report is bounded by the limits,
@@ -456,6 +473,11 @@ alone, step 1 the second alone, and step 2 both together.
   optional `workload`. An entry without a workload is resident: it holds
   resources and is observed, nothing more. A ComfyUI run or a pinned
   production model can be listed this way.
+- `target_revision` (optional, per run): the revision read from the run list,
+  as an operation's precondition. When present it must match. When absent, the
+  revision at submission is recorded. The console always sends it. Every run
+  snapshot already carries it, but the runs OpenAPI schema does not list it
+  yet; this arc documents it.
 - `workload.input_tokens` (at least 1): prompt tokens per request, as the
   engine counts them after template expansion.
 - `workload.output_tokens` (at least 1, chat only): generated tokens per
@@ -484,6 +506,7 @@ Submission validation is synchronous, because every run is already up:
 | 400 | `concurrency_above_limit` | A step's concurrency exceeds the run's `max_concurrent_requests` (zero means unlimited), so zzRouter itself would queue it. The problem names the limit and its setting. |
 | 404 | `run_not_found` | A `run_id` that is not on that node. This is a new route code; run 404s answer a plain not-found today. |
 | 409 | `run_not_ready` | A run that is not ready to serve. |
+| 409 | `run_changed` | A `target_revision` that no longer matches: the run restarted or was replaced since it was read. The next action is `zz_runs`. |
 | 409 | `calibration_unsupported` | A workload on a run whose endpoint has no workload kind, or whose wire endpoints lack the kind's API. |
 | 409 | `calibration_running` | A calibration is already running on that node; the problem names its job. |
 | 503 | | The named worker is unreachable. |
@@ -945,6 +968,12 @@ later of completion and the last hand-out of the job ID. A node restart ends a
 running calibration and its job ID answers 404; the runs follow their own
 lifecycle. Durable knowledge lives in saved parameters, not in reports.
 
+The coordinator's SQLite database holds access records and administrative
+audit only ([coordinator state](coordinator-state-spec.md)), and calibration
+writes neither. Usage history is planned as its own database on the same
+`pkg/sqlitedb` plumbing. A calibration history, if one is wanted later,
+belongs there, never in the access store or a calibration file.
+
 ## Decisions
 
 1. **A calibration measures running models.** Configuration and lifecycle stay
@@ -1055,6 +1084,7 @@ neither reads nor changes them.
   in `public_requests`, and the outcome is unchanged.
 - **Interruptions:**
   - A run restarted mid-step gives `inconclusive` with `run_changed`.
+  - A stale `target_revision` at submission answers 409 `run_changed`.
   - A step timeout gives `step_timeout`.
   - Cancellation mid-step keeps the measured steps.
 - **Validation:** `context_too_small`, `concurrency_above_limit`,

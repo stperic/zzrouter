@@ -26,7 +26,8 @@ These are the plan's defaults. Change them before the briefs go out.
    (`?restart=affected`), not a button after it (Console).
 5. **No `Location` header.** `POST /calibrations` answers like the other
    job-creating routes.
-6. **One protocol bump, 25 with minimum 25**, made once on `feat/calibration`
+6. **One protocol bump, 26 with minimum 26** (main is 25/25 since provider
+   operations), made once on `feat/calibration`
    before it merges to `main`. Packages before that point are tested together
    on that branch, never deployed alone to a mixed cluster.
 
@@ -44,7 +45,12 @@ Both changes this plan waited on are on `main` (2026-11-19) and merged into
 - **`feat/coordinator-state`** opens the SQLite access store
   (`pkg/access/sqlstore`) in `server.go` and `server_factory.go`, and the
   shared test node builder disables pricing. WP7 wires its services beside
-  that.
+  that. The access database holds access records and audit only; calibration
+  writes neither.
+- **Provider operations** (same merge) are reused, not duplicated: WP3's
+  `observe` read goes through their bounded `protocol.Target` read, and
+  calibration binds runs by the `target_revision` operations check. MCP tools
+  now register with schema-checked input and structured output.
 
 ## Work packages
 
@@ -218,7 +224,9 @@ against its base.
    - `busy` only with `json`;
    - format from a closed set.
 3. **Reader** in `pkg/prov_apps/health`.
-   - It reads `schema.Observe` through `engineRequest`.
+   - It reads `schema.Observe` through `protocol.Target` on the run's port
+     (`ReadJSON`, plus a sibling bounded text read in `pkg/prov_apps/protocol`).
+     Delete `engineRequest` and the monitor's private size-limited read.
    - Prometheus is parsed with `prometheus/common` (promoted to a direct
      dependency): counts sum over label sets, fractions take the maximum.
    - JSON reads dotted paths; `busy` means a non-empty array.
@@ -381,7 +389,8 @@ interfaces.
 **Tests:** the spec's acceptance list for the pure parts, including outcome
 tables (mutation-checked), percentiles at small counts, ITL with one output
 token, a step timeout, cancellation keeping measured steps, and a counter going
-backwards as `run_changed`. Run `-race -count=20` on the scheduler.
+backwards or a changed `target_revision` as `run_changed`. Run
+`-race -count=20` on the scheduler.
 
 ## WP7 Node runner, API, MCP, protocol
 
@@ -395,7 +404,8 @@ backwards as `run_changed`. Run `-race -count=20` on the scheduler.
      - `context_length`;
      - `max_concurrent_requests`;
      - the endpoint and wire endpoints from `Resolved`;
-     - the run read once through `InstanceInfo` for `parameters_status`.
+     - the run read once through `InstanceInfo` for `parameters_status` and
+       `target_revision` (a given revision that differs is `run_changed`);
    - A node claim, as `claimInflightDeploy` does.
    - `Registry.Reuse` for an identical running request.
    - `StartDetached`.
@@ -407,14 +417,17 @@ backwards as `run_changed`. Run `-race -count=20` on the scheduler.
      `routeAndParse` to the internal route, as `POST /runs` does.
    - `respondAccepted` with `job_id` and `node`.
 4. **Codes.** `run_not_found`, `context_too_small`, `concurrency_above_limit`,
-   `run_not_ready`, `calibration_unsupported` and `calibration_running` in
+   `run_not_ready`, `run_changed`, `calibration_unsupported` and
+   `calibration_running` in
    `pkg/httperr/route_code.go` and `docs/agent_error_codes.md`.
 5. **Surfaces.**
-   - The `zz_calibrate` tool binding `createCalibration`, and its
-     idempotency contract if it exposes a key.
+   - The `zz_calibrate` tool binding `createCalibration` through the
+     schema-checked registration in `mcpserver/tools.go`, and its idempotency
+     contract if it exposes a key.
    - The discovery `calibration` block (coordinator only).
-   - OpenAPI and `asyncRoutes`.
-6. **Protocol.** Bump `pkg/version/protocol.go` to 25 with minimum 25, plus a
+   - OpenAPI and `asyncRoutes`, including `target_revision` in the runs
+     schema (the snapshot already serializes it).
+6. **Protocol.** Bump `pkg/version/protocol.go` to 26 with minimum 26, plus a
    paragraph in `docs/protocol_versioning.md`.
 
 **Tests:**
