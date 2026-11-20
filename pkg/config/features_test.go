@@ -101,7 +101,7 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 	for name, want := range expected {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, cfg.UpdateApp(name, func(sc *ServiceConfig) error { sc.Description = "updated"; return nil }))
-			assert.Equal(t, want, providerToServiceConfig(cfg.Find(name)).Features)
+			assert.Equal(t, want, ProviderServiceConfig(cfg.Find(name)).Features)
 		})
 	}
 	require.NoError(t, cfg.SaveToDir(dir))

@@ -68,10 +68,15 @@ func (o *CompiledOperation) ValidateOutput(output any) error { return o.output.V
 
 // AppliesToRuntime tests explicit applicability; an empty runtime identifies the base engine.
 func (o *CompiledOperation) AppliesToRuntime(runtime string) bool {
-	if runtime == "" || runtime == o.provider {
+	return MatchesRuntime(o.definition.Runtimes, o.provider, runtime)
+}
+
+// MatchesRuntime matches a selector against a launch's effective runtime.
+func MatchesRuntime(runtimes []string, provider, runtime string) bool {
+	if runtime == "" || runtime == provider {
 		runtime = "base"
 	}
-	return slices.Contains(o.definition.Runtimes, runtime)
+	return slices.Contains(runtimes, runtime)
 }
 
 // Operation returns an immutable operation from this configuration snapshot.
@@ -144,19 +149,8 @@ func (p *OnDemandProvider) compileOperation(key string, def OperationDefinition)
 	if (def.Binding.Method != "GET" && def.Binding.Method != "POST") || !validOperationPath(def.Binding.Path) {
 		return nil, fmt.Errorf("binding requires GET or POST and a fixed bounded relative path")
 	}
-	if len(def.Runtimes) == 0 || len(def.Runtimes) > 16 {
-		return nil, fmt.Errorf("explicit runtime applicability required")
-	}
-	seen := map[string]bool{}
-	for _, runtime := range def.Runtimes {
-		known := runtime == "base"
-		for _, feature := range p.Features {
-			known = known || feature.Runtime != "" && runtime == feature.Runtime
-		}
-		if !known || seen[runtime] || len(runtime) > 128 {
-			return nil, fmt.Errorf("unknown or duplicate runtime %q", runtime)
-		}
-		seen[runtime] = true
+	if err := ValidateRuntimeSelectors(def.Runtimes, p.Features); err != nil {
+		return nil, err
 	}
 	input, err := compileOperationSchema(def.InputSchema)
 	if err != nil {
@@ -185,8 +179,25 @@ func (p *OnDemandProvider) compileOperation(key string, def OperationDefinition)
 	return &CompiledOperation{id: id, provider: p.Name, key: key, revision: fmt.Sprintf("sha256:%x", digest), definition: frozen.Definition, input: input, output: output}, nil
 }
 
+// ValidateRuntimeSelectors checks an explicit selection against configured feature runtimes.
+func ValidateRuntimeSelectors(runtimes []string, features map[string]Feature) error {
+	if len(runtimes) == 0 || len(runtimes) > 16 {
+		return fmt.Errorf("explicit runtime applicability required")
+	}
+	for index, runtime := range runtimes {
+		known := runtime == "base"
+		for _, feature := range features {
+			known = known || feature.Runtime != "" && runtime == feature.Runtime
+		}
+		if !known || slices.Contains(runtimes[:index], runtime) || len(runtime) > 128 {
+			return fmt.Errorf("unknown or duplicate runtime %q", runtime)
+		}
+	}
+	return nil
+}
+
 func validOperationPath(value string) bool {
-	if len(value) == 0 || len(value) > 256 || !validHTTPPath(value) || path.Clean(value) != value || strings.ContainsAny(value, "%{}:$ \t\r\n\x00") {
+	if len(value) == 0 || len(value) > 256 || !ValidHTTPPath(value) || path.Clean(value) != value || strings.ContainsAny(value, "%{}:$ \t\r\n\x00") {
 		return false
 	}
 	for _, r := range value {

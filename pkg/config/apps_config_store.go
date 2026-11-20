@@ -528,7 +528,7 @@ func (s *AppsConfigStore) invokeListener(idx int, l appsListenerEntry, cfg *Apps
 // directory by SaveToDir.
 func (s *AppsConfigStore) AddProviderInstance(name string, p Provider) error {
 	return s.mutate(func(cfg *AppsConfig) (bool, error) {
-		sc := providerToServiceConfig(p)
+		sc := ProviderServiceConfig(p)
 		if err := cfg.AddApp(name, sc); err != nil {
 			return false, err
 		}

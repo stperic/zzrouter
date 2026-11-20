@@ -136,7 +136,7 @@ func loadAppsConfigFromDir(dir string) (*AppsConfig, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.providers)) {
 		p := cfg.providers[name]
-		if err := cfg.checkVariantNames(name, providerToServiceConfig(p)); err != nil {
+		if err := cfg.checkVariantNames(name, ProviderServiceConfig(p)); err != nil {
 			return nil, fmt.Errorf("%s/%s: %w", kindDirKeyFor(p.Kind()), name, err)
 		}
 	}
@@ -294,12 +294,12 @@ func resolveContainerVolumes(c *ContainerConfig, configDir string) {
 	c.Volumes = resolved
 }
 
-// providerToServiceConfig is the inverse of serviceConfigToProvider.
+// ProviderServiceConfig is the inverse of serviceConfigToProvider.
 // Used by LookupApp/RangeApps/UpdateApp to synthesize a legacy
 // ServiceConfig view of a typed Provider for callers that still take
 // ServiceConfig parameters. Fields the kind-split discards (like
 // AppType) get sane defaults — the collapse is one-way.
-func providerToServiceConfig(p Provider) ServiceConfig {
+func ProviderServiceConfig(p Provider) ServiceConfig {
 	switch tp := p.(type) {
 	case *OnDemandProvider:
 		return ServiceConfig{
@@ -388,7 +388,6 @@ func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 		DataDir:               rt.DataDir,
 		DataSubdirs:           rt.DataSubdirs,
 		ModelStore:            rt.ModelStore,
-		ActivityProbe:         rt.ActivityProbe,
 		Browser:               rt.Browser,
 		Listener:              rt.Listener,
 		PortRange:             rt.PortRange,

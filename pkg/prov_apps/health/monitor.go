@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -115,8 +116,9 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 	if hcConfig.Interval > 0 {
 		interval = hcConfig.Interval
 	}
-	if hcConfig.ActivityProbe != nil {
-		inst.ConfigureActivityProbe(2*interval + constants.HealthCheckTimeout)
+	observeBusy := observesRun(hcConfig.Observe, inst) && len(hcConfig.Observe.Busy) > 0
+	if observeBusy {
+		inst.ConfigureActivityObservation(2*interval + constants.HealthCheckTimeout)
 	}
 
 	maxFailures := m.config.MaxRetries
@@ -157,11 +159,13 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 				return
 			}
 
-			if hcConfig.ActivityProbe != nil {
-				busy, ok := m.checkActivity(ctx, current, hcConfig)
-				if ok {
+			if observeBusy {
+				checkCtx, cancel := m.checkContext(ctx, hcConfig)
+				observed := ReadObservation(checkCtx, m.client, current, hcConfig.Observe)
+				cancel()
+				if observed.Busy != nil {
 					activityFailures = 0
-					current.ObserveActivity(busy)
+					current.ObserveActivity(*observed.Busy)
 				} else {
 					activityFailures++
 					current.ActivityUnknown(activityFailures >= maxFailures)
@@ -226,7 +230,8 @@ func (m *Monitor) checkHTTP(ctx context.Context, inst *instance.Instance, config
 		method = "GET"
 	}
 
-	req, err := engineRequest(checkCtx, method, inst.HealthURL, nil)
+	target := backend.Resolved{Endpoint: inst.HealthURL, Upstream: backend.Engine()}
+	req, err := target.NewRequest(checkCtx, method, "", nil)
 	if err != nil {
 		return false
 	}
@@ -263,8 +268,8 @@ func (m *Monitor) Serves(ctx context.Context, inst *instance.Instance, check *Se
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, check.Path)
-	req, err := engineRequest(reqCtx, check.method(), url, strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
+	target := backend.Resolved{Endpoint: protocol.ProcessRunEndpoint(inst.Port), Upstream: backend.Engine()}
+	req, err := target.NewRequest(reqCtx, check.method(), check.Path, strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
 	if err != nil {
 		return false
 	}
@@ -298,9 +303,6 @@ func expandWireModel(body, wireModel string) string {
 	return strings.ReplaceAll(body, wireModelPlaceholder, string(escaped[1:len(escaped)-1]))
 }
 
-// activityProbeMaxBytes bounds queue reports even when an engine returns an unexpected payload.
-const activityProbeMaxBytes = 1 << 20
-
 func (m *Monitor) checkContext(ctx context.Context, cfg CheckConfig) (context.Context, context.CancelFunc) {
 	timeout := m.config.Timeout
 	if cfg.Timeout > 0 {
@@ -310,42 +312,4 @@ func (m *Monitor) checkContext(ctx context.Context, cfg CheckConfig) (context.Co
 		timeout = DefaultTimeout
 	}
 	return context.WithTimeout(ctx, timeout)
-}
-
-func engineRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
-	return (&backend.Resolved{Endpoint: endpoint, Upstream: backend.Engine()}).NewRequest(ctx, method, "", body)
-}
-
-func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig) (bool, bool) {
-	ctx, cancel := m.checkContext(ctx, cfg)
-	defer cancel()
-	req, err := engineRequest(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, cfg.ActivityProbe.Path), nil)
-	if err != nil {
-		return false, false
-	}
-	resp, err := m.client.Do(req)
-	if err != nil {
-		return false, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false, false
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, activityProbeMaxBytes+1))
-	if err != nil || len(data) > activityProbeMaxBytes {
-		return false, false
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(data, &fields) != nil {
-		return false, false
-	}
-	busy := false
-	for _, field := range cfg.ActivityProbe.BusyWhenNonempty {
-		var queue []json.RawMessage
-		if json.Unmarshal(fields[field], &queue) != nil || queue == nil {
-			return false, false
-		}
-		busy = busy || len(queue) > 0
-	}
-	return busy, true
 }

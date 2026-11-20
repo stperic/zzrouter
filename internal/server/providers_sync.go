@@ -76,10 +76,12 @@ func (s *Server) HandleProviderSync(c *gin.Context) {
 	// already landed and the receiver's in-memory state went stale; failing
 	// closed at the wire is cleaner and gives the coord a fast 4xx for
 	// future retry/alerting.
-	if p, err := pkgConfig.DecodeProviderBytes(body.Kind, name, body.ConfigYAML); err != nil {
+	p, err := pkgConfig.DecodeProviderBytes(body.Kind, name, body.ConfigYAML)
+	if err != nil {
 		BadRequest(c, "validate config: "+err.Error())
 		return
-	} else if err := p.Validate(); err != nil {
+	}
+	if err := p.Validate(); err != nil {
 		BadRequest(c, "validate config: "+err.Error())
 		return
 	}
@@ -89,7 +91,7 @@ func (s *Server) HandleProviderSync(c *gin.Context) {
 			BadRequest(c, "validate schema: "+err.Error())
 			return
 		}
-		_, errs := schema.Merge(name, declared, pkgConfig.ServiceConfig{})
+		_, errs := schema.Merge(name, declared, pkgConfig.ProviderServiceConfig(p))
 		if len(errs) != 0 {
 			BadRequest(c, "validate schema: "+errors.Join(errs...).Error())
 			return

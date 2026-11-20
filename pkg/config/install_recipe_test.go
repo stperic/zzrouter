@@ -28,7 +28,7 @@ func TestInstallRecipeOverrideRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	var decoded OnDemandProvider
 	require.NoError(t, yaml.Unmarshal(data, &decoded))
-	after := providerToServiceConfig(&decoded)
+	after := ProviderServiceConfig(&decoded)
 	resolved, err := after.ResolveInstall("worker", "engine")
 	require.NoError(t, err)
 	assert.Equal(t, "", *resolved.Recipe.VersionConstraint)

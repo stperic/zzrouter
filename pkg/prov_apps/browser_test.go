@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +40,7 @@ func browserLaunchFixture(t *testing.T) (*ProviderAppManager, preparedLaunch, *i
 	declared, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
 	m, err := NewProviderAppManager(cfg, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
+		merged, errs := schema.Merge(provider, declared, svc)
 		return merged, errors.Join(errs...)
 	}))
 	require.NoError(t, err)
@@ -81,7 +82,7 @@ func TestBrowserReceiptCapturesCanonicalSourceLaunch(t *testing.T) {
 	actual, endpoint, err := m.BrowserRun(t.Context(), run.ID)
 	require.NoError(t, err)
 	require.Same(t, run, actual)
-	require.Equal(t, processRunEndpoint(run.Port), endpoint)
+	require.Equal(t, protocol.ProcessRunEndpoint(run.Port), endpoint)
 	view := run.Resolved()
 	view.Browser.SourceSHA256 = "changed by reader"
 	require.Equal(t, receipt.SourceSHA256, run.Resolved().Browser.SourceSHA256)

@@ -155,14 +155,15 @@ func providerSchema(store *pkgConfig.AppsConfigStore) func(string) (*schema.Prov
 			return nil, err
 		}
 		merged, errs := serviceSchema(provider, svc, declared)
+		mergeErr := errors.Join(errs...)
+		if _, hard := errors.AsType[schema.HardError](mergeErr); hard {
+			return merged, mergeErr
+		}
 		for _, err := range errs {
 			slog.Warn("provider schema entry dropped", "provider", provider, "error", err)
 		}
 		for _, problem := range merged.Problems {
 			slog.Warn("operator schema field dropped", "provider", provider, "path", problem.Key, "problem", problem.Message)
-		}
-		if declared != nil && declared.Diagnostics != nil && merged.Diagnostics == nil {
-			return merged, errors.Join(errs...)
 		}
 		return merged, nil
 	}
