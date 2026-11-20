@@ -90,7 +90,7 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		if ollamaRequestType(endpointType) == llm.RequestTypeEmbedding {
 			endpoint = prov_apps.EndpointEmbeddings
 		}
-		s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
+		s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, body), recorder,
 			callerModel(c.Request.Context(), resolved), string(endpoint), suppressUsageFrameFromContext(c.Request.Context()))
 		return nil
 	}
@@ -121,11 +121,11 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 	if model == "" {
 		model = modelName
 	}
-	return s.serveLocalOllama(c.Writer, c.Request, model)
+	return s.serveLocalOllama(c.Writer, c.Request, body, model)
 }
 
 // serveLocalOllama answers a native request through the model's run, else by Ollama itself when it has none.
-func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, model string) error {
+func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, body []byte, model string) error {
 	if s.hasRuns(constants.AppOllama) {
 		// A zero keep_alive asks the model unloaded: with no run of it, nothing starts and the daemon answers it.
 		hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
@@ -138,7 +138,7 @@ func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, mode
 			return nil
 		}
 		if inst != nil {
-			s.forwardToRun(w, req, inst)
+			s.forwardToRun(w, req, body, inst)
 			return nil
 		}
 	}
@@ -146,7 +146,6 @@ func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, mode
 	if !ok {
 		return ollamaUnavailableErr(model)
 	}
-	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
 	s.proxy.ForwardToBackend(w, req, constants.AppOllama, backend.PassthroughTarget(ollama.Endpoint, req.URL.Path, req.URL.RawQuery), ollama.Upstream, body)
 	return nil
 }

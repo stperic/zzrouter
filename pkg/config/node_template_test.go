@@ -30,7 +30,7 @@ func TestComfyUITemplateAndSchemaLoad(t *testing.T) {
 	require.NoError(t, err)
 	declared, err := providerschema.LoadYAMLSchema(data)
 	require.NoError(t, err)
-	_, errs := providerschema.Merge("comfyui", declared, config.ServiceConfig{})
+	_, errs := providerschema.Merge("comfyui", declared, view)
 	require.Empty(t, errs)
 	require.Equal(t, "reserve_mib", declared.Diagnostics.Memory.Kind)
 	require.Equal(t, "reserve-vram", declared.Diagnostics.Memory.ComplementParameter)

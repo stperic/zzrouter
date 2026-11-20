@@ -96,8 +96,12 @@ tiers say `environment`.
     settings, is refused too; today it silently gets the other start's run.
   - Served runs (Ollama) pass through the same rule, so tests that re-ensure a
     warm run with different settings are checked first.
-- **One routing rule.** A start with no `node` routes by model, as preview
-  does, rather than to the coordinator.
+- **One routing rule.** A start with no `node` goes to the node preview's
+  model resolution picks (the holder, else the coordinator when the
+  coordinator resolves a provider), rather than always to the coordinator. A
+  start never broadcasts: when resolution names no owner, it is refused with a
+  closed code that asks for `node`. Only preview, which is read-only, keeps
+  its broadcast fallback.
 - **MCP.** `zz_run_start` gains `replace` and documents the refusal.
 - **Terminal client.** `zzrouter run` and the TUI start through `POST /runs`.
   - `zzrouter run --force` currently means both "pick the first match" and
@@ -116,9 +120,11 @@ utilization or per-process host memory:
   `memoryInventory` (cached totals).
 - **Node metrics:** `gpu.liveCardMetricsContext` and `gpu.LiveMetricsContext`,
   plus `inventory.GatherMemory` and `GatherGPU` over `hardware.DiscoverMemory`.
-- **Routing input:** `mesh.ResourceTracker`, a 30 s poll that feeds routing
-  and fallback. On Apple Silicon it estimates the pool as 75% of RAM and
-  computes used memory as total minus free.
+- **Node reports:** `mesh.ResourceTracker`, a 30 s poll behind `/health`, the
+  node resources report and the node views. Nothing routes on it since the
+  fallback memory filter and the node resource cache were removed. On Apple
+  Silicon it estimates the pool as 75% of RAM and computes used memory as
+  total minus free.
 - **Duplicates:** a third nvidia-smi call that returns summary text, and a
   second Apple RAM reader inside `memory_snapshot.go`.
 
@@ -152,12 +158,12 @@ pools:
 - **ResourceTracker.** It reads the snapshot, and `ResourceMetrics` keeps its
   JSON fields. Its Apple figure becomes the unified pool's available memory,
   the number the console shows, with no 75% ratio and no total minus free.
-  This changes routing inputs on Macs.
-- **Two existing defects** are fixed on the way:
-  - the inventory cache stamps a GPU sample before its probe returns, so a
-    slow probe looks fresher than it is;
-  - a GPU reporting 0 MiB free reads as "no GPU" in fallback, because unknown
-    and zero share one value.
+  This changes what node views show on Macs; nothing routes on it.
+- **A dead read goes.** Each peer health probe still decodes `resources` into
+  `mesh.Connection.Resources` and `ResourcesObservedAt`, which nothing reads
+  since the node resource cache was removed.
+- **An existing defect is fixed on the way:** the inventory cache stamps a GPU
+  sample before its probe returns, so a slow probe looks fresher than it is.
 - **The console rule stays.** Used memory is never computed as total minus
   available, and a unified pool appears once.
 
@@ -177,9 +183,16 @@ observe:
   waiting: <series or path>      # requests queued in the engine
   kv_cache_usage: <series or path> # fraction of the KV pool in use
   busy: [<field>, ...]           # json only: a non-empty array holds the run busy
+  runtimes: [<runtime>, ...]     # optional: base or a feature runtime; absent means every runtime
 ```
 
-- **Roles.** Every role is optional.
+- **Runtimes.** A provider whose runtimes serve different engines (MLX: mlx-lm
+  as `base`, mlx-vlm as a feature runtime) scopes the block with `runtimes`,
+  with the same meaning and validation as a provider operation's `runtimes`
+  (`base`, or a feature runtime that exists on the provider), sharing that
+  check. Absent, the block applies to every runtime.
+- **Roles.** Each role is optional, but a block declares at least one; a
+  block that observes nothing fails the merge.
   - `busy` keeps today's meaning exactly. A listed JSON field holding a
     non-empty array holds the run busy (the eviction hold and the activity
     observation). A missing or non-array field makes the read unknown.
@@ -201,7 +214,8 @@ observe:
   unreachable, an error status (llama.cpp answers 501 without `--metrics`),
   malformed, or series absent. A report and the form can then say why a
   figure is null. An absent series is null, never zero. The body cap stays
-  1 MiB; measure vLLM's `/metrics` size on the lab before relying on it.
+  1 MiB: vLLM 0.29.0's `/metrics` measured 54 KB idle and 56 KB under load
+  (592 lines, one model) on the lab on 2026-11-20.
 - **Strict validation.** A bad block fails the provider's schema merge (an
   error from `Merge`), as `activity_probe` fails its load today. It must never
   use the warn-and-drop `cache_log` uses, because a dropped block would
@@ -210,8 +224,18 @@ observe:
     explicitly.
   - The local-path rule is `activity_probe`'s, exported from `pkg/config`
     rather than copied.
-- **Credentials.** Requests go through `engineRequest`, the engine request path
-  the activity probe uses today, so a credential rule is never written twice.
+- **One bounded engine read.** The read goes through `pkg/prov_apps/protocol`'s
+  `Target`, the bounded read provider operations use: the run's own port
+  (`processRunEndpoint`, never its advertised URL), `backend.Engine()`
+  credentials, no redirects and a 1 MiB cap. JSON uses `ReadJSON`; Prometheus
+  text gets a sibling read in the same package. The health monitor's
+  `engineRequest` and its private size-limited read go, so there is one engine
+  read and one credential rule.
+- **Not a provider operation.** Operations are schema-checked JSON diagnostics
+  an administrator executes. `observe` is a node-internal poll whose fields
+  drive the eviction hold and calibration, and it reads Prometheus text. The
+  two share the binding rule (a fixed engine-relative path) and the read, not
+  the declaration.
 - **llama.cpp** serves `/metrics` only with `--metrics`, so its shipped config
   sets `metrics: true`. An operator who turns it off gets null engine figures,
   and the calibration form says why.
@@ -270,8 +294,11 @@ stream reading, without publishing.
 snapshot as `requests_admitted` beside `active_requests`. A calibration
 subtracts its own leases from a step's increase to report public traffic.
 `active_requests` is a gauge and would miss short requests between samples. A
-restart creates a new instance whose count starts again, so a calibration
-treats a changed run or a count that went backwards as `run_changed`.
+restart creates a new instance whose count starts again. A calibration binds
+each run to its `target_revision`, the run snapshot revision provider
+operations already check (node, run ID, provider, model, runtime, execution
+and start time). A changed revision, or a count that went backwards, is
+`run_changed`.
 
 ### 6. An absolute KV budget for vLLM
 
@@ -349,15 +376,16 @@ lets its users load past its estimate. Add a reserved run setting beside
 
 ### 8. Cluster protocol
 
-The protocol is 24, with a minimum of 23 (`pkg/version/protocol.go`). This
-arc changes what older peers would misread:
+The protocol is 25, with a minimum of 25 (`pkg/version/protocol.go`), since
+provider operations landed. This arc changes what older peers would misread:
 - refactor 1 renames and removes internal start fields and a route;
 - older workers' strict diagnostics decode rejects refactor 6's
   `kv_bytes_parameter`;
-- refactor 3 moves ComfyUI's eviction hold into `observe`;
+- refactor 3 moves ComfyUI's eviction hold into `observe`, a new strict
+  provider field, which like `operations` must reach only peers that read it;
 - calibration adds an internal route.
 
-Under the policy in `protocol.go`, bump to 25 and raise the minimum to 25, so
+Under the policy in `protocol.go`, bump to 26 and raise the minimum to 26, so
 there is no older-worker code path. Optional reply fields such as
 `requests_admitted` and `admission_warning` would not need a bump on their
 own. The number lives only in `pkg/version/protocol.go`.
@@ -396,14 +424,14 @@ browser CSRF controls, success envelopes and Problem Details.
 | `GET /jobs?node={node}&kind=calibration` | Calibrations on that node still inside retention, through the existing paginated job list. Job lists omit `meta.report`, which only the item read and the stream's terminal event return. A worker's internal job list is unpaginated, and the coordinator's proxy refuses bodies over 1 MiB. A report at the limits is about 30 to 50 KB, so about 25 retained reports would otherwise break every job list on that node. |
 | `DELETE /jobs/{id}?node={node}` | Cancels: in-flight requests are aborted, and the report keeps the steps already measured. |
 | `GET /providers/{name}/schema` | Gains `calibration` (output-forcing request fields) and `observe` (declared roles), so a client can say what a report will contain. |
-| `GET /zzrouter/v1` (discovery) | Lists the calibration limits and workload kinds under `data.calibration`, so clients never hardcode them. |
+| `GET /zzrouter/v1` (discovery) | Lists the calibration limits and workload kinds under `data.calibration` (`workload_kinds`, `max_runs`, `max_steps`, `max_concurrency`, `max_requests_per_step`, `max_step_timeout_seconds`, `default_step_timeout_seconds`), so clients never hardcode them. |
 
 The job is the record. There is a new job kind, `calibration`, with ID prefix
 `cal_`, registered in `pkg/jobs/kind.go` with an entry in `jobOutcomeTools`.
 
 - **Timeouts.** The kind has its own ring policy and inactivity timeout. A
-  calibration can run 8 steps of 600 s, past the default 30-minute inactivity
-  reap. Progress `Meta` set on every sample also refreshes its activity.
+  calibration can run 8 steps of up to 1,800 s each (600 s by default), past
+  the default 30-minute inactivity reap. Progress `Meta` set on every sample also refreshes its activity.
 - **The report** reaches clients through job `Meta` set before the terminal
   event, as a restart job's `restarted` map does.
 - **Cancellation.** The runner watches `context.Cause` of its job context for
@@ -424,8 +452,11 @@ The job is the record. There is a new job kind, `calibration`, with ID prefix
 ### MCP
 
 `zz_calibrate` on the admin surface takes the `POST /calibrations` body and
-returns the job, dispatching into the gin engine like every `zz_*` tool. Its
-description says how to get `run_id`s (`zz_runs`), change settings
+returns the job, dispatching into the gin engine like every `zz_*` tool. It
+registers through the schema-checked tool path (`mcpserver/tools.go`): input
+is validated against its schema before dispatch, and the job comes back as
+structured content. Its description says how to get `run_id`s and
+`target_revision`s (`zz_runs`), change settings
 (`zz_params_set` with `restart_affected`, or `zz_run_start` with `replace`)
 and read the result (`zz_job`). `zz_job` returns a job's `Meta` only once the
 job ends, so agents see the report then. The report is bounded by the limits,
@@ -454,6 +485,11 @@ alone, step 1 the second alone, and step 2 both together.
   optional `workload`. An entry without a workload is resident: it holds
   resources and is observed, nothing more. A ComfyUI run or a pinned
   production model can be listed this way.
+- `target_revision` (optional, per run): the revision read from the run list,
+  as an operation's precondition. When present it must match. When absent, the
+  revision at submission is recorded. The console always sends it. Every run
+  snapshot already carries it, but the runs OpenAPI schema does not list it
+  yet; this arc documents it.
 - `workload.input_tokens` (at least 1): prompt tokens per request, as the
   engine counts them after template expansion.
 - `workload.output_tokens` (at least 1, chat only): generated tokens per
@@ -470,8 +506,9 @@ The workload kind follows the run's endpoint: `chat` and `embeddings` in the
 first release. Each kind has a versioned generator (`chat-v1`,
 `embeddings-v1`) in `pkg/calibration`, and a new kind (reranking, images) is a
 new generator, never a new request shape. Limits are named constants
-published in discovery: 3 runs, 8 steps, a request count per step, and a
-maximum step timeout.
+published in discovery: 3 runs, 8 steps, a concurrency of at most 256 and at
+most 1,024 requests per run per step (so the default `3 × concurrency` always
+fits), and a step timeout of at most 1,800 seconds (default 600).
 
 Submission validation is synchronous, because every run is already up:
 
@@ -482,9 +519,17 @@ Submission validation is synchronous, because every run is already up:
 | 400 | `concurrency_above_limit` | A step's concurrency exceeds the run's `max_concurrent_requests` (zero means unlimited), so zzRouter itself would queue it. The problem names the limit and its setting. |
 | 404 | `run_not_found` | A `run_id` that is not on that node. This is a new route code; run 404s answer a plain not-found today. |
 | 409 | `run_not_ready` | A run that is not ready to serve. |
+| 409 | `run_changed` | A `target_revision` that no longer matches: the run restarted or was replaced since it was read. The next action is `zz_runs`. |
 | 409 | `calibration_unsupported` | A workload on a run whose endpoint has no workload kind, or whose wire endpoints lack the kind's API. |
 | 409 | `calibration_running` | A calibration is already running on that node; the problem names its job. |
 | 503 | | The named worker is unreachable. |
+| 421 | `calibration_wrong_node` | The internal route received a request for another node; the problem names the node it reached. No job is created. |
+
+The identifiers a refusal names are typed fields of the Problem, never only
+prose: `job_id` on `calibration_running`, and `run_id` on every refusal that
+concerns one run (`run_not_found`, `run_not_ready`, `run_changed`,
+`calibration_unsupported`, `context_too_small`, `concurrency_above_limit`).
+The internal route refuses a request whose `node` is not the node it reached.
 
 One calibration runs per node at a time, so two calibrations never contaminate
 each other's measurements.
@@ -530,18 +575,34 @@ with `usage_unavailable`.
 1. **Check.** Record each run's identity, resolved parameters,
    `parameters_status`, served context and engine cache report, and the pools
    it holds memory in.
-2. **Warm up.** Send one short request to each run with a workload. It is not
-   measured. Its reported prompt tokens give the tokens-per-character ratio
-   that sizes that run's prompts, with no engine-specific tokenizer.
+2. **Warm up.** Send two unmeasured requests to each run with a workload: a
+   short one, then one sized to the target from the short one's
+   tokens-per-character ratio, so the fit is measured at the operating point.
+   Their reported prompt tokens give a line,
+   `tokens = overhead + ratio × characters`, which separates the chat
+   template's fixed tokens from the per-character rate. Prompts aim at
+   `input_tokens` plus a margin of the larger of 0.2% and 4 tokens, because
+   tokenization is not exactly linear and the outcome requires at least
+   `input_tokens`; the margin never takes input plus output past the run's
+   served context. No engine-specific tokenizer is used. On the lab, a fit
+   extrapolated from a 2,048-character request undershot 30,000 tokens by 6
+   (2026-11-20). When the longer request does not report more
+   tokens, that run's steps are `inconclusive` with `usage_unavailable`. All
+   runs warm up together under one deadline equal to the step timeout.
 3. **Run the steps.** In step k, every run whose `concurrency[k]` is non-zero
    runs at once. Each keeps `concurrency[k]` requests in flight until its
    requests for the step complete or the step times out. Every request has a
    distinct prompt prefix, so prefix caching cannot flatter the result.
 4. **Publish.** Write the report into job `Meta`, then end the job.
 
-Progress `meta` carries `step`, `steps`, `requests_completed`,
-`requests_total` and the latest resource sample. Job steps are `checking`,
-`warming_up` and `measuring`.
+Progress `meta` carries `step` (0-based) and `steps`; `requests_completed`
+and `requests_total`, each an object keyed by `run_id` (a run idle in the step
+is absent; an unknown total is null); and `sample`, the latest accepted
+resource sample, as `{"at": <time>, "pools": [...]}`. Each pool uses the
+report's pool field names: `id`, `kind`, `vendor`, `total_mib`, `used_mib`,
+`free_mib`, `available_mib`, `swap_used_mib`, `utilization_pct`, `power_w`,
+`cpu_pct`, `ownership` and `holders`; unknown values are null. Job steps are
+`checking`, `warming_up` and `measuring`.
 
 ### Sampling
 
@@ -549,7 +610,9 @@ During checking and measuring, the node takes a resource snapshot
 ([refactor 2](#2-one-resource-snapshot)) and each run's engine observation
 ([refactor 3](#3-one-engine-observation-declaration)) at a fixed interval,
 initially 500 ms. The report includes `sampling_interval_ms` and
-`largest_sample_gap_ms`. A slow snapshot delays the next one rather than
+`largest_sample_gap_ms`, the largest gap between consecutive samples within
+checking or within measuring; the pause for warm-up is not a gap. A slow
+snapshot delays the next one rather than
 overlapping it. On the RTX PRO 6000 one NVIDIA snapshot takes about 145 ms
 (two nvidia-smi calls of about 72 ms each), idle or with a model loaded, so
 500 ms leaves headroom.
@@ -662,7 +725,10 @@ Definitions:
   `stale` (behind the configuration) or `unknown`. `overridden` lists the keys
   the run's request tier sets, so a non-empty list means the tested settings
   include per-run overrides not yet saved. Both are read once per run at
-  check time, because the status re-resolves the launch.
+  check time, because the status re-resolves the launch. `overridden` uses the
+  canonical flag names `resolved_parameters` uses. `redacted_parameters` lists
+  the keys whose values the report redacts; a client never saves those values
+  back as settings.
 - **Format.** Units are milliseconds, MiB, watts, percent, and a 0 to 1
   fraction for KV usage. Unknown values are null, measured zero is zero, and an
   empty list is empty. A run idle in a step is absent from that step's `runs`.
@@ -676,7 +742,7 @@ Definitions:
 | `verified` | Every request completed, with measured input at or above `input_tokens`; output equal to `output_tokens` when output is forced; and, for chat, `concurrent_streams_peak` reaching the step's concurrency. |
 | `queued` | Every request completed at the requested lengths, but fewer ran at once than requested, for example a step above the engine's sequence limit. Throughput and latency are still valid. |
 | `failed` | A request errored, or a length was not reached. |
-| `inconclusive` | The step timed out, or the run stopped, restarted or was replaced during it. |
+| `inconclusive` | The step timed out before this run completed its requests, or the run stopped, restarted or was replaced during it. A run that completed every request keeps its own outcome when another run in the step times out. |
 
 Embeddings have no output stream, so an embeddings run is verified when every
 request succeeded at the requested input length. Public traffic does not
@@ -687,9 +753,16 @@ verified when every run active in it is verified.
 |---|---|
 | `verified` | Every step is verified. |
 | `partial` | At least one step is verified, but not all. |
-| `failed` | No step is verified, and requests failed. |
-| `inconclusive` | No step is verified, and a step was cut short. |
+| `failed` | No step is verified, and requests failed or every measured step queued (the target concurrency was never reached; reason `target_not_met`). |
+| `inconclusive` | No step is verified, no request failed, and a step was cut short. |
 | `cancelled` | A cancellation was requested. |
+
+A run step that both had a failed request and was cut short by the step
+timeout is `failed`: an error is a finding. For the same reason `failed` takes
+precedence over `inconclusive` overall. A run that stopped, restarted or was
+replaced during the step is `inconclusive` with `run_changed` even when its
+requests failed, because the change caused the failures. A warm-up cut off by
+its deadline gives `step_timeout`, not `usage_unavailable`.
 
 Every outcome except `verified` carries a `reason`: a `code`, a `message`, and
 a `next_action` with its own `code` and the `tool` to call.
@@ -703,9 +776,12 @@ a `next_action` with its own `code` and the `tool` to call.
 | `step_timeout` | `change_workload` | `zz_calibrate` |
 | `cancelled` | none | none |
 
-The job ends `done` whenever a report is published. Cancellation ends it
-`failed` with the existing cancellation error, after the report records the
-steps already measured.
+The job ends `done` when the calibration ran to its end and published its
+report. When its context ends early (cancellation, or the node shutting down),
+it publishes the report with the steps already measured and then ends
+`failed` with that cause; cancellation uses the existing cancellation error.
+The node's one-calibration claim is released only after the job is terminal,
+and a panic in the runner fails the job and releases the claim.
 
 ## Providers
 
@@ -745,7 +821,7 @@ marked, confirmed on the wire on 2026-11-19:
 | vLLM 0.29.0 (wire) | prometheus `/metrics`: `running` = `vllm:num_requests_running`, `waiting` = `vllm:num_requests_waiting`, `kv_cache_usage` = `vllm:kv_cache_usage_perc` (0 to 1) | `{ignore_eos: true}` (48 of 48 tokens on the wire) | final chunk with `include_usage` | Metrics are on by default. `disable-log-stats: true` leaves the engine series unpopulated, so the form warns and the report reads null. |
 | llama.cpp b10549 (source) | prometheus `/metrics`: `running` = `llamacpp:requests_processing`, `waiting` = `llamacpp:requests_deferred`; no KV usage series exists | `{ignore_eos: true}`; `max_tokens` maps to `n_predict` | final chunk with `include_usage`, plus `timings` | `/metrics` answers 501 without `metrics: true`; the shipped config sets it. |
 | mlx-lm 0.31.3 (wire) | none: no metrics route | none: output reported, not forced (10 of 48 tokens on the wire) | final chunk with `include_usage`, `object` `chat.completion` | Batches only requests without `seed`; `decode-concurrency` 32 and `prompt-concurrency` 8 by default. |
-| mlx-vlm 0.7.6 (source) | json `/metrics`: `running` = `summary.in_flight`, `waiting` = `server.request_queue_depth`; no KV usage | none | final chunk with `include_usage` | Embeddings return usage. |
+| mlx-vlm 0.7.6 (source) | json `/metrics`, `runtimes: [mlx-vlm]` in the MLX schema: `running` = `summary.in_flight`, `waiting` = `server.request_queue_depth`; no KV usage | none | final chunk with `include_usage` | Embeddings return usage. |
 | Strata 0.1.44.1 (source) | prometheus `/metrics/prometheus`: `running` = `vllm:num_requests_running`, `waiting` = `vllm:num_requests_waiting`. Its `vllm:kv_cache_usage_perc` is the running request's share of its context, not KV pool use, so `kv_cache_usage` is not declared. | none: output reported, not forced | always on the final chunk, not gated by `include_usage`, plus `timings` | Serves one request at a time unless the engine gets `--batch N`; see below. No embeddings. `/health` takes no lock, so it answers during a long prefill. |
 | Ollama 0.40.16 (wire) | none: no metrics route; `/api/ps` gives context and residency | none: output reported, not forced (23 of 48 tokens on the wire) | final chunk with `include_usage`, plus `timings` | Embeddings return usage. |
 | ComfyUI | json `/queue`: `busy` = `queue_running`, `queue_pending` | not applicable | not applicable | Resident entries only. |
@@ -943,6 +1019,12 @@ later of completion and the last hand-out of the job ID. A node restart ends a
 running calibration and its job ID answers 404; the runs follow their own
 lifecycle. Durable knowledge lives in saved parameters, not in reports.
 
+The coordinator's SQLite database holds access records and administrative
+audit only ([coordinator state](coordinator-state-spec.md)), and calibration
+writes neither. Usage history is planned as its own database on the same
+`pkg/sqlitedb` plumbing. A calibration history, if one is wanted later,
+belongs there, never in the access store or a calibration file.
+
 ## Decisions
 
 1. **A calibration measures running models.** Configuration and lifecycle stay
@@ -1000,6 +1082,11 @@ Automatic searches across settings, server-side latency targets, rate-based
 routing that consumes calibration results, and a terminal client view. The
 terminal client can still read reports through its existing job display.
 
+`routing.ResourceAwareRouter` (`pkg/routing/resource_router.go`, 539 lines) is
+built in `server_factory.go` and never called, and some `coordinator.routing`
+fields exist only for it. Removing them is a separate cleanup: calibration
+neither reads nor changes them.
+
 ## Acceptance
 
 - **Tests:**
@@ -1048,6 +1135,7 @@ terminal client can still read reports through its existing job display.
   in `public_requests`, and the outcome is unchanged.
 - **Interruptions:**
   - A run restarted mid-step gives `inconclusive` with `run_changed`.
+  - A stale `target_revision` at submission answers 409 `run_changed`.
   - A step timeout gives `step_timeout`.
   - Cancellation mid-step keeps the measured steps.
 - **Validation:** `context_too_small`, `concurrency_above_limit`,

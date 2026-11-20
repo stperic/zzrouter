@@ -27,13 +27,13 @@ func TestRunParameterBoundaries(t *testing.T) {
 		parameters func(any) schema.ParameterValues
 	}{
 		{"launch", func() any { return &LaunchRunRequest{} }, func(r any) schema.ParameterValues { return r.(*LaunchRunRequest).Parameters }},
-		{"preview and load", func() any { return &LoadModelRequest{} }, func(r any) schema.ParameterValues { return r.(*LoadModelRequest).Parameters }},
+		{"preview", func() any { return &PreviewRunRequest{} }, func(r any) schema.ParameterValues { return r.(*PreviewRunRequest).Parameters }},
 		{"batch member", func() any { return &LaunchRequest{} }, func(r any) schema.ParameterValues { return r.(*LaunchRequest).Parameters }},
 	} {
 		t.Run(surface.name, func(t *testing.T) {
 			req := surface.request()
 			body := `{"provider":"studio","launch_mode":"native","parameters":{"gpu-reserve-mib":16384,"bool":false,"large":9007199254740993,"decimal":0.1234567890123456789,"str":"auto"}}`
-			if surface.name == "preview and load" {
+			if surface.name == "preview" {
 				body = `{"provider":"studio","parameters":{"gpu-reserve-mib":16384,"bool":false,"large":9007199254740993,"decimal":0.1234567890123456789,"str":"auto"}}`
 			}
 			c, rec := postJSON(t, body)
@@ -41,7 +41,7 @@ func TestRunParameterBoundaries(t *testing.T) {
 			require.Equal(t, schema.ParameterValues{"gpu-reserve-mib": "16384", "bool": "false", "large": "9007199254740993", "decimal": "0.1234567890123456789", "str": "auto"}, surface.parameters(req))
 			for _, value := range []string{"null", "{}", "[]"} {
 				c, rec := postJSON(t, `{"provider":"studio","launch_mode":"native","parameters":{"bad":`+value+`}}`)
-				if surface.name == "preview and load" {
+				if surface.name == "preview" {
 					c, rec = postJSON(t, `{"parameters":{"bad":`+value+`}}`)
 				}
 				require.False(t, BindJSONStrict(c, surface.request()))
@@ -59,16 +59,16 @@ func TestRunParameterBoundaries(t *testing.T) {
 
 func TestBatchRunParametersAcceptScalars(t *testing.T) {
 	var batch BatchLaunchRequest
-	require.NoError(t, json.Unmarshal([]byte(`{"instances":[{"provider":"studio","parameters":{"gpu-reserve-mib":16384,"flag":true}}]}`), &batch))
+	require.NoError(t, json.Unmarshal([]byte(`{"instances":[{"provider":"studio","parameters":{"gpu-reserve-mib":16384,"flag":true},"environment":{"DEVICE":"0"},"replace":true}]}`), &batch))
 	require.Equal(t, schema.ParameterValues{"gpu-reserve-mib": "16384", "flag": "true"}, batch.Instances[0].Parameters)
+	req := buildEnsureRequest("studio", batch.Instances[0])
+	require.Equal(t, map[string]string{"DEVICE": "0"}, req.EnvVars)
+	require.True(t, req.Force)
 }
 
 func TestRunParametersDoNotWidenEnvironment(t *testing.T) {
-	for _, req := range []any{&LaunchRunRequest{}, &LoadModelRequest{}} {
-		body := `{"provider":"studio","env_vars":{"BAD":true}}`
-		if _, load := req.(*LoadModelRequest); load {
-			body = `{"provider":"studio","environment":{"BAD":true}}`
-		}
+	for _, req := range []any{&LaunchRunRequest{}, &PreviewRunRequest{}} {
+		body := `{"provider":"studio","environment":{"BAD":true}}`
 		c, rec := postJSON(t, body)
 		require.False(t, BindJSONStrict(c, req))
 		require.Equal(t, http.StatusBadRequest, rec.Code)
@@ -79,7 +79,7 @@ func TestRunParametersDoNotWidenEnvironment(t *testing.T) {
 func TestRunParameterOpenAPISchemas(t *testing.T) {
 	doc := loadSpecTree(t)
 	components := doc["components"].(map[string]any)["schemas"].(map[string]any)
-	for _, name := range []string{"LaunchRunRequest", "PreviewRunRequest", "LoadModelRequest"} {
+	for _, name := range []string{"LaunchRunRequest", "PreviewRunRequest"} {
 		properties := components[name].(map[string]any)["properties"].(map[string]any)
 		parameters := properties["parameters"].(map[string]any)
 		require.Equal(t, "object", parameters["type"])
@@ -95,12 +95,40 @@ func runParameterProblem(t *testing.T, body []byte) utils.ProblemDetails {
 	return problem
 }
 
+func TestInvalidMemoryAdmissionIs400OnPatchStartAndPreview(t *testing.T) {
+	s := variantNode(t)
+	check := func(t *testing.T, status int, body []byte) {
+		t.Helper()
+		require.Equal(t, http.StatusBadRequest, status, string(body))
+		problem := runParameterProblem(t, body)
+		require.Len(t, problem.Errors, 1)
+		assert.Equal(t, "memory-admission", problem.Errors[0].Key)
+		assert.Equal(t, string(httperr.CodeCoercionFailed), problem.Errors[0].Code)
+	}
+	for _, value := range []string{"warn", "auto", ""} {
+		t.Run(value, func(t *testing.T) {
+			t.Run("patch", func(t *testing.T) {
+				status, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"memory-admission": value}}})
+				check(t, status, []byte(body))
+			})
+			for _, path := range []string{"/zzrouter/v1/runs", "/zzrouter/v1/runs/preview"} {
+				t.Run(path, func(t *testing.T) {
+					body := raw(map[string]any{"model": qwenModel, "provider": "llamacpp", "parameters": map[string]any{"memory-admission": value}})
+					w := assetRequest(t, s, http.MethodPost, path, body)
+					check(t, w.Code, w.Body.Bytes())
+				})
+			}
+		})
+	}
+	assert.Empty(t, s.providers.appMgr.ListInstances(""))
+}
+
 // An agent spelled llama.cpp's context parameter the way another engine
 // does. Every launch surface refuses it before a process exists, and the
 // refusal names the key the provider takes instead.
 func TestRunParametersRefuseUndeclaredContextLength(t *testing.T) {
 	s := variantNode(t)
-	for _, path := range []string{"/zzrouter/v1/runs/preview", "/zzrouter/v1/runs", "/zzrouter/v1/runs/load"} {
+	for _, path := range []string{"/zzrouter/v1/runs/preview", "/zzrouter/v1/runs"} {
 		t.Run(path, func(t *testing.T) {
 			body := `{"model":"` + qwenModel + `","provider":"llamacpp","parameters":{"context_length":32768}}`
 			if path == "/zzrouter/v1/runs" {
@@ -315,7 +343,7 @@ func TestServedRefusalHintsOnlyUnknownFlags(t *testing.T) {
 	mgr, err := prov_apps.NewProviderAppManager(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-	_, err = NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "soon", "temperature": "0.7"}})
+	_, err = NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil).PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "soon", "temperature": "0.7"}})
 	c, rec := testGinContext(http.MethodPost, "/zzrouter/v1/runs/preview")
 	RespondToError(c, err)
 	hints := map[string]string{}

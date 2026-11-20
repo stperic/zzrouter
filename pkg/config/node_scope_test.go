@@ -14,9 +14,6 @@ runtime:
   port_range: [8188, 8188]
   base_port: 8188
   execution: {type: python, command: python}
-  activity_probe:
-    path: /queue
-    busy_when_nonempty: [queue_running, queue_pending]
 `
 
 func TestNodeScopeConfigRoundTrip(t *testing.T) {
@@ -25,9 +22,8 @@ func TestNodeScopeConfigRoundTrip(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte(nodeProviderBody), &provider))
 	provider.Name = "studio"
 	require.NoError(t, provider.Validate())
-	view := providerToServiceConfig(&provider)
+	view := ProviderServiceConfig(&provider)
 	require.Equal(t, RunScopeNode, view.RunScope)
-	require.Equal(t, provider.Runtime.ActivityProbe, view.Runtime.ActivityProbe)
 	converted, err := serviceConfigToProvider(provider.Name, view)
 	require.NoError(t, err)
 	require.Equal(t, &provider, converted)
@@ -59,14 +55,17 @@ func TestNodeScopeRejectsModelConfiguration(t *testing.T) {
 	}
 }
 
-func TestActivityProbeValidation(t *testing.T) {
-	for _, probe := range []*ActivityProbe{
-		{Path: "http://remote/queue", BusyWhenNonempty: []string{"running"}},
-		{Path: "//remote/queue", BusyWhenNonempty: []string{"running"}},
-		{Path: "/queue"},
-		{Path: "/queue", BusyWhenNonempty: []string{"running", "running"}},
+func TestNodeScopeRejectsRetiredActivityProbe(t *testing.T) {
+	for _, probe := range []string{
+		"{path: /queue, busy_when_nonempty: [queue_running]}",
+		"{path: http://remote/queue, busy_when_nonempty: [running]}",
+		"{path: //remote/queue, busy_when_nonempty: [running]}",
+		"{path: /queue}",
+		"{path: /queue, busy_when_nonempty: [running, running]}",
 	} {
-		require.Error(t, probe.Validate())
+		body := []byte(nodeProviderBody + "  activity_probe: " + probe + "\n")
+		require.ErrorContains(t, configschema.ValidateOnDemand(body), "activity_probe")
+		_, err := DecodeProviderBytes(KindOnDemand, "studio", body)
+		require.ErrorContains(t, err, "activity_probe")
 	}
-	require.NoError(t, (*ActivityProbe)(nil).Validate())
 }

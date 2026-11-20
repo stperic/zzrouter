@@ -1,9 +1,18 @@
 package clientcli
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,6 +61,73 @@ func TestNewRunCmd(t *testing.T) {
 	forceFlag := flags.Lookup("force")
 	if forceFlag == nil {
 		t.Error("expected 'force' flag to exist")
+	}
+	require.NotNil(t, flags.Lookup("replace"))
+}
+
+func TestRunCommandForceSelectionAndReplace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flags   []string
+		replace bool
+		refuse  bool
+		wantErr string
+		starts  int32
+	}{
+		{name: "force selects and reuses", flags: []string{"--force"}, starts: 1},
+		{name: "replace goes on the wire", flags: []string{"--force", "--replace"}, replace: true, starts: 1},
+		{name: "replace leaves selection ambiguous", flags: []string{"--replace"}, wantErr: "multiple models match"},
+		{name: "settings refusal suggests replace", flags: []string{"--force"}, refuse: true, wantErr: "Use --replace", starts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+			var starts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case apipath.Health:
+					w.WriteHeader(http.StatusOK)
+				case apipath.Models:
+					_, _ = io.WriteString(w, `{"data":[{"name":"first","node":"worker","assigned_app":"llamacpp"},{"name":"second","node":"worker","assigned_app":"llamacpp"}]}`)
+				case apipath.Runs:
+					if r.Method == http.MethodGet {
+						_, _ = io.WriteString(w, `{"data":[]}`)
+						return
+					}
+					starts.Add(1)
+					require.Equal(t, http.MethodPost, r.Method)
+					var start pkgClient.StartRunRequest
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&start))
+					require.Equal(t, "first", start.Model)
+					require.Equal(t, "worker", start.Node)
+					require.Equal(t, tc.replace, start.Replace)
+					if tc.refuse {
+						w.WriteHeader(http.StatusConflict)
+						_, _ = io.WriteString(w, `{"code":"run_settings_differ","detail":"Settings differ"}`)
+						return
+					}
+					w.WriteHeader(http.StatusAccepted)
+					_, _ = io.WriteString(w, `{"data":{"id":"existing-run","node":"worker","status":"running"}}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+			addr, err := url.Parse(srv.URL)
+			require.NoError(t, err)
+			port, err := strconv.Atoi(addr.Port())
+			require.NoError(t, err)
+			cm := config.NewConfigManager("zzrouter")
+			require.NoError(t, cm.SaveClientConfig(&config.ClientConfig{Node: config.NodeConnection{Address: addr.Hostname(), Port: port}}))
+			cmd := NewRunCmd()
+			cmd.SetArgs(append([]string{"*"}, tc.flags...))
+			err = cmd.ExecuteContext(t.Context())
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.starts, starts.Load())
+		})
 	}
 
 }

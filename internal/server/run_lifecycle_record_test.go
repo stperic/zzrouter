@@ -112,7 +112,7 @@ func TestRunLifecycleRecordExecutor(t *testing.T) {
 			var refusal map[string]any
 			require.NoError(t, json.Unmarshal(actual, &refusal))
 			assert.Equal(t, string(httperr.CodeUnknownFlag), refusal["code"])
-			controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, nil, &NodeIdentity{name: "worker"}, nil, nil)
+			controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, &NodeIdentity{name: "worker"}, nil, nil)
 			public := gin.New()
 			public.GET("/runs", controller.ListRuns)
 			filtered := httptest.NewRecorder()
@@ -160,11 +160,17 @@ func TestRunLifecycleReplayResponse(t *testing.T) {
 	assert.True(t, response.Pinned)
 	assert.Equal(t, saved.Parameters, response.Parameters)
 	assert.Equal(t, len(saved.Parameters), response.ParametersApplied)
-	// D3: a reused run reports its own settings even when the caller stated others.
-	response, err = service.LaunchRun(t.Context(), &LaunchRunRequest{Provider: saved.Provider, Model: saved.Model, LaunchMode: "native", Node: "worker", Parameters: schema.ParameterValues{"keep-alive": "30m"}})
+	require.NotEmpty(t, response.ID)
+	refused, err := service.LaunchRun(t.Context(), &LaunchRunRequest{Provider: saved.Provider, Model: saved.Model, LaunchMode: "native", Node: "worker", Parameters: schema.ParameterValues{"keep-alive": "30m"}})
+	require.Nil(t, refused)
+	problem := requireStartProblem(t, err, http.StatusConflict, "run_settings_differ")
+	require.Equal(t, response.ID, problem.RunID)
+	reused, err := service.LaunchRun(t.Context(), &LaunchRunRequest{Provider: saved.Provider, Model: saved.Model, LaunchMode: "native", Node: "worker"})
 	require.NoError(t, err)
-	assert.True(t, response.Pinned)
-	assert.Equal(t, saved.Parameters, response.Parameters)
+	assert.True(t, reused.Pinned)
+	assert.Equal(t, saved.Parameters, reused.Parameters)
+	assert.Equal(t, response.ID, reused.ID)
+	assert.Equal(t, response.JobID, reused.JobID)
 }
 
 type lifecycleRefreshRuns struct {

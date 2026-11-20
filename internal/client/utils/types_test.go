@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -106,26 +107,12 @@ func TestRunPreview_Fields(t *testing.T) {
 	assert.Equal(t, "default", preview.ParameterSources["ctx_size"])
 }
 
-func TestLoadModelRequest_Fields(t *testing.T) {
-	req := LoadModelRequest{
-		Node:      "gpu-server",
-		App:       "vllm",
-		ModelName: "meta-llama/Llama-3-8B",
-		Force:     true,
-		Parameters: map[string]string{
-			"tensor-parallel-size": "2",
-		},
-		Environment: map[string]string{
-			"CUDA_VISIBLE_DEVICES": "0,1",
-		},
-	}
-
-	assert.Equal(t, "gpu-server", req.Node)
-	assert.Equal(t, "vllm", req.App)
-	assert.Equal(t, "meta-llama/Llama-3-8B", req.ModelName)
-	assert.True(t, req.Force)
-	assert.Equal(t, "2", req.Parameters["tensor-parallel-size"])
-	assert.Equal(t, "0,1", req.Environment["CUDA_VISIBLE_DEVICES"])
+func TestStartRunRequestEncodesSettings(t *testing.T) {
+	req := StartRunRequest{Node: "gpu-server", Provider: "vllm", Model: "meta-llama/Llama-3-8B", Replace: true,
+		Parameters: map[string]string{"tensor-parallel-size": "2"}, Environment: map[string]string{"CUDA_VISIBLE_DEVICES": "0,1"}}
+	body, err := json.Marshal(req)
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"node":"gpu-server","provider":"vllm","model":"meta-llama/Llama-3-8B","replace":true,"parameters":{"tensor-parallel-size":"2"},"environment":{"CUDA_VISIBLE_DEVICES":"0,1"}}`, string(body))
 }
 
 func TestDeployRequest_Fields(t *testing.T) {

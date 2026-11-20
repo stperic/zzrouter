@@ -170,7 +170,7 @@ and the provider sync carries to every node.
 Closed-enum `code` values from `pkg/httperr.ParamErrorCode`, one Problem
 `errors[]` entry per key: `{"key","code","got","want","min","max","message","hint"}`.
 
-A launch (`POST /runs`, `/runs/preview`, `/runs/load`, a restart or a pinned
+A launch (`POST /runs`, `/runs/preview`, a restart or a pinned
 restore) checks every parameter it would pass, from every tier, with the same
 rules and answers 400 before any process starts. Keys are flag names, so
 `ctx_size` and `ctx-size` are one parameter and the later one in the tier walk
@@ -288,10 +288,25 @@ Common `title`/`code` pairs an agent will see:
 | 400 `bad_request` with provider disabled and not installed | The target node's inventory has no installed copy. | `POST /zzrouter/v1/providers/:name/install` on that node, follow the job, then retry. |
 | 400 `bad_request` with provider disabled and installed | The target node has an installed copy that is disabled. | `PATCH /zzrouter/v1/providers/:name` with `{"enabled":true}` on that node, then retry. |
 | 400 `run_preview_not_applicable` | A cloud or external provider has no local process command or memory budget to preview. | Use `zz_chat` to verify its serving path. |
+| 404 `not_found` with provider not found | Start selected a provider absent from the target node's configuration. | Use `zz_providers` to find a configured provider on that node. |
+| 404 `run_not_found` | A calibration run is missing on the selected node. | Check the run ID and node with zz_runs. |
+| 400 `context_too_small` | The served context cannot hold the calibration workload. | Increase the context with zz_params_set and restart the run, or reduce the token counts with zz_calibrate. |
+| 400 `concurrency_above_limit` | A calibration workload exceeds the run admission limit. | Change max_concurrent_requests with zz_params_set and restart the run, or lower concurrency with zz_calibrate. |
+| 409 `run_not_ready` | A calibration run is not ready to serve. | Check readiness with zz_runs. |
+| 409 `run_changed` | The run revision no longer matches the calibration target. | Read the latest target_revision with zz_runs. |
+| 409 `calibration_unsupported` | The run lacks a supported calibration workload API. | Check the run endpoint with zz_runs, or list this run without a workload. |
+| 409 `calibration_running` | A calibration already owns the node claim. | Follow the Problem's `job_id` with `zz_job`. |
+| 421 `calibration_wrong_node` | A calibration reached a different node. The Problem's `node` names the receiver. | Check the intended node with `zz_nodes`. |
+| 409 `run_settings_differ` | The request tier differs from the run identified by `run_id`. | Call `zz_run_start` with `replace: true` and the complete intended request tier. |
+| 400 `run_node_required` | Start could not select one owning node. A missing model needs explicit placement to start a download. | Use `zz_models` to locate the model or `zz_nodes` to choose a download target, then pass `node` to `zz_run_start`. |
 | 404 with `not in this provider's catalog` | The node does not list the requested model for that provider. | Download or register it; use `POST /zzrouter/v1/deployments` for a cloud model. Cataloged external and cloud models return ready without a run. |
 | 400 with `provider %q has no search.registry configured` | auto_deploy was requested but the provider can't infer a download source. | Either deploy explicitly via `/deployments` or pick a provider with a registry. |
 | 421 with `Location: <coord-url>` | Worker received a write that only the coordinator may serve (e.g. provider PATCH). | Retry against the URL in the `Location` header. |
 | 404 `not_found` with `run not found: <id>` | No node lists the run. A stopped run is removed, whoever stopped it; when a live run's `evicted_runs` names it, `detail` names that run and its node. | Read the run's log at `GET /zzrouter/v1/runs/{id}/logs?node=<node>`; relaunch if you still need the model. |
+
+Calibration Problems for `run_not_found`, `run_not_ready`, `run_changed`,
+`calibration_unsupported`, `context_too_small` and `concurrency_above_limit`
+identify the affected run in `run_id`.
 
 ### Cross-node job lookup
 
@@ -403,3 +418,14 @@ node. Unknown names keep the ordinary missing-model behavior; previously known
 replicas on a failed node can return 503 `cluster_unavailable`. Discovery failures
 are cached for 30 seconds between blocking retries. A provider observed stopped
 still reports `provider_not_running` with its service-start route.
+
+### Calibration report reasons
+
+| Reason | Meaning | Next action |
+|---|---|---|
+| `target_not_met` | Fewer output streams overlapped than requested. | `change_settings` in `zz_params_set`. |
+| `requests_failed` | An engine request failed or missed the required token length. | `inspect_run` in `zz_logs`. |
+| `run_changed` | The run stopped, restarted, was replaced, or reset its admission counter. | `check_run` in `zz_runs`. |
+| `usage_unavailable` | Engine usage was insufficient to verify the workload. | `check_provider` in `zz_providers`. |
+| `step_timeout` | A warm-up or measurement step reached its time limit. | `change_workload` in `zz_calibrate`. |
+| `cancelled` | The calibration context ended early. The report keeps measured steps. | None. |

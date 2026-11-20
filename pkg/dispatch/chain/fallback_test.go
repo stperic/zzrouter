@@ -164,16 +164,23 @@ func (f *fakeDeps) ValidateModel(_ context.Context, model string) error {
 	return f.validationErrors[model]
 }
 
-func (f *fakeDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
-	return inst.Acquire(req.Context(), nil)
+func testInstanceRequest(c *gin.Context, body []byte) InstanceRequest {
+	return InstanceRequest{
+		Context: c.Request.Context(), Method: c.Request.Method, Path: c.Request.URL.Path,
+		RawQuery: c.Request.URL.RawQuery, Header: c.Request.Header, OriginalBody: body,
+	}
 }
 
-func (f *fakeDeps) InstanceBody(_ *http.Request, lease *instance.Lease, body []byte) []byte {
+func (f *fakeDeps) LeaseInstance(req InstanceRequest, inst *instance.Instance) (*instance.Lease, error) {
+	return inst.Acquire(req.Context, req.Hints)
+}
+
+func (f *fakeDeps) InstanceBody(req InstanceRequest, lease *instance.Lease) []byte {
 	inst := lease.Instance()
 	if inst.WireModel != "" {
-		return wire.SetModelIfPresent(body, inst.WireModel)
+		return wire.SetModelIfPresent(req.OriginalBody, inst.WireModel)
 	}
-	return body
+	return req.OriginalBody
 }
 
 func (f *fakeDeps) StartOnDemand(model, provider, endpoint string) error {
@@ -263,7 +270,7 @@ func TestProxyWithFallback_ExhaustedWithNoCandidates(t *testing.T) {
 		Candidates:   nil,
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-x"}`), rec, "group-x", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-x"}`)), rec, "group-x", "", false)
 
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	var env map[string]any
@@ -290,7 +297,7 @@ func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-y"}`), rec, "group-y", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-y"}`)), rec, "group-y", "", false)
 
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	var env map[string]any
@@ -328,7 +335,7 @@ func TestProxyWithFallback_SuccessCommitsResponse(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-z"}`), rec, "group-z", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-z"}`)), rec, "group-z", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected upstream 200 to pass through; body=%s", w.Body.String())
@@ -379,7 +386,7 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-q"}`)), rec, "group-q", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected fallback to second deployment to succeed; body=%s", w.Body.String())
@@ -426,7 +433,7 @@ func proxyTwoRetriable(t *testing.T, first, second *int) map[string]int {
 			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: second},
 		},
 	}
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-r"}`), rec, "group-r", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-r"}`)), rec, "group-r", "", false)
 	return counts
 }
 
@@ -503,7 +510,7 @@ func TestProxyWithFallback_AppliesTheReplicasRequestDefaults(t *testing.T) {
 		OriginalName: "agent", GroupName: "agent", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "r", App: "llamacpp", Model: "q+agent"}},
 	}
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"agent","temperature":0.1}`), rec, "agent", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"agent","temperature":0.1}`)), rec, "agent", "", false)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var sent map[string]any
@@ -596,7 +603,7 @@ func TestProxyWithFallback_UnreachableReplicaFallsThrough(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group-q"}`)), rec, "group-q", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
 	assert.Equal(t, "provider-b", w.Header().Get("X-zzrouter-Provider"))
@@ -620,7 +627,7 @@ func TestUpstreamImageGateDispatchPaths(t *testing.T) {
 			}
 			c, w := buildGinCtx(t, body)
 			r := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: []pfallback.Candidate{{Name: "dep-a", App: "ollama", Model: "m"}, {Name: "dep-b", App: "ollama", Model: "m"}}}
-			p.ProxyWithFallback(c, r, []byte(body), nil, "group", "", false)
+			p.ProxyWithFallback(c, r, testInstanceRequest(c, []byte(body)), nil, "group", "", false)
 			if !images {
 				require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
 				assert.NotContains(t, w.Body.String(), `"code":"unsupported_input"`)
@@ -648,7 +655,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Candidates: []pfallback.Candidate{
 				{Name: "conflict", App: "llamacpp", Model: "fast", OnDemand: true, Node: node},
 			}}
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", "", false)
+			p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group"}`)), rec, "group", "", false)
 			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 			assert.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 			assert.Zero(t, deps.forwardCalls.Load())
@@ -662,7 +669,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			resolved.Candidates = append(resolved.Candidates, pfallback.Candidate{Name: "safe", App: "ollama", Model: "base"})
 			c, w = buildGinCtx(t, `{"model":"group"}`)
 			rec = llm.NewInferenceRecorder(c.Request.Context(), "group", "")
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", "", false)
+			p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group"}`)), rec, "group", "", false)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, int32(1), deps.forwardCalls.Load(), "only the safe replica received a request")
 			assert.Zero(t, deps.onDemandStartCalls.Load())
@@ -683,7 +690,7 @@ func TestCommitWithRouting_CutStreamEndsWithDialectError(t *testing.T) {
 	c, w := buildGinCtx(t, `{"model":"group","stream":true}`)
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
-	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", "", false)
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group","stream":true}`)), nil, "group", "", false)
 	assert.Contains(t, w.Body.String(), `"content":"partial"`)
 	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
 	assert.Equal(t, 1, strings.Count(w.Body.String(), `"error":`))
@@ -700,7 +707,7 @@ func TestCommitWithRouting_CutBodyAnswersBadGateway(t *testing.T) {
 	c, w := buildGinCtx(t, `{"model":"group"}`)
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
-	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
 	assert.NotContains(t, w.Body.String(), "data:")
@@ -736,7 +743,7 @@ func TestProxyWithFallback_DialFailureRetriesAndCoolsDown(t *testing.T) {
 		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
 			{Name: "failed", App: "failed", Model: "m", MaxRetries: intPtr(1)},
 			{Name: "next", App: "next", Model: "m"},
-		}), []byte(`{"model":"group"}`), nil, "group", "", false)
+		}), testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.EqualValues(t, 3, deps.forwardCalls.Load())
 		assert.True(t, p.cooldowns.InCooldown("failed"))
@@ -760,7 +767,7 @@ func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
 			p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
 				{Name: "failed", App: "failed", Model: "m"},
 				{Name: "next", App: "failed", Model: "m"},
-			}), []byte(`{"model":"group"}`), nil, "group", "", false)
+			}), testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 			want := status
 			if want == 0 {
 				want = http.StatusBadGateway
@@ -788,7 +795,7 @@ func TestChainOnDemandRefusalCarriesCause(t *testing.T) {
 			_, attempts := p.separateOnDemand(candidates, "")
 			assert.ErrorIs(t, attempts[0].Err, deps.onDemandErrors["disabled"])
 			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: candidates}
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
+			p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 			require.Equal(t, http.StatusServiceUnavailable, w.Code)
 			if pending {
 				assert.Contains(t, w.Body.String(), `"code":"model_loading"`)
@@ -815,7 +822,7 @@ func TestProxyWithFallback_MixedRefusalsStayUnavailable(t *testing.T) {
 		{Name: "conflict", App: "llamacpp", Model: "fast", OnDemand: true},
 		{Name: "down", App: "llamacpp", Model: "slow", OnDemand: true},
 	}}
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
+	p.ProxyWithFallback(c, resolved, testInstanceRequest(c, []byte(`{"model":"group"}`)), nil, "group", "", false)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 	assert.NotContains(t, w.Body.String(), `"code":"model_name_conflict"`)
 	assert.Zero(t, deps.forwardCalls.Load())

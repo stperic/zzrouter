@@ -100,7 +100,7 @@ func (r *featureResolvedRouter) Route(ctx context.Context, req *routing.Request)
 func TestRunPreviewRendersLaunchCommand(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	response, err := s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent, Parameters: map[string]string{"ctx-size": "65536"}})
+	response, err := s.newRunsExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent, Parameters: map[string]string{"ctx-size": "65536"}})
 	require.NoError(t, err)
 	require.NotContains(t, response.FullCommand, "${MODEL_PATH}")
 	require.NotContains(t, response.FullCommand, "${PORT}")
@@ -127,10 +127,9 @@ func TestFeatureEvidencePublicSurfaces(t *testing.T) {
 	worker.model.Resolver = staticModelResolver{provider: "llamacpp"}
 	coordinator, _ := assetTestNode(t)
 	router := &previewWorkerRouter{worker: buildInternalEngine(worker)}
-	coordinator.services.Load.router = router
 	coordinator.services.Runs.router = router
 	body := []byte(`{"model":"vendor/model","provider":"llamacpp","node":"feature-worker","launch_mode":"native"}`)
-	for _, path := range []string{"/zzrouter/v1/runs", "/zzrouter/v1/runs/preview", "/zzrouter/v1/runs/load"} {
+	for _, path := range []string{"/zzrouter/v1/runs", "/zzrouter/v1/runs/preview"} {
 		t.Run(path, func(t *testing.T) {
 			requestBody := body
 			if path != "/zzrouter/v1/runs" {

@@ -57,7 +57,7 @@ func TestDeclaredReadinessAndExitFailures(t *testing.T) {
 			var cfg config.ServiceConfig
 			require.NoError(t, yaml.Unmarshal(raw, &cfg))
 			require.NoError(t, cfg.Runtime.FailurePatterns.Compile())
-			probe := buildHealthCheckConfig(cfg, 0).ReadinessProbe
+			probe := buildHealthCheckConfig(cfg, nil).ReadinessProbe
 			require.NotNil(t, probe)
 			probe.LogPatterns.Success = []health.PatternMatcher{{Pattern: "ready"}}
 			for _, generic := range []string{"error:", "RuntimeError:", ""} {

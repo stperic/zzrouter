@@ -129,7 +129,9 @@ func TestRunLifecycleConcurrentStarts(t *testing.T) {
 				joiner.Parameters["keep-alive"] = "30m"
 			}
 			ctxs, reqs := same(t.Context(), joiner)
+			unspecified := EnsureRequest{Provider: leader.Provider, Model: leader.Model}
 			reqs[0] = leader
+			reqs[1] = unspecified
 			outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 			b.open()
 			results := collect(t, outs)
@@ -141,8 +143,19 @@ func TestRunLifecycleConcurrentStarts(t *testing.T) {
 				assert.Empty(t, readPins(t))
 				return
 			}
-			assert.Equal(t, 1, requireSharedRun(t, results))
+			require.NoError(t, results[0].err)
+			require.True(t, results[0].result.Started)
 			run := results[0].result.Run
+			require.NotNil(t, run)
+			require.NoError(t, results[1].err)
+			require.Same(t, run, results[1].result.Run)
+			require.False(t, results[1].result.Started)
+			for _, result := range results[2:] {
+				var conflict *RunSettingsDifferError
+				require.ErrorAs(t, result.err, &conflict)
+				assert.Equal(t, run.ID, conflict.RunID)
+				assert.Nil(t, result.result.Run)
+			}
 			awaitRunning(t, run)
 			assert.Equal(t, int32(1), r.attempts.Load())
 			assert.Equal(t, leader.Parameters, run.SnapshotConfig().Parameters)
@@ -153,9 +166,11 @@ func TestRunLifecycleConcurrentStarts(t *testing.T) {
 				require.Len(t, saved, 1)
 				assert.Equal(t, run.SnapshotConfig().Parameters, saved[0].Parameters)
 			}
-			reused, err := r.m.EnsureRun(t.Context(), joiner)
+			_, err := r.m.EnsureRun(t.Context(), joiner)
+			require.ErrorIs(t, err, ErrRunSettingsDiffer)
+			reused, err := r.m.EnsureRun(t.Context(), unspecified)
 			require.NoError(t, err)
-			assert.Same(t, run, reused.Run, "D3: an explicit request reuses the live run without rewriting its request")
+			assert.Same(t, run, reused.Run)
 			assert.Equal(t, leader.Parameters, run.SnapshotConfig().Parameters)
 		})
 	}
@@ -391,9 +406,9 @@ func TestRunLifecycleQueuedRefusalKeepsRequest(t *testing.T) {
 	r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 	})), func(m *ProviderAppManager) {
-		m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 			return []gpu.MemoryDevice{{UUID: "GPU-test", TotalMiB: 10000, FreeMiB: 6000}}, nil
-		}
+		})
 	})
 	before := readPins(t)
 	blocker, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "blocker"})

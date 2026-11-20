@@ -15,6 +15,8 @@ import (
 type UsageData struct {
 	In              int64
 	Out             int64
+	HasInput        bool
+	HasOutput       bool
 	CachedTokens    int64
 	ReasoningTokens int64
 	Cost            float64
@@ -35,6 +37,8 @@ type UsageData struct {
 func (u UsageData) merge(later UsageData) UsageData {
 	u.In = max(u.In, later.In)
 	u.Out = max(u.Out, later.Out)
+	u.HasInput = u.HasInput || later.HasInput
+	u.HasOutput = u.HasOutput || later.HasOutput
 	u.CachedTokens = max(u.CachedTokens, later.CachedTokens)
 	u.ReasoningTokens = max(u.ReasoningTokens, later.ReasoningTokens)
 	if later.CostSource != "" {
@@ -44,6 +48,10 @@ func (u UsageData) merge(later UsageData) UsageData {
 		u.Model = later.Model
 	}
 	return u
+}
+
+func (u UsageData) recordable() bool {
+	return u.In > 0 || u.Out > 0 || u.CostSource != ""
 }
 
 // jsonNumber handles both int and float JSON numbers for token counts.
@@ -112,10 +120,10 @@ func ParseUsageExtended(body []byte) UsageData {
 		PromptTokensDetails     *tokenDetails `json:"prompt_tokens_details"`
 		CompletionTokensDetails *tokenDetails `json:"completion_tokens_details"`
 
-		InputTokens              jsonNumber    `json:"input_tokens"`
-		OutputTokens             jsonNumber    `json:"output_tokens"`
-		CacheReadInputTokens     jsonNumber    `json:"cache_read_input_tokens"`
-		CacheCreationInputTokens jsonNumber    `json:"cache_creation_input_tokens"`
+		InputTokens              *jsonNumber   `json:"input_tokens"`
+		OutputTokens             *jsonNumber   `json:"output_tokens"`
+		CacheReadInputTokens     *jsonNumber   `json:"cache_read_input_tokens"`
+		CacheCreationInputTokens *jsonNumber   `json:"cache_creation_input_tokens"`
 		InputTokensDetails       *tokenDetails `json:"input_tokens_details"`
 		OutputTokensDetails      *tokenDetails `json:"output_tokens_details"`
 
@@ -126,11 +134,12 @@ func ParseUsageExtended(body []byte) UsageData {
 		return UsageData{}
 	}
 
-	u := UsageData{Model: responseModel}
+	u := UsageData{Model: responseModel, HasInput: usage.InputTokens != nil, HasOutput: usage.OutputTokens != nil}
 	switch {
 	// A gateway that echoes several vocabularies is read as Chat: the
 	// presence of a Chat field decides, not which count is larger.
 	case usage.PromptTokens != nil || usage.CompletionTokens != nil:
+		u.HasInput, u.HasOutput = usage.PromptTokens != nil, usage.CompletionTokens != nil
 		u.In = usage.PromptTokens.Int64()
 		u.Out = usage.CompletionTokens.Int64()
 		if usage.PromptTokensDetails != nil {
@@ -149,6 +158,7 @@ func ParseUsageExtended(body []byte) UsageData {
 		}
 	// Anthropic: cache reads and writes sit outside input_tokens.
 	default:
+		u.HasInput = u.HasInput || usage.CacheReadInputTokens != nil || usage.CacheCreationInputTokens != nil
 		cacheRead := usage.CacheReadInputTokens.Int64()
 		u.In = usage.InputTokens.Int64() + cacheRead + usage.CacheCreationInputTokens.Int64()
 		u.Out = usage.OutputTokens.Int64()
@@ -208,25 +218,33 @@ func parseProviderCost(raw json.RawMessage) *float64 {
 // from an Ollama JSON response. Returns (in, out, model, ok) so callers
 // that need to populate gen_ai.response.model don't have to re-parse the body.
 func ParseOllamaUsageExtended(body []byte) (int64, int64, string, bool) {
-	return parseOllamaResponse(body)
+	u := parseOllamaResponse(body)
+	if u.In == 0 && u.Out == 0 {
+		return 0, 0, "", false
+	}
+	return u.In, u.Out, u.Model, true
 }
 
-func parseOllamaResponse(body []byte) (int64, int64, string, bool) {
+func parseOllamaResponse(body []byte) UsageData {
 	var resp struct {
-		Model           string     `json:"model"`
-		Done            bool       `json:"done"`
-		PromptEvalCount jsonNumber `json:"prompt_eval_count"`
-		EvalCount       jsonNumber `json:"eval_count"`
+		Model           string      `json:"model"`
+		Done            bool        `json:"done"`
+		PromptEvalCount *jsonNumber `json:"prompt_eval_count"`
+		EvalCount       *jsonNumber `json:"eval_count"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || !resp.Done {
-		return 0, 0, "", false
+		return UsageData{}
 	}
-	in := resp.PromptEvalCount.Int64()
-	out := resp.EvalCount.Int64()
-	if in == 0 && out == 0 {
-		return 0, 0, "", false
+	u := UsageData{
+		In:        resp.PromptEvalCount.Int64(),
+		Out:       resp.EvalCount.Int64(),
+		HasInput:  resp.PromptEvalCount != nil,
+		HasOutput: resp.EvalCount != nil,
 	}
-	return in, out, resp.Model, true
+	if u.In != 0 || u.Out != 0 {
+		u.Model = resp.Model
+	}
+	return u
 }
 
 // ParseSSEFinalUsageExtended extracts full usage data from an SSE chunk.
@@ -243,10 +261,7 @@ func ParseSSEFinalUsageExtended(chunk []byte) UsageData {
 	}
 
 	// Ollama NDJSON format: bare JSON objects
-	if in, out, model, ok := ParseOllamaUsageExtended(data); ok {
-		return UsageData{In: in, Out: out, Model: model}
-	}
-	return UsageData{}
+	return parseOllamaResponse(data)
 }
 
 // tagRecorderFromStatus sets the recorder's error_type from an upstream
@@ -330,7 +345,7 @@ func recordProxyMetrics(respBody []byte, recorder *llm.InferenceRecorder) {
 	if u.Model != "" {
 		recorder.SetResponseModel(u.Model)
 	}
-	if u.In > 0 || u.Out > 0 || u.CostSource != "" {
+	if u.recordable() {
 		recorder.SetExtendedUsage(u.CachedTokens, u.ReasoningTokens, u.Cost, string(u.CostSource))
 		recorder.RecordCompletion(u.In, u.Out)
 		return

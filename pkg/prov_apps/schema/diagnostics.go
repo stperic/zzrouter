@@ -44,6 +44,7 @@ type MemoryBudget struct {
 	Kind                 string `yaml:"kind" json:"kind"`
 	Parameter            string `yaml:"parameter,omitempty" json:"parameter,omitempty"`
 	DeviceCountParameter string `yaml:"device_count_parameter,omitempty" json:"device_count_parameter,omitempty"`
+	KVBytesParameter     string `yaml:"kv_bytes_parameter,omitempty" json:"kv_bytes_parameter,omitempty"`
 	AutoSafetyMarginMiB  int64  `yaml:"auto_safety_margin_mib,omitempty" json:"auto_safety_margin_mib,omitempty"`
 }
 
@@ -158,10 +159,13 @@ func (m *MemoryBudget) validate() error {
 	if m.AutoSafetyMarginMiB < 0 {
 		return fmt.Errorf("auto safety margin must not be negative")
 	}
-	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter, m.ComplementParameter} {
+	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter, m.ComplementParameter, m.KVBytesParameter} {
 		if parameter != "" && !validDiagnosticName(parameter) {
 			return fmt.Errorf("invalid memory parameter %q", parameter)
 		}
+	}
+	if m.KVBytesParameter != "" && m.Kind != MemoryFractionTotal {
+		return fmt.Errorf("KV bytes parameter requires a %s budget", MemoryFractionTotal)
 	}
 	if m.ComplementParameter != "" && (m.Kind != MemoryReserveMiB || m.ComplementParameter == m.Parameter) {
 		return fmt.Errorf("complement parameter requires a distinct %s parameter", MemoryReserveMiB)

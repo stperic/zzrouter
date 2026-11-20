@@ -12,7 +12,7 @@ func TestProviderBrowserContractRoundTripsTypedRuntime(t *testing.T) {
 	typed, err := serviceConfigToProvider("engine", svc)
 	require.NoError(t, err)
 	require.NoError(t, typed.(*OnDemandProvider).validateBrowser())
-	roundTrip := providerToServiceConfig(typed)
+	roundTrip := ProviderServiceConfig(typed)
 	require.Equal(t, svc.Runtime.Browser, roundTrip.Runtime.Browser)
 }
 

@@ -100,7 +100,7 @@ func (p *pacedStream) Read(b []byte) (int, error) {
 func ttftFor(t *testing.T, steps ...pacedStep) int64 {
 	t.Helper()
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "mlx")
-	CopyStream(t.Context(), httptest.NewRecorder(), &pacedStream{steps: steps}, rec, nil)
+	CopyStream(t.Context(), httptest.NewRecorder(), &pacedStream{steps: steps}, RecorderObserver(rec), nil)
 	return rec.Snapshot().TTFTMs
 }
 

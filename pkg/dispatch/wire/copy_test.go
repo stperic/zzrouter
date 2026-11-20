@@ -90,7 +90,7 @@ func TestCopyStream_PopulatesResponseModel(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, strings.NewReader(upstream), rec, nil)
+	CopyStream(context.Background(), w, strings.NewReader(upstream), RecorderObserver(rec), nil)
 	rec.RecordCompletion(0, 0) // fire the hook so we see the captured payload
 
 	assert.Equal(t, "gpt-4-turbo-2024-04-09", captured.ResponseModel,
@@ -108,7 +108,7 @@ func TestCopyStream_ResponseModelOnDeltaOnly(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, strings.NewReader(upstream), rec, nil)
+	CopyStream(context.Background(), w, strings.NewReader(upstream), RecorderObserver(rec), nil)
 
 	assert.Equal(t, "gpt-4-turbo-2024-04-09", captured.ResponseModel,
 		"delta chunks alone must populate ResponseModel — the gate on usage>0 dropped this case before the cold-review fix")
@@ -132,7 +132,7 @@ func TestCopyStream_ReassemblesStreamedReply(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, strings.NewReader(upstream), rec, nil)
+	CopyStream(context.Background(), w, strings.NewReader(upstream), RecorderObserver(rec), nil)
 
 	assert.Equal(t, "Hey Eric!", captured.ResponseText)
 	assert.Contains(t, w.Body.String(), "Hey ", "capture must not disturb what the client receives")
@@ -153,7 +153,7 @@ func TestCopyStream_ReplyNotCapturedWhenGated(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, strings.NewReader(upstream), rec, nil)
+	CopyStream(context.Background(), w, strings.NewReader(upstream), RecorderObserver(rec), nil)
 
 	assert.Empty(t, captured.ResponseText)
 	assert.Contains(t, w.Body.String(), "secret", "the client still gets the full stream")
@@ -172,7 +172,7 @@ func TestCopyStream_MetersUsageFrameSplitAcrossReads(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, body, rec, nil)
+	CopyStream(context.Background(), w, body, RecorderObserver(rec), nil)
 
 	calls := spy.snapshot()
 	require.Len(t, calls, 1, "exactly one completion per stream")
@@ -203,7 +203,7 @@ func TestCopyStream_MetersFinalFrameWithoutTrailingNewline(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyStream(context.Background(), w, strings.NewReader(upstream), rec, nil)
+	CopyStream(context.Background(), w, strings.NewReader(upstream), RecorderObserver(rec), nil)
 
 	calls := spy.snapshot()
 	require.Len(t, calls, 1)

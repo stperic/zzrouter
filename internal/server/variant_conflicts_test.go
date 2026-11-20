@@ -99,8 +99,9 @@ func TestVariants_LateConflictBlocksColdAndWarmPaths(t *testing.T) {
 					require.ErrorIs(t, err, config.ErrModelNameConflict)
 					assert.Nil(t, result.Run)
 					// Force must not stop a warm process before checking admission.
-					load, err := s.newLoadExecutor().LoadLocalModel(t.Context(), &LoadModelRequest{Provider: "llamacpp", ModelName: name, Force: true})
-					require.ErrorIs(t, err, config.ErrModelNameConflict)
+					load, err := startForTest(t, t.Context(), s.newRunsExecutor(), LaunchRunRequest{Provider: "llamacpp", Model: name, Replace: true})
+					require.Equal(t, http.StatusConflict, answeredStatus(err))
+					require.ErrorContains(t, err, "rename the variant")
 					assert.Nil(t, load)
 				}
 			}
@@ -163,7 +164,7 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 	rec := llm.NewInferenceRecorder(c.Request.Context(), "group", "")
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []fallback.Candidate{{Name: "variant", App: "llamacpp", Model: variantChat, OnDemand: true}}}
-	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "group", "", false)
+	s.providers.fallback.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, raw), rec, "group", "", false)
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 	require.Zero(t, calls.Load())
@@ -184,9 +185,9 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 			return
 		}
 		c, _ := gin.CreateTestContext(w)
-		c.Request = r.WithContext(context.WithValue(r.Context(), CtxKeyOriginalBody, raw))
+		c.Request = r
 		httperr.AttachResponder(s.responders.openai)(c)
-		_ = s.HandleLocalModel(w, c.Request, &resolver.Resolved{ModelName: body.Model, Provider: "llamacpp"}, "chat")
+		_ = s.HandleLocalModel(w, c.Request, raw, &resolver.Resolved{ModelName: body.Model, Provider: "llamacpp"}, "chat")
 	}))
 	defer worker.Close()
 	req := httptest.NewRequest(http.MethodPost, worker.URL+"/v1/chat/completions", strings.NewReader(`{"model":"`+variantChat+`"}`))
@@ -410,7 +411,7 @@ func TestRemoteRescanKeepsCoordinatorPublishedEvidence(t *testing.T) {
 	}
 }
 
-func TestVariants_UnpublishedColdLoadAndForcePreserveAddressedName(t *testing.T) {
+func TestVariants_UnpublishedStartAndReplacePreserveAddressedName(t *testing.T) {
 	for _, force := range []bool{false, true} {
 		t.Run(strconv.FormatBool(force), func(t *testing.T) {
 			s := variantNode(t)
@@ -423,8 +424,9 @@ func TestVariants_UnpublishedColdLoadAndForcePreserveAddressedName(t *testing.T)
 			if force {
 				conflictRun(t, s, qwenModel)
 			}
-			_, err = s.newLoadExecutor().LoadLocalModel(t.Context(), &LoadModelRequest{Provider: "llamacpp", ModelName: variantChat, Force: force})
-			require.ErrorIs(t, err, config.ErrModelNameConflict)
+			_, err = startForTest(t, t.Context(), s.newRunsExecutor(), LaunchRunRequest{Provider: "llamacpp", Model: variantChat, Replace: force})
+			require.Equal(t, http.StatusConflict, answeredStatus(err))
+			require.ErrorContains(t, err, "rename the variant")
 			if force {
 				require.Len(t, s.providers.appMgr.Instances().List(), 1)
 				require.Equal(t, instance.StatusRunning, s.providers.appMgr.Instances().List()[0].GetStatus())
@@ -450,10 +452,12 @@ func TestVariants_ColdAndForcedSourceAliasUseCanonicalMetadata(t *testing.T) {
 			if force {
 				conflictRun(t, s, model.Name)
 			}
-			result, err := s.newLoadExecutor().LoadLocalModel(t.Context(), &LoadModelRequest{Provider: "llamacpp", ModelName: "owner/source", Force: force})
+			result, err := startForTest(t, t.Context(), s.newRunsExecutor(), LaunchRunRequest{Provider: "llamacpp", Model: "owner/source", Replace: force})
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			assert.Equal(t, model.Name, result.Model)
+			run, ok := s.providers.appMgr.GetInstance(result.ID)
+			require.True(t, ok)
+			assert.Equal(t, model.Name, run.Model)
 		})
 	}
 }
@@ -461,7 +465,10 @@ func TestVariants_ColdAndForcedSourceAliasUseCanonicalMetadata(t *testing.T) {
 func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	manager, err := prov_apps.NewProviderAppManager(s.appsConfig(), prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }))
+	manager, err := prov_apps.NewProviderAppManager(s.appsConfig(),
+		prov_apps.WithProviderSchema(providerSchema(s.configStore)),
+		prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }),
+	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = manager.Stop(t.Context()) })
 	old := s.providers.appMgr
@@ -481,29 +488,29 @@ func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
-		raw, _ := json.Marshal(map[string]string{"model_name": tc.model, "provider": tc.provider})
-		c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/load", strings.NewReader(string(raw)))
-		s.newLoadExecutor().HandleInternalLoadModel(c)
+		raw, _ := json.Marshal(map[string]string{"model_name": tc.model, "provider": tc.provider, "launch_mode": "native"})
+		c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs", strings.NewReader(string(raw)))
+		s.newRunsExecutor().HandleInternalLaunchRun(c)
 		require.Equal(t, tc.status, w.Code, w.Body.String())
 	}
-	_, err = s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "missing-provider", ModelName: qwenModel})
+	_, err = s.newRunsExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "missing-provider", ModelName: qwenModel})
 	require.Equal(t, http.StatusBadRequest, answeredStatus(err))
 	service.WithModelValidator(func(context.Context, string) error { return &config.ModelNameConflictError{Model: "reserved"} })
 	require.Equal(t, http.StatusConflict, answeredStatus(service.admitModel(t.Context(), "reserved")))
 }
 
-// Provider refusals use the failure table on the load route too.
-func TestVariants_InternalLoadAnswersFromTheFailureTable(t *testing.T) {
+// Provider refusals on the worker use the failure table.
+func TestVariants_InternalStartAnswersFromTheFailureTable(t *testing.T) {
 	s := variantNode(t)
-	executor := s.newLoadExecutor()
+	executor := s.newRunsExecutor()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"missing"}`))
-	executor.HandleInternalLoadModel(c)
+	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"missing","launch_mode":"native"}`))
+	executor.HandleInternalLaunchRun(c)
 	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
 
-func TestVariants_ForcedLoadCarriesLocalAdmission(t *testing.T) {
+func TestVariants_ReplaceCarriesLocalAdmission(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
 	_, err := s.LookupModel(t.Context(), variantAgent)
@@ -511,12 +518,12 @@ func TestVariants_ForcedLoadCarriesLocalAdmission(t *testing.T) {
 	conflictRun(t, s, variantAgent)
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
-	executor := s.newLoadExecutor()
+	executor := s.newRunsExecutor()
 	prov_apps.WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (prov_apps.Localized, error) {
 		require.NoError(t, os.WriteFile(filepath.Join(root, variantAgent+".gguf"), []byte("GGUF"), 0o600))
 		return prov_apps.Localized{Params: params}, nil
 	})(s.providers.appMgr)
-	result, err := executor.LoadLocalModel(cache.WithVariantAdmission(t.Context()), &LoadModelRequest{Provider: "llamacpp", ModelName: variantAgent, Force: true})
+	result, err := startForTest(t, cache.WithVariantAdmission(t.Context()), executor, LaunchRunRequest{Provider: "llamacpp", Model: variantAgent, Replace: true})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	_, err = s.providers.appMgr.AdmitLocalModel(t.Context(), variantAgent)
@@ -531,7 +538,7 @@ func TestVariants_PreviewGuardsUnpublishedLocalConflict(t *testing.T) {
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, variantAgent+".gguf"), []byte("GGUF"), 0o600))
-	_, err = s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent})
+	_, err = s.newRunsExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusConflict, answeredStatus(err))
 }

@@ -60,13 +60,13 @@ func TestNodeAdmissionFailurePublishesEvictions(t *testing.T) {
 			idle.MarkRunning(false, nil)
 			idle.SetProcessInfo(9000001, 0, 0, nil)
 			require.NoError(t, f.mgr.instances.Register(idle))
-			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				free := int64(1000)
 				if idle.GetStatus() == instance.StatusStopped {
 					free = 6000
 				}
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-			}
+			})
 			preparationFailure := errors.New("preparation refused after eviction")
 			f.mgr.localizeParams = func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 				if idle.GetStatus() == instance.StatusStopped {
@@ -155,14 +155,14 @@ func TestQueuedStopDrainsActualAdmissionPublication(t *testing.T) {
 	require.NoError(t, f.mgr.instances.Register(idle))
 	evicted, resume, publication, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		free := int64(1000)
 		if idle.GetStatus() == instance.StatusStopped {
 			once.Do(func() { close(evicted); <-resume })
 			free = 6000
 		}
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-	}
+	})
 	f.mgr.publishCatalog = func() error { close(publication); <-release; return errors.New("reverse blocked") }
 	defer func() {
 		select {

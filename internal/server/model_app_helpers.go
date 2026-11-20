@@ -17,6 +17,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/dispatch/affinity"
+	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
@@ -63,26 +64,12 @@ func (s *Server) modelSource(ctx context.Context, model string) string {
 	return cm.SourceRepo
 }
 
-// applyRequestDefaults fills in the request-time defaults for the model
-// the request addressed and leaves every field the client sent as sent.
-// See requestDefaults.
-func (s *Server) applyRequestDefaults(ctx context.Context, provider, model, path string, body []byte) []byte {
-	return wire.SetDefaultFields(body, s.requestDefaults(ctx, provider, model, path))
-}
-
-// requestDefaults is the request-body defaults the provider's config
-// resolves for model (its request blocks: model defaults, then the
-// model's own, then a variant's), on a route that generates text; other
-// routes (embeddings, rerank, audio) get none, since an engine may refuse
-// sampling fields there. The addressed model keys the lookup, not the
-// serving instance's, so a variant served by its base's process still
-// gets its own defaults.
+// requestDefaults resolves the provider's request blocks for text generation.
+// Embeddings, reranking and audio skip defaults because engines may refuse sampling fields there.
+// The addressed model keys the lookup so a variant sharing its base's process keeps its own defaults.
 //
-// A body reaches an engine through instanceRequest (every post to an
-// instance) or, for a model group, the fallback chain's per-replica
-// rewrite, which picks its replica itself; both apply these.
-// Setting only absent fields makes a second application on the worker of
-// a coordinator-routed request a no-op.
+// instanceRequest applies defaults for a run, and the fallback chain applies them for each selected replica.
+// Setting only absent fields makes reapplication on a worker a no-op when the coordinator already set them.
 func (s *Server) requestDefaults(ctx context.Context, provider, model, path string) map[string]any {
 	if s.configStore == nil || model == "" {
 		return nil
@@ -124,62 +111,82 @@ func (s *Server) providerConfig(name string) (pkgConfig.ServiceConfig, bool) {
 	return s.configStore.Config().LookupApp(name)
 }
 
-func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
-	hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-	return inst.Acquire(req.Context(), hints)
+type instanceRequest = chain.InstanceRequest
+
+func newInstanceRequest(req *http.Request, body []byte) instanceRequest {
+	header := req.Header
+	if header == nil {
+		header = make(http.Header)
+	}
+	ctx := req.Context()
+	hints, _ := ctx.Value(CtxKeyRequestHints).(*keepalive.Override)
+	return instanceRequest{
+		Context: ctx, Method: req.Method, Path: req.URL.Path, RawQuery: req.URL.RawQuery,
+		Header: header, OriginalBody: body, ClientModel: clientModelFromContext(ctx), Hints: hints,
+	}
+}
+
+func (s *Server) openInstance(req instanceRequest, inst *instance.Instance) (*instance.Lease, error) {
+	if req.Context == nil || req.Header == nil {
+		return nil, errors.New("instance request requires a context and header")
+	}
+	if req.Method == "" || req.Path == "" {
+		return nil, errors.New("instance request requires a method and path")
+	}
+	if req.Synthetic {
+		return inst.AcquireSynthetic(req.Context, req.Hints)
+	}
+	return inst.Acquire(req.Context, req.Hints)
 }
 
 // openRun leases a local run and resolves its target; on failure it answers through fail unless the client is gone.
-func (s *Server) openRun(req *http.Request, inst *instance.Instance, recorder *llm.InferenceRecorder, fail func(httperr.Error)) (*instance.Lease, *url.URL, backend.Upstream, bool) {
+func (s *Server) openRun(req instanceRequest, inst *instance.Instance, recorder *llm.InferenceRecorder, fail func(httperr.Error)) (*instance.Lease, *url.URL, backend.Upstream, bool) {
 	lease, err := s.openInstance(req, inst)
 	if err != nil {
 		var admission *instance.AdmissionError
 		if errors.As(err, &admission) {
 			fail(failureWire(err, http.StatusServiceUnavailable))
-		} else {
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
+		} else {
+			fail(instanceSendFailure(recorder, err))
 		}
 		return nil, nil, backend.Upstream{}, false
+	}
+	if req.OnLease != nil {
+		req.OnLease()
 	}
 	base, up, err := s.providers.appMgr.Upstream(inst)
 	var target *url.URL
 	if err == nil {
-		target, err = url.Parse(backend.PassthroughTarget(base, req.URL.Path, req.URL.RawQuery))
+		target, err = url.Parse(backend.PassthroughTarget(base, req.Path, req.RawQuery))
 	}
 	if err != nil {
 		lease.Release()
 		fail(instanceSendFailure(recorder, err))
 		return nil, nil, backend.Upstream{}, false
 	}
-	if expected, bound := affinity.Expected(req.Context()); bound && (expected.RunID != inst.ID || !backend.SameEndpoint(expected.Endpoint, base)) {
+	if expected, bound := affinity.Expected(req.Context); bound && (expected.RunID != inst.ID || !backend.SameEndpoint(expected.Endpoint, base)) {
 		lease.Release()
 		fail(httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "response_origin_unavailable", Message: "The response's originating run is no longer available"})
 		return nil, nil, backend.Upstream{}, false
 	}
-	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
-	affinity.Observe(req.Context(), affinity.Origin{ProviderKey: inst.Provider, RunID: inst.ID, Endpoint: base, Model: wire.ModelFromBody(body)})
+	affinity.Observe(req.Context, affinity.Origin{ProviderKey: inst.Provider, RunID: inst.ID, Endpoint: base, Model: wire.ModelFromBody(req.OriginalBody)})
 	return lease, target, up, true
 }
 
-// sendToInstance is the one way a request reaches a leased local run; a streaming one gets the
-// lease's first-byte and idle deadlines.
-func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte, target *url.URL, up backend.Upstream) (*http.Response, error) {
+// sendToInstance applies the lease's first-byte and idle deadlines when the request streams.
+func (s *Server) sendToInstance(req instanceRequest, lease *instance.Lease, body []byte, target *url.URL, up backend.Upstream) (*http.Response, error) {
 	ctx := lease.Context()
 	var wrap func(io.ReadCloser) io.ReadCloser
 	if wire.StreamFromBody(body) {
 		ctx, wrap = lease.WatchStream(ctx)
 	}
-	proxyReq := req.Clone(ctx) //nolint:contextcheck // Acquire derives Lease.Context from this request; WatchStream only narrows its lifetime.
-	proxyReq.URL = target
-	proxyReq.Host = target.Host
-	proxyReq.RequestURI = ""
-	proxyReq.Close = false
-	if body != nil {
-		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
-		proxyReq.ContentLength = int64(len(body))
-		proxyReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, target.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
-	proxyReq.Header = upstreamHeaders(req.Context(), req.Header, up)
+	proxyReq.Header = upstreamHeaders(req.Context, req.Header, up)
 	// Engine servers refuse a JSON body sent without its type; a multipart body always names its own.
 	if proxyReq.Header.Get("Content-Type") == "" {
 		proxyReq.Header.Set("Content-Type", "application/json")
@@ -189,7 +196,7 @@ func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body [
 	}
 	resp, err := s.httpStreamingClient.Do(proxyReq)
 	if err != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) { //nolint:contextcheck // ctx is the request-derived lease context, optionally narrowed by WatchStream.
+		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) {
 			return nil, cause
 		}
 		return nil, err
@@ -211,13 +218,17 @@ func instanceSendFailure(recorder *llm.InferenceRecorder, err error) httperr.Err
 	return failure
 }
 
-func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
+func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, runRequest instanceRequest, inst *instance.Instance, quiet bool) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
 	ctx, attempt := llm.StartAttempt(req.Context(), inst.Provider, model)
 	defer attempt.End()
 	req = req.WithContext(ctx)
+	runRequest.Context = ctx
 	recorder := requestRecorder(req.Context(), model, inst.Provider)
-	lease, target, up, ok := s.openRun(req, inst, recorder, func(e httperr.Error) { attempt.SetError(e.Code, nil); failBeforeBackend(w, req, e) })
+	lease, target, up, ok := s.openRun(runRequest, inst, recorder, func(e httperr.Error) {
+		attempt.SetError(e.Code, nil)
+		failBeforeBackend(w, req, runRequest.OriginalBody, e)
+	})
 	if !ok {
 		return
 	}
@@ -230,12 +241,12 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 		inst.Provider, model, target.Hostname())
 	defer obsproxy.DecInflight(req.Context(), inflightToken)
 
-	body, restoreModel := s.instanceRequest(req, inst)
+	body, restoreModel := s.instanceRequest(runRequest, inst)
 	recorder.SetUpstreamRequestData(body)
 	if !quiet {
 		slog.Info("Forwarding request to instance", "id", inst.ID, "target", target.Host, "path", req.URL.Path)
 	}
-	resp, err := s.sendToInstance(req, lease, body, target, up)
+	resp, err := s.sendToInstance(runRequest, lease, body, target, up) //nolint:contextcheck // The lease derives its context from runRequest.
 	if err != nil {
 		attempt.SetError("transport_failure", err)
 		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
@@ -282,9 +293,9 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 // byte. A streaming request whose dialect streams failures in band gets
 // it inside a fresh 200 stream (a bare status leaves OpenWebUI stuck);
 // everything else gets the status.
-func failBeforeBackend(w http.ResponseWriter, req *http.Request, e httperr.Error) {
+func failBeforeBackend(w http.ResponseWriter, req *http.Request, body []byte, e httperr.Error) {
 	d := dialectOf(req)
-	if streamer, inBand := d.(httperr.InBandStreamer); inBand && isStreamingRequest(req) {
+	if streamer, inBand := d.(httperr.InBandStreamer); inBand && wire.StreamFromBody(body) {
 		openEventStream(w)
 		streamer.StreamError(w, e)
 		return
@@ -298,12 +309,6 @@ func openEventStream(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-}
-
-// isStreamingRequest reports whether the engine-facing body (translated already, if it was) streams.
-func isStreamingRequest(req *http.Request) bool {
-	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
-	return wire.StreamFromBody(body)
 }
 
 // previewProviderError uses the target node's inventory to select one recovery action.
@@ -326,28 +331,25 @@ func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error 
 	return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is configured but disabled on this node; %s, then retry", name, next))
 }
 
-// instanceRequest is what an instance is sent for this request, and the
-// model name to answer in. Every path that posts a request to an instance
-// uses it, so what an engine receives cannot differ by path.
-//
-// The body is the client's, with the addressed model's request defaults,
-// then the engine's own token for the model (see instance.WireModel):
-// zzRouter speaks that token inbound and puts the client's name back on
-// the way out, so no engine's naming reaches a client. Both steps are
-// no-ops when there is nothing to add and the engine honors the client's
-// name. The answer name is the id the caller used: the decorated one when
-// a @node hint was stripped, otherwise the body's. A request with no
-// stashed body gets a nil body and is sent as it came.
-func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (body []byte, answerAs string) {
-	clientModel := ""
-	if original, ok := req.Context().Value(CtxKeyOriginalBody).([]byte); ok && len(original) > 0 {
-		clientModel = wire.ModelFromBody(original)
-		body = s.applyRequestDefaults(req.Context(), inst.Provider, clientModel, req.URL.Path, original)
+// instanceRequest prepares the body and response model name for direct and fallback run dispatch.
+// Every path that posts to an instance uses it, so what an engine receives cannot differ by path.
+// Defaults use the body model before it is replaced with the engine's own token.
+// The answer uses the caller's decorated model name when present, or the body model otherwise.
+// A nil body means there is no prepared payload to rewrite or send.
+func (s *Server) instanceRequest(req instanceRequest, inst *instance.Instance) (body []byte, answerAs string) {
+	clientModel := wire.ModelFromBody(req.OriginalBody)
+	if len(req.OriginalBody) > 0 {
+		defaults := s.requestDefaults(req.Context, inst.Provider, clientModel, req.Path)
+		var omit []string
+		if req.Synthetic {
+			omit = []string{"seed"}
+		}
+		body = wire.SetDefaultFields(req.OriginalBody, defaults, omit...)
 		if clientModel != "" {
 			body = wire.SetModelIfPresent(body, s.providers.appMgr.RequestModel(inst, clientModel))
 		}
 	}
-	answerAs = clientModelFromContext(req.Context())
+	answerAs = req.ClientModel
 	if answerAs == "" {
 		answerAs = clientModel
 	}
@@ -355,15 +357,19 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 }
 
 // forwardToRun relays a native request to a leased local run, with the run's body at the run's target.
-func (s *Server) forwardToRun(w http.ResponseWriter, req *http.Request, inst *instance.Instance) {
+func (s *Server) forwardToRun(w http.ResponseWriter, req *http.Request, body []byte, inst *instance.Instance) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
-	lease, target, up, ok := s.openRun(req, inst, requestRecorder(req.Context(), model, inst.Provider), func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	runRequest := newInstanceRequest(req, body)
+	lease, target, up, ok := s.openRun(runRequest, inst, requestRecorder(req.Context(), model, inst.Provider), func(e httperr.Error) {
+		failBeforeBackend(w, req, runRequest.OriginalBody, e)
+	})
 	if !ok {
 		return
 	}
 	defer lease.Release()
-	req = req.WithContext(lease.Context()) //nolint:contextcheck // openRun acquires this lease from req.Context and adds run/release cancellation.
-	body, _ := s.instanceRequest(req, inst)
+	req = req.WithContext(lease.Context()) //nolint:contextcheck // The lease adds run cancellation to the request context.
+	runRequest.Context = req.Context()
+	body, _ = s.instanceRequest(runRequest, inst)
 	s.proxy.ForwardToBackend(w, req, inst.Provider, target.String(), up, body)
 }
 

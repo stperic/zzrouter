@@ -15,6 +15,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMemoryAssessmentKeepsThirteenUnknownCauses(t *testing.T) {
+	for cause, wire := range map[UnknownCause]string{
+		WeightsUnavailable: "weights_unavailable", MetadataInvalid: "metadata_invalid", ModelUnmodelled: "model_unmodelled",
+		KVDtypeUnsupported: "kv_dtype_unsupported", ContextUnresolved: "context_unresolved", ContextBelowMinimum: "context_below_minimum",
+		NativeContextAdaptation: "native_context_adaptation", BudgetNotSized: "budget_not_sized", MemoryEvidenceUnavailable: "memory_evidence_unavailable",
+		AssessmentFailed: "assessment_failed", NodeOutdated: "node_outdated", NodeUnreachable: "node_unreachable",
+		ProviderNotEligible: "provider_not_eligible",
+	} {
+		t.Run(wire, func(t *testing.T) {
+			var assessment MemoryAssessment
+			assessment.SetUnknown(cause, "")
+			assert.Equal(t, "unknown", assessment.Status)
+			assert.Equal(t, wire, string(assessment.UnknownCause))
+			assert.NotEmpty(t, assessment.Reason)
+		})
+	}
+}
+
 func TestSizingUnknownCausesCoverExistingFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

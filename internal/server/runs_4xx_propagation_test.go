@@ -23,8 +23,8 @@ func TestRuns_LaunchRun_InvalidParameterMaps(t *testing.T) {
 		{"leading digit", map[string]any{"parameters": map[string]string{"2lead": "value"}}},
 		{"leading hyphen", map[string]any{"parameters": map[string]string{"-lead": "value"}}},
 		{"parameter newline", map[string]any{"parameters": map[string]string{"text": "bad\nvalue"}}},
-		{"environment newline", map[string]any{"env_vars": map[string]string{"TEXT": "bad\nvalue"}}},
-		{"environment key", map[string]any{"env_vars": map[string]string{"bad-key": "value"}}},
+		{"environment newline", map[string]any{"environment": map[string]string{"TEXT": "bad\nvalue"}}},
+		{"environment key", map[string]any{"environment": map[string]string{"bad-key": "value"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.fields["provider"] = "llamacpp"
@@ -42,14 +42,11 @@ func TestRuns_LaunchRun_InvalidParameterMaps(t *testing.T) {
 }
 
 // TestRuns_LaunchRun_4xxPropagation pins POST /zzrouter/v1/runs: an
-// internal-executor 4xx (e.g. "unsupported provider") propagates as 400
-// Problem Details verbatim — not 502 Bad Gateway from broadcast-envelope
-// unmarshal failure (the pre-418aac33 bug) and not 500 from a stringified
-// status-code error.
+// internal-executor 404 for an unknown provider propagates as Problem Details.
 func TestRuns_LaunchRun_4xxPropagation(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 
-	body := []byte(`{"model_name":"x","provider":"definitely-not-a-real-provider"}`)
+	body := []byte(`{"model_name":"x","provider":"definitely-not-a-real-provider","node":"@master"}`)
 	req := httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", TestAdminKey)
@@ -57,19 +54,16 @@ func TestRuns_LaunchRun_4xxPropagation(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.engine.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusBadRequest, w.Code,
-		"unsupported provider must propagate 400 from internal to public, got %d body=%s", w.Code, w.Body.String())
+	assert.Equal(t, http.StatusNotFound, w.Code,
+		"unknown provider must propagate 404 from internal to public, got %d body=%s", w.Code, w.Body.String())
 	assert.Contains(t, w.Header().Get("Content-Type"), "application/problem+json",
 		"4xx must round-trip as Problem Details, got %q", w.Header().Get("Content-Type"))
 
-	var pd struct {
-		Status int    `json:"status"`
-		Title  string `json:"title"`
-		Detail string `json:"detail"`
-	}
+	var pd utils.ProblemDetails
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &pd),
 		"public 4xx must be valid Problem Details JSON: %s", w.Body.String())
-	assert.Equal(t, http.StatusBadRequest, pd.Status, "Problem Details status must match HTTP code")
+	assert.Equal(t, http.StatusNotFound, pd.Status, "Problem Details status must match HTTP code")
+	assert.Equal(t, "not_found", pd.Code)
 	assert.NotEmpty(t, pd.Detail, "Problem Details detail must be populated")
 }
 

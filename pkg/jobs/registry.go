@@ -281,6 +281,10 @@ func (r *Registry) List(kind Kind) []Event {
 			continue
 		}
 		if ev, err := j.snapshot(false); err == nil {
+			if j.kind == KindCalibration {
+				ev.Meta = cloneMeta(ev.Meta)
+				delete(ev.Meta, "report")
+			}
 			out = append(out, ev)
 		}
 	}

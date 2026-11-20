@@ -40,6 +40,9 @@ var (
 	// ErrRunHeldByOtherProvider refuses reuse across providers.
 	ErrRunHeldByOtherProvider = errors.New("model is held by another provider")
 
+	// ErrRunSettingsDiffer refuses reuse when the request tier differs.
+	ErrRunSettingsDiffer = errors.New("run settings differ")
+
 	// ErrProviderUnavailable refuses a served start without a usable endpoint.
 	ErrProviderUnavailable = errors.New("provider endpoint unavailable")
 
@@ -94,3 +97,9 @@ var (
 	// ErrParameterValidation marks invalid launch parameters or an endpoint the provider cannot serve.
 	ErrParameterValidation = errors.New("parameter validation failed")
 )
+
+// RunSettingsDifferError identifies the run holding the requested key.
+type RunSettingsDifferError struct{ RunID string }
+
+func (*RunSettingsDifferError) Error() string { return ErrRunSettingsDiffer.Error() }
+func (*RunSettingsDifferError) Unwrap() error { return ErrRunSettingsDiffer }

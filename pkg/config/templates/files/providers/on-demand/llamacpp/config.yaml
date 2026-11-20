@@ -153,6 +153,7 @@ capabilities:
 defaults:
   parameters:
     ctx-size: "auto"
+    metrics: "true"
   metadata:
     shutdown_timeout: "gpu"
     context_param: "ctx-size"

@@ -16,7 +16,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -38,12 +38,10 @@ func capacityFixture(t *testing.T) (*ProviderAppManager, EnsureRequest, string) 
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization"}, nil
 	})
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 10000}}
-	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 0}}, nil
-	}
+	})
 	return m, EnsureRequest{Provider: "vllm", Model: "vendor/model"}, dir
 }
 
@@ -51,9 +49,12 @@ func TestPreviewCapacityHasNoSideEffects(t *testing.T) {
 	m, req, _ := capacityFixture(t)
 	m.idleEvictionDefault = true
 	observations := 0
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		observations++
-		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 0}}, nil
+	cached := m.memorySnapshot
+	m.memorySnapshot = func(ctx context.Context, fresh bool) resources.Snapshot {
+		if fresh {
+			observations++
+		}
+		return cached(ctx, fresh)
 	}
 	held := instance.NewInstance("held", "vllm", "other", 0, -1, 1)
 	held.SetStatus(instance.StatusRunning)
@@ -88,13 +89,37 @@ func TestPreviewCapacityHasNoSideEffects(t *testing.T) {
 	assert.Equal(t, 1, observations)
 }
 
+func TestReportPreviewAndCapacityStillShowNoFit(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization", KVBytesParameter: "kv-cache-memory-bytes"}, nil
+	}, "parameters:\n  kv-cache-memory-bytes: {type: int, min: 1}\n")
+	req.Parameters = map[string]string{
+		"memory-admission": "report", "gpu-memory-utilization": "0.1", "kv-cache-memory-bytes": "9663676416",
+	}
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+	require.NoError(t, err)
+	assert.Equal(t, "no_fit", preview.Assessment.Status)
+	assert.Contains(t, preview.Assessment.Reason, "kv-cache-memory-bytes")
+	assert.Equal(t, preview.Assessment, m.AssessCapacity(t.Context(), req))
+	assert.Contains(t, preview.Args, "--kv-cache-memory-bytes")
+	assert.NotContains(t, preview.Args, "--memory-admission")
+	assert.Empty(t, m.instances.List())
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, effects, err := m.admitMemory(t.Context(), features, true, nil)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	assert.Nil(t, effects.Warning)
+}
+
 func TestPreviewLaunchPreservesPartialResultOnPrepareError(t *testing.T) {
 	m, req, _ := capacityFixture(t)
 	cause := errors.New("schema unavailable")
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return nil, cause }
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+	m.memorySnapshot = func(context.Context, bool) resources.Snapshot {
 		t.Error("failed preparation must not assess capacity")
-		return nil
+		return resources.Snapshot{}
 	}
 	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 	require.ErrorIs(t, err, cause)
@@ -113,9 +138,7 @@ func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryLayers, Parameter: "gpu-layers"}, nil
 	})
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation }
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation })
 	assessment := m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.MemoryEvidenceUnavailable, assessment.UnknownCause)
@@ -134,7 +157,7 @@ func TestCapacityMissingUnifiedTotalIsUnknown(t *testing.T) {
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
 	})
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
+	m.memorySnapshot = poolSnapshot()
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
 	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
 }
@@ -172,21 +195,16 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization"}, nil
 	})
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("measurement missing") }
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("measurement missing") })
 	assessment = m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.MemoryEvidenceUnavailable, assessment.UnknownCause)
 	assert.Equal(t, int64(1024), assessment.WeightsMiB)
 	assert.Equal(t, int64(2048), assessment.ContextTokens)
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
-	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device, err := gpu.UnifiedMemoryDevice(512*1024*1024, 512*1024*1024)
 		return []gpu.MemoryDevice{device}, err
-	}
+	})
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
 	})
@@ -203,9 +221,9 @@ func TestCancelledAssessmentRetainsCollectedEvidence(t *testing.T) {
 	m, req, _ := capacityFixture(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+	m.memorySnapshot = func(context.Context, bool) resources.Snapshot {
 		cancel()
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 10000}}
+		return resources.Snapshot{}
 	}
 	assessment := m.AssessCapacity(ctx, req)
 	assert.Equal(t, "unknown", assessment.Status)
@@ -229,26 +247,23 @@ func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
 				declared.Diagnostics.Memory.Kind = kind
 				return declared, err
 			}
-			m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-				return &hardware.HardwareInfo{TotalRAM: 20000 << 20}
-			}
 			features, err := m.ResolveLaunchParameters(t.Context(), req)
 			require.NoError(t, err)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-			}
+			}, 20000)
 			decision, _, err := m.admitMemory(ctx, features, false, nil)
 			require.NoError(t, err)
 			require.Equal(t, "fit", decision.Status)
 			require.Positive(t, decision.RequiredMiB)
 			require.Positive(t, decision.CapacityMiB)
 			require.Positive(t, decision.AffordableContextTokens)
-			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				cancel()
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-			}
+			})
 			assessment, _, err := m.admitMemory(ctx, features, false, nil)
 			require.ErrorIs(t, err, context.Canceled)
 			assert.Equal(t, "unknown", assessment.Status)
@@ -291,10 +306,10 @@ func TestNilBudgetLaunchEvidenceIsBestEffort(t *testing.T) {
 					require.ErrorIs(t, err, os.ErrPermission)
 				}
 				features.model = process.ResolvedModel{Path: dir}
-				m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 					t.Error("nil budgets must not observe or wait for device memory")
 					return nil, process.ErrMemoryObservation
-				}
+				})
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
 				assessment, _, err := m.admitMemory(ctx, features, false, nil)
@@ -314,11 +329,11 @@ func TestNilBudgetLaunchEvidenceIsBestEffort(t *testing.T) {
 
 func TestCapacityIncompleteSelectedObservationIsUnknown(t *testing.T) {
 	m, req, _ := capacityFixture(t)
-	for _, cards := range [][]gpu.CardMetrics{
-		{{UUID: "GPU-A", TotalMemoryMiB: 10000}, {UUID: "GPU-B"}},
-		{{UUID: "GPU-A", TotalMemoryMiB: 10000}, {TotalMemoryMiB: 10000}},
+	for _, card := range []resources.Pool{
+		{Kind: resources.GPU, ID: "GPU-B"},
+		{Kind: resources.GPU, TotalMiB: new(int64(10000))},
 	} {
-		m.memoryInventory = func(context.Context) []gpu.CardMetrics { return cards }
+		m.memorySnapshot = poolSnapshot(resources.Pool{Kind: resources.GPU, ID: "GPU-A", TotalMiB: new(int64(10000))}, card)
 		req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}
 		req.Parameters = map[string]string{"tensor-parallel-size": "2"}
 		m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
@@ -336,14 +351,10 @@ func TestCapacityLayersUseUnifiedPool(t *testing.T) {
 		t.Skip("Apple unified pool")
 	}
 	m, req, _ := capacityFixture(t)
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device, err := gpu.UnifiedMemoryDevice(512*1024*1024, 512*1024*1024)
 		return []gpu.MemoryDevice{device}, err
-	}
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
-	}
+	})
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryLayers, Parameter: "gpu-layers"}, nil
 	})
@@ -393,9 +404,9 @@ func autoCapacityFixture(t *testing.T) (*ProviderAppManager, EnsureRequest) {
 
 func TestMinimumContextUsesEndpointSchema(t *testing.T) {
 	m, req := autoCapacityFixture(t)
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-	}
+	})
 	for _, tc := range []struct {
 		endpoint Endpoint
 		tokens   int64
@@ -471,13 +482,10 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 		}
 		return declared, nil
 	}
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
-	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device, err := gpu.UnifiedMemoryDevice(10000*1024*1024, 10000*1024*1024)
 		return []gpu.MemoryDevice{device}, err
-	}
+	})
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
 	var originalEnvironment map[string]string
 	for _, f := range []float64{0.75, 0.6} {
@@ -539,12 +547,9 @@ func TestNativeContextAdmissionAllowsEngineAdaptation(t *testing.T) {
 		declared.Parameters["max-model-len"] = shape
 		return declared, err
 	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-	}
-	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 1024 * 1024}
-	}
+	}, 1)
 	for _, context := range []string{"auto", "32768"} {
 		req.Parameters = map[string]string{"max-model-len": context, "gpu-memory-utilization": "0.95"}
 		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
@@ -579,9 +584,9 @@ func TestKVCacheRolesReachPreviewAndAdmission(t *testing.T) {
 		declared.Parameters["kv-cache-dtype"] = schema.ParamShape{Kind: schema.ParamString, KVCacheDtype: "both"}
 		return declared, err
 	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
-	}
+	})
 	for _, dtype := range []string{"auto", "fp8", "future-dtype"} {
 		req.Parameters = map[string]string{"max-model-len": "4096", "gpu-memory-utilization": "0.6", "kv-cache-dtype": dtype}
 		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
@@ -638,18 +643,15 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 				return declared, nil
 			}
 			total := int64(10000)
-			m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-				return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: total}}
-			}
-			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-				if kind == schema.MemoryUnified {
-					device, err := gpu.UnifiedMemoryDevice(total*1024*1024, total*1024*1024)
-					return []gpu.MemoryDevice{device}, err
-				}
-				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: total}}, nil
-			}
-			m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-				return &hardware.HardwareInfo{TotalRAM: total * 1024 * 1024}
+
+			m.memorySnapshot = func(ctx context.Context, fresh bool) resources.Snapshot {
+				return deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
+					if kind == schema.MemoryUnified {
+						device, err := gpu.UnifiedMemoryDevice(total*1024*1024, total*1024*1024)
+						return []gpu.MemoryDevice{device}, err
+					}
+					return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: total}}, nil
+				}, total)(ctx, fresh)
 			}
 			req.Parameters = map[string]string{"max-model-len": "4096", "gpu-memory-utilization": "0.75"}
 			if kind == schema.MemoryUnified {

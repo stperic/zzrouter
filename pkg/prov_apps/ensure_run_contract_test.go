@@ -606,7 +606,7 @@ func TestEnsureRunContract(t *testing.T) {
 
 	t.Run("10 two budgeted models queue", func(t *testing.T) {
 		root := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000' ;;\nesac\n"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000, [N/A], 0000:01:00.0, 0, [N/A]' ;;\nesac\n"), 0o700))
 		t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 		reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
@@ -615,7 +615,7 @@ func TestEnsureRunContract(t *testing.T) {
 		r := newContractRig(t, true, WithJobsRegistry(reg), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 			return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 		})))
-		r.m.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+		r.m.memorySnapshot = nvidiaSnapshot
 		budgeted := func(model string) *instance.Instance {
 			t.Helper()
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: model})})[0]
@@ -1457,6 +1457,26 @@ func TestEnsureRunContractServed(t *testing.T) {
 		assert.Zero(t, r.daemon.count(true), "zzRouter sends no unload")
 	})
 
+	t.Run("a served run reuses absent and equal request settings", func(t *testing.T) {
+		r := newServedRig(t)
+		pinned := served
+		pinned.Parameters = map[string]string{"keep-alive": "-1"}
+		run := r.running(t, pinned)
+		same := served
+		same.Parameters = map[string]string{"keep_alive": "-1"}
+		for _, req := range []EnsureRequest{served, same} {
+			result, err := r.m.EnsureRun(t.Context(), req)
+			require.NoError(t, err)
+			assert.Same(t, run, result.Run)
+			assert.False(t, result.Started)
+		}
+		different := served
+		different.Parameters = map[string]string{"keep-alive": "30m"}
+		_, err := r.m.EnsureRun(t.Context(), different)
+		require.ErrorIs(t, err, ErrRunSettingsDiffer)
+		assert.Equal(t, 1, r.daemon.count(false))
+	})
+
 	t.Run("S13 a model a process provider holds refuses a served start", func(t *testing.T) {
 		r := newServedRig(t)
 		held := instance.NewInstance("held", "generic", servedLoaded, 0, 0, 0)
@@ -2054,9 +2074,9 @@ func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
 			r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 				return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 			})))
-			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
-			}
+			})
 			edit := func(limit string) {
 				fresh := &config.AppsConfig{}
 				r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {

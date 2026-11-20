@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -15,14 +15,16 @@ import (
 
 func TestUnifiedCapacityUsesTotalsAndAdmissionUsesFreshAvailability(t *testing.T) {
 	r := reservationRig(t, false)
-	r.m.memorySystem = func(context.Context) *hardware.HardwareInfo {
-		return &hardware.HardwareInfo{TotalRAM: 32 << 30, AvailableRAM: 31 << 30}
-	}
 	observations := 0
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		observations++
-		device, err := gpu.UnifiedMemoryDevice(32<<30, 6<<30)
-		return []gpu.MemoryDevice{device}, err
+	r.m.memorySnapshot = func(_ context.Context, fresh bool) resources.Snapshot {
+		available := int64(31 << 10)
+		if fresh {
+			observations++
+			available = 6 << 10
+		}
+		return resources.Snapshot{Pools: []resources.Pool{{
+			Kind: resources.Unified, ID: "unified", TotalMiB: new(int64(32 << 10)), AvailableMiB: &available,
+		}}}
 	}
 	capacity, _, err := r.m.memoryDevices(t.Context(), schema.MemoryUnified, true)
 	require.NoError(t, err)
@@ -36,7 +38,6 @@ func TestUnifiedCapacityUsesTotalsAndAdmissionUsesFreshAvailability(t *testing.T
 
 	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
 		t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-foreign")
-		r.m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
 		features, err := r.m.ResolveLaunchParameters(t.Context(), EnsureRequest{Provider: "generic"})
 		require.NoError(t, err)
 		require.Equal(t, map[string]int64{"unified": 9000}, features.Commitments)
@@ -59,11 +60,11 @@ func TestUnifiedReclaimReleasesCommitmentWithoutClaimingFreedRAM(t *testing.T) {
 	f.features.Params = map[string]string{"budget": "6144"}
 	f.older.SetResolved(instance.Resolved{Commitments: map[string]int64{"unified": 12288}})
 	observations := 0
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		observations++
 		device, err := gpu.UnifiedMemoryDevice(32<<30, 16<<30)
 		return []gpu.MemoryDevice{device}, err
-	}
+	})
 	evicted, err := f.admit(t)
 	require.NoError(t, err)
 	require.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 0}}, evicted)

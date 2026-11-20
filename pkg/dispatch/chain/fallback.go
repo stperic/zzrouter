@@ -91,15 +91,15 @@ func (p *Proxy) Stop(_ context.Context) {
 // then ordered by strategy. Each deployment is retried (with exponential
 // backoff) before falling back to the next.
 //
-// body goes out as given apart from each deployment's model name: the
-// chain serves every surface, so one whose body needs more (Chat's forced
-// usage reporting) prepares it first. suppressUsageFrame drops the
-// terminal usage-only frame the caller did not ask to see. The return
-// names the provider of the deployment that answered, "" when none did.
+// req carries the body already prepared for the wire protocol, including
+// forced usage reporting when the surface supports it.
+// suppressUsageFrame drops the terminal usage-only frame when the caller
+// did not request it. The return names the provider that answered, or ""
+// when no provider answered.
 func (p *Proxy) ProxyWithFallback(
 	c *gin.Context,
 	resolved *resolver.Resolved,
-	body []byte,
+	req InstanceRequest,
 	recorder *llm.InferenceRecorder,
 	clientModel, endpoint string,
 	suppressUsageFrame bool,
@@ -185,7 +185,7 @@ func (p *Proxy) ProxyWithFallback(
 		maxRetries := dep.RetryLimit()
 
 		rctx.attemptsSoFar = attempts
-		depAttempt, disposition := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)
+		depAttempt, disposition := p.tryDeployment(c, dep, req, recorder, resolved, maxRetries, rctx)
 		attempts = append(attempts, depAttempt...)
 
 		if p.loadTracker != nil {
@@ -319,7 +319,7 @@ type attemptOutcome struct {
 func (p *Proxy) tryDeployment(
 	c *gin.Context,
 	dep pfallback.Candidate,
-	body []byte,
+	req InstanceRequest,
 	recorder *llm.InferenceRecorder,
 	resolved *resolver.Resolved,
 	maxRetries int,
@@ -328,13 +328,13 @@ func (p *Proxy) tryDeployment(
 	var attempts []pfallback.Attempt
 	// The client sent the group alias; the backend needs the replica's own model name.
 	if dep.Model != resolved.OriginalName {
-		body = wire.RewriteRequestModel(body, c.Request.Header.Get("Content-Type"), dep.Model)
+		req.OriginalBody = wire.RewriteRequestModel(req.OriginalBody, req.Header.Get("Content-Type"), dep.Model)
 	}
-	body = wire.SetDefaultFields(body, p.deps.RequestDefaults(dep.App, dep.Model, c.Request.URL.Path))
+	req.OriginalBody = wire.SetDefaultFields(req.OriginalBody, p.deps.RequestDefaults(dep.App, dep.Model, req.Path))
 	for retry := 0; retry <= maxRetries; retry++ {
 		attemptMeta := rctx
 		attemptMeta.attemptsSoFar = append(append([]pfallback.Attempt{}, rctx.attemptsSoFar...), attempts...)
-		outcome := p.tryOnce(c, dep, body, recorder, resolved, attemptMeta, retry, maxRetries)
+		outcome := p.tryOnce(c, dep, req, recorder, resolved, attemptMeta, retry, maxRetries)
 		attempts = append(attempts, outcome.attempt)
 		if outcome.disposition != attemptRetry {
 			return attempts, outcome.disposition
@@ -373,7 +373,7 @@ func (p *Proxy) coolDown(dep pfallback.Candidate, a pfallback.Attempt) {
 func (p *Proxy) tryOnce(
 	c *gin.Context,
 	dep pfallback.Candidate,
-	body []byte,
+	req InstanceRequest,
 	recorder *llm.InferenceRecorder,
 	resolved *resolver.Resolved,
 	rctx routeMetaCtx,
@@ -382,13 +382,13 @@ func (p *Proxy) tryOnce(
 	recorder.SetProvider(dep.App)
 	recorder.SetServingTarget(dep.App, dep.Model)
 	original := c.Request
-	ctx, attempt := llm.StartAttempt(original.Context(), dep.App, dep.Model)
+	ctx, attempt := llm.StartAttempt(req.Context, dep.App, dep.Model)
 	defer attempt.End()
 	defer func() { c.Request = original }()
 	c.Request = original.WithContext(ctx)
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
-	targetURL, up, inst, err := p.resolveDeploymentTarget(c.Request.Context(), dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
+	targetURL, up, inst, err := p.resolveDeploymentTarget(ctx, dep, req.Path, req.RawQuery, rctx.endpoint)
 	if err != nil {
 		attempt.SetError("unavailable", err)
 		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
@@ -397,9 +397,11 @@ func (p *Proxy) tryOnce(
 	}
 
 	attempt.SetTarget(targetURL)
+	body := req.OriginalBody
 	var lease *instance.Lease
 	if inst != nil {
-		lease, err = p.deps.LeaseInstance(c.Request, inst)
+		req.Context = ctx
+		lease, err = p.deps.LeaseInstance(req, inst)
 		if err != nil {
 			attempt.SetError("unavailable", err)
 			outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
@@ -409,7 +411,7 @@ func (p *Proxy) tryOnce(
 			return outcome
 		}
 		defer lease.Release()
-		body = p.deps.InstanceBody(c.Request, lease, body)
+		body = p.deps.InstanceBody(req, lease)
 	}
 	recorder.SetUpstreamRequestData(body)
 
@@ -429,7 +431,7 @@ func (p *Proxy) tryOnce(
 	if lease != nil && wire.StreamFromBody(body) {
 		attemptCtx, wrap = lease.WatchStream(attemptCtx)
 	}
-	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
+	resp, err := p.deps.ProxyForwardDetached(attemptCtx, req.Method, targetURL, attemptHeaders(req.Header, up, dep), up, body)
 	if err != nil {
 		if resp != nil {
 			_ = resp.Body.Close()

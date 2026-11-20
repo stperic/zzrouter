@@ -111,7 +111,8 @@ func TestDecide(t *testing.T) {
 		{name: "force joiner shares the flight's run", want: Want{Force: true}, node: joined(instance.StatusStarting, "fake"), act: ActReuse, run: "flown"},
 		{name: "force joiner of another provider's flight is refused", want: Want{Force: true}, node: joined(instance.StatusRunning, "other"), err: ErrRunHeldByOtherProvider},
 		{name: "failed flight wins over another provider", node: joined(instance.StatusFailed, "other"), err: errTestStart},
-		{name: "joiner of a run already failed gets its cause", want: Want{Force: true}, node: joined(instance.StatusFailed, "fake"), err: errTestStart},
+		{name: "joiner of a run already failed gets its cause", node: joined(instance.StatusFailed, "fake"), err: errTestStart},
+		{name: "force joiner of a different failed flight gets its cause", want: Want{Force: true, Runtime: "other"}, node: joined(instance.StatusFailed, "fake"), err: errTestStart},
 		{name: "joiner of a run already stopped gets why", node: joined(instance.StatusStopped, "other"), err: errTestStart},
 		{name: "joiner of a stopping run retries", node: joined(instance.StatusStopping, "fake"), err: instance.ErrStopping},
 
@@ -146,6 +147,73 @@ func TestDecide(t *testing.T) {
 			assert.Equal(t, want, d.Act)
 			assert.Equal(t, tc.run, d.Run)
 			assert.Equal(t, tc.replace, d.Replace)
+		})
+	}
+}
+
+func TestDecideExistingRequestSettings(t *testing.T) {
+	run := &RunView{ID: "held", Provider: "p", Status: instance.StatusRunning,
+		Parameters: map[string]string{"ctx-size": "4096"}, Environment: map[string]string{"DEVICE": "0"}}
+	for _, tc := range []struct {
+		name          string
+		params, env   map[string]string
+		force, joined bool
+		act           Act
+	}{
+		{name: "absent", act: ActReuse},
+		{"same flag", map[string]string{"ctx_size": "4096"}, run.Environment, false, false, ActReuse},
+		{"different flag value", map[string]string{"ctx-size": "8192"}, run.Environment, false, false, ActRefuse},
+		{"different environment", run.Parameters, map[string]string{"DEVICE": "1"}, false, false, ActRefuse},
+		{"one tier map omitted", run.Parameters, nil, false, false, ActRefuse},
+		{"environment alone states the tier", nil, run.Environment, false, false, ActRefuse},
+		{"replace", run.Parameters, nil, true, false, ActStart},
+		{"replace joins same settings", run.Parameters, run.Environment, true, true, ActReuse},
+		{"replace joins different settings", run.Parameters, nil, true, true, ActRefuse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decision := Decide(Want{Provider: run.Provider, Parameters: tc.params, Environment: tc.env, Force: tc.force}, Node{Existing: run, Joined: tc.joined})
+			require.Equal(t, tc.act, decision.Act)
+			if tc.act == ActRefuse {
+				require.ErrorIs(t, decision.Err, ErrRunSettingsDiffer)
+				var conflict *RunSettingsDifferError
+				require.ErrorAs(t, decision.Err, &conflict)
+				assert.Equal(t, run.ID, conflict.RunID)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name                      string
+		stored, requested         map[string]string
+		status                    instance.Status
+		force, joined, wantRefuse bool
+	}{
+		{"pinned flight with different budget", map[string]string{"keep-alive": "-1", "budget": "0.31"}, map[string]string{"keep-alive": "-1", "budget": "0.42"}, instance.StatusStarting, false, true, true},
+		{"unpinned leader with different tier", map[string]string{"keep-alive": "30m", "budget": "0.31"}, map[string]string{"keep-alive": "-1", "budget": "0.42"}, instance.StatusStarting, false, true, true},
+		{"unpinned joiner with different tier", map[string]string{"keep-alive": "-1", "budget": "0.31"}, map[string]string{"keep-alive": "30m", "budget": "0.42"}, instance.StatusStarting, false, true, true},
+		{"pin replay reused with the replayed tier", map[string]string{"keep-alive": "-1", "budget": "0.37"}, map[string]string{"keep_alive": "-1", "budget": "0.37"}, instance.StatusRunning, false, false, false},
+		{"pin replay reused with an empty tier", map[string]string{"keep-alive": "-1", "budget": "0.37"}, map[string]string{}, instance.StatusRunning, false, false, false},
+		{"pin replay with altered keep-alive", map[string]string{"keep-alive": "-1", "budget": "0.37"}, map[string]string{"keep-alive": "30m"}, instance.StatusRunning, false, false, true},
+		{"force joins terminal flight without settings", run.Parameters, nil, instance.StatusStopped, true, true, false},
+		{"force joins terminal flight with the same settings", run.Parameters, run.Parameters, instance.StatusFailed, true, true, false},
+		{"force joins terminal flight with different settings", run.Parameters, map[string]string{"ctx-size": "8192"}, instance.StatusFailed, true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := &RunView{ID: run.ID, Provider: run.Provider, Status: tc.status, Parameters: tc.stored, Environment: map[string]string{}, Failure: errTestStart}
+			want := Want{Provider: existing.Provider, Parameters: tc.requested, Force: tc.force}
+			d := Decide(want, Node{Existing: existing, Joined: tc.joined})
+			require.Empty(t, d.Replace)
+			if tc.wantRefuse {
+				require.Equal(t, ActRefuse, d.Act)
+				require.ErrorIs(t, d.Err, ErrRunSettingsDiffer)
+				var conflict *RunSettingsDifferError
+				require.ErrorAs(t, d.Err, &conflict)
+				require.Equal(t, existing.ID, conflict.RunID)
+				return
+			}
+			require.NoError(t, d.Err)
+			require.Equal(t, ActReuse, d.Act)
+			require.Equal(t, existing.ID, d.Run)
 		})
 	}
 }

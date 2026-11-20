@@ -1,5 +1,8 @@
 provider: strata
+observe: {path: /metrics/prometheus, format: prometheus, running: "vllm:num_requests_running", waiting: "vllm:num_requests_waiting"}
 parameters:
+  batch: {type: int, description: "Requested concurrent engine slots"}
+  batch-mtp: {type: bool, description: "Allow more than eight batch slots"}
   max-context:
     type: int
     min: 1

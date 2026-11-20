@@ -1,5 +1,7 @@
 # Long-tail llama.cpp parameters. Go spine carries ctx-size + n-gpu-layers.
 provider: llamacpp
+observe: {path: /metrics, format: prometheus, running: "llamacpp:requests_processing", waiting: "llamacpp:requests_deferred"}
+calibration: {output: {ignore_eos: true}}
 cache_log:
   pools: 'llama_kv_cache: size = +[0-9.]+ MiB \( *([0-9]+) cells, *[0-9]+ layers, *[0-9]+/([0-9]+) seqs\)'
   slots: "srv +load_model: initializing, n_slots = ([0-9]+), n_ctx_slot = ([0-9]+), kv_unified = '(true|false)'"

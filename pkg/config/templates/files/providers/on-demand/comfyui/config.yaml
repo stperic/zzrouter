@@ -88,6 +88,3 @@ runtime:
     readiness_probe:
       timeout: 2m
       serve: {path: /system_stats}
-  activity_probe:
-    path: /queue
-    busy_when_nonempty: [queue_running, queue_pending]

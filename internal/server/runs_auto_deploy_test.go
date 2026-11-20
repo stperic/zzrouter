@@ -18,10 +18,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/model"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 )
@@ -221,32 +223,77 @@ func TestHandleAutoDeployLaunch_DownloadsTheVariantsBase(t *testing.T) {
 	assert.Equal(t, []string{"test-node"}, sent.Nodes)
 }
 
+func TestInternalStartAutoDeployCarriesReplace(t *testing.T) {
+	type requestKey struct{}
+	exec, mgr, _ := newAliasRunsExecutor(t)
+	cfg := aliasLoadConfig(t)
+	require.NoError(t, cfg.UpdateApp(aliasLoadProvider, func(svc *pkgConfig.ServiceConfig) error {
+		svc.Search = &pkgConfig.AppSearchConfig{Registry: constants.RepoHuggingFace}
+		return nil
+	}))
+	mgr.ReloadConfig(cfg)
+	old := instance.NewInstance("old", aliasLoadProvider, aliasLoadFileStem, 8300, 0, 0)
+	old.MarkRunning(false, nil)
+	require.NoError(t, mgr.Instances().Register(old))
+	registry := newJobsForChainTest(t)
+	download, err := registry.StartDetached(jobs.KindDownload, "", nil)
+	require.NoError(t, err)
+	exec.WithAutoDeploy(func(string) bool { return false }, func(ctx context.Context, _ *DeployRequest) (*Deployment, error) {
+		assert.Nil(t, ctx.Value(requestKey{}))
+		assert.Nil(t, ctx.Done())
+		return &Deployment{Nodes: []modelregistry.DeploymentNode{{Node: "n1", JobID: download.ID()}}}, nil
+	}, registry)
+	c, w := postJSON(t, `{"provider":"fake","model_name":"`+aliasLoadRepoID+`","launch_mode":"native","auto_deploy":true,"replace":true}`)
+	c.Request = c.Request.WithContext(context.WithValue(t.Context(), requestKey{}, "caller"))
+	exec.HandleInternalLaunchRun(c)
+	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
+	require.Equal(t, instance.StatusRunning, old.GetStatus(), "the deploy job still holds the start")
+	download.Done()
+	require.Eventually(t, func() bool {
+		_, exists := mgr.GetInstance(old.ID)
+		return !exists
+	}, 5*time.Second, time.Millisecond, "the chained start replaces the warm run")
+}
+
 // Drive the real deployment service so its required-node contract is exercised.
 func TestRunsService_AutoDeployTargetsLaunchNode(t *testing.T) {
-	for _, target := range []string{"", "@master", "worker-a"} {
-		t.Run("target="+target, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, target, weights, owner string
+	}{
+		{"no owner", "", "org/Base-GGUF", ""},
+		{"no download target", "@master", "org/Base-GGUF", ""},
+		{"worker", "worker-a", "org/Base-GGUF", "worker-a"},
+		{"loopback alias", "localhost", "org/Base-GGUF", "coordinator"},
+		{"coordinator alias with qualified weights", "@master", "org/Base-GGUF@coordinator", "coordinator"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := &pkgConfig.AppsConfig{Version: "1.0", Name: "test"}
 			require.NoError(t, cfg.AddApp("llamacpp", pkgConfig.ServiceConfig{
 				Name: "llamacpp", Mode: constants.AppModeOnDemand, Protocol: pkgConfig.ProtocolOpenAI,
 				Runtime:      &pkgConfig.AppRuntimeConfig{BasePort: 18080, Execution: pkgConfig.ExecutionConfig{Type: "cli", Command: "stub"}},
 				Search:       &pkgConfig.AppSearchConfig{Registry: "huggingface"},
 				Capabilities: &pkgConfig.AppCapabilities{DefaultVariant: "Q4_K_M", WireEndpoints: []string{"chat_completions"}},
-				Models:       map[string]pkgConfig.ModelSpec{"fast": {From: "org/Base-GGUF"}},
+				Models:       map[string]pkgConfig.ModelSpec{"fast": {From: tc.weights}},
 			}))
 			router := &autoDeployRouter{launched: make(chan routing.Request, 1)}
-			deployments := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
+			deployments := NewDeploymentsService(router, &mockNodeInfo{name: "coordinator"}, func() *pkgConfig.AppsConfig { return cfg })
 			deployments.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
 				return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "base-Q4_K_M.gguf", Size: 7}}}, nil
 			}
 			service := NewRunsService(router).WithAutoDeploy(deployments, func(string) bool { return false },
 				func() *pkgConfig.AppsConfig { return cfg }, newJobsForChainTest(t))
 			resp, err := service.LaunchRun(context.Background(), &LaunchRunRequest{
-				Provider: "llamacpp", Model: "fast", AutoDeploy: true, Node: target,
+				Provider: "llamacpp", Model: "fast", AutoDeploy: true, Node: tc.target, Replace: true,
+				Environment: map[string]string{"DEVICE": "0"},
 			})
-			if target == "" || target == "@master" {
+			if tc.owner == "" {
 				require.Error(t, err, "omitted deploy targets retain the required-target contract")
 				require.Nil(t, resp)
-				require.Contains(t, err.Error(), "nodes")
+				if tc.target == "" {
+					require.ErrorIs(t, err, errRunNodeRequired)
+				} else {
+					require.Contains(t, err.Error(), "nodes")
+				}
 				router.mu.Lock()
 				sent := router.deployed
 				router.mu.Unlock()
@@ -259,7 +306,7 @@ func TestRunsService_AutoDeployTargetsLaunchNode(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			wantNode := target
+			wantNode := tc.owner
 			assert.Equal(t, wantNode, resp.Node)
 			assert.Equal(t, "download-job", resp.DeployJobID)
 			select {
@@ -269,6 +316,8 @@ func TestRunsService_AutoDeployTargetsLaunchNode(t *testing.T) {
 				require.NoError(t, json.Unmarshal(launched.Body, &launch))
 				assert.Equal(t, "fast#Q4_K_M", launch.Model)
 				assert.False(t, launch.AutoDeploy)
+				assert.True(t, launch.Replace)
+				assert.Equal(t, map[string]string{"DEVICE": "0"}, launch.Environment)
 			case <-time.After(time.Second):
 				t.Fatal("deployment completed but launch was not forwarded")
 			}
@@ -307,20 +356,67 @@ func (r *autoDeployRouter) Route(_ context.Context, req *routing.Request) (*rout
 		return &routing.Response{StatusCode: http.StatusAccepted, Body: []byte(`{"key":"download-1","job_id":"download-job","status":"completed"}`)}, nil
 	case req.Path == "/zzrouter/v1/internal/runs":
 		r.launched <- *req
-		return &routing.Response{StatusCode: http.StatusAccepted, Body: []byte(`{"id":"run-1","status":"launching","port":18080}`)}, nil
+		body, err := json.Marshal(LaunchRunResponse{ID: "run-1", Status: "launching", Port: 18080, Node: req.Node})
+		return &routing.Response{StatusCode: http.StatusAccepted, Body: body}, err
 	default:
 		return &routing.Response{StatusCode: http.StatusOK, Body: []byte(`{"exists":false,"data":[]}`)}, nil
 	}
 }
 
-func TestRunsService_AutoDeployPresentModelKeepsMasterDefault(t *testing.T) {
+func TestRunsService_AutoDeployPresentModelUsesModelOwner(t *testing.T) {
+	coordinator := &Server{
+		node:  &NodeIdentity{name: "coordinator", mode: pkgConfig.ClusterModeCoordinator},
+		model: &model.Subsystem{Resolver: staticModelResolver{provider: "ollama"}},
+	}
+	for _, tc := range []struct {
+		name, node, provider string
+		router               runModelRouter
+	}{
+		{"worker replica", "worker-a", "llamacpp", &capturingCache{owner: "worker-a"}},
+		{"coordinator provider without a replica", "coordinator", "ollama", coordinator},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := &autoDeployRouter{launched: make(chan routing.Request, 1)}
+			service := NewRunsService(router).WithAutoDeploy(&DeploymentsService{}, func(name string) bool {
+				assert.Equal(t, "present", name)
+				return true
+			}, nil, newJobsForChainTest(t)).WithModelRouter(tc.router, nil)
+			response, err := service.LaunchRun(t.Context(), &LaunchRunRequest{Provider: tc.provider, Model: "present", AutoDeploy: true})
+			require.NoError(t, err)
+			require.Equal(t, tc.node, response.Node)
+			request := <-router.launched
+			assert.Equal(t, tc.node, request.Node)
+			var forwarded LaunchRunRequest
+			require.NoError(t, json.Unmarshal(request.Body, &forwarded))
+			assert.False(t, forwarded.AutoDeploy)
+			require.Nil(t, router.deployed)
+		})
+	}
+}
+
+func TestRunsService_AutoDeployMissingModelRequiresPlacement(t *testing.T) {
+	coordinator := &Server{
+		node:  &NodeIdentity{name: "coordinator", mode: pkgConfig.ClusterModeCoordinator},
+		model: &model.Subsystem{Resolver: staticModelResolver{provider: "ollama"}},
+	}
 	router := &autoDeployRouter{launched: make(chan routing.Request, 1)}
-	service := NewRunsService(router).WithAutoDeploy(&DeploymentsService{}, func(string) bool { return true }, nil, newJobsForChainTest(t))
-	_, err := service.LaunchRun(t.Context(), &LaunchRunRequest{Provider: "llamacpp", Model: "present", AutoDeploy: true})
-	require.NoError(t, err)
-	request := <-router.launched
-	assert.Equal(t, "@master", request.Node)
-	require.Nil(t, router.deployed)
+	service := NewRunsService(router).WithAutoDeploy(&DeploymentsService{}, func(name string) bool {
+		assert.Equal(t, "missing", name)
+		return false
+	}, nil, newJobsForChainTest(t)).WithModelRouter(coordinator, nil)
+	controller := NewRunsController(service, nil, nil, nil, nil)
+
+	c, w := postJSON(t, `{"provider":"ollama","model":"missing","auto_deploy":true}`)
+	controller.LaunchRun(c)
+
+	assert.Empty(t, router.launched, "implicit placement cannot forward a start")
+	router.mu.Lock()
+	deployed := router.deployed
+	router.mu.Unlock()
+	assert.Nil(t, deployed, "implicit placement cannot forward a download")
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	problem := requireStartProblem(t, parseRoutedError(w.Code, w.Body.Bytes(), w.Header()), http.StatusBadRequest, string(httperr.CodeRunNodeRequired))
+	assert.Contains(t, problem.Detail, "zz_nodes")
 }
 
 // Ensure starts the model where the shared resolver places it, so it never picks a node inference would not.

@@ -51,7 +51,7 @@ func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Re
 	if streaming {
 		st := NewStreamTransform(norms.Stream(meta.Provider), meta, recorder)
 		w.WriteHeader(resp.StatusCode)
-		result := CopyStream(ctx, w, resp.Body, recorder, st.Func())
+		result := CopyStream(ctx, w, resp.Body, RecorderObserver(recorder), st.Func())
 
 		// A completed stream without usage still needs its requested routing metadata.
 		if result.Outcome == Completed && meta.InjectUsage && !st.UsageSeen() && meta.Deployment != "" && !meta.SuppressUsageFrame {

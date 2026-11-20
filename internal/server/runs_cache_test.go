@@ -72,6 +72,7 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 					if expected != nil {
 						assert.Equal(t, expected, row)
 					}
+					assert.NotContains(t, row, "requests_admitted")
 					assert.Equal(t, want, row["cache"])
 					if want == nil {
 						assert.NotContains(t, row, "cache")
@@ -104,6 +105,7 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 						expected["run_id"] = "fixture"
 						assert.Equal(t, expected, fields)
 					}
+					assert.NotContains(t, fields, "requests_admitted")
 					assert.NotContains(t, fields, "id")
 				}
 			})

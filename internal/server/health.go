@@ -10,6 +10,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -87,35 +88,14 @@ func (s *Server) handleHealth(c *gin.Context) {
 	respondRetrievalSuccess(c, "Health check", health)
 }
 
-// GetSystemInfo collects OS-agnostic system information with
-// formatted display values. Called from handleHealth here and
-// passed to SystemExecutor by routes_internal.go as a callback
-// so the internal /system endpoint can reuse the same shape.
-//
-// Hardware reads go through inventory.Cache — memory and disk use
-// its 30s TTL cache, CPU uses its permanent cache (CPU model and
-// core count never change at runtime). Before this migration
-// /health ran three fresh gopsutil subprocess-ish calls on every
-// liveness probe hit, which was wasteful on systems that poll
-// /health every second.
+// GetSystemInfo serves the shared node resource sample in the existing health format.
 func (s *Server) GetSystemInfo() map[string]any {
 	info := make(map[string]any)
 	ctx := context.Background()
 	cache := inventory.Default()
 
-	// Usage is the OS observation, not total minus available memory.
-	if memInfo, sampledAt := cache.GetMemoryInfo(ctx); memInfo != nil && memInfo.TotalRAM > 0 {
-		total, available := memInfo.TotalRAM, memInfo.AvailableRAM
-		info["memory_total"] = map[string]any{"value": total, "display_value": utils.FormatSize(total)}
-		info["memory_available"] = map[string]any{"value": available, "display_value": utils.FormatSize(available)}
-		info["memory_sample"] = inventory.NewMemorySample(total, memInfo.UsedRAM, sampledAt)
-		if memInfo.UsedRAM != nil {
-			used := *memInfo.UsedRAM
-			percent := float64(used) / float64(total) * 100
-			info["memory_used"] = map[string]any{"value": used, "display_value": utils.FormatSize(used)}
-			info["memory_used_percent"] = map[string]any{"value": percent, "display_value": fmt.Sprintf("%.2f%%", percent)}
-		}
-	}
+	snapshot := cache.GetSnapshot(ctx)
+	addHealthMemory(info, snapshot)
 
 	// Disk information — pick the primary mount from the disk
 	// slice ("/" on Unix, "C:\" on Windows) and fall back to the
@@ -163,27 +143,8 @@ func (s *Server) GetSystemInfo() map[string]any {
 		info["cpu_model"] = "N/A"
 	}
 
-	// GPU information — per-card static detail (index, name, total
-	// memory) comes from the startup-cached Inventory populated by
-	// detectGPUs() in server.go. Free / used are runtime state, so a
-	// cached figure would be a stale one: they are polled per scrape
-	// below and reported as N/A on any card the vendor tool can't
-	// measure. Never report a card as "0 free" on an unmeasured card,
-	// which reads as "full" to anyone looking at it.
-	// Filter to compute-capable cards. ghw enumerates every display
-	// device the OS sees — on Windows that includes Microsoft Basic
-	// Display Adapter (the QEMU virt console) plus any RDP / Hyper-V
-	// virtual adapters, all of which classify as VendorOther because
-	// neither product nor vendor name matches NVIDIA/AMD/Apple/Intel.
-	// Including them inflates gpu_count and the [N] bracket in the
-	// cluster TUI; they have no compute role. We keep VendorIntel
-	// even with MemoryMiB==0 so future iGPU support detects properly.
+	// Only compute cards belong in node views.
 	cards := gpu.List(false).Cards
-
-	// Read through the inventory cache so concurrent handlers share one
-	// nvidia-smi per TTL window instead of each spawning their own.
-	liveCards, sampledAt := cache.GetGPUCardMetrics(ctx)
-	live := gpu.NewCardMetricsIndex(liveCards)
 
 	gpuInfo := make([]map[string]any, 0, len(cards))
 	idx := 0
@@ -229,22 +190,18 @@ func (s *Server) GetSystemInfo() map[string]any {
 		// An unmeasured card omits these keys rather than sending zero.
 		// A reader that finds no key knows it wasn't measured; one that
 		// finds a zero has to guess, and "0 free" reads as a full card.
-		if m, ok := live.ForCard(card); ok {
-			var used *int64
-			if m.FreeMemoryMiB != nil {
-				free := *m.FreeMemoryMiB * 1024 * 1024
-				gpuCard["vram_free"] = map[string]any{"value": free, "display_value": utils.FormatSize(free)}
+		if pool, ok := snapshot.Device(card.UUID, card.PCIAddress); ok {
+			total, used, free := pool.DeviceMemoryBytes()
+			if free != nil {
+				gpuCard["vram_free"] = map[string]any{"value": *free, "display_value": utils.FormatSize(*free)}
 			}
-			if m.UsedMemoryMiB != nil {
-				value := *m.UsedMemoryMiB * 1024 * 1024
-				used = &value
-				gpuCard["vram_used"] = map[string]any{"value": value, "display_value": utils.FormatSize(value)}
+			if used != nil {
+				gpuCard["vram_used"] = map[string]any{"value": *used, "display_value": utils.FormatSize(*used)}
 			}
-			total := card.MemoryMiB
-			if m.TotalMemoryMiB > 0 {
-				total = m.TotalMemoryMiB
+			if total == nil {
+				total = new(card.MemoryMiB * constants.BytesPerMB)
 			}
-			gpuCard["memory_sample"] = inventory.NewMemorySample(total*1024*1024, used, sampledAt)
+			gpuCard["memory_sample"] = inventory.NewMemorySample(*total, used, snapshot.At)
 		}
 		gpuInfo = append(gpuInfo, gpuCard)
 	}
@@ -252,6 +209,22 @@ func (s *Server) GetSystemInfo() map[string]any {
 	info["gpu_count"] = len(gpuInfo)
 
 	return info
+}
+
+func addHealthMemory(info map[string]any, snapshot resources.Snapshot) {
+	pool, _ := snapshot.SystemPool()
+	total, used, available := pool.MemoryBytes()
+	if total == nil || *total <= 0 || available == nil {
+		return
+	}
+	info["memory_total"] = map[string]any{"value": *total, "display_value": utils.FormatSize(*total)}
+	info["memory_available"] = map[string]any{"value": *available, "display_value": utils.FormatSize(*available)}
+	info["memory_sample"] = inventory.NewMemorySample(*total, used, snapshot.At)
+	if used != nil {
+		percent := float64(*used) / float64(*total) * 100
+		info["memory_used"] = map[string]any{"value": *used, "display_value": utils.FormatSize(*used)}
+		info["memory_used_percent"] = map[string]any{"value": percent, "display_value": fmt.Sprintf("%.2f%%", percent)}
+	}
 }
 
 // rootDisk picks the primary filesystem mount from a disk slice

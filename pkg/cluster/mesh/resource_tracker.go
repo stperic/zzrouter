@@ -4,25 +4,21 @@ package mesh
 
 import (
 	"context"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/discovery/hardware"
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
+	"github.com/stperic/zzrouter/pkg/host/inventory"
 )
-
-// gpuProbeTimeout bounds every call into gpu.LiveMetricsContext.
-// Short because nvidia-smi on a broken driver can hang.
-const gpuProbeTimeout = 5 * time.Second
 
 // ResourceTracker collects and caches resource metrics from the local node
 type ResourceTracker struct {
 	mu          sync.RWMutex
 	metrics     *ResourceMetrics
+	observedAt  time.Time
+	cache       *inventory.Cache
 	nodeName    string
 	updateFreq  time.Duration
 	stopCh      chan struct{}
@@ -56,6 +52,7 @@ func NewResourceTracker(nodeName string, updateFrequency time.Duration) *Resourc
 
 	return &ResourceTracker{
 		nodeName:   nodeName,
+		cache:      inventory.Default(),
 		updateFreq: updateFrequency,
 		stopCh:     make(chan struct{}),
 		refreshCh:  make(chan struct{}, 1),
@@ -71,7 +68,7 @@ func (rt *ResourceTracker) Start(ctx context.Context) {
 		rt.started.Store(true)
 
 		// Collect initial metrics
-		rt.collectMetrics()
+		rt.collectMetrics(ctx)
 
 		// Start periodic collection
 		rt.wg.Add(1)
@@ -104,16 +101,24 @@ func (rt *ResourceTracker) GetMetrics() *ResourceMetrics {
 
 	// Return a copy to prevent mutation
 	copy := *rt.metrics
+	for _, value := range []**int64{&copy.GPUMemoryTotalMB, &copy.GPUMemoryUsedMB, &copy.GPUMemoryFreeMB, &copy.RAMTotalMB, &copy.RAMAvailableMB} {
+		if *value != nil {
+			*value = new(**value)
+		}
+	}
+	if copy.GPUUtilization != nil {
+		copy.GPUUtilization = new(*copy.GPUUtilization)
+	}
 	return &copy
 }
 
-// CollectNow forces an immediate metrics collection and returns the result
+// CollectNow re-probes and publishes a fresh resource observation.
 func (rt *ResourceTracker) CollectNow() *ResourceMetrics {
-	rt.collectMetrics()
+	rt.collectMetrics(context.Background())
 	return rt.GetMetrics()
 }
 
-// RequestRefresh coalesces lifecycle updates onto the owned collector.
+// RequestRefresh coalesces requests to re-probe onto the owned collector.
 func (rt *ResourceTracker) RequestRefresh() {
 	select {
 	case rt.refreshCh <- struct{}{}:
@@ -133,9 +138,9 @@ func (rt *ResourceTracker) runCollector(ctx context.Context) {
 		case <-rt.stopCh:
 			return
 		case <-rt.refreshCh:
-			rt.collectMetrics()
+			rt.collectMetrics(ctx)
 		case <-ticker.C:
-			rt.collectMetrics()
+			rt.collectMetrics(ctx)
 			if rt.tickedCh != nil {
 				// Non-blocking: tests that aren't watching don't stall
 				// the collector, and a test waiting on the next tick
@@ -149,124 +154,43 @@ func (rt *ResourceTracker) runCollector(ctx context.Context) {
 	}
 }
 
-// collectMetrics gathers current resource metrics
-func (rt *ResourceTracker) collectMetrics() {
-	metrics := &ResourceMetrics{
-		NodeName:    rt.nodeName,
-		CollectedAt: utils.Now().Unix(),
+func (rt *ResourceTracker) collectMetrics(ctx context.Context) {
+	snapshot := rt.cache.RefreshSnapshot(ctx)
+	metrics := resourceMetrics(rt.nodeName, snapshot)
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.metrics != nil {
+		if rt.observedAt.After(snapshot.At) {
+			return
+		}
+		metrics.ActiveModels = rt.metrics.ActiveModels
 	}
+	rt.metrics, rt.observedAt = metrics, snapshot.At
+}
 
-	// Collect RAM metrics
-	rt.collectRAMMetrics(metrics)
-
-	// Collect GPU metrics based on platform. On Linux/Windows
-	// one poll of gpu.LiveMetricsContext invokes nvidia-smi and
-	// rocm-smi at most once each and returns both vendor's
-	// aggregate metrics in a single struct. We then apply the
-	// NVIDIA-over-AMD precedence that this tracker has always
-	// used — the two helpers it replaced did the same thing via
-	// sequential fallback, but needed two separate subprocess
-	// calls when the first one failed.
-	switch runtime.GOOS {
-	case "darwin":
-		rt.collectAppleSiliconMetrics(metrics)
-	default:
-		ctx, cancel := context.WithTimeout(context.Background(), gpuProbeTimeout)
-		set := gpu.LiveMetricsContext(ctx)
-		cancel()
-		switch {
-		case set.NVIDIA.Count > 0:
-			applyLiveMetrics(metrics, "nvidia", set.NVIDIA)
-		case set.AMD.Count > 0:
-			applyLiveMetrics(metrics, "amd", set.AMD)
+func resourceMetrics(nodeName string, snapshot resources.Snapshot) *ResourceMetrics {
+	metrics := &ResourceMetrics{NodeName: nodeName, GPUType: "none"}
+	if !snapshot.At.IsZero() {
+		metrics.CollectedAt = snapshot.At.Unix()
+	}
+	if pool, ok := snapshot.SystemPool(); ok {
+		metrics.RAMTotalMB, metrics.RAMAvailableMB = pool.TotalMiB, pool.AvailableMiB
+		if pool.Kind == resources.Unified {
+			metrics.GPUType, metrics.GPUCount = "apple", 1
+			metrics.GPUMemoryTotalMB, metrics.GPUMemoryFreeMB = pool.TotalMiB, pool.AvailableMiB
+			return metrics
 		}
 	}
-
-	// Update cached metrics
-	rt.mu.Lock()
-	rt.metrics = metrics
-	rt.mu.Unlock()
-
-	utils.LogDebugf("[ResourceTracker] Collected metrics: GPU=%s (%dMB free), RAM=%dMB available",
-		metrics.GPUType, metrics.GPUMemoryFreeMB, metrics.RAMAvailableMB)
-}
-
-// applyLiveMetrics copies gpu.LiveMetrics fields into the
-// tracker's ResourceMetrics shape. Memory fields are already
-// in MiB — gpu.LiveMetrics and ResourceMetrics use compatible
-// MB-ish units for memory (both are 1024-based "MB" values).
-func applyLiveMetrics(metrics *ResourceMetrics, gpuType string, m gpu.LiveMetrics) {
-	metrics.GPUType = gpuType
-	metrics.GPUCount = m.Count
-	metrics.GPUMemoryTotalMB = m.TotalMemoryMiB
-	metrics.GPUMemoryUsedMB = m.UsedMemoryMiB
-	metrics.GPUMemoryFreeMB = m.FreeMemoryMiB
-	metrics.GPUUtilization = m.UtilizationPct
-}
-
-// collectRAMMetrics collects system RAM information via the
-// shared pkg/discovery/hardware helper. That's the same
-// abstraction pkg/discovery/gpu uses for GPU metrics in this
-// file — keeping both reads behind the discovery package keeps
-// the cluster tracker free of gopsutil imports and matches the
-// "no direct gopsutil calls outside pkg/discovery" invariant
-// the GPU consolidation arc established.
-func (rt *ResourceTracker) collectRAMMetrics(metrics *ResourceMetrics) {
-	ctx, cancel := context.WithTimeout(context.Background(), gpuProbeTimeout)
-	defer cancel()
-
-	info, errs := hardware.DiscoverMemory(ctx)
-	if len(errs) > 0 || info.TotalRAM == 0 {
-		utils.LogDebugf("[ResourceTracker] Failed to get memory info: %v", errs)
-		return
+	for _, vendor := range []string{"nvidia", "amd"} {
+		if stats := snapshot.GPUStats(vendor); stats.Count > 0 {
+			metrics.GPUType, metrics.GPUCount = vendor, stats.Count
+			metrics.GPUMemoryTotalMB, metrics.GPUMemoryUsedMB, metrics.GPUMemoryFreeMB = stats.TotalMiB, stats.UsedMiB, stats.FreeMiB
+			metrics.GPUUtilization = stats.UtilizationPct
+			break
+		}
 	}
-
-	metrics.RAMTotalMB = info.TotalRAM / (1024 * 1024)
-	metrics.RAMAvailableMB = info.AvailableRAM / (1024 * 1024)
-}
-
-// collectAppleSiliconMetrics collects Apple Silicon GPU metrics.
-// Apple Silicon uses unified memory, so GPU memory is a slice of
-// system RAM — there is no per-GPU figure to pull from any SMI
-// tool, which is why this path doesn't run through
-// gpu.LiveMetricsContext like NVIDIA and AMD do.
-//
-// Detection delegates to gpu.ProbeContext(VendorApple) so the
-// GOARCH check and the sysctl brand-string parse live in exactly
-// one place (pkg/discovery/gpu/probe_darwin.go). ProbeContext for
-// Apple is cheap — one sysctl syscall, no ghw, no subprocess —
-// so it's safe to call on the 30s polling interval without
-// opening the "pulls the full inventory on every scrape" hole
-// that InventoryContext would.
-func (rt *ResourceTracker) collectAppleSiliconMetrics(metrics *ResourceMetrics) {
-	ctx, cancel := context.WithTimeout(context.Background(), gpuProbeTimeout)
-	defer cancel()
-
-	det, _ := gpu.ProbeContext(ctx, gpu.VendorApple)
-	if det.State != gpu.StateDriverOK {
-		metrics.GPUType = "none"
-		metrics.GPUCount = 0
-		return
-	}
-
-	metrics.GPUType = "apple"
-	metrics.GPUCount = 1 // Apple Silicon is integrated
-
-	// Apple Silicon uses unified memory architecture: GPU memory
-	// is a share of system RAM. Query via hardware.DiscoverMemory
-	// (same helper collectRAMMetrics uses) and scale by a
-	// conservative 75% ratio for the portion Apple's Metal / MLX
-	// runtimes can realistically use.
-	memInfo, errs := hardware.DiscoverMemory(ctx)
-	if len(errs) == 0 && memInfo.TotalRAM > 0 {
-		const gpuAvailableRatio = 0.75
-		metrics.GPUMemoryTotalMB = int64(float64(memInfo.TotalRAM) / (1024 * 1024) * gpuAvailableRatio)
-		metrics.GPUMemoryFreeMB = int64(float64(memInfo.AvailableRAM) / (1024 * 1024) * gpuAvailableRatio)
-		metrics.GPUMemoryUsedMB = metrics.GPUMemoryTotalMB - metrics.GPUMemoryFreeMB
-	}
-
-	// Apple doesn't expose GPU utilization easily; leave it at 0.
-	metrics.GPUUtilization = 0
+	return metrics
 }
 
 // SetActiveModels updates the count of active models
@@ -279,9 +203,7 @@ func (rt *ResourceTracker) SetActiveModels(count int) {
 	}
 }
 
-// CollectResourceMetrics is a standalone function to collect metrics once
-// Useful for immediate collection without starting the tracker
+// CollectResourceMetrics reads the shared node snapshot without starting a tracker.
 func CollectResourceMetrics(nodeName string) *ResourceMetrics {
-	tracker := NewResourceTracker(nodeName, 0)
-	return tracker.CollectNow()
+	return resourceMetrics(nodeName, inventory.Default().GetSnapshot(context.Background()))
 }

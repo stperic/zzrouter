@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -208,4 +209,48 @@ func TestLease_ReleaseNotifiesIdleAfterLongRequest(t *testing.T) {
 	assert.False(t, idle.Leased)
 	assert.True(t, idle.Released)
 	assert.False(t, idle.Activity.Before(before))
+}
+
+func TestRequestsAdmittedCountsOnlyGrantedLeases(t *testing.T) {
+	run := NewInstance("count", "provider", "model", 0, time.Minute, 0)
+	defer run.Cancel()
+	run.MarkRunning(false, nil)
+	run.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 1, QueueTimeout: time.Second})
+	require.Zero(t, run.ToInfo("node").RequestsAdmitted)
+
+	first := acquireTestLease(t, run)
+	require.EqualValues(t, 1, run.ToInfo("node").RequestsAdmitted)
+	waitCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	waiting := queuedTestAcquire(t, run, waitCtx)
+	require.Eventually(t, func() bool { return waiterCount(run) == 1 }, time.Second, time.Millisecond)
+	_, err := run.Acquire(t.Context(), nil)
+	require.ErrorIs(t, err, ErrQueueFull)
+	require.EqualValues(t, 1, run.ToInfo("node").RequestsAdmitted)
+	cancel()
+	select {
+	case got := <-waiting:
+		require.ErrorIs(t, got.err, context.Canceled)
+		require.Nil(t, got.lease)
+	case <-time.After(time.Second):
+		t.Fatal("cancelled Acquire did not return")
+	}
+	require.EqualValues(t, 1, run.ToInfo("node").RequestsAdmitted)
+
+	first.Release()
+	require.Zero(t, run.ToInfo("node").ActiveRequests)
+	require.EqualValues(t, 1, run.ToInfo("node").RequestsAdmitted)
+	second := acquireTestLease(t, run)
+	require.EqualValues(t, 2, run.ToInfo("node").RequestsAdmitted)
+	second.Release()
+	run.SetStatus(StatusStopping)
+	_, err = run.Acquire(t.Context(), nil)
+	require.ErrorIs(t, err, ErrStopping)
+	require.EqualValues(t, 2, run.ToInfo("node").RequestsAdmitted)
+	wire, err := json.Marshal(run.ToInfo("node"))
+	require.NoError(t, err)
+	require.Contains(t, string(wire), `"requests_admitted":2`)
+	replacement := NewInstance("replacement", run.Provider, run.Model, 0, time.Minute, 0)
+	defer replacement.Cancel()
+	require.Zero(t, replacement.ToInfo("node").RequestsAdmitted)
 }

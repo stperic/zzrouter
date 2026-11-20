@@ -12,6 +12,8 @@ import (
 // Outcome is how a relay ended.
 type Outcome int
 
+const upstreamStreamFailed = "upstream_stream_failed"
+
 const (
 	Unknown        Outcome = iota // not finished yet: a zero Result is never a success
 	Completed                     // the whole body or terminal stream frame arrived
@@ -104,7 +106,7 @@ func (r Result) ObserveAttempt(attempt *llm.Attempt) {
 	case ClientGone:
 		attempt.SetError("client_cancelled", r.Err)
 	case UpstreamFailed:
-		attempt.SetError("upstream_stream_failed", r.Err)
+		attempt.SetError(upstreamStreamFailed, r.Err)
 	default:
 		attempt.SetError("upstream_stream_truncated", r.Err)
 	}

@@ -7,10 +7,35 @@ import (
 	"testing"
 
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/apipath"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stretchr/testify/require"
 )
+
+func TestModelsActionStartsSelectedRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, apipath.Runs, r.URL.Path)
+		var start pkgClient.StartRunRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&start))
+		require.Equal(t, pkgClient.StartRunRequest{Node: "worker", Model: "selected", Provider: "llamacpp"}, start)
+		w.WriteHeader(http.StatusAccepted)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": pkgClient.StartRunResponse{ID: "run", Node: "worker"}}))
+	}))
+	t.Cleanup(srv.Close)
+	m := ModelsViewModel{
+		client: pkgClient.NewClient(config.ClientNodeConfig{Address: srv.URL}),
+		rows:   []modelRow{{Node: "worker", RawModel: "selected", Provider: "llamacpp", sortPriority: 2}},
+	}
+	m.syncListItems()
+	cmd := m.actionStartStop()
+	require.NotNil(t, cmd)
+	result, ok := cmd().(modelsActionMsg)
+	require.True(t, ok)
+	require.Equal(t, "start", result.action)
+	require.NoError(t, result.err)
+}
 
 func TestNodeRunRowsStayDistinctAndNamed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

@@ -135,12 +135,12 @@ type Instance struct {
 
 	// mu protects mutable state: Status, ErrorMessage, timestamps, keep-alive state.
 	// Use RLock for reads, Lock for writes.
-	mu            sync.RWMutex    `json:"-"`
-	idleChanged   chan<- struct{} `json:"-"`
-	activityHold  bool            `json:"-"`
-	activityProbe activityProbe
-	idleReleased  bool `json:"-"`
-	pinned        bool // fixed by resolved launch settings before admission
+	mu                  sync.RWMutex    `json:"-"`
+	idleChanged         chan<- struct{} `json:"-"`
+	activityHold        bool            `json:"-"`
+	activityObservation activityObservation
+	idleReleased        bool `json:"-"`
+	pinned              bool // fixed by resolved launch settings before admission
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -153,8 +153,9 @@ type Instance struct {
 	// Goroutine tracking for graceful shutdown
 	wg sync.WaitGroup `json:"-"`
 
-	// Active request counter (atomic)
-	activeRequests int64 `json:"-"`
+	// Request counters (atomic)
+	requestsAdmitted atomic.Uint64
+	activeRequests   int64 `json:"-"`
 	// Reservations keep later victims idle while earlier stops drain.
 	idleStopClaimed bool `json:"-"`
 
@@ -315,7 +316,7 @@ func (i *Instance) setStatusLocked(status Status) {
 	i.Status = status
 	if status.IsTerminal() || status == StatusStopping {
 		i.activityHold = false
-		i.activityProbe.known = false
+		i.activityObservation.known = false
 	}
 	i.notifyIdleLocked()
 }
@@ -390,7 +391,15 @@ func (i *Instance) SetAdmissionEffects(effects AdmissionEffects) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	effects.EvictedRuns = slices.Clone(effects.EvictedRuns)
+	effects.Warning = effects.Warning.clone()
 	i.admissionEffects = effects
+}
+
+// AdmissionWarning returns the evidence from a waived fit refusal.
+func (i *Instance) AdmissionWarning() *AdmissionWarning {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.admissionEffects.Warning.clone()
 }
 
 // EvictedRuns returns the idle runs this launch stopped to be admitted.
@@ -834,6 +843,20 @@ func (i *Instance) HasStdinPipe() bool {
 
 // --- Snapshot ---
 
+// CalibrationIdentity reads the pinned revision and counter together, without re-resolving settings.
+func (i *Instance) CalibrationIdentity(hostname string) (string, uint64) {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.Status != StatusRunning && i.Status != StatusUnhealthy {
+		return "", 0
+	}
+	return i.targetRevisionLocked(hostname), i.requestsAdmitted.Load()
+}
+
+func (i *Instance) targetRevisionLocked(hostname string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano()))))
+}
+
 // ToInfo creates a read-only InstanceInfo snapshot for API responses.
 // hostname is the externally-reachable name of this node; it replaces the
 // localhost in the stored HealthURL so coordinators (and any cross-node
@@ -844,7 +867,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 
 	activity := i.activitySnapshotLocked(utils.Now())
 	info := InstanceInfo{
-		TargetRevision:    fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano())))),
+		TargetRevision:    i.targetRevisionLocked(hostname),
 		Activity:          &activity,
 		BaseURL:           i.BaseURL,
 		EngineBusy:        i.activityHold,
@@ -869,9 +892,11 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
 		EvictedRuns:           slices.Clone(i.admissionEffects.EvictedRuns),
+		AdmissionWarning:      i.admissionEffects.Warning.clone(),
 		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
+		RequestsAdmitted:      i.requestsAdmitted.Load(),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),
 		Parameters:            copyStringMap(i.Config.Parameters),
 		ResolvedParameters:    copyStringMap(i.resolved.Parameters),
@@ -1016,7 +1041,11 @@ func (i *Instance) ObserveActivity(busy bool) {
 	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
 		return
 	}
-	i.observeActivityProbeLocked(busy)
+	i.activityObservation.known = true
+	i.activityObservation.at = utils.Now()
+	if i.activityObservation.validFor <= 0 {
+		i.activityObservation.validFor = 2 * constants.HealthCheckInterval
+	}
 	i.observeActivityHoldLocked(busy)
 }
 

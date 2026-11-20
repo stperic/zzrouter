@@ -368,9 +368,8 @@ func inference(path string, body []byte) *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+servedCallerKey)
 	ctx := context.WithValue(req.Context(), CtxKeyModel, servedClientModel)
-	ctx = context.WithValue(ctx, CtxKeyOriginalBody, body)
 	ctx = context.WithValue(ctx, CtxKeyRequestHints, keepalive.Parse(body))
-	return req.WithContext(ctx)
+	return withInferenceBody(req.WithContext(ctx), body)
 }
 
 func TestEnsureRunContractServedInference(t *testing.T) {
@@ -379,7 +378,7 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 		run := r.served(t)
 		native := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":"10m"}`)
 		w := httptest.NewRecorder()
-		r.s.forwardToRun(w, inference("/api/chat", native), run)
+		r.s.forwardToRun(w, inference("/api/chat", native), native, run)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		seen := r.daemon.last(t)
 		assert.Equal(t, servedDaemonHost, seen.host)
@@ -392,7 +391,8 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 
 		openAI := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 		w = httptest.NewRecorder()
-		r.s.proxyToInstance(w, inference("/v1/chat/completions", openAI), run, true)
+		req := inference("/v1/chat/completions", openAI)
+		r.s.proxyToInstance(w, req, newInstanceRequest(req, openAI), run, true)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		seen = r.daemon.last(t)
 		assert.Equal(t, servedDaemonHost, seen.host)
@@ -408,7 +408,8 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 		r.mgr.Start(t.Context())
 		run := r.served(t)
 		w := httptest.NewRecorder()
-		r.s.forwardToRun(w, inference("/api/generate", []byte(`{"model":"m","prompt":"hi","stream":false,"keep_alive":0}`)), run)
+		native := []byte(`{"model":"m","prompt":"hi","stream":false,"keep_alive":0}`)
+		r.s.forwardToRun(w, inference("/api/generate", native), native, run)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		assert.Equal(t, float64(0), r.daemon.last(t).body["keep_alive"], "the client's keep_alive passes through")
 		require.Eventually(t, func() bool { return len(r.mgr.Instances().List()) == 0 }, readinessWait, 10*time.Millisecond)
@@ -431,7 +432,7 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 			return run
 		}
 		resolved := &resolver.Resolved{OriginalName: "g", GroupName: "g", Strategy: "priority", Candidates: []fallback.Candidate{{Name: "r1", App: "ollama", Model: servedClientModel}}}
-		proxy.ProxyWithFallback(c, resolved, body, llm.NewInferenceRecorder(t.Context(), "g", ""), "g", "", false)
+		proxy.ProxyWithFallback(c, resolved, newInstanceRequest(c.Request, body), llm.NewInferenceRecorder(t.Context(), "g", ""), "g", "", false)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		seen := r.daemon.last(t)
 		assert.Equal(t, servedDaemonHost, seen.host)
@@ -454,7 +455,7 @@ func TestForwardToRunAnswersAsEveryRunPath(t *testing.T) {
 		run := r.served(t)
 		run.SetStatus(instance.StatusStopping)
 		w := httptest.NewRecorder()
-		r.s.forwardToRun(w, inference("/api/generate", native), run)
+		r.s.forwardToRun(w, inference("/api/generate", native), native, run)
 		assert.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
 		assert.Empty(t, r.daemon.seen)
 	})
@@ -465,7 +466,7 @@ func TestForwardToRunAnswersAsEveryRunPath(t *testing.T) {
 		ctx, cancel := context.WithCancel(req.Context())
 		cancel()
 		w := httptest.NewRecorder()
-		r.s.forwardToRun(w, req.WithContext(ctx), run)
+		r.s.forwardToRun(w, req.WithContext(ctx), native, run)
 		assert.Empty(t, w.Body.String())
 		assert.Empty(t, r.daemon.seen)
 		assert.Zero(t, run.GetActiveRequests())
@@ -476,7 +477,9 @@ func TestServedSurfaces(t *testing.T) {
 	t.Run("an unload of a model with no run goes to the daemon and loads nothing", func(t *testing.T) {
 		r := newServedServerRig(t)
 		w := httptest.NewRecorder()
-		require.NoError(t, r.s.serveLocalOllama(w, inference("/api/generate", []byte(`{"model":"m","keep_alive":0}`)), servedClientModel))
+		native := []byte(`{"model":"m","keep_alive":0}`)
+		req := withInferenceBody(inference("/api/generate", native), []byte(`{"model":"stale","prompt":"hi"}`))
+		require.NoError(t, r.s.serveLocalOllama(w, req, native, servedClientModel))
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		assert.Equal(t, 1, r.daemon.unloaded(), "the daemon answers the unload itself")
 		assert.Empty(t, r.daemon.loaded, "nothing was loaded first")
@@ -505,7 +508,7 @@ func TestServedSurfaces(t *testing.T) {
 			internal := gin.New()
 			internal.GET("/zzrouter/v1/internal/runs", executor.HandleInternalListRuns)
 			internal.GET("/zzrouter/v1/internal/runs/:id", executor.HandleInternalGetRun)
-			ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
+			ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
 			logs := &LogsHandlers{appMgr: r.mgr, getClusterClient: func() mesh.ClusterClient { return nil }, isLocalNode: func(n string) bool { return n == "node-a" }}
 			public := gin.New()
 			public.GET("/zzrouter/v1/runs/:id", ctrl.GetRun)

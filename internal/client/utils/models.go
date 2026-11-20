@@ -160,35 +160,33 @@ func (c *Client) DeleteModelsFromRegistry(models []ModelMetadata) (*DeleteRegist
 	}, nil
 }
 
-// LoadModelResponse represents the response from loading a model
-type LoadModelResponse struct {
-	BaseURL    string `json:"base_url,omitempty"`
-	InstanceID string `json:"instance_id"`
-	Model      string `json:"model"`
-	App        string `json:"provider"`
-	Port       int    `json:"port"`
-	Status     string `json:"status"`
-	Node       string `json:"node"`
-	// JobID is populated on async on-demand launches (202). Empty when
-	// the provider completed synchronously (e.g. endpoint/cloud).
-	JobID string `json:"job_id,omitempty"`
+// StartRunRequest selects the owner and request tier for a start.
+type StartRunRequest struct {
+	Node        string            `json:"node,omitempty"`
+	Provider    string            `json:"provider"`
+	Model       string            `json:"model,omitempty"`
+	Replace     bool              `json:"replace,omitempty"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
 }
 
-// LoadModelWithProviderForceParamsAndEnv loads a model with optional force flag, custom parameters, and environment variables
-// Returns the instance ID so the caller can use it directly (e.g., for streaming logs)
-func (c *Client) LoadModelWithProviderForceParamsAndEnv(host, modelName, provider string, force bool, parameters, environment map[string]string) (*LoadModelResponse, error) {
-	req := LoadModelRequest{
-		Node:        host,
-		App:         provider,
-		ModelName:   modelName,
-		Force:       force,
-		Parameters:  parameters,
-		Environment: environment,
-	}
+// StartRunResponse identifies the run and its readiness job when available.
+type StartRunResponse struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+	Node     string `json:"node"`
+	JobID    string `json:"job_id,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Port     int    `json:"port"`
+	Status   string `json:"status"`
+}
+
+// StartRun starts or reuses a run on its owning node.
+func (c *Client) StartRun(ctx context.Context, req StartRunRequest) (*StartRunResponse, error) {
 	var envelope struct {
-		Data LoadModelResponse `json:"data"`
+		Data StartRunResponse `json:"data"`
 	}
-	if err := c.doJSON("POST", apipath.RunsLoad, req, &envelope, "load model"); err != nil {
+	if err := c.doContextJSON(ctx, http.MethodPost, apipath.Runs, req, &envelope, "start run"); err != nil {
 		return nil, err
 	}
 	return &envelope.Data, nil

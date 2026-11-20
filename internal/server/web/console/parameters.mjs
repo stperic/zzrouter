@@ -1,6 +1,8 @@
-import { el, text, input, select, field, button, leaveButton, actions, message, problem, formFeedback, editorActions, clearSecrets } from './dom.mjs';
+import { el, text, input, select, field, button, leaveButton, actions, message, problem, formFeedback, editorActions, clearSecrets, facts } from './dom.mjs';
 import { formSubmission, readAfterWrite } from './details.mjs';
+import { workloadKey } from './workload-data.mjs';
 
+export const providerSchemaPath = provider => `/providers/${encodeURIComponent(provider)}/schema`;
 const base = provider => `/zzrouter/v1/providers/${encodeURIComponent(provider)}`;
 const scopes = [['defaults', 'Provider defaults'], ['model', 'Model defaults'], ['node', 'Compute node'], ['node-model', 'Model on a compute node']];
 const has = (object, key) => Object.hasOwn(object || {}, key);
@@ -62,9 +64,9 @@ function valueControl(name, value, shape, sensitive) {
     placeholder: shape.auto ? `Value or ${shape.auto}` : shape.type === 'asset' ? 'Configured asset name' : '' });
 }
 
-export async function parameterSettings(p, { provider, node = '', model = '', back = p.close }) {
-  let selection = { scope: node ? model ? 'node-model' : 'node' : model ? 'model' : 'defaults', node, model, endpoint: '' };
-  const load = async (next = selection, notice, runs) => {
+export async function parameterSettings(p, { provider, node = '', model = '', endpoint = '', parameters, back = p.close }) {
+  let selection = { scope: node ? model ? 'node-model' : 'node' : model ? 'model' : 'defaults', node, model, endpoint };
+  const load = async (next = selection, notice, runs, seed) => {
     selection = next;
     const owner = p.panel.view('Runtime settings');
     owner.root.append(message('Loading runtime settings…'));
@@ -81,26 +83,27 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
     if (!owner.current()) return;
     const failure = reads.slice(0, 2).find(result => result.status === 'rejected');
     if (failure) {
-      owner.root.replaceChildren(problem(failure.reason), actions(leaveButton('Reload settings', () => load(selection), owner.api), leaveButton('Back', back, owner.api)));
+      owner.root.replaceChildren(problem(failure.reason), actions(leaveButton('Reload settings', () => load(selection, undefined, undefined, seed), owner.api), leaveButton('Back', back, owner.api)));
       return;
     }
     const schema = reads[0].value;
     const before = reads[1].value;
     const effective = reads[2].status === 'fulfilled' ? reads[2].value : null;
-    const shapes = { parameters: { ...schema.parameters, ...schema.endpoints?.[selection.endpoint]?.parameters }, environment: schema.environment || {} };
+    const shapes = parameterShapes(schema, selection.endpoint);
     const form = el('form', { class: 'entity-editor parameter-editor' });
     const draft = owner.trackDraft(form);
     const controls = el('fieldset', { 'data-protected-actions': true });
     const feedback = el('div', { 'aria-live': 'polite' });
     const changes = { parameters: Object.create(null), environment: Object.create(null) };
-    const fields = new Map();
-    const entries = [];
-    const validation = formFeedback(form, feedback, path => [...fields].find(([key]) => path?.endsWith(`.${key}`))?.[1]);
+    const validation = formFeedback(form, feedback, path => editor.target(path));
+    const diff = el('div', { 'aria-live': 'polite' });
     const count = el('span', { class: 'muted', role: 'status' });
     const changed = () => {
       const n = Object.keys(changes.parameters).length + Object.keys(changes.environment).length;
       count.textContent = `${n} ${n === 1 ? 'change' : 'changes'}`;
       if (n) draft.touch(); else draft.clean();
+      if (seed) diff.replaceChildren(el('h3', {}, 'Settings diff'), facts(Object.entries(changes.parameters).map(([key, value]) =>
+        [key, `${before.parameters?.[key] ?? 'Inherited'} → ${value ?? 'Inherited'}`])));
     };
     const update = (group, key, value) => {
       if (value === null ? !has(before[group], key) : has(before[group], key) && before[group][key] === value) delete changes[group][key];
@@ -126,34 +129,10 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
       draft.clean();
       await load({ scope: scope.value, node: nodeWrap.hidden ? '' : nodeField.value.trim(), model: modelWrap.hidden ? '' : modelField.value.trim(), endpoint: endpoint.value });
     });
-    const search = input('parameter_search', '', { type: 'search', placeholder: 'Search settings or environment names', 'aria-label': 'Search runtime settings' });
-    const parameterRows = el('div', { class: 'parameter-fields' });
-    const environmentRows = el('div', { class: 'parameter-fields' });
-    const filter = () => {
-      const query = search.value.trim().toLowerCase();
-      for (const entry of entries) entry.root.hidden = !entry.search.includes(query);
-    };
-    search.addEventListener('input', filter);
-    const addRow = (group, key) => {
-      const entry = parameterRow(owner, { group, key, shape: shapes[group][key] || {}, present: has(before[group], key),
-        configured: before[group]?.[key], evidence: effective?.[group]?.[key], update, disabled: () => controls.disabled });
-      fields.set(`${group}.${key}`, entry.control);
-      entries.push(entry);
-      (group === 'environment' ? environmentRows : parameterRows).append(entry.root);
-    };
-    for (const group of ['parameters', 'environment']) {
-      const keys = [...new Set([...Object.keys(shapes[group]), ...Object.keys(before[group] || {}), ...Object.keys(effective?.[group] || {})])].sort();
-      for (const key of keys) addRow(group, key);
-    }
-    const envName = input('environment_name', '', { placeholder: 'e.g. CUDA_VISIBLE_DEVICES', 'aria-label': 'Environment variable name' });
-    const addEnv = button('Add variable', () => {
-      const key = envName.value.trim();
-      if (controls.disabled || !key) return;
-      if (fields.has(`environment.${key}`)) { fields.get(`environment.${key}`).focus(); return; }
-      addRow('environment', key); envName.value = ''; filter();
-    });
-    controls.append(parameterRows.childNodes.length ? parameterRows : message('No runtime parameters declared for this provider.'),
-      el('details', { class: 'access-section' }, el('summary', {}, 'Environment variables'), environmentRows, actions(envName, addEnv)));
+    const editor = parameterFields(owner, { shapes, values: before, effective, seed, update, disabled: () => controls.disabled });
+    for (const [key, value] of Object.entries(seed?.parameters || {})) update('parameters', key, String(value));
+    const restart = input('restart_affected', '', { type: 'checkbox' });
+    controls.append(editor.root, diff, el('label', { class: 'model-choice' }, restart, 'Restart affected runs after saving'));
     const save = el('button', { type: 'submit', class: 'primary' }, 'Save settings');
     const submission = formSubmission(owner, controls, save, draft);
     form.addEventListener('submit', async event => {
@@ -169,8 +148,10 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
           submission.block();
           throw new Error(`These settings changed in another session: ${conflicts.join(', ')}. Reload before editing.`);
         }
-        return owner.api.request(`${base(provider)}/parameters`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: parameterPatch(selection, changes, shapes), signal: owner.scope.signal });
-      }, result => readAfterWrite(owner, notice => load(selection, notice, result.runs), 'Settings saved. Changes take effect on the next start; per-run overrides can still take precedence.'), (error, blocked) => {
+        return owner.api.request(`${base(provider)}/parameters${restart.checked ? '?restart=affected' : ''}`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: parameterPatch(selection, changes, shapes), signal: owner.scope.signal });
+      }, result => readAfterWrite(owner, notice => load(selection, notice, result.runs), restart.checked ?
+        'Settings saved. Per-run overrides can still take precedence.' :
+        'Settings saved. Changes take effect on the next start. Per-run overrides can still take precedence.'), (error, blocked) => {
         validation.error(error);
         if (blocked) feedback.append(leaveButton('Inspect current settings', () => { draft.clean(); return load(selection); }, owner.api));
       });
@@ -179,19 +160,56 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
       editorActions(save, back, owner.api, draft), count);
     owner.root.replaceChildren(el('h2', {}, `${provider} settings`), notice ? message(notice) : '', runs ? runImpact(owner, runs) : '', scopeForm,
       text(`Effective values below describe ${selection.node || 'the coordinator'}${selection.model ? ` · ${selection.model}` : ''}. They can differ from this editing scope.`, 'muted'),
-      !effective ? message('Effective values could not be read. Configured overrides remain available.', 'warning') : '', search, form);
+      !effective ? message('Effective values could not be read. Configured overrides remain available.', 'warning') : '', form);
     owner.scope.signal.addEventListener('abort', () => {
       before.environment = {}; if (effective) effective.environment = {};
       changes.environment = Object.create(null); clearSecrets(owner.root);
     }, { once: true });
     changed(); owner.syncActivity?.();
   };
-  await load();
+  await load(selection, undefined, undefined, parameters ? { parameters } : undefined);
+}
+
+export function parameterShapes(schema, endpoint) {
+  return { parameters: { ...schema.parameters, ...schema.endpoints?.[endpoint]?.parameters }, environment: schema.environment || {} };
+}
+
+export function parameterFields(owner, { shapes, values, effective, seed, update, disabled }) {
+  const fields = new Map(), entries = [];
+  const search = input('parameter_search', '', { type: 'search', placeholder: 'Search settings or environment names', 'aria-label': 'Search runtime settings' });
+  const parameterRows = el('div', { class: 'parameter-fields' });
+  const environmentRows = el('div', { class: 'parameter-fields' });
+  const filter = () => {
+    const query = search.value.trim().toLowerCase();
+    for (const entry of entries) entry.root.hidden = !entry.search.includes(query);
+  };
+  search.addEventListener('input', filter);
+  const addRow = (group, key) => {
+    const entry = parameterRow(owner, { group, key, shape: shapes[group][key] || {}, present: has(seed?.[group], key) || has(values[group], key),
+      configured: seed?.[group]?.[key] ?? values[group]?.[key], evidence: effective?.[group]?.[key], update, disabled });
+    fields.set(`${group}.${key}`, entry.control);
+    entries.push(entry);
+    (group === 'environment' ? environmentRows : parameterRows).append(entry.root);
+  };
+  for (const group of ['parameters', 'environment']) {
+    const keys = [...new Set([...Object.keys(shapes[group]), ...Object.keys(values[group] || {}), ...Object.keys(seed?.[group] || {}), ...Object.keys(effective?.[group] || {})])].sort();
+    for (const key of keys) addRow(group, key);
+  }
+  const envName = input('environment_name', '', { placeholder: 'e.g. CUDA_VISIBLE_DEVICES', 'aria-label': 'Environment variable name' });
+  const addEnv = button('Add variable', () => {
+    const key = envName.value.trim();
+    if (disabled() || !key) return;
+    if (fields.has(`environment.${key}`)) { fields.get(`environment.${key}`).focus(); return; }
+    addRow('environment', key); envName.value = ''; filter();
+  });
+  const root = el('div', {}, search, parameterRows.childNodes.length ? parameterRows : message('No runtime parameters declared for this provider.'),
+    el('details', { class: 'access-section' }, el('summary', {}, 'Environment variables'), environmentRows, actions(envName, addEnv)));
+  return { root, target: path => [...fields].find(([key]) => path === key || path?.endsWith(`.${key}`))?.[1] };
 }
 
 function parameterRow(owner, { group, key, shape, present, configured, evidence, update, disabled }) {
   const sensitive = group === 'environment';
-  let value = present ? configured : '';
+  let value = present ? String(configured) : '';
   let visible = false;
   const override = input(`${group}_${key}_override`, '', { type: 'checkbox', checked: present, 'aria-label': `Override ${key} at this scope` });
   const control = valueControl(`${group}_${key}`, present ? value : undefined, shape, sensitive);
@@ -227,5 +245,6 @@ function runImpact(p, runs) {
     runs.error ? message(runs.error, 'warning') : '',
     ...[['stale', 'Need restart'], ['overridden', 'Have per-run overrides'], ['unknown', 'Effect unknown']].map(([key, label]) =>
       el('section', {}, el('h4', {}, `${label}: ${runs[key]?.length || 0}`), el('ul', {}, (runs[key] || []).map(run => el('li', {}, `${run.node} · ${run.model || run.id}${run.reason ? `: ${run.reason}` : ''}`))))),
+    runs.restart_job_id ? leaveButton('View restart job', () => p.go('workloads', workloadKey('job', p.state.node_name, runs.restart_job_id), 'jobs'), p.api) : null,
     leaveButton('View workloads', () => p.go('workloads'), p.api));
 }

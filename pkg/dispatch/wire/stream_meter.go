@@ -4,21 +4,22 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
 // streamMeter observes a stream's raw frames for usage, TTFT and its terminal frame.
 type streamMeter struct {
-	framer   lineFramer
-	best     UsageData
-	recorder *llm.InferenceRecorder
-	first    bool
-	done     bool
-	failed   bool
-	finished bool
-	midLine  bool
-	result   Result
+	framer      lineFramer
+	best        UsageData
+	observer    StreamObserver
+	stopContent bool
+	done        bool
+	failed      bool
+	finished    bool
+	midLine     bool
+	result      Result
 }
 
 func (m *streamMeter) next(chunk []byte) []byte {
@@ -42,21 +43,15 @@ func (m *streamMeter) observe(frame []byte) {
 	}
 	usageSeen := false
 	for line := range bytes.SplitSeq(frame, []byte("\n")) {
-		if !m.first && contentBearing(line) {
-			m.recorder.RecordFirstToken()
-			m.first = true
+		if m.observer != nil && m.observeLine(line) {
+			usageSeen = true
 		}
 		done, failed := terminal(line)
 		m.done = m.done || done
 		m.failed = m.failed || failed
-		if u, ok := observeChunk(m.recorder, line); ok {
-			m.best = m.best.merge(u)
-			usageSeen = true
-		}
 	}
 	if usageSeen {
-		m.recorder.SetExtendedUsage(m.best.CachedTokens, m.best.ReasoningTokens, m.best.Cost, string(m.best.CostSource))
-		m.recorder.SetTokensOut(m.best.Out)
+		m.observer.Usage(m.best)
 	}
 }
 
@@ -74,35 +69,143 @@ func (m *streamMeter) finish(readErr error, clientGone bool) Result {
 		m.result.Outcome = ClientGone
 	case m.failed:
 		m.result.Outcome = UpstreamFailed
-		m.recorder.SetError("upstream_stream_failed", "The upstream stream reported an error.")
 	// The terminal frame is the proof; a reset after it loses nothing.
 	case m.done:
 		m.result.Outcome = Completed
-	case m.result.Err != nil:
-		m.recorder.SetError("upstream_stream_error", readErr.Error())
-	default:
-		m.recorder.SetError("upstream_stream_truncated", "The upstream stream ended before completing.")
 	}
 	m.finished = true
-	m.recorder.SetExtendedUsage(m.best.CachedTokens, m.best.ReasoningTokens, m.best.Cost, string(m.best.CostSource))
-	m.recorder.RecordCompletion(m.best.In, m.best.Out)
+	if m.observer != nil {
+		m.observer.End(m.result, m.best)
+	}
 	return m.result
 }
 
-func observeChunk(recorder *llm.InferenceRecorder, frame []byte) (UsageData, bool) {
-	if recorder == nil {
-		return UsageData{}, false
+func (m *streamMeter) observeLine(frame []byte) bool {
+	if !m.stopContent && contentBearing(frame) {
+		m.stopContent = !m.observer.ContentToken()
 	}
 	var usage UsageData
-	if bytes.Contains(frame, []byte(`"usage"`)) || bytes.Contains(frame, []byte(`"model"`)) {
-		usage = ParseSSEFinalUsageExtended(bytes.TrimSpace(frame))
+	measureCounts := m.observer.MeasureTokenPresence()
+	if streamUsageCandidate(frame, measureCounts) {
+		usage = ParseSSEFinalUsageExtended(frame)
 		if usage.Model != "" {
-			recorder.SetResponseModel(usage.Model)
+			m.observer.SetResponseModel(usage.Model)
 		}
 	}
 	// Gated so a node with capture off pays no per-frame parse.
-	if llm.CaptureResponses() {
-		recorder.AppendResponseText(StreamDeltaText(frame))
+	if m.observer.CaptureText() {
+		m.observer.AppendResponseText(StreamDeltaText(frame))
 	}
-	return usage, usage.In > 0 || usage.Out > 0 || usage.CostSource != ""
+	reported := usage.recordable()
+	if measureCounts {
+		reported = reported || usage.HasInput || usage.HasOutput
+	}
+	if reported {
+		m.best = m.best.merge(usage)
+	}
+	return reported
+}
+
+func streamUsageCandidate(frame []byte, measureCounts bool) bool {
+	if bytes.Contains(frame, []byte(`"usage"`)) || bytes.Contains(frame, []byte(`"model"`)) {
+		return true
+	}
+	return measureCounts && (bytes.Contains(frame, []byte(`"eval_count"`)) ||
+		bytes.Contains(frame, []byte(`"prompt_eval_count"`)))
+}
+
+// StreamObserver receives raw stream observations before any response rewrite.
+type StreamObserver interface {
+	ContentToken() bool // Return true to keep observing later content.
+	SetResponseModel(string)
+	CaptureText() bool
+	AppendResponseText(string)
+	MeasureTokenPresence() bool
+	Usage(UsageData)
+	End(Result, UsageData)
+}
+
+type recorderObserver struct{ *llm.InferenceRecorder }
+
+// RecorderObserver publishes stream observations through the inference recorder.
+func RecorderObserver(rec *llm.InferenceRecorder) StreamObserver {
+	if rec == nil {
+		return nil
+	}
+	return recorderObserver{rec}
+}
+
+func (o recorderObserver) ContentToken() bool {
+	o.RecordFirstToken()
+	return false
+}
+
+func (recorderObserver) CaptureText() bool { return llm.CaptureResponses() }
+
+func (recorderObserver) MeasureTokenPresence() bool { return false }
+
+func (o recorderObserver) Usage(u UsageData) {
+	o.SetExtendedUsage(u.CachedTokens, u.ReasoningTokens, u.Cost, string(u.CostSource))
+	o.SetTokensOut(u.Out)
+}
+
+func (o recorderObserver) End(result Result, u UsageData) {
+	// Calibration uses Result.Failure's wire code, while the recorder distinguishes truncation from read errors.
+	switch {
+	case result.Outcome == UpstreamFailed:
+		o.SetError(upstreamStreamFailed, "The upstream stream reported an error.")
+	case result.Outcome == Truncated && result.Err != nil:
+		o.SetError("upstream_stream_error", result.Err.Error())
+	case result.Outcome == Truncated:
+		o.SetError("upstream_stream_truncated", "The upstream stream ended before completing.")
+	}
+	o.SetExtendedUsage(u.CachedTokens, u.ReasoningTokens, u.Cost, string(u.CostSource))
+	o.RecordCompletion(u.In, u.Out)
+}
+
+// StreamMeasurement collects timings and counts without publishing inference telemetry.
+// Construct it with NewStreamMeasurement so content timestamps have a clock.
+type StreamMeasurement struct {
+	now                                 func() time.Time
+	FirstContentToken, LastContentToken time.Time
+	InputTokens, OutputTokens           *int
+	ErrorCode                           string
+}
+
+// NewStreamMeasurement requires the caller's clock for content timestamps.
+func NewStreamMeasurement(now func() time.Time) (*StreamMeasurement, error) {
+	if now == nil {
+		return nil, errors.New("stream measurement requires a clock")
+	}
+	return &StreamMeasurement{now: now}, nil
+}
+
+// ContentToken timestamps content with the caller's clock.
+func (m *StreamMeasurement) ContentToken() bool {
+	m.LastContentToken = m.now()
+	if m.FirstContentToken.IsZero() {
+		m.FirstContentToken = m.LastContentToken
+	}
+	return true
+}
+
+func (*StreamMeasurement) SetResponseModel(string)    {}
+func (*StreamMeasurement) CaptureText() bool          { return false }
+func (*StreamMeasurement) AppendResponseText(string)  {}
+func (*StreamMeasurement) MeasureTokenPresence() bool { return true }
+func (*StreamMeasurement) Usage(UsageData)            {}
+
+// End keeps missing usage distinct from reported zeroes and retains the wire failure code.
+func (m *StreamMeasurement) End(result Result, u UsageData) {
+	if u.HasInput {
+		m.InputTokens = new(int(u.In))
+	}
+	if u.HasOutput {
+		m.OutputTokens = new(int(u.Out))
+	}
+	failure, _ := result.Failure()
+	m.ErrorCode = failure.Code
+	if result.Outcome == UpstreamFailed {
+		m.ErrorCode = upstreamStreamFailed
+	}
 }

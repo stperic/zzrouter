@@ -2,6 +2,7 @@ package clientcli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -10,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -46,11 +47,15 @@ Examples:
   # Force selection when multiple matches
   zzrouter run "Qwen*" --force
   
+  # Replace the current run with new settings
+  zzrouter run llama2 --param keep-alive=5m --replace
+
   # Dry-run to preview configuration
   zzrouter run Qwen/Qwen2.5-VL-3B --param gpu-memory-utilization=0.95 --dry-run`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
+			replace, _ := cmd.Flags().GetBool("replace")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			stream, _ := cmd.Flags().GetBool("stream")
 			watch, _ := cmd.Flags().GetBool("watch")
@@ -81,7 +86,7 @@ Examples:
 				return fmt.Errorf("specify a model or a node-scoped --provider")
 			}
 
-			return runRun(nil, provider, node, model, force, dryRun, stream, watch, params, envVars) // clientConfig not needed since EnsureConnected handles it
+			return runRun(cmd.Context(), provider, node, model, force, replace, dryRun, stream, watch, params, envVars)
 		},
 	}
 
@@ -98,7 +103,8 @@ Examples:
 	cmd.Flags().StringToString("envs", nil, "Environment variables (comma-separated, format: KEY=value,KEY2=value2)")
 
 	// Control Flags
-	cmd.Flags().BoolP("force", "f", false, "Force loading without confirmation")
+	cmd.Flags().BoolP("force", "f", false, "Select the first matching model")
+	cmd.Flags().Bool("replace", false, "Replace the run with the requested settings")
 	cmd.Flags().Bool("dry-run", false, "Preview configuration without running model")
 	cmd.Flags().Bool("stream", false, "Stream logs after running model (like 'ps stream')")
 	cmd.Flags().BoolP("watch", "w", false, "Stream launch progress until the instance reports ready")
@@ -180,9 +186,8 @@ func parseEnvironmentFlags(cmd *cobra.Command) (map[string]string, error) {
 	return result, nil
 }
 
-func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryRun, stream, watch bool, params, envVars map[string]string) error {
-	// Use centralized sign-in logic
-	client, err := EnsureConnected()
+func runRun(ctx context.Context, provider, node, model string, force, replace, dryRun, stream, watch bool, params, envVars map[string]string) error {
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -209,9 +214,6 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 		modelID = selectedModel.Name
 	}
 
-	// Use force flag as specified by user
-	forceLoad := force
-
 	// Dry-run mode: get preview from server and display
 	if dryRun {
 		fmt.Printf("\n%s Fetching run preview from server...\n", ui.GetSearchEmoji())
@@ -225,34 +227,29 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 		return nil
 	}
 
-	loadResp, err := client.LoadModelWithProviderForceParamsAndEnv(selectedModel.Node, modelID, selectedModel.Provider, forceLoad, params, envVars)
+	start, err := client.StartRun(ctx, pkgClient.StartRunRequest{
+		Node: selectedModel.Node, Model: modelID, Provider: selectedModel.Provider,
+		Replace: replace, Parameters: params, Environment: envVars,
+	})
 	if err != nil {
-		// Error messages from server are already user-friendly, just return them
+		var apiErr *pkgClient.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == string(httperr.CodeRunSettingsDiffer) {
+			return fmt.Errorf("%w\nUse --replace to apply the requested settings", err)
+		}
 		return err
 	}
+	fmt.Printf("%s Running: %s\n", ui.GetCheckEmoji(), selectedModel.Name)
 
-	// Validate response
-	if loadResp == nil {
-		return fmt.Errorf("empty response from server")
-	}
-
-	// Print success message now that API call succeeded
-	if force {
-		fmt.Printf("%s Running: %s (force restart)\n", ui.GetCheckEmoji(), selectedModel.Name)
-	} else {
-		fmt.Printf("%s Running: %s\n", ui.GetCheckEmoji(), selectedModel.Name)
-	}
-
-	if loadResp.BaseURL != "" {
-		fmt.Printf("Base URL: %s\n", loadResp.BaseURL)
+	if start.BaseURL != "" {
+		fmt.Printf("Base URL: %s\n", start.BaseURL)
 	}
 
 	if watch {
-		if loadResp.JobID == "" {
-			fmt.Printf("%s --watch: server returned no job_id (provider launched synchronously)\n", ui.GetInfoEmoji())
+		if start.JobID == "" {
+			fmt.Printf("%s No readiness job is available. Use 'zzrouter ps' to inspect runs.\n", ui.GetInfoEmoji())
 		} else {
 			label := fmt.Sprintf("Launching %s", selectedModel.Name)
-			if err := RenderJobProgress(context.Background(), client, loadResp.JobID, loadResp.Node, label); err != nil {
+			if err := RenderJobProgress(ctx, client, start.JobID, start.Node, label); err != nil {
 				return err
 			}
 		}
@@ -260,29 +257,28 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 
 	// Handle streaming mode
 	if stream {
-		if loadResp.InstanceID == "" {
+		if start.ID == "" {
 			// Service/external providers manage their own instances
 			// and don't provide zzRouter instance IDs for log streaming
 			fmt.Println()
 			fmt.Printf("%s Log streaming is not available for service providers like '%s'\n",
-				ui.GetWarningEmoji(), loadResp.App)
+				ui.GetWarningEmoji(), start.Provider)
 			fmt.Printf("   The model is running successfully. Use 'zzrouter ps' to see running instances.\n")
-			if loadResp.App == constants.AppOllama {
+			if start.Provider == constants.AppOllama {
 				fmt.Printf("   For Ollama logs, use: ollama ps\n")
 			}
 			return nil // Success, just can't stream logs
 		}
 		fmt.Println()
-		// Use instance ID directly from load response (much better UX!)
 		fmt.Printf("Streaming logs for %s (press Ctrl+C to stop)...\n", modelID)
 		fmt.Println(strings.Repeat("-", 80))
-		err = client.StreamInstanceLogs(loadResp.InstanceID, selectedModel.Node)
+		err = client.StreamInstanceLogs(ctx, start.ID, start.Node)
 		fmt.Println(strings.Repeat("-", 80))
 		return err
 	}
 
 	// Non-streaming mode: show ps table
-	err = runPs(nil, "", "") // Show all running instances
+	err = runPs(ctx, "", "")
 	if err != nil {
 		fmt.Printf("Warning: Failed to display running instances: %v\n", err)
 	}

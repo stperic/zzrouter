@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -441,7 +440,7 @@ func TestUpstreamImageGateDispatchPaths(t *testing.T) {
 						body = []byte(`{"model":"org/model","stream":true,` + tc.image + `}`)
 					}
 					req := routedRequest(httptest.NewRequest("POST", tc.path, bytes.NewReader(body)))
-					req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
+					req = withInferenceBody(req, body)
 					w := httptest.NewRecorder()
 					inst := instanceFor(t, engine, "org/model", "")
 					inst.FailureClassifier = s.failureClassifier("llamacpp")
@@ -449,7 +448,7 @@ func TestUpstreamImageGateDispatchPaths(t *testing.T) {
 					case "direct":
 						s.proxy.ForwardToBackend(w, req, "llamacpp", engine.URL+tc.path, backend.Engine(), body)
 					case "instance":
-						s.proxyToInstance(w, req, inst, true)
+						s.proxyToInstance(w, req, newInstanceRequest(req, body), inst, true)
 					case "worker":
 						c, _ := gin.CreateTestContext(w)
 						c.Request = req
@@ -457,7 +456,7 @@ func TestUpstreamImageGateDispatchPaths(t *testing.T) {
 					case "cold":
 						w.Header().Set("Content-Type", "text/event-stream")
 						w.WriteHeader(200)
-						s.streamFromInstance(w, req, inst, dialectOf(req).(httperr.InBandStreamer))
+						s.streamFromInstance(w, req, newInstanceRequest(req, body), inst, dialectOf(req).(httperr.InBandStreamer))
 					}
 					want, code := 500, false
 					if images || method == "worker" {

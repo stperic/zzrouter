@@ -20,8 +20,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -167,9 +166,7 @@ type ProviderAppManager struct {
 	installPolicyFile   string
 	providerSchema      func(provider string) (*schema.ProviderSchema, error)
 	featureWarnings     sync.Map // [provider, feature, key] schema warnings, once per manager
-	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
-	memoryInventory     func(context.Context) []gpu.CardMetrics
-	memorySystem        func(context.Context) *hardware.HardwareInfo
+	memorySnapshot      func(context.Context, bool) resources.Snapshot
 	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
@@ -383,14 +380,11 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		runExpired:      make(chan struct{}),
-		memorySnapshot:  gpu.MemorySnapshotContext,
-		memorySystem: func(ctx context.Context) *hardware.HardwareInfo {
-			value, _ := inventory.Default().GetMemoryInfo(ctx)
-			return value
-		},
-		memoryInventory: func(ctx context.Context) []gpu.CardMetrics {
-			value, _ := inventory.Default().GetGPUCardMetrics(ctx)
-			return value
+		memorySnapshot: func(ctx context.Context, fresh bool) resources.Snapshot {
+			if fresh {
+				return resources.Sample(ctx, nil, nil)
+			}
+			return inventory.Default().GetSnapshot(ctx)
 		},
 		services:  make(map[string]*managedService),
 		flights:   make(map[instance.Key]*flight),

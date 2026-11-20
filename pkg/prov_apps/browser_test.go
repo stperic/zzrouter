@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/require"
 )
@@ -39,17 +40,15 @@ func browserLaunchFixture(t *testing.T) (*ProviderAppManager, preparedLaunch, *i
 	declared, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
 	m, err := NewProviderAppManager(cfg, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
+		merged, errs := schema.Merge(provider, declared, svc)
 		return merged, errors.Join(errs...)
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
-	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 24576}}, nil
-	}
+	})
 	snapshot, err := m.resolveRecipe("comfyui", "comfyui")
 	require.NoError(t, err)
 	manifest := &fsroot.InstallManifest{Version: snapshot.Recipe.Source.Version, WorkingDir: snapshot.WorkingDir, Recipe: &snapshot.Recipe, RecipeFingerprint: snapshot.Fingerprint, PlanID: "installed-browser-source", Interpreter: &fsroot.ManifestInterpreter{Path: "python", Version: "3.14.0"}, Inventory: []fsroot.ManifestPackage{{Name: "torch", Version: "2.9"}}}
@@ -81,7 +80,7 @@ func TestBrowserReceiptCapturesCanonicalSourceLaunch(t *testing.T) {
 	actual, endpoint, err := m.BrowserRun(t.Context(), run.ID)
 	require.NoError(t, err)
 	require.Same(t, run, actual)
-	require.Equal(t, processRunEndpoint(run.Port), endpoint)
+	require.Equal(t, protocol.ProcessRunEndpoint(run.Port), endpoint)
 	view := run.Resolved()
 	view.Browser.SourceSHA256 = "changed by reader"
 	require.Equal(t, receipt.SourceSHA256, run.Resolved().Browser.SourceSHA256)
@@ -193,10 +192,11 @@ func TestBrowserReceiptAcceptsReleasedTuningAndInactiveOperatorFlag(t *testing.T
 		merged, errs := schema.Merge(provider, declared, svc)
 		return merged, errors.Join(errs...)
 	}
-	req := EnsureRequest{Provider: "comfyui", Parameters: map[string]string{"enable-manager-legacy-u": "false", "default-device": "-1", "keep-alive": "-1", "max-upload-size": "100"}, EnvVars: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}}
+	req := EnsureRequest{Provider: "comfyui", Parameters: map[string]string{"enable-manager-legacy-u": "false", "default-device": "-1", "keep-alive": "-1", "max-upload-size": "100", "memory-admission": "report"}, EnvVars: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}}
 	admitted, err := m.prepareRun(t.Context(), run, req, launchSelection{key: "comfyui", config: svc, model: process.ResolveModel(svc, "")}, requireLaunchSchema(t, m, "comfyui"))
 	require.NoError(t, err)
 	require.NotContains(t, admitted.args, "--enable-manager-legacy-u")
+	require.NotContains(t, admitted.args, "--memory-admission")
 	require.Contains(t, admitted.args, "--default-device")
 	require.Contains(t, admitted.args, "-1")
 	require.NotNil(t, run.Resolved().Browser)

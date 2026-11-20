@@ -37,7 +37,8 @@ func buildEnsureRequest(providerName string, req LaunchRequest) prov_apps.Ensure
 		Model:        req.Model,
 		Port:         req.Port,
 		Parameters:   req.Parameters,
-		EnvVars:      req.EnvVars,
+		EnvVars:      req.Environment,
+		Force:        req.Replace,
 		Files:        req.Files,
 		NativeConfig: req.NativeConfig,
 	}
@@ -51,7 +52,8 @@ type LaunchRequest struct {
 	Port         int                    `json:"port,omitempty"`
 	Files        []instance.FileMount   `json:"files,omitempty"`
 	Parameters   schema.ParameterValues `json:"parameters,omitempty"`
-	EnvVars      map[string]string      `json:"env_vars,omitempty"`
+	Environment  map[string]string      `json:"environment,omitempty"`
+	Replace      bool                   `json:"replace,omitempty"`
 	NativeConfig *instance.NativeConfig `json:"native_config,omitempty"`
 }
 

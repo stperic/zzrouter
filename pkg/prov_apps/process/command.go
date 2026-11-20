@@ -149,7 +149,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, shapes, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
+		args = append(args, buildParameterArgs(params, shapes, nil)...)
 	}
 
 	wireModel := modelClean
@@ -321,7 +321,7 @@ func buildParameterArgs(params map[string]string, shapes map[string]schema.Param
 
 	args := make([]string, 0, len(params)*2)
 	for _, key := range slices.Sorted(maps.Keys(params)) {
-		if excludedSet[key] {
+		if excludedSet[key] || runsettings.IsParameter(runsettings.FlagName(key)) {
 			continue
 		}
 		value := params[key]

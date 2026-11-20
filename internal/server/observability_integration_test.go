@@ -587,12 +587,11 @@ func TestStreamFromInstance_PopulatesInflight(t *testing.T) {
 	body := []byte(`{"model":"test-stream-model","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
 	ctx := context.WithValue(req.Context(), CtxKeyModel, "test-stream-model")
-	ctx = context.WithValue(ctx, CtxKeyOriginalBody, body)
-	req = req.WithContext(ctx)
+	req = withInferenceBody(req.WithContext(ctx), body)
 
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	server.streamFromInstance(w, req, inst, dialectOf(req).(httperr.InBandStreamer))
+	server.streamFromInstance(w, req, newInstanceRequest(req, body), inst, dialectOf(req).(httperr.InBandStreamer))
 
 	mreq := httptest.NewRequest("GET", "/metrics", nil)
 	mw := httptest.NewRecorder()

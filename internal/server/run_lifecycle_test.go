@@ -59,6 +59,7 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 				if catalog {
 					require.NoError(t, err)
 					assert.Equal(t, "running", launch.Status)
+					assert.Equal(t, "worker", launch.Node)
 					assert.Empty(t, launch.ID)
 					assert.Empty(t, launch.JobID)
 				} else {
@@ -72,15 +73,6 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 					assert.Empty(t, ensured.JobID)
 				} else {
 					assert.Equal(t, http.StatusNotFound, answeredStatus(err))
-				}
-				loaded, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "worker" }).LoadLocalModel(t.Context(), &LoadModelRequest{Provider: provider, ModelName: "m"})
-				if catalog {
-					require.NoError(t, err)
-					assert.Empty(t, loaded.InstanceID)
-					assert.Empty(t, loaded.JobID)
-					assert.Equal(t, "running", loaded.Status)
-				} else {
-					assert.ErrorIs(t, err, prov_apps.ErrModelNotLocal)
 				}
 				utility := NewRunsUtilityService(mgr, func() *config.AppsConfig { return cfg })
 				launches, failed, err := utility.BatchLaunch(t.Context(), []LaunchRequest{{Provider: provider, Model: "m", LaunchMode: "native"}})

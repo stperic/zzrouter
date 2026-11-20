@@ -8,13 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -43,17 +43,15 @@ func reservationRig(t *testing.T, eviction bool) *contractRig {
 		require.NoError(t, fresh.AddApp(name, svc))
 	}
 	r.m.ReloadConfig(fresh)
-	r.m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
-	}
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+
+	r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 24576}
 		if run, ok := r.m.instances.GetByKey(instance.NewKey("generic", "", "")); ok && run.GetProcessID() != 0 {
 			device.FreeMiB = 22528
 			device.Processes = []gpu.MemoryProcess{{PID: run.GetProcessID(), MemoryMiB: new(int64(2048))}}
 		}
 		return []gpu.MemoryDevice{device}, nil
-	}
+	})
 	return r
 }
 
@@ -79,8 +77,18 @@ func TestReservationLaunchPreviewAndStaleness(t *testing.T) {
 func TestReservationIgnoresUnusableInventoryCards(t *testing.T) {
 	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 	r := reservationRig(t, false)
-	r.m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}, {TotalMemoryMiB: 24576}, {UUID: "GPU-B"}, {UUID: "GPU-C", TotalMemoryMiB: -1}}
+	cached := poolSnapshot(
+		resources.Pool{Kind: resources.GPU, ID: "GPU-A", TotalMiB: new(int64(24576))},
+		resources.Pool{Kind: resources.GPU, TotalMiB: new(int64(24576))},
+		resources.Pool{Kind: resources.GPU, ID: "GPU-B"},
+		resources.Pool{Kind: resources.GPU, ID: "GPU-C", TotalMiB: new(int64(-1))},
+	)
+	fresh := r.m.memorySnapshot
+	r.m.memorySnapshot = func(ctx context.Context, live bool) resources.Snapshot {
+		if live {
+			return fresh(ctx, live)
+		}
+		return cached(ctx, live)
 	}
 	devices, err := r.m.memoryTotals(t.Context())
 	require.NoError(t, err)
@@ -105,6 +113,13 @@ func TestReservationProtectsBudgetAndReclaimsIdleTenant(t *testing.T) {
 				require.ErrorAs(t, err, &fit)
 				require.Equal(t, int64(15576), fit.FreeMiB)
 				require.Contains(t, fit.Error(), studio.Run.ID)
+				require.Equal(t, map[string]int64{"GPU-A": 9000}, studio.Run.Resolved().Commitments)
+				require.Len(t, fit.Holders, 2)
+				require.Equal(t, studio.Run.ID, fit.Holders[0].Run)
+				require.Equal(t, studio.Run.GetProcessID(), fit.Holders[0].PID)
+				require.Equal(t, new(int64(2048)), fit.Holders[0].MemoryMiB)
+				require.Equal(t, studio.Run.ID, fit.Holders[1].Run)
+				require.Equal(t, int64(6952), fit.Holders[1].UnusedCommitmentMiB)
 				return
 			}
 			require.NoError(t, err)
@@ -124,7 +139,7 @@ func TestReservationReclaimsLLMHoldersOnlyWhenEnabled(t *testing.T) {
 			})
 			f.features.declared = requireLaunchSchema(t, f.mgr, "vllm")
 			f.features.Params = map[string]string{"gpu-reserve-mib": "6000"}
-			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				device := f.device
 				device.Processes = nil
 				for _, run := range []*instance.Instance{f.older, f.newer} {
@@ -135,7 +150,7 @@ func TestReservationReclaimsLLMHoldersOnlyWhenEnabled(t *testing.T) {
 					}
 				}
 				return []gpu.MemoryDevice{device}, nil
-			}
+			})
 			evicted, err := f.admit(t)
 			if !enabled {
 				require.Error(t, err)
@@ -228,9 +243,9 @@ func TestUnknownBudgetIgnoresOtherDeviceCommitment(t *testing.T) {
 	f.features.declared = requireLaunchSchema(t, f.mgr, "vllm")
 	f.older.SetResolved(instance.Resolved{Commitments: map[string]int64{"GPU-A": 4000}})
 	f.features.Environment = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B"}
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+	f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24000, FreeMiB: 24000}, {UUID: "GPU-B", TotalMiB: 24000, FreeMiB: 24000}}, nil
-	}
+	})
 	evicted, err := f.admit(t)
 	require.NoError(t, err)
 	require.Empty(t, evicted)
@@ -274,14 +289,16 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	r := reservationRig(t, false)
 	tools := t.TempDir()
 	counter := filepath.Join(tools, "calls")
-	script := "#!/bin/sh\nprintf 'call\n' >> '" + counter + "'\nprintf 'GPU-A, 00000000:01:00.0, 24576, 0, 24576, 0\n'\n"
+	script := "#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo gpu >> '" + counter + "'; echo 'GPU-A, 0, 24576, 24576, 0, 0000:01:00.0, 0, [N/A]' ;;\n--query-compute-apps=*) echo apps >> '" + counter + "' ;;\nesac\n"
 	require.NoError(t, os.WriteFile(filepath.Join(tools, "nvidia-smi"), []byte(script), 0700))
 	t.Setenv("PATH", tools)
-	cache := inventory.NewCache(time.Hour)
-	r.m.memoryInventory = func(ctx context.Context) []gpu.CardMetrics { value, _ := cache.GetGPUCardMetrics(ctx); return value }
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		t.Fatal("preparation queried live admission memory")
-		return nil, nil
+	cache := inventory.NewCacheWithProbe(time.Hour, func(ctx context.Context, _ *resources.Snapshot) resources.Snapshot {
+		pools, err := resources.NVIDIAPools(ctx)
+		return resources.Snapshot{Pools: pools, GPUError: err}
+	})
+	r.m.memorySnapshot = func(ctx context.Context, fresh bool) resources.Snapshot {
+		require.False(t, fresh, "preparation queried live admission memory")
+		return cache.GetSnapshot(ctx)
 	}
 	fresh := &config.AppsConfig{}
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
@@ -309,7 +326,7 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	}
 	calls, err := os.ReadFile(counter)
 	require.NoError(t, err)
-	require.Equal(t, 1, strings.Count(string(calls), "call"))
+	require.Equal(t, "gpu\napps\n", string(calls))
 }
 
 func TestReservationPreparationPropagatesContext(t *testing.T) {
@@ -317,10 +334,11 @@ func TestReservationPreparationPropagatesContext(t *testing.T) {
 	type operationKey struct{}
 	ctx, cancel := context.WithCancel(context.WithValue(t.Context(), operationKey{}, "operation"))
 	defer cancel()
-	r.m.memoryInventory = func(got context.Context) []gpu.CardMetrics {
+	r.m.memorySnapshot = func(got context.Context, fresh bool) resources.Snapshot {
+		require.False(t, fresh)
 		require.Equal(t, "operation", got.Value(operationKey{}))
 		cancel()
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
+		return resources.Snapshot{Pools: []resources.Pool{{Kind: resources.GPU, ID: "GPU-A", TotalMiB: new(int64(24576))}}}
 	}
 	_, err := r.m.PreviewLaunch(ctx, EnsureRequest{Provider: "generic"}, 8740)
 	require.ErrorIs(t, err, context.Canceled)
@@ -358,10 +376,7 @@ func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
 			} else {
 				devices[1].FreeMiB = 0
 			}
-			r.m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-				return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}, {UUID: "GPU-B", TotalMemoryMiB: 32768}}
-			}
-			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return devices, nil }
+			r.m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) { return devices, nil })
 			req := EnsureRequest{Provider: "generic"}
 			expected, complement := "GPU-A", "15.2109375"
 			if override != "" {
@@ -402,15 +417,13 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "float", declared.Parameters["reserve-vram"].Type)
 	manager, err := NewProviderAppManager(cfg, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
+		merged, errs := schema.Merge(provider, declared, svc)
 		return merged, errors.Join(errs...)
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, manager)
 	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
-	manager.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
-	}
+	manager.memorySnapshot = poolSnapshot(resources.Pool{Kind: resources.GPU, ID: "GPU-A", TotalMiB: new(int64(24576))})
 	preview, err := manager.PreviewLaunch(t.Context(), EnsureRequest{Provider: "comfyui"}, 8188)
 	require.NoError(t, err)
 	require.Len(t, preview.Args, 10)

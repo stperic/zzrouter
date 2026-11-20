@@ -161,6 +161,7 @@ type Server struct {
 
 	// idempotency is shared by every route that honours Idempotency-Key; the key scopes by method and path.
 	idempotency *idempotencyStore
+	calibration calibrationClaim
 
 	// fsnotify-driven cache invalidator. Closes the disk-state-vs-cache
 	// drift class of bug; nil when the models root doesn't exist yet

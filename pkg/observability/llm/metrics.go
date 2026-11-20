@@ -184,7 +184,7 @@ func newMetrics() (*Metrics, error) {
 // RecordModelLoad records a model load attempt.
 //
 // model is caller-controlled (the request body's model field for
-// /runs/load and similar paths) and is gated through ModelName, which
+// /runs and inference paths) and is gated through ModelName, which
 // applies genai.GateModelLabel. Without the gate, an adversarial
 // caller could explode the model_load metric's model dimension.
 func (m *Metrics) RecordModelLoad(ctx context.Context, model, provider, status string, durationSeconds float64) {

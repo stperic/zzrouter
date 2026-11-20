@@ -187,6 +187,16 @@ test('list adapter accepts data envelopes without success and follows pagination
   await assert.rejects(broken.list('/keys'), /fully loaded/);
 });
 
+test('management discovery allows an ordinary GET at the exact API root', async () => {
+  const queue = queued({ data: { calibration: { workload_kinds: ['chat'] } } });
+  const api = new API({ ...queue, origin });
+  api.state = { csrf: 'proof' };
+  assert.deepEqual(await api.data(''), { calibration: { workload_kinds: ['chat'] } });
+  await assert.rejects(api.data('', { method: 'POST' }), /Unsupported console request/);
+  await assert.rejects(api.stream(''), /Unsupported console request/);
+  assert.deepEqual(queue.calls.map(call => [call.path, call.options.method, call.options.redirect]), [['/zzrouter/v1', 'GET', 'error']]);
+});
+
 test('partial save presentation reports every boolean independently', () => {
   const summary = applySummary({ saved: true, durable: false, active: false, published: true, outcome: 'saved_durability_uncertain' });
   assert.match(summary, /Saved/);

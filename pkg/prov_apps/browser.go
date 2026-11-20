@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"gopkg.in/yaml.v3"
 )
@@ -45,7 +46,7 @@ func (m *ProviderAppManager) captureBrowserReceipt(ctx context.Context, prepared
 	if manifest == nil {
 		return nil
 	}
-	return &instance.BrowserReceipt{Endpoint: processRunEndpoint(port), Name: release.Runtime.Browser.Name, InstallPlanID: manifest.PlanID, SourceSHA256: manifest.Recipe.Source.SHA256, RecipeFingerprint: manifest.RecipeFingerprint, Contract: install.Fingerprint(release.Runtime.Browser), Execution: install.Fingerprint(prepared.launch)}
+	return &instance.BrowserReceipt{Endpoint: protocol.ProcessRunEndpoint(port), Name: release.Runtime.Browser.Name, InstallPlanID: manifest.PlanID, SourceSHA256: manifest.Recipe.Source.SHA256, RecipeFingerprint: manifest.RecipeFingerprint, Contract: install.Fingerprint(release.Runtime.Browser), Execution: install.Fingerprint(prepared.launch)}
 }
 
 // Only release-declared flags with proven scalar boundaries can establish shared access.
@@ -58,13 +59,13 @@ func browserArgumentsProven(prepared preparedLaunch) bool {
 	if err != nil {
 		return false
 	}
-	released, problems := schema.Merge(prepared.config.Name, definition, config.ServiceConfig{})
+	released, problems := schema.Merge(prepared.config.Name, definition, config.ServiceConfig{Features: prepared.config.Features})
 	if len(problems) != 0 {
 		return false
 	}
 	for key, value := range prepared.resolved.Parameters {
 		name := runsettings.FlagName(key)
-		if name == runsettings.KeepAliveParameter || name == runsettings.EvictIdleParameter {
+		if runsettings.IsParameter(name) {
 			continue
 		}
 		actual, known := prepared.parameters.parameterShapes[name]
@@ -120,7 +121,7 @@ func (m *ProviderAppManager) BrowserRun(ctx context.Context, id string) (*instan
 	}
 	resolved := run.Resolved()
 	receipt := resolved.Browser
-	if receipt == nil || receipt.Endpoint != processRunEndpoint(run.Port) {
+	if receipt == nil || receipt.Endpoint != protocol.ProcessRunEndpoint(run.Port) {
 		return nil, "", ErrProviderUnavailable
 	}
 	_, svc, ok := m.resolveConfigKey(run.Provider)

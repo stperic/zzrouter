@@ -3,6 +3,8 @@ import { details } from './details.mjs';
 import { liveReads } from './live-reads.mjs';
 import { bytes, deploymentTerminal } from './model-data.mjs';
 import { workloadKey } from './workload-data.mjs';
+import { startRun } from './run-form.mjs';
+import { calibrationDiscovery, calibrationForm, canCalibrate } from './calibrations.mjs';
 
 const path = id => `/deployments/${encodeURIComponent(id)}`;
 
@@ -29,6 +31,24 @@ export async function inspectDeployment(p, id, initial) {
         item.error ? message(item.error, 'warning') : null,
         item.job_id ? leaveButton('View job', () => p.go('workloads', workloadKey('job', item.node, item.job_id), 'jobs'), p.api) : null,
         !deploymentTerminal(item.status) ? mutationButton('Cancel on this node', () => cancel(item.node)) : null);
+      if (item.status === 'completed' && p.panel) {
+        const model = record.model;
+        row.append(leaveButton('Start and calibrate', async () => {
+          const owner = p.panel.view('Start and calibrate');
+          const back = () => inspectDeployment(p.panel.view('Download details'), id);
+          owner.root.append(message('Reading start options…'));
+          try {
+            const [nodes, config] = await Promise.all([owner.api.list('/nodes', { signal: owner.scope.signal }), calibrationDiscovery(owner)]);
+            if (!owner.current()) return;
+            if (!config?.workload_kinds?.length) throw new Error('This coordinator does not report calibration workload kinds.');
+            owner.root.replaceChildren();
+            await startRun(owner, nodes, item.node, { model }, { back, endpointKinds: config.workload_kinds, onReady: (run, feedback) => {
+              if (canCalibrate(run, config)) return calibrationForm(p.panel.view('New calibration'), { run, nodes, config });
+              feedback.append(message('No calibration workload kind is available for this run.', 'warning'));
+            } });
+          } catch (error) { if (owner.current()) owner.root.replaceChildren(problem(error), leaveButton('Back', back, owner.api)); }
+        }, p.api));
+      }
       content.append(row);
     }
     if (deploymentTerminal(record.status)) content.append(leaveButton('Inspect available models', () => p.go('models'), p.api), text('Download status is reported by the coordinator. Available models are read separately before starting a run.', 'muted'));
@@ -93,7 +113,7 @@ export async function deployments(p, selected) {
     catch (error) { if (p.current()) feedback.replaceChildren(problem(error)); }
   };
   p.root.append(heading('Workloads', 'Running models, downloads and background jobs.', leaveButton('Refresh', read, p.api)),
-    el('nav', { class: 'actions tabs', 'aria-label': 'Workload views' }, [['runs', 'Runs'], ['jobs', 'Jobs'], ['downloads', 'Downloads']].map(([id, label]) => { const control = leaveButton(label, () => p.go('workloads', undefined, id), p.api); control.setAttribute('aria-current', String(id === 'downloads')); return control; })), workspace);
+    el('nav', { class: 'actions tabs', 'aria-label': 'Workload views' }, [['runs', 'Runs'], ['jobs', 'Jobs'], ['calibrations', 'Calibrations'], ['downloads', 'Downloads']].map(([id, label]) => { const control = leaveButton(label, () => p.go('workloads', undefined, id), p.api); control.setAttribute('aria-current', String(id === 'downloads')); return control; })), workspace);
   listing.append(field('Search downloads', search), actions(leaveButton('Discover models', () => p.go('models', undefined, 'discover'), p.api)), feedback, results);
   search.addEventListener('input', render);
   await read(); if (!p.current()) return;

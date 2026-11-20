@@ -261,3 +261,12 @@ func TestServedRunChecksTheRunSettingsItReads(t *testing.T) {
 	_, err = r.m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}}, 0)
 	require.NoError(t, err, "the request's keep-alive settles it")
 }
+
+func TestServedRunRetainsMemoryAdmissionInResolvedSettings(t *testing.T) {
+	r := newServedRig(t)
+	req := EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"memory_admission": "report"}}
+	preview, err := r.m.PreviewLaunch(t.Context(), req, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "report", preview.Params[config.MemoryAdmissionParameter])
+	assert.Empty(t, preview.Args)
+}

@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"runtime"
 	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -117,7 +118,7 @@ func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device stri
 	ticker := time.NewTicker(constants.MemoryRecoveryInterval)
 	defer ticker.Stop()
 	for {
-		devices, err := m.memorySnapshot(recoveryCtx)
+		devices, _, err := m.memoryDevices(recoveryCtx, "", false)
 		if err == nil {
 			for _, snapshot := range devices {
 				if snapshot.UUID == device && snapshot.FreeMiB >= target {
@@ -221,7 +222,8 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	credits := make(map[string]*int64)
 	var devices []gpu.MemoryDevice
 	var systemMiB int64
-	err = admitWithReclaim(settings.EvictIdle && !capacity, func() error {
+	report := settings.MemoryAdmission == runsettings.MemoryAdmissionReport
+	err = admitWithReclaim(settings.EvictIdle && !capacity && !report, func() error {
 		if replacement == nil || devices == nil {
 			if !capacity {
 				owners = m.memoryRuns()
@@ -272,8 +274,17 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 			}
 			fit.KeptRun, fit.CreditedMiB = replacement.run, credit
 		}
+		if report && !capacity {
+			effects.Warning = &instance.AdmissionWarning{
+				Message: fit.Error(), KeptRun: fit.KeptRun, CreditedMiB: fit.CreditedMiB, BudgetKind: fit.BudgetKind,
+				Parameter: fit.Parameter, Device: fit.Device, RequiredMiB: fit.RequiredMiB, FreeMiB: fit.FreeMiB,
+				Holders: fit.Holders, AttributionReason: fit.AttributionReason,
+			}
+			clear(commitments) // A waived fit grants no commitment, and a replacement pre-check clears only its clone.
+			err = nil
+		}
 	}
-	if !capacity && (budget.Kind == schema.MemoryLayers || budget.Kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
+	if mayDeferMemoryObservation(err, budget.Kind, capacity, owners) {
 		err = nil
 	}
 	if ctx.Err() != nil {
@@ -284,57 +295,81 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	return assessment, effects, err
 }
 
-// memoryTotals shares the cached device observation used by reservation preparation.
+func mayDeferMemoryObservation(err error, kind string, capacity bool, owners []process.RunRef) bool {
+	return !capacity && (kind == schema.MemoryLayers || kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 })
+}
+
+func (m *ProviderAppManager) cachedMemory(ctx context.Context) (resources.Snapshot, error) {
+	snapshot := m.memorySnapshot(ctx, false)
+	return snapshot, ctx.Err()
+}
+
+func (m *ProviderAppManager) freshMemory(ctx context.Context) (resources.Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, resources.AdmissionTimeout)
+	defer cancel()
+	snapshot := m.memorySnapshot(ctx, true)
+	return snapshot, ctx.Err()
+}
+
+// memoryTotals uses the same cached pool totals for reservation preparation and capacity.
 func (m *ProviderAppManager) memoryTotals(ctx context.Context) ([]gpu.MemoryDevice, error) {
-	cards := m.memoryInventory(ctx)
-	if err := ctx.Err(); err != nil {
+	snapshot, err := m.cachedMemory(ctx)
+	if err != nil {
 		return nil, err
 	}
-	devices := make([]gpu.MemoryDevice, 0, len(cards))
-	for _, card := range cards {
-		if card.UUID != "" && card.TotalMemoryMiB > 0 {
-			devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB, FreeMiB: card.TotalMemoryMiB})
+	return memoryTotals(snapshot)
+}
+
+func memoryTotals(snapshot resources.Snapshot) ([]gpu.MemoryDevice, error) {
+	var devices []gpu.MemoryDevice
+	for _, pool := range snapshot.Pools {
+		if pool.Kind == resources.Host || pool.ID == "" || pool.TotalMiB == nil || *pool.TotalMiB <= 0 {
+			continue
 		}
-	}
-	if len(devices) == 0 {
-		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-			if memory := m.memorySystem(ctx); memory != nil {
-				device, err := gpu.UnifiedMemoryDevice(memory.TotalRAM, memory.TotalRAM)
-				if err == nil {
-					return []gpu.MemoryDevice{device}, nil
-				}
+		device := gpu.MemoryDevice{UUID: pool.ID, TotalMiB: *pool.TotalMiB, FreeMiB: *pool.TotalMiB}
+		if pool.Kind == resources.Unified {
+			var err error
+			device, err = gpu.UnifiedMemoryDevice(*pool.TotalMiB*constants.BytesPerMB, *pool.TotalMiB*constants.BytesPerMB)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 			}
 		}
+		devices = append(devices, device)
+	}
+	if len(devices) == 0 {
 		return nil, fmt.Errorf("%w: GPU memory totals unavailable", process.ErrMemoryObservation)
 	}
 	return devices, nil
 }
 
 func (m *ProviderAppManager) memoryDevices(ctx context.Context, kind string, capacity bool) ([]gpu.MemoryDevice, int64, error) {
-	var systemMiB int64
-	if kind == schema.MemoryLayers || kind == schema.MemoryUnified {
-		if memory := m.memorySystem(ctx); memory != nil {
-			systemMiB = memory.TotalRAM / (1024 * 1024)
-		}
+	read := m.cachedMemory
+	if !capacity {
+		read = m.freshMemory
 	}
-	var devices []gpu.MemoryDevice
-	var err error
+	snapshot, err := read(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	var systemMiB int64
+	if pool, ok := snapshot.SystemPool(); ok && pool.TotalMiB != nil {
+		systemMiB = *pool.TotalMiB
+	}
 	if kind == schema.MemoryUnified && capacity {
-		device, observationErr := gpu.UnifiedMemoryDevice(systemMiB*1024*1024, systemMiB*1024*1024)
+		device, observationErr := gpu.UnifiedMemoryDevice(systemMiB*constants.BytesPerMB, systemMiB*constants.BytesPerMB)
 		if observationErr != nil {
 			return nil, systemMiB, fmt.Errorf("%w: %v", process.ErrMemoryObservation, observationErr)
 		}
 		return []gpu.MemoryDevice{device}, systemMiB, nil
 	}
+	var devices []gpu.MemoryDevice
 	if capacity {
-		devices, err = m.memoryTotals(ctx)
+		devices, err = memoryTotals(snapshot)
 	} else {
-		devices, err = m.memorySnapshot(ctx)
+		devices, err = snapshot.MemoryDevices()
 	}
-	if kind == schema.MemoryUnified && err == nil {
-		if len(devices) != 1 || !devices[0].Unified {
-			return nil, systemMiB, fmt.Errorf("%w: unified memory pool unavailable", process.ErrMemoryObservation)
-		}
+	if kind == schema.MemoryUnified && err == nil && (len(devices) != 1 || !devices[0].Unified) {
+		return nil, systemMiB, fmt.Errorf("%w: unified memory pool unavailable", process.ErrMemoryObservation)
 	}
 	return devices, systemMiB, err
 }

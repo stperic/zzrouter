@@ -113,9 +113,11 @@ type InstanceInfo struct {
 	ErrorMessage          string            `json:"error_message,omitempty"`
 	WaitingOn             string            `json:"waiting_on,omitempty"`   // run a queued launch waits for
 	EvictedRuns           []EvictedRun      `json:"evicted_runs,omitempty"` // idle runs this launch stopped for GPU memory
+	AdmissionWarning      *AdmissionWarning `json:"admission_warning,omitempty"`
 	StartedBy             StartedBy         `json:"started_by,omitempty"`
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
+	RequestsAdmitted      uint64            `json:"requests_admitted,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`
 	Parameters            map[string]string `json:"parameters,omitempty"`
 	// ResolvedParameters is what the process actually launched with,
@@ -169,6 +171,50 @@ type EvictedRun struct {
 type AdmissionEffects struct {
 	EvictedRuns    []EvictedRun
 	CatalogChanged bool
+	Warning        *AdmissionWarning
+}
+
+// AdmissionWarning reports the fit refusal an operator allowed the run to proceed past.
+type AdmissionWarning struct {
+	Message           string         `json:"message"`
+	KeptRun           string         `json:"kept_run,omitempty"`
+	CreditedMiB       *int64         `json:"credited_mib,omitempty"`
+	BudgetKind        string         `json:"budget_kind,omitempty"`
+	Parameter         string         `json:"parameter"`
+	Device            string         `json:"device"`
+	RequiredMiB       int64          `json:"required_mib"`
+	FreeMiB           int64          `json:"free_mib"`
+	Holders           []MemoryHolder `json:"holders"`
+	AttributionReason string         `json:"attribution_reason,omitempty"`
+}
+
+// MemoryHolder describes driver attribution without exposing process command lines.
+type MemoryHolder struct {
+	PID                  int    `json:"pid,omitempty"`
+	MemoryMiB            *int64 `json:"memory_mib,omitempty"`
+	Run                  string `json:"run,omitempty"`
+	Model                string `json:"model,omitempty"`
+	Ownership            string `json:"ownership"`
+	Provider             string `json:"provider,omitempty"`
+	UnusedCommitmentMiB  int64  `json:"unused_commitment_mib,omitempty"`
+	ReclaimSkippedReason string `json:"reclaim_skipped_reason,omitempty"`
+}
+
+func (w *AdmissionWarning) clone() *AdmissionWarning {
+	if w == nil {
+		return nil
+	}
+	out := *w
+	if w.CreditedMiB != nil {
+		out.CreditedMiB = new(*w.CreditedMiB)
+	}
+	out.Holders = slices.Clone(w.Holders)
+	for i, holder := range out.Holders {
+		if holder.MemoryMiB != nil {
+			out.Holders[i].MemoryMiB = new(*holder.MemoryMiB)
+		}
+	}
+	return &out
 }
 
 // Resolved is what one launch computed from config: the values its

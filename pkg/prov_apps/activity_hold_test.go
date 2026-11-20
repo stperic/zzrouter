@@ -13,25 +13,16 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
-
-type activityObserver interface{ ObserveActivity(bool) }
-
-func observeFixture(t *testing.T, run *instance.Instance) activityObserver {
-	t.Helper()
-	observer, ok := any(run).(activityObserver)
-	require.True(t, ok, "instance must accept observed engine activity")
-	return observer
-}
 
 func TestActivityHoldProtectsIdleAndLeavesSlotsFree(t *testing.T) {
 	run := instance.NewInstance("busy", "studio", "", 0, time.Minute, 0)
 	run.MarkRunning(false, nil)
 	run.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1})
-	observer := observeFixture(t, run)
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	require.Zero(t, run.GetActiveRequests())
 	require.False(t, run.Evictable())
 	require.False(t, Expired(run.IdleSnapshot(), utils.Now().Add(time.Hour)))
@@ -44,13 +35,13 @@ func TestActivityHoldProtectsIdleAndLeavesSlotsFree(t *testing.T) {
 	now := utils.Now().Add(time.Hour)
 	restore := utils.SetClock(utils.FixedClock(now))
 	defer restore()
-	observer.ObserveActivity(false)
+	run.ObserveActivity(false)
 	require.Equal(t, now, run.GetLastActivity())
 	require.False(t, Expired(run.IdleSnapshot(), now.Add(time.Minute-time.Nanosecond)))
 	require.True(t, Expired(run.IdleSnapshot(), now.Add(time.Minute)))
-	observer.ObserveActivity(false)
+	run.ObserveActivity(false)
 	require.Equal(t, now, run.GetLastActivity())
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	run.MarkFailed("dead engine")
 	require.True(t, run.IdleSnapshot().Leased == false)
 	run.Cancel()
@@ -60,12 +51,11 @@ func TestObservedBusyAndIdleClaimAreSerialized(t *testing.T) {
 	for range 100 {
 		run := instance.NewInstance("race", "studio", "", 0, time.Minute, 0)
 		run.MarkRunning(false, nil)
-		observer := observeFixture(t, run)
 		start := make(chan struct{})
 		holds := make(chan struct{})
 		claims := make(chan bool)
 		done := make(chan struct{})
-		go func() { <-start; observer.ObserveActivity(true); close(holds) }()
+		go func() { <-start; run.ObserveActivity(true); close(holds) }()
 		go func() {
 			<-start
 			release, _ := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
@@ -92,8 +82,8 @@ func TestObservedBusyAndIdleClaimAreSerialized(t *testing.T) {
 
 func TestActivityHoldPreventsPressureEviction(t *testing.T) {
 	f := newReclaimFixture(t, true)
-	observeFixture(t, f.older).ObserveActivity(true)
-	observeFixture(t, f.newer).ObserveActivity(true)
+	f.older.ObserveActivity(true)
+	f.newer.ObserveActivity(true)
 	evicted, err := f.admit(t)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
@@ -123,17 +113,27 @@ func (directQueueTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 func TestManagerStopDrainsObservedBusySampler(t *testing.T) {
 	r := reservationRig(t, true)
-	fresh := &config.AppsConfig{}
-	svc, _ := r.m.AppsConfig().LookupApp("generic")
-	svc.Runtime.ActivityProbe = &config.ActivityProbe{Path: "/queue", BusyWhenNonempty: []string{"queue_running", "queue_pending"}}
-	require.NoError(t, fresh.AddApp("generic", svc))
-	r.m.ReloadConfig(fresh)
+	loadSchema := r.m.providerSchema
+	declared, err := schema.LoadYAMLSchema([]byte("observe: {path: /queue, format: json, busy: [queue_running, queue_pending]}"))
+	require.NoError(t, err)
+	contract, conflicts := schema.Merge("generic", declared, config.ServiceConfig{})
+	require.Empty(t, conflicts)
+	r.m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+		base, err := loadSchema(provider)
+		if err != nil {
+			return nil, err
+		}
+		merged := *base
+		merged.Observe = contract.Observe
+		return &merged, nil
+	}
 	r.m.healthMon = health.NewMonitor(r.m.instances, health.MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: 3, HTTPClient: &http.Client{Transport: directQueueTransport{}}})
 	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
 	require.NoError(t, err)
 	awaitRunning(t, result.Run)
 	require.Eventually(t, func() bool { return result.Run.ToInfo("node").EngineBusy }, contractWait, time.Millisecond)
 	require.Zero(t, result.Run.GetActiveRequests())
+	require.Equal(t, "active", result.Run.ToInfo("node").Activity.State)
 	ctx, cancel := context.WithTimeout(t.Context(), contractWait)
 	defer cancel()
 	require.NoError(t, r.m.StopInstance(ctx, result.Run.ID))
@@ -146,7 +146,6 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	run := instance.NewInstance("submission-race", "studio", "", 0, time.Minute, 0)
 	run.MarkRunning(false, nil)
 	defer run.Cancel()
-	observer := observeFixture(t, run)
 	old := run.GetLastActivity()
 	restore := utils.SetClock(utils.FixedClock(old.Add(time.Second)))
 	defer restore()
@@ -159,7 +158,7 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	require.NotNil(t, release, "ensure has no lease over a direct submission after it returns")
 	require.Nil(t, refusal)
 	defer release()
-	observer.ObserveActivity(true)
+	run.ObserveActivity(true)
 	require.False(t, run.IdleSnapshot().Leased, "a later busy sample cannot revoke a stop already claimed")
 }
 

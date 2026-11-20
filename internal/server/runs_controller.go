@@ -3,7 +3,6 @@ package server
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 
 	"github.com/gin-gonic/gin"
@@ -17,30 +16,27 @@ type ValidateFilesRequest struct {
 
 // RunsController handles HTTP requests for run-related operations.
 type RunsController struct {
-	service     *RunsService
-	loadService *LoadService
-	utility     *RunsUtilityService
-	nodes       NodeValidator
-	logs        RunLogHandler
-	browserURL  func(string, string) string
+	service    *RunsService
+	utility    *RunsUtilityService
+	nodes      NodeValidator
+	logs       RunLogHandler
+	browserURL func(string, string) string
 }
 
 // NewRunsController creates a new runs controller.
 func NewRunsController(
 	service *RunsService,
-	loadService *LoadService,
 	utility *RunsUtilityService,
 	nodes NodeValidator,
 	logs RunLogHandler,
 	browserURL func(string, string) string,
 ) *RunsController {
 	return &RunsController{
-		service:     service,
-		loadService: loadService,
-		utility:     utility,
-		nodes:       nodes,
-		logs:        logs,
-		browserURL:  browserURL,
+		service:    service,
+		utility:    utility,
+		nodes:      nodes,
+		logs:       logs,
+		browserURL: browserURL,
 	}
 }
 
@@ -59,8 +55,6 @@ func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup, idempo
 	router.DELETE("/runs/:id", ctrl.StopRun)
 	idempotent(router, "POST", "/runs/:id/restart", nil, ctrl.RestartRun)
 
-	// Load (Cache-aware)
-	router.POST("/runs/load", ctrl.LoadModel)
 	router.POST("/runs/preview", ctrl.PreviewRun)
 
 	// Local configuration and utilities
@@ -250,34 +244,6 @@ func (ctrl *RunsController) RestartRun(c *gin.Context) {
 	respondAccepted(c, "Run restart accepted; subscribe to job_id of the new instance", resp)
 }
 
-// LoadModel handles POST /zzrouter/runs/load.
-func (ctrl *RunsController) LoadModel(c *gin.Context) {
-	var req LoadModelRequest
-	if !BindJSONStrict(c, &req) {
-		return
-	}
-
-	resp, err := ctrl.loadService.LoadModel(c.Request.Context(), &req)
-	if err != nil {
-		RespondToError(c, err)
-		return
-	}
-
-	// Endpoint providers (cloud/service that LoadModel forwards to
-	// directly) complete synchronously and lack a job_id. Local on-demand
-	// launches return 202 + job_id for async subscribe; the service layer
-	// maps status codes, so mirror the upstream status here.
-	if resp.Reused {
-		c.JSON(http.StatusConflict, SuccessResponse{Success: true, Message: resp.Message, Data: resp})
-		return
-	}
-	if resp.JobID != "" {
-		respondAccepted(c, "Model launch accepted; subscribe to job_id for readiness", resp)
-		return
-	}
-	respondSuccess(c, resp.Message, resp)
-}
-
 // PreviewRun handles POST /zzrouter/runs/preview.
 func (ctrl *RunsController) PreviewRun(c *gin.Context) {
 	var req PreviewRunRequest
@@ -291,7 +257,7 @@ func (ctrl *RunsController) PreviewRun(c *gin.Context) {
 			"GET /zzrouter/v1/runs/capabilities lists the providers this cluster can run")
 		return
 	}
-	resp, err := ctrl.loadService.PreviewRun(c.Request.Context(), &req)
+	resp, err := ctrl.service.PreviewRun(c.Request.Context(), &req)
 	if err != nil {
 		RespondToError(c, err)
 		return

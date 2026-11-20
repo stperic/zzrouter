@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	commonmcp "github.com/stperic/common/mcp"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -182,6 +183,8 @@ func (objectSchema[T]) MarshalJSON() ([]byte, error) {
 }
 
 type runOutput struct {
+	AdmissionWarning *instance.AdmissionWarning `json:"admission_warning,omitempty"`
+
 	Parameters  map[string]string `json:"parameters,omitempty"`
 	Pinned      bool              `json:"pinned,omitempty"`
 	BaseURL     string            `json:"base_url,omitempty"`

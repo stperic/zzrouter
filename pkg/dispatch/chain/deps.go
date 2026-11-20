@@ -17,7 +17,26 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 )
+
+// InstanceRequest carries the prepared fields for run dispatch.
+// Its context carries cancellation and tracing.
+// upstreamHeaders and affinity continue to read their request-scoped values from it.
+// Public handlers never set Synthetic.
+// Calibration uses openRun with a nil recorder, instanceRequest and sendToInstance.
+type InstanceRequest struct {
+	Context      context.Context
+	Method       string
+	Path         string
+	RawQuery     string
+	Header       http.Header
+	OriginalBody []byte
+	ClientModel  string
+	Hints        *keepalive.Override
+	Synthetic    bool
+	OnLease      func()
+}
 
 // Topology captures the cluster-shape questions the Proxy asks during a
 // request: who am I, is this node me, and where does a remote node live.
@@ -89,10 +108,10 @@ type Runtime interface {
 	RunUpstream(inst *instance.Instance) (string, backend.Upstream, error)
 
 	// LeaseInstance shares local request admission with the direct instance paths.
-	LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error)
+	LeaseInstance(req InstanceRequest, inst *instance.Instance) (*instance.Lease, error)
 
 	// InstanceBody prepares each attempt through the host's instance request path.
-	InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte
+	InstanceBody(req InstanceRequest, lease *instance.Lease) []byte
 
 	// StartOnDemand returns immediate refusals before the manager owns the launch.
 	StartOnDemand(model, provider, endpoint string) error
