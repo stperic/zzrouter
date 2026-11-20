@@ -1,12 +1,12 @@
 const BASE = '/zzrouter/v1';
 
 export class APIError extends Error {
-  constructor(message, { status = 0, code = '', uncertain = false, node, request_id, errors, mutation_applied, run_id, deleted } = {}) {
+  constructor(message, { status = 0, code = '', uncertain = false, node, request_id, errors, mutation_applied, run_id, job_id, deleted } = {}) {
     super(message);
     this.status = status;
     this.code = code;
     this.uncertain = uncertain;
-    Object.assign(this, { node, request_id, errors, mutation_applied, run_id, deleted });
+    Object.assign(this, { node, request_id, errors, mutation_applied, run_id, job_id, deleted });
   }
 }
 
@@ -64,8 +64,9 @@ export class API {
   async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000, raw = false, node, contentType = 'application/json' } = {}) {
     const generation = this.generation;
     const inference = method === 'GET' && path === '/v1/models' || method === 'POST' && path === '/v1/chat/completions';
+    const management = path.startsWith(BASE + '/') || (method === 'GET' && path === BASE);
     const managementStream = method === 'GET' && /^\/zzrouter\/v1\/(?:jobs\/[^/?#]+\/stream|runs\/[^/?#]+\/logs)(?:\?[^#]*)?$/.test(path);
-    if (!(path.startsWith(BASE + '/') || path === '/health' || inference) || raw && path !== '/v1/chat/completions' && !managementStream) throw new APIError('Unsupported console request.');
+    if (!(management || path === '/health' || inference) || raw && path !== '/v1/chat/completions' && !managementStream) throw new APIError('Unsupported console request.');
     if (!['application/json', 'application/merge-patch+json'].includes(contentType)) throw new APIError('Unsupported request content type.');
     const mutation = method !== 'GET';
     if ((mutation || inference) && !proof) throw new APIError('Refresh your session before making changes.', { code: 'session_refresh_required' });

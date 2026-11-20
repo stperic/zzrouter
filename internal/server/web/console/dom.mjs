@@ -1,9 +1,16 @@
 export function el(tag, attrs = {}, ...children) {
-  const node = document.createElement(tag);
+  return element(document.createElement(tag), attrs, children);
+}
+
+export function svg(tag, attrs = {}, ...children) {
+  return element(document.createElementNS('http://www.w3.org/2000/svg', tag), attrs, children);
+}
+
+function element(node, attrs, children) {
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined || value === null || value === false) continue;
     if (key.startsWith('on')) node.addEventListener(key.slice(2).toLowerCase(), value);
-    else if (key === 'class') node.className = value;
+    else if (key === 'class' && !node.namespaceURI?.endsWith('/svg')) node.className = value;
     else if (['value', 'checked', 'disabled', 'readOnly', 'required', 'selected'].includes(key)) node[key] = value;
     else node.setAttribute(key, value === true ? '' : String(value));
   }
@@ -81,10 +88,11 @@ function revealField(control) {
 }
 
 // The form maps server paths to its controls. Never infer a target from prose.
-export function formFeedback(form, region, target = () => undefined) {
+export function formFeedback(form, region, target = () => undefined, { inline = false } = {}) {
   const marked = new Map();
   const clear = () => {
-    for (const [control, previous] of marked) {
+    for (const [control, { previous, note }] of marked) {
+      note?.remove();
       control.removeAttribute('aria-invalid');
       if (previous) control.setAttribute('aria-describedby', previous);
       else control.removeAttribute('aria-describedby');
@@ -99,10 +107,13 @@ export function formFeedback(form, region, target = () => undefined) {
       if (!control || marked.has(control)) continue;
       const id = `form-error-${++feedbackID}`;
       if (!control.id) control.id = `${id}-field`;
-      marked.set(control, control.getAttribute('aria-describedby'));
+      const previous = control.getAttribute('aria-describedby');
+      const note = inline && control.parentElement ? el('small', { id, class: 'field-error' }, message) : null;
+      marked.set(control, { previous, note });
+      if (note) control.after(note);
       control.setAttribute('aria-invalid', 'true');
-      control.setAttribute('aria-describedby', [marked.get(control), id].filter(Boolean).join(' '));
-      links.append(el('li', {}, el('a', { id, href: `#${control.id}`, onclick: event => { event.preventDefault(); revealField(control); } }, message)));
+      control.setAttribute('aria-describedby', [previous, id].filter(Boolean).join(' '));
+      links.append(el('li', {}, el('a', { id: note ? undefined : id, href: `#${control.id}`, onclick: event => { event.preventDefault(); revealField(control); } }, message)));
     }
     if (links.children.length) root.append(links);
     region.replaceChildren(root); region.setAttribute('tabindex', '-1');

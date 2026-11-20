@@ -1374,6 +1374,20 @@ h1 {
 .diagnostic-evidence pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; font-size:.8rem }
 .diagnostic-evidence summary { cursor:pointer; padding:.7rem 0 }
 @media(max-width:600px) { .workload-filters { grid-template-columns:minmax(0,1fr) } }
+.calibration-table { max-width:100%; margin:.75rem 0; }
+.calibration-table th,.calibration-table td { min-width:5rem; }
+.calibration-table input { width:5rem; }
+.calibration-compare { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
+.calibration-compare section,.calibration-form fieldset { min-width:0; }
+.calibration-report,.calibration-compare,.calibration-form { overflow-wrap:anywhere; }
+.calibration-chart { margin:1rem 0; }
+.calibration-chart svg { display:block; width:min(100%,320px); height:auto; }
+.calibration-chart svg text { fill:currentColor; font-size:11px; }
+.calibration-difference { color:var(--text); background:var(--selected); padding:.15rem .25rem; }
+.field-error { display:block; color:var(--danger); }
+@media(max-width:600px) {
+  .calibration-compare { grid-template-columns:minmax(0,1fr); }
+}
 @media(max-width:650px) {
   .table-wrap td,.table-wrap th { padding:.6rem .4rem; overflow-wrap:anywhere }
   .table-wrap td:first-child,.table-wrap th:first-child { padding-left:0; min-width:0 }

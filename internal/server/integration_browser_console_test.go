@@ -68,6 +68,7 @@ func TestIntegrationBrowserConsoleTopologyAssets(t *testing.T) {
 		"/console/workload-data.mjs":    "text/javascript; charset=utf-8",
 		"/console/workload-details.mjs": "text/javascript; charset=utf-8",
 		"/console/run-form.mjs":         "text/javascript; charset=utf-8",
+		"/console/calibrations.mjs":     "text/javascript; charset=utf-8",
 
 		"/console/topology.mjs":                   "text/javascript; charset=utf-8",
 		"/console/topology-data.mjs":              "text/javascript; charset=utf-8",

@@ -4,7 +4,8 @@ import { activityText, observeActivity } from './observations.mjs';
 import { failureDetails } from './diagnostics.mjs';
 import { parameterSettings } from './parameters.mjs';
 import { runLogs } from './run-logs.mjs';
-import { ownedPath, jobProgress, jobSubject, newerJob, workloadKey } from './workload-data.mjs';
+import { ownedPath, jobProgress, jobSubject, newerJob, readyRun, workloadKey } from './workload-data.mjs';
+import { calibrationDiscovery, calibrationForm, calibrationJob, canCalibrate, changeRunSettings } from './calibrations.mjs';
 
 export function runDetails(p, run) {
   let browser;
@@ -33,7 +34,8 @@ export function jobDetails(job) {
 
 export async function inspectWorkload(p, kind, node, id, { controls = [], observed = () => {} } = {}) {
   const content = el('div'), feedback = el('div', { 'aria-live': 'polite' }), confirmation = el('div');
-  let row, stopping = false, terminal = false, blocked = false;
+  let row, stopping = false, terminal = false, blocked = false, discovery;
+  const back = () => inspectWorkload(p.panel.view(kind === 'runs' ? 'Run details' : 'Job details'), kind, node, id, { controls, observed });
   const pause = button('Pause updates', () => live.toggle());
   const refresh = leaveButton('Refresh', () => live.refresh(), p.api);
   const stop = button('Stop run', () => {
@@ -67,13 +69,22 @@ export async function inspectWorkload(p, kind, node, id, { controls = [], observ
       if (automatic && !live.canUpdate()) return true;
       row = kind === 'jobs' ? newerJob(row, { ...next, node }) : { ...next, node };
       observeActivity(row.activity, startedAt);
-      content.replaceChildren(kind === 'jobs' ? jobDetails(row) : runDetails(p, row));
+      content.replaceChildren(kind === 'jobs' ? row.kind === 'calibration' ? calibrationJob(p, row, back) : jobDetails(row) : runDetails(p, row));
+      if (kind === 'runs' && readyRun(row) && p.panel) {
+        const current = row, calibrate = el('div');
+        content.append(calibrate, changeRunSettings(p, current, back));
+        discovery ||= calibrationDiscovery(p).catch(() => { discovery = undefined; });
+        discovery.then(config => {
+          if (p.current() && row === current && canCalibrate(current, config)) calibrate.append(
+            leaveButton('Calibrate', () => calibrationForm(p.panel.view('New calibration'), { run: current, config }), p.api));
+        });
+      }
       const failedLaunch = kind === 'runs' ? row.status === 'failed' && row :
         row.kind === 'run' && row.phase === 'failed' && row.meta?.failure && row.meta;
       if (failedLaunch?.provider && failedLaunch.model) {
         const { provider, model } = failedLaunch;
         content.append(actions(leaveButton('Edit launch parameters', () => parameterSettings(p, {
-          provider, model, node, back: () => inspectWorkload(p.panel.view(kind === 'runs' ? 'Run details' : 'Job details'), kind, node, id, { controls, observed }),
+          provider, model, node, back,
         }), p.api)));
       }
       terminal = kind === 'jobs' ? ['done', 'failed'].includes(row.phase) : row.record_only || ['stopped', 'failed', 'crashed'].includes(row.status);
@@ -114,7 +125,7 @@ export async function inspectWorkload(p, kind, node, id, { controls = [], observ
 }
 
 // A start result keeps its immutable operation identity. Only GETs run here.
-export async function followStart(p, target, operation, result, error) {
+export async function followStart(p, target, operation, result, error, onReady) {
   p.editing = false;
   const content = el('div'), feedback = el('div', { 'aria-live': 'polite' });
   const runID = result?.id || error?.run_id;
@@ -142,10 +153,15 @@ export async function followStart(p, target, operation, result, error) {
       if (runID) {
         const run = { ...reads[0].value, node: target.node };
         observeActivity(run.activity, startedAt);
-        ready = run.status === 'running' && !run.record_only;
+        ready = readyRun(run);
         terminal = run.record_only || ['stopped', 'failed', 'crashed'].includes(run.status);
         feedback.prepend(message(ready ? 'This run is reported running by its node.' : `Run status: ${run.status}.`, ready ? '' : 'warning'));
         content.prepend(runDetails(p, run), leaveButton('View run', () => p.go('workloads', workloadKey('run', target.node, runID), 'runs'), p.api));
+        if (ready && result && onReady) {
+          const open = onReady;
+          onReady = undefined;
+          await open(run, feedback, target.replace === true);
+        }
       } else {
         feedback.append(message('No run identity was returned. These are current observations, not proof of this operation’s outcome. An empty list does not prove failure.', 'warning'));
         for (const run of reads[0].value.filter(row => row.provider === target.provider && (!target.model || row.model === target.model))) content.append(leaveButton(`${run.model || run.provider} · ${run.status} · ${run.id}`, () => p.go('workloads', workloadKey('run', target.node, run.id), 'runs'), p.api));

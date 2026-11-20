@@ -50,8 +50,8 @@ mutation happens merely because an operator opens a screen or a preview.
 
 ## Workloads
 
-One workspace uses the existing list plus right-side panel. Runs and Jobs are
-tabs; a compute-node selector and search preserve context while selecting rows.
+One workspace uses the existing list plus right-side panel. Runs, Jobs and
+Calibrations use a compute-node selector and search to preserve selection context.
 All nodes reads use explicit node requests with bounded concurrency. Nodes
 reported down are skipped with a quiet offline count, and reads resume after
 health recovers. Unexpected read failures remain visible with the owning node.
@@ -97,6 +97,17 @@ Keys for selection include both owning node and immutable run/job ID.
   Preserve the submitted target and idempotency key in that recovery state even
   when no run/job ID arrived; an empty list does not prove the operation failed.
 
+- Ready runs offer **Change settings**. **Save for this model on this node**
+  uses the model-on-node parameter editor. **Restart affected runs after saving**
+  adds `?restart=affected` to the settings PATCH and the effect section links to
+  any returned restart job. **Try on this run only** uses the same schema fields
+  to prefill the run's request parameters and environment. The start preview
+  reviews that request tier. **Replace the running run** opts in to replacement
+  on Start. A `run_settings_differ` refusal offers the same choice and requires
+  another preview before submission. When the editor was opened from a
+  calibration draft, a confirmed ready replacement takes the old run's place
+  in that draft and the console identifies the replacement.
+
 ### Jobs
 
 - Show node, job kind, subject, phase, current step and actual progress. Support
@@ -116,6 +127,25 @@ Keys for selection include both owning node and immutable run/job ID.
   the requested snapshot UI. Polling has one owner, no overlapping reads, pauses
   when hidden or writing, and stops on teardown. Failed reads show their state
   and an explicit retry; polling is not a mutation/refusal retry mechanism.
+
+### Calibrations
+
+- Calibrations uses the Jobs reader filtered by kind, including pagination,
+  explicit node ownership and offline handling. Open the form with **New
+  calibration**, **Calibrate** on a ready supported run, or **Start and calibrate**
+  on a completed download's node. The download entry waits for exact-run readiness
+  through the ordinary preview and start flow.
+- Use discovery workload kinds and limits, carry selected run revisions, and show
+  served-context checks, the editable step grid, default requests and review
+  notices. Associate Problems with their controls. A refresh keeps the draft and
+  its selected revisions. Submit explicitly with one idempotency key.
+- Calibration details share job polling, pause, refresh and cancellation. Show
+  reported step progress, per-run counts and the time of the latest resource
+  sample while running. A terminal report
+  shows resource ownership and measured steps with an accessible data table and
+  throughput chart. Null measurements are unknown, including unattributed unified
+  memory. Reports can prefill another run, show a settings diff before a scoped
+  save, or compare with a retained report from the same node.
 
 ## Diagnostics
 
