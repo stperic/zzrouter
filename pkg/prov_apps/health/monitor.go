@@ -102,8 +102,8 @@ func (m *Monitor) ConfigureActivity(inst *instance.Instance, hc CheckConfig) {
 	}
 }
 
-func (hc CheckConfig) observesBusy(inst *instance.Instance) bool {
-	return observesRun(hc.Observe, inst) && len(hc.Observe.Busy) > 0
+func (c CheckConfig) observesBusy(inst *instance.Instance) bool {
+	return observesRun(c.Observe, inst) && len(c.Observe.Busy) > 0
 }
 
 func (m *Monitor) pollInterval(hc CheckConfig) time.Duration {
