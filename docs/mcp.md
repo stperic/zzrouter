@@ -340,6 +340,16 @@ a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
+`zz_run_start` uses the same model selection as preview when `node` is omitted.
+A start never broadcasts. On `run_node_required` or `model_node_ambiguous`,
+use `zz_models` to find where the model is available and pass that node's name.
+Use `zz_nodes` to select placement for a model you still need to download.
+
+`parameters` and `environment` together state the request tier. Without either,
+a start replays any pin and can reuse the run. On `run_settings_differ`, pass
+`replace: true` and the complete intended tier. A reused start returns its
+owning `node` and its existing `job_id` while the job is retained.
+
 `details.features.tools` is `present`, `available`, `unsupported` or `unknown`.
 Only present projects to `/v1/models` `capabilities.tools: true`; false does not
 block requests. Running chat evidence survives configuration patches until a

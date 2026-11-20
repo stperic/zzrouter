@@ -265,7 +265,7 @@ func TestDeploymentEligibilityIgnoresCapacityUnknown(t *testing.T) {
 }
 
 func TestPreviewWorkerWithoutAssessmentIsUnknown(t *testing.T) {
-	s := NewLoadService(nil, &loadResultRouter{status: http.StatusOK, body: `{"model":"m","provider":"vllm","full_command":"engine"}`})
+	s := NewRunsService(&runResultRouter{status: http.StatusOK, body: `{"model":"m","provider":"vllm","full_command":"engine"}`})
 	preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "vllm", Node: "worker"})
 	require.NoError(t, err)
 	require.NotNil(t, preview.Assessment)
@@ -306,7 +306,7 @@ func TestLegacyAssessmentDegradesToUnknown(t *testing.T) {
 			require.Len(t, nodes.Assessments, 1)
 			assert.Equal(t, "unknown", nodes.Assessments[0].Status)
 			assert.Equal(t, "unknown", nodes.Assessments[0].ContextMode)
-			s := NewLoadService(nil, &loadResultRouter{status: 200, body: `{"model":"m","provider":"vllm","assessment":` + assessment + `}`})
+			s := NewRunsService(&runResultRouter{status: 200, body: `{"model":"m","provider":"vllm","assessment":` + assessment + `}`})
 			preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "vllm", Node: "worker"})
 			require.NoError(t, err)
 			assert.Equal(t, "unknown", preview.Assessment.Status)
@@ -338,7 +338,7 @@ func TestAutoContextRESTPreservesEvidence(t *testing.T) {
 			assert.Equal(t, evidence, nodes.Assessments[0].MemoryAssessment)
 			body, err := json.Marshal(map[string]any{"assessment": evidence})
 			require.NoError(t, err)
-			s := NewLoadService(nil, &loadResultRouter{status: 200, body: string(body)})
+			s := NewRunsService(&runResultRouter{status: 200, body: string(body)})
 			preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "p", Node: "worker"})
 			require.NoError(t, err)
 			require.NotNil(t, preview.Assessment)

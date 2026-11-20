@@ -24,6 +24,8 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeProtocolCutoverRequired":       "protocol_cutover_required",
 		"CodeJobNotFound":                   "job_not_found",
 		"CodeModelNodeAmbiguous":            "model_node_ambiguous",
+		"CodeRunNodeRequired":               "run_node_required",
+		"CodeRunSettingsDiffer":             "run_settings_differ",
 		"CodeModelSourceAmbiguous":          "model_source_ambiguous",
 		"CodeModelDetailUnsupported":        "model_detail_unsupported",
 		"CodeNodeUnreachable":               "node_unreachable",

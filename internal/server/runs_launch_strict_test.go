@@ -2,11 +2,24 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLaunchRunRequestUsesEnvironmentAndReplace(t *testing.T) {
+	var req LaunchRunRequest
+	assert.NoError(t, json.Unmarshal([]byte(`{"provider":"vllm","model":"m","environment":{"DEVICE":"0"},"replace":true}`), &req))
+	assert.Equal(t, map[string]string{"DEVICE": "0"}, req.Environment)
+	assert.True(t, req.Replace)
+	for _, field := range []string{`"env_vars":{"DEVICE":"0"}`, `"force":true`} {
+		c, rec := postJSON(t, `{"provider":"vllm","model":"m",`+field+`}`)
+		assert.False(t, BindJSONStrict(c, new(LaunchRunRequest)))
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	}
+}
 
 // A custom json.Unmarshaler takes over decoding for its type, which
 // silently discards the DisallowUnknownFields that BindJSONStrict set on
@@ -77,4 +90,14 @@ func TestPreviewRequestAcceptsModelAliasAndStaysStrict(t *testing.T) {
 	err := json.Unmarshal([]byte(`{"provider":"vllm","model":"m","host":"192.0.2.10"}`), &req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "host")
+}
+
+func TestPreviewRequestRefusesForce(t *testing.T) {
+	RegisterValidatorTranslator()
+	for _, field := range []string{"force", "replace"} {
+		c, rec := postJSON(t, `{"provider":"vllm","model":"m","`+field+`":true}`)
+		assert.False(t, BindJSONStrict(c, new(PreviewRunRequest)))
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), field)
+	}
 }

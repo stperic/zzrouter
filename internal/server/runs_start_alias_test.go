@@ -2,20 +2,21 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // One model is reachable by several names — the repo it came from and
-// the file it landed in — and a launch registers it under whichever one
-// this node knows it by. These tests drive the load path with the OTHER
+// the file it landed in, and a launch registers it under whichever one
+// this node knows it by. These tests drive the start path with the OTHER
 // one, which is the only name a caller who launched by repo id holds.
 const (
 	aliasLoadProvider = "fake"
@@ -25,7 +26,7 @@ const (
 
 // aliasLoadConfig is a provider whose launch command never references
 // ${MODEL_PATH}, so these tests need no weights on the machine running
-// them. What is under test is the name the load path looks an instance
+// them. What is under test is the name the start path looks an instance
 // up by, not whether the model exists.
 func aliasLoadConfig(t *testing.T) *config.AppsConfig {
 	t.Helper()
@@ -57,21 +58,11 @@ func aliasLoadConfig(t *testing.T) *config.AppsConfig {
 	return cfg
 }
 
-// emptyModelStore is a model store holding nothing. The load path
-// consults it only after the existing-instance check has missed, so a
-// test whose model IS running should never reach it — and when one
-// does, the 404 it produces names the fall-through precisely.
-type emptyModelStore struct{}
-
-func (emptyModelStore) ListAllModels() ([]*metadata.ModelMetadata, error) {
-	return nil, nil
-}
-
-// newAliasLoadExecutor wires a LoadExecutor over a real provider manager
+// newAliasRunsExecutor wires a RunsExecutor over a real provider manager
 // that resolves aliasLoadRepoID to aliasLoadFileStem, the way the model
 // cache resolves a SourceID. The returned counter records how many
 // launches the executor actually asked for.
-func newAliasLoadExecutor(t *testing.T) (*LoadExecutor, *prov_apps.ProviderAppManager, *int) {
+func newAliasRunsExecutor(t *testing.T) (*RunsExecutor, *prov_apps.ProviderAppManager, *int) {
 	t.Helper()
 
 	launches := 0
@@ -88,7 +79,7 @@ func newAliasLoadExecutor(t *testing.T) (*LoadExecutor, *prov_apps.ProviderAppMa
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mgr.Stop(context.Background()) })
 
-	exec := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "n1" })
+	exec := NewRunsExecutor(mgr, func() string { return "n1" }, mgr.AppsConfig, nil, nil, nil)
 	return exec, mgr, &launches
 }
 
@@ -98,8 +89,8 @@ func newAliasLoadExecutor(t *testing.T) (*LoadExecutor, *prov_apps.ProviderAppMa
 // EnsureRun, which does resolve the alias, handed back the very
 // process the caller asked to replace. The route answered 200 and
 // restarted nothing.
-func TestLoadLocalModel_ForceRestartsARunNamedByItsRepoID(t *testing.T) {
-	exec, mgr, launches := newAliasLoadExecutor(t)
+func TestStartRunReplaceRestartsARunNamedByItsRepoID(t *testing.T) {
+	exec, mgr, launches := newAliasRunsExecutor(t)
 
 	existingResult, err := mgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{
 		Provider: aliasLoadProvider,
@@ -110,10 +101,10 @@ func TestLoadLocalModel_ForceRestartsARunNamedByItsRepoID(t *testing.T) {
 	require.Equal(t, aliasLoadFileStem, existing.Model,
 		"the launch should have registered the run under the resolved name")
 
-	resp, err := exec.LoadLocalModel(context.Background(), &LoadModelRequest{
-		ModelName: aliasLoadRepoID,
-		Provider:  aliasLoadProvider,
-		Force:     true,
+	resp, err := startForTest(t, t.Context(), exec, LaunchRunRequest{
+		Model:    aliasLoadRepoID,
+		Provider: aliasLoadProvider,
+		Replace:  true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -122,7 +113,7 @@ func TestLoadLocalModel_ForceRestartsARunNamedByItsRepoID(t *testing.T) {
 		t.Error("force left the original instance in place")
 	}
 	assert.Equal(t, 2, *launches, "force did not launch a replacement")
-	assert.NotEqual(t, existing.ID, resp.InstanceID,
+	assert.NotEqual(t, existing.ID, resp.ID,
 		"force answered with the instance it was asked to replace")
 }
 
@@ -130,8 +121,8 @@ func TestLoadLocalModel_ForceRestartsARunNamedByItsRepoID(t *testing.T) {
 // the repo id it was launched with, fell past the existing-instance
 // check and on into the model store — which matches on file name, not
 // repo id, so a running model was answered "has not been downloaded".
-func TestLoadLocalModel_ReportsARunningRunNamedByItsRepoID(t *testing.T) {
-	exec, mgr, launches := newAliasLoadExecutor(t)
+func TestStartRunReusesARunNamedByItsRepoID(t *testing.T) {
+	exec, mgr, launches := newAliasRunsExecutor(t)
 
 	existingResult, err := mgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{
 		Provider: aliasLoadProvider,
@@ -140,26 +131,43 @@ func TestLoadLocalModel_ReportsARunningRunNamedByItsRepoID(t *testing.T) {
 	existing := existingResult.Run
 	require.NoError(t, err)
 
-	resp, err := exec.LoadLocalModel(context.Background(), &LoadModelRequest{
-		ModelName: aliasLoadRepoID,
-		Provider:  aliasLoadProvider,
+	resp, err := startForTest(t, t.Context(), exec, LaunchRunRequest{
+		Model:    aliasLoadRepoID,
+		Provider: aliasLoadProvider,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 
-	assert.Equal(t, existing.ID, resp.InstanceID)
+	assert.Equal(t, existing.ID, resp.ID)
 	assert.Equal(t, 1, *launches, "a running model was launched a second time")
 }
 
-func TestLoadLocalModelRefusesAnotherProvidersRun(t *testing.T) {
-	exec, mgr, launches := newAliasLoadExecutor(t)
+func TestStartRunRefusesAnotherProvidersRun(t *testing.T) {
+	exec, mgr, launches := newAliasRunsExecutor(t)
 	existing := instance.NewInstance("other-run", "different-provider", aliasLoadFileStem, 8300, 0, 0)
 	existing.MarkRunning(false, nil)
 	require.NoError(t, mgr.Instances().Register(existing))
 	t.Cleanup(func() { _ = mgr.Instances().Remove(existing.ID) })
-	resp, err := exec.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: aliasLoadRepoID, Provider: aliasLoadProvider})
-	require.ErrorIs(t, err, prov_apps.ErrRunHeldByOtherProvider)
+	resp, err := startForTest(t, t.Context(), exec, LaunchRunRequest{Model: aliasLoadRepoID, Provider: aliasLoadProvider})
+	require.Equal(t, http.StatusConflict, answeredStatus(err))
+	require.ErrorContains(t, err, "held by provider different-provider")
 	require.Nil(t, resp)
 	require.Equal(t, instance.StatusRunning, existing.GetStatus())
 	require.Zero(t, *launches)
+}
+
+func startForTest(t *testing.T, ctx context.Context, executor *RunsExecutor, req LaunchRunRequest) (*LaunchRunResponse, error) {
+	t.Helper()
+	req.LaunchMode = "native"
+	body, err := json.Marshal(req)
+	require.NoError(t, err)
+	c, w := postJSON(t, string(body))
+	c.Request = c.Request.WithContext(ctx)
+	executor.HandleInternalLaunchRun(c) //nolint:contextcheck // Auto-deploy owns a detached job; the start inherits ctx.
+	if w.Code >= http.StatusBadRequest {
+		return nil, parseRoutedError(w.Code, w.Body.Bytes(), w.Header())
+	}
+	var response LaunchRunResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	return &response, nil
 }

@@ -1,12 +1,15 @@
 package client
 
 import (
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestModelMetadata_GetModifiedTime(t *testing.T) {
@@ -213,22 +216,25 @@ func TestDeleteRegistryResponse_Fields(t *testing.T) {
 	assert.Equal(t, "error1", resp.Errors[0])
 }
 
-func TestLoadModelResponse_Fields(t *testing.T) {
-	resp := LoadModelResponse{
-		InstanceID: "abc123",
-		Model:      "llama3:8b",
-		App:        "ollama",
-		Port:       11434,
-		Status:     "running",
-		Node:       "localhost",
-	}
+func TestStartRunAcceptsReusedRun(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/zzrouter/v1/runs", r.URL.Path)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"data":{"id":"abc123","provider":"ollama","node":"worker","port":11434,"status":"running","job_id":"existing-job"}}`)
+	}))
+	response, err := c.StartRun(t.Context(), StartRunRequest{Provider: "ollama", Model: "llama3:8b"})
+	require.NoError(t, err)
+	assert.Equal(t, StartRunResponse{ID: "abc123", Provider: "ollama", Node: "worker", Port: 11434, Status: "running", JobID: "existing-job"}, *response)
+}
 
-	assert.Equal(t, "abc123", resp.InstanceID)
-	assert.Equal(t, "llama3:8b", resp.Model)
-	assert.Equal(t, "ollama", resp.App)
-	assert.Equal(t, 11434, resp.Port)
-	assert.Equal(t, "running", resp.Status)
-	assert.Equal(t, "localhost", resp.Node)
+func TestStartRunPreservesSettingsRefusalCode(t *testing.T) {
+	response := &http.Response{StatusCode: http.StatusConflict, Body: io.NopCloser(strings.NewReader(`{"code":"run_settings_differ","detail":"Different request settings"}`))}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	var apiErr *APIError
+	require.ErrorAs(t, ReadResponse(response, nil, "start run"), &apiErr)
+	assert.Equal(t, "run_settings_differ", apiErr.Code)
+	assert.Equal(t, "Different request settings", apiErr.Message)
 }
 
 // A filter value reaches the server as typed: a variant's name carries a

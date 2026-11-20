@@ -45,9 +45,8 @@ func TestEnsureCallersRefuseUncatalogedNameOnlyModel(t *testing.T) {
 	c, rec := postJSON(t, `{"model_name":"not-downloaded","provider":"fake","launch_mode":"native"}`)
 	runs.HandleInternalLaunchRun(c)
 	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
-	load := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" })
-	c, rec = postJSON(t, `{"model_name":"not-downloaded","provider":"fake","force":true}`)
-	load.HandleInternalLoadModel(c)
+	c, rec = postJSON(t, `{"model_name":"not-downloaded","provider":"fake","launch_mode":"native","replace":true}`)
+	runs.HandleInternalLaunchRun(c)
 	assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	assert.Equal(t, 4, checks)
 	registry := newJobsForChainTest(t)
@@ -117,7 +116,7 @@ func TestConcurrentInferenceAndChainEnsureOneRun(t *testing.T) {
 	require.Len(t, mgr.Instances().List(), 1)
 }
 
-func TestEnsureLaunchAndLoadShareAcceptedJob(t *testing.T) {
+func TestRunStartAndReuseShareAcceptedJob(t *testing.T) {
 	registry := newJobsForChainTest(t)
 	cfg := aliasLoadConfig(t)
 	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithJobsRegistry(registry))
@@ -133,24 +132,23 @@ func TestEnsureLaunchAndLoadShareAcceptedJob(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &launched))
 	require.NotEmpty(t, launched.JobID)
-	load := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" })
-	c, rec = postJSON(t, `{"model_name":"local","provider":"fake"}`)
-	load.HandleInternalLoadModel(c)
-	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
-	var loaded LoadModelResponse
+	c, rec = postJSON(t, `{"model_name":"local","provider":"fake","launch_mode":"native"}`)
+	runs.HandleInternalLaunchRun(c)
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	var loaded LaunchRunResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &loaded))
-	assert.Equal(t, launched.ID, loaded.InstanceID)
+	assert.Equal(t, launched.ID, loaded.ID)
 	assert.Equal(t, launched.JobID, loaded.JobID)
-	controller := NewRunsController(nil, NewLoadService(nil, &loadResultRouter{status: http.StatusConflict, body: rec.Body.String()}), nil, nil, nil, nil)
+	controller := NewRunsController(NewRunsService(&runResultRouter{status: http.StatusAccepted, body: rec.Body.String()}), nil, nil, nil, nil)
 	c, rec = postJSON(t, `{"model_name":"local","provider":"fake","node":"worker"}`)
-	controller.LoadModel(c)
-	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	controller.LaunchRun(c)
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), `"success":true`)
 	assert.Contains(t, rec.Body.String(), launched.ID)
 	assert.Contains(t, rec.Body.String(), launched.JobID)
 }
 
-func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) {
+func TestEnsureServedStartAndBatchShareOneRunWithoutPortPool(t *testing.T) {
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
 	var loads atomic.Int32
@@ -176,17 +174,26 @@ func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) 
 	c, rec := postJSON(t, `{"model_name":"local","provider":"ollama","launch_mode":"native","parameters":{"keep-alive":"-1"}}`)
 	runs.HandleInternalLaunchRun(c)
 	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
-	var launched struct {
-		ID   string
-		Port int
-	}
+	var launched LaunchRunResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &launched))
 	require.NotEmpty(t, launched.ID, "a served model is a run")
 	assert.Zero(t, launched.Port, "a served run takes no port")
-	response, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "local", Provider: "ollama"})
-	require.NoError(t, err)
-	assert.True(t, response.Reused)
-	assert.Equal(t, launched.ID, response.InstanceID)
+	assert.Equal(t, "node", launched.Node)
+	for _, body := range []string{
+		`{"model_name":"local","provider":"ollama","launch_mode":"native"}`,
+		`{"model_name":"local","provider":"ollama","launch_mode":"native","parameters":{"keep_alive":"-1"}}`,
+	} {
+		c, reused := postJSON(t, body)
+		runs.HandleInternalLaunchRun(c)
+		require.Equal(t, http.StatusAccepted, reused.Code, reused.Body.String())
+		var response LaunchRunResponse
+		require.NoError(t, json.Unmarshal(reused.Body.Bytes(), &response))
+		assert.Equal(t, launched.ID, response.ID)
+	}
+	c, refused := postJSON(t, `{"model_name":"local","provider":"ollama","launch_mode":"native","parameters":{"keep-alive":"30m"}}`)
+	runs.HandleInternalLaunchRun(c)
+	require.Equal(t, http.StatusConflict, refused.Code, refused.Body.String())
+	assert.Contains(t, refused.Body.String(), `"code":"run_settings_differ"`)
 	utility := NewRunsUtilityService(mgr, func() *config.AppsConfig { return cfg })
 	batch, failed, err := utility.BatchLaunch(t.Context(), []LaunchRequest{{Provider: "ollama", Model: "local", LaunchMode: "native"}})
 	require.NoError(t, err)
@@ -200,7 +207,7 @@ func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) 
 	}
 }
 
-func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
+func TestRunStartProviderRefusalsUseFailureTable(t *testing.T) {
 	for _, provider := range []string{"missing", "fake"} {
 		t.Run(provider, func(t *testing.T) {
 			cfg := aliasLoadConfig(t)
@@ -212,20 +219,20 @@ func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
 			mgr, err := prov_apps.NewProviderAppManager(cfg)
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-			load := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" })
-			c, internal := postJSON(t, `{"model_name":"local","provider":"`+provider+`"}`)
-			load.HandleInternalLoadModel(c)
+			runs := NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil)
+			c, internal := postJSON(t, `{"model_name":"local","provider":"`+provider+`","launch_mode":"native"}`)
+			runs.HandleInternalLaunchRun(c)
 			require.Equal(t, status, internal.Code, internal.Body.String())
-			ctrl := NewRunsController(nil, NewLoadService(nil, &loadResultRouter{status: internal.Code, body: internal.Body.String()}), nil, nil, nil, nil)
+			ctrl := NewRunsController(NewRunsService(&runResultRouter{status: internal.Code, body: internal.Body.String()}), nil, nil, nil, nil)
 			c, public := postJSON(t, `{"model_name":"local","provider":"`+provider+`","node":"worker"}`)
-			ctrl.LoadModel(c)
+			ctrl.LaunchRun(c)
 			assert.Equal(t, status, public.Code, public.Body.String())
 			assert.NotContains(t, public.Body.String(), `"success":true`)
 		})
 	}
 }
 
-func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
+func TestRunStartReusesRunningAndStartingWith202(t *testing.T) {
 	for _, status := range []instance.Status{instance.StatusRunning, instance.StatusStarting} {
 		t.Run(string(status), func(t *testing.T) {
 			registry := newJobsForChainTest(t)
@@ -241,20 +248,20 @@ func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
 			run.StreamJobID = h.ID()
 			run.SetStatus(status)
 			require.NoError(t, mgr.Instances().Register(run))
-			c, internal := postJSON(t, `{"model_name":"local","provider":"fake"}`)
-			NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).HandleInternalLoadModel(c)
-			require.Equal(t, http.StatusConflict, internal.Code, internal.Body.String())
-			ctrl := NewRunsController(nil, NewLoadService(nil, &loadResultRouter{status: internal.Code, body: internal.Body.String()}), nil, nil, nil, nil)
+			c, internal := postJSON(t, `{"model_name":"local","provider":"fake","launch_mode":"native"}`)
+			NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil).HandleInternalLaunchRun(c)
+			require.Equal(t, http.StatusAccepted, internal.Code, internal.Body.String())
+			ctrl := NewRunsController(NewRunsService(&runResultRouter{status: internal.Code, body: internal.Body.String()}), nil, nil, nil, nil)
 			c, public := postJSON(t, `{"model_name":"local","provider":"fake","node":"worker"}`)
-			ctrl.LoadModel(c)
-			require.Equal(t, http.StatusConflict, public.Code, public.Body.String())
+			ctrl.LaunchRun(c)
+			require.Equal(t, http.StatusAccepted, public.Code, public.Body.String())
 			var response struct {
 				Success bool
-				Data    LoadModelResponse
+				Data    LaunchRunResponse
 			}
 			require.NoError(t, json.Unmarshal(public.Body.Bytes(), &response))
 			assert.True(t, response.Success)
-			assert.Equal(t, run.ID, response.Data.InstanceID)
+			assert.Equal(t, run.ID, response.Data.ID)
 			assert.Equal(t, run.StreamJobID, response.Data.JobID)
 			assert.Equal(t, run.Port, response.Data.Port)
 			assert.Equal(t, string(status), response.Data.Status)
@@ -263,7 +270,7 @@ func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
 	}
 }
 
-func TestLoadProviderAutodetectResolvesVariant(t *testing.T) {
+func TestStartRunRequiresProviderAndReusesVariant(t *testing.T) {
 	cfg := aliasLoadConfig(t)
 	const variant = "base+long"
 	require.NoError(t, cfg.UpdateApp("fake", func(svc *config.ServiceConfig) error {
@@ -276,11 +283,14 @@ func TestLoadProviderAutodetectResolvesVariant(t *testing.T) {
 	run := instance.NewInstance("variant", "fake", variant, 8300, 0, 0)
 	run.MarkRunning(false, nil)
 	require.NoError(t, mgr.Instances().Register(run))
-	response, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: variant})
+	executor := NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil)
+	_, err = startForTest(t, t.Context(), executor, LaunchRunRequest{Model: variant})
+	require.Equal(t, http.StatusBadRequest, answeredStatus(err))
+	response, err := startForTest(t, t.Context(), executor, LaunchRunRequest{Model: variant, Provider: "fake"})
 	require.NoError(t, err)
 	assert.Equal(t, "fake", response.Provider)
-	assert.Equal(t, run.ID, response.InstanceID)
-	assert.True(t, response.Reused)
+	assert.Equal(t, run.ID, response.ID)
+	assert.Contains(t, response.Message, "reused")
 }
 
 func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
@@ -355,7 +365,7 @@ func TestEnsureServedProvidersShareOneRunPerModel(t *testing.T) {
 	assert.Len(t, mgr.Instances().List(), 1)
 }
 
-func TestRunsLoadStoppingRunRefusesWithRetryAfter(t *testing.T) {
+func TestRunStartStoppingRunRefusesWithRetryAfter(t *testing.T) {
 	mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
 		t.Error("stopping refusal must not query the catalog")
 		return true, nil
@@ -365,17 +375,21 @@ func TestRunsLoadStoppingRunRefusesWithRetryAfter(t *testing.T) {
 	run := instance.NewInstance("stopping", "fake", "local", 8300, 0, 0)
 	run.SetStatus(instance.StatusStopping)
 	require.NoError(t, mgr.Instances().Register(run))
+	runs := NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil)
 	for _, force := range []string{"false", "true"} {
-		c, response := postJSON(t, `{"model_name":"local","provider":"fake","force":`+force+`}`)
-		NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).HandleInternalLoadModel(c)
+		c, start := postJSON(t, `{"model_name":"local","provider":"fake","launch_mode":"native","replace":`+force+`}`)
+		runs.HandleInternalLaunchRun(c)
+		require.Equal(t, http.StatusServiceUnavailable, start.Code, start.Body.String())
+		assert.Equal(t, "5", start.Header().Get("Retry-After"))
+		response := start
 		require.Equal(t, http.StatusServiceUnavailable, response.Code, response.Body.String())
 		assert.Equal(t, "5", response.Header().Get("Retry-After"))
 		assert.Contains(t, response.Body.String(), "run is stopping")
 		assert.Contains(t, response.Body.String(), "retry shortly")
 		assert.NotContains(t, response.Body.String(), `"success":true`)
-		ctrl := NewRunsController(nil, NewLoadService(nil, &loadResultRouter{status: response.Code, body: response.Body.String(), headers: response.Header()}), nil, nil, nil, nil)
-		c, public := postJSON(t, `{"model_name":"local","provider":"fake","node":"worker"}`)
-		ctrl.LoadModel(c)
+		ctrl := NewRunsController(NewRunsService(&runResultRouter{status: response.Code, body: response.Body.String(), headers: response.Header()}), nil, nil, nil, nil)
+		c, public := postJSON(t, `{"model_name":"local","provider":"fake","node":"worker","replace":`+force+`}`)
+		ctrl.LaunchRun(c)
 		require.Equal(t, http.StatusServiceUnavailable, public.Code, public.Body.String())
 		assert.Equal(t, "5", public.Header().Get("Retry-After"))
 		assert.Contains(t, public.Body.String(), "run is stopping")
@@ -394,13 +408,13 @@ func TestPreviewServedRendersItsLoad(t *testing.T) {
 	mgr, err := prov_apps.NewProviderAppManager(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-	load := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" })
-	preview, err := load.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama"})
+	executor := NewRunsExecutor(mgr, func() string { return "node" }, mgr.AppsConfig, nil, nil, nil)
+	preview, err := executor.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama"})
 	require.NoError(t, err)
 	assert.Equal(t, "local:latest", preview.Model)
 	assert.Empty(t, preview.FullCommand)
 	assert.Equal(t, map[string]string{"keep-alive": "5m0s"}, preview.Parameters)
-	pinned, err := load.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "-1"}})
+	pinned, err := executor.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "-1"}})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"keep-alive": "-1"}, pinned.Parameters)
 }

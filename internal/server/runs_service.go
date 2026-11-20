@@ -13,10 +13,12 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -24,6 +26,13 @@ import (
 
 // ErrRunNotFound is returned when a run is not found
 var ErrRunNotFound = errors.New("run not found")
+
+var errRunNodeRequired = errors.New("run node required")
+
+type runModelRouter interface {
+	RouteToModelOrBroadcast(context.Context, string, string, string, []byte) (*routing.Response, error)
+	modelOwner(context.Context, string) (string, error)
+}
 
 // isBroadcastNotFound checks if a response body is an error/problem response
 // indicating not-found. This handles the case where broadcast aggregation returns
@@ -49,7 +58,8 @@ func isBroadcastNotFound(body []byte) bool {
 
 // RunsService handles runs-related business logic
 type RunsService struct {
-	router routing.Router
+	router      routing.Router
+	modelRouter runModelRouter
 	// Auto-deploy hooks (nil when not wired — caller falls back to the
 	// existing sync forward path). Wired at coord only; workers don't
 	// have a DeploymentsService, so without this RunsService the
@@ -82,6 +92,12 @@ func (s *RunsService) WithAutoDeploy(
 	s.modelInPool = modelInPool
 	s.appsConfig = appsConfig
 	s.jobs = jobsReg
+	return s
+}
+
+// WithModelRouter wires model-aware dispatch and the current target rules.
+func (s *RunsService) WithModelRouter(router runModelRouter, appsConfig func() *pkgConfig.AppsConfig) *RunsService {
+	s.modelRouter, s.appsConfig = router, appsConfig
 	return s
 }
 
@@ -361,8 +377,6 @@ func (s *RunsService) RestartRun(ctx context.Context, req *RestartRunRequest) (*
 }
 
 // LaunchRunRequest represents a request to launch a run.
-// Field name matches LoadModelRequest/PreviewRunRequest so agents hit one
-// consistent shape across /runs, /runs/load, /runs/preview.
 type LaunchRunRequest struct {
 	Runtime          string `json:"runtime,omitempty"`
 	DisposablePlanID string `json:"disposable_plan_id,omitempty"`
@@ -386,7 +400,8 @@ type LaunchRunRequest struct {
 	Port         int                    `json:"port,omitempty"`
 	Files        any                    `json:"files,omitempty"` // Will be unmarshaled as []instance.FileMount
 	Parameters   schema.ParameterValues `json:"parameters,omitempty"`
-	EnvVars      map[string]string      `json:"env_vars,omitempty"`
+	Environment  map[string]string      `json:"environment,omitempty"`
+	Replace      bool                   `json:"replace,omitempty"`
 	NativeConfig any                    `json:"native_config,omitempty"` // Will be unmarshaled as *instance.NativeConfig
 	Node         string                 `json:"node,omitempty"`          // Target cluster node for routing
 }
@@ -453,9 +468,7 @@ type LaunchRunResponse struct {
 	Node              string            `json:"node,omitempty"`
 }
 
-// LaunchRun launches a new provider instance
-// Note: Currently local-only (launches on current host)
-// For cluster support, this would route to internal executor
+// LaunchRun sends a start to one node.
 func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*LaunchRunResponse, error) {
 	if err := validateRunTarget(s.appsConfig, req.Provider, req.Model, req.Endpoint); err != nil {
 		return nil, err
@@ -464,29 +477,38 @@ func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*La
 	if err := s.admitModel(ctx, req.Model); err != nil {
 		return nil, err
 	}
-	slog.Info("[RunsService] LaunchRun", "provider", req.Provider, "launch_mode", req.LaunchMode, "node", req.Node)
-
-	// Launching an instance is unicast by definition — broadcast would
-	// fan out to every cluster node and aggregate per-node responses
-	// into a wrapper envelope that routeAndParse can't deserialize into
-	// LaunchRunResponse. When the caller doesn't specify a node, target
-	// the coord-local executor explicitly via @master.
+	if err := validateParameterMaps(req.Parameters, req.Environment); err != nil {
+		return nil, invalidInputf("invalid parameters: %w", err)
+	}
 	node := req.Node
 	if node == "" {
-		node = "@master"
+		if req.Model == "" {
+			node = "@master"
+		} else if s.modelRouter != nil {
+			var err error
+			node, err = s.modelRouter.modelOwner(ctx, req.Model)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
-
-	// Validate parameter keys and values
-	if err := validateParameterMaps(req.Parameters, req.EnvVars); err != nil {
-		return nil, invalidInputf("invalid parameters: %w", err)
+	if selector := constants.ParseNodeIdentifier(node); selector.Nodename == "" || selector.IsWildcard() {
+		return nil, errRunNodeRequired
 	}
 
 	// Auto-deploy at the public layer when wired and the model is missing
 	// from the coord-side pool. This is the only place where auto_deploy
 	// works for non-coord targets: workers don't carry a DeploymentsService
 	// so the internal handler's auto_deploy gate short-circuits.
-	if req.Model != "" && req.AutoDeploy && s.deployments != nil && s.modelInPool != nil && s.jobs != nil {
-		if !s.modelInPool(req.Model) {
+	if req.AutoDeploy && req.Model != "" {
+		if req.Node == "" {
+			if s.modelInPool == nil || !s.modelInPool(req.Model) {
+				return nil, errRunNodeRequired
+			}
+			forward := *req
+			forward.AutoDeploy = false
+			req = &forward
+		} else if s.deployments != nil && s.modelInPool != nil && s.jobs != nil && !s.modelInPool(req.Model) {
 			return s.runAutoDeployChain(ctx, req, node)
 		}
 	}
@@ -494,25 +516,134 @@ func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*La
 	ctx, cancel := ensureTimeout(ctx, constants.ConfiguratorTimeout)
 	defer cancel()
 
-	// Route to internal executor
+	return s.forwardLaunch(ctx, req, node)
+}
+
+func (s *RunsService) forwardLaunch(ctx context.Context, req *LaunchRunRequest, node string) (*LaunchRunResponse, error) {
 	requestBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Route the request (handles local vs cluster logic)
 	launchResp, err := routeAndParse[LaunchRunResponse](ctx, s.router, "POST", "/zzrouter/v1/internal/runs", node, requestBody)
 	if err != nil {
 		return nil, err
 	}
 
-	slog.Info("[RunsService] Run launched successfully", "id", launchResp.ID)
+	if strings.TrimSpace(launchResp.Node) == "" {
+		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "upstream start response is missing its owning node", httperr.CodeUpstreamShape, node)
+	}
 	return launchResp, nil
+}
+
+// PreviewRunRequest is the set of launch settings a preview can assess.
+type PreviewRunRequest struct {
+	Node        string                 `json:"node,omitempty"`
+	Provider    string                 `json:"provider,omitempty"`
+	ModelName   string                 `json:"model_name,omitempty"`
+	Endpoint    string                 `json:"endpoint,omitempty" binding:"omitempty,oneof=chat embeddings reranking"`
+	Parameters  schema.ParameterValues `json:"parameters,omitempty"`
+	Environment map[string]string      `json:"environment,omitempty"`
+}
+
+// UnmarshalJSON accepts model as an alias for model_name and refuses unknown fields.
+func (req *PreviewRunRequest) UnmarshalJSON(data []byte) error {
+	type raw PreviewRunRequest
+	aux := struct {
+		ModelAlias string `json:"model"`
+		*raw
+	}{raw: (*raw)(req)}
+	if err := decodeStrict(data, &aux); err != nil {
+		return err
+	}
+	if req.ModelName == "" {
+		req.ModelName = aux.ModelAlias
+	}
+	return nil
+}
+
+// PreviewRunResponse represents a run preview
+type PreviewRunResponse struct {
+	Assessment       *process.MemoryAssessment `json:"assessment,omitempty"`
+	Model            string                    `json:"model"`
+	Provider         string                    `json:"provider"`
+	Node             string                    `json:"node"`
+	Port             int                       `json:"port"`
+	FullCommand      string                    `json:"full_command"`
+	Parameters       map[string]string         `json:"parameters"`
+	ParameterSources map[string]string         `json:"parameter_sources"`
+	Environment      map[string]string         `json:"environment"`
+	WorkingDir       string                    `json:"working_dir"`
+}
+
+// PreviewRun returns a preview of what would be run without actually running it
+func (s *RunsService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*PreviewRunResponse, error) {
+	if err := validateRunTarget(s.appsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
+	slog.Info("[RunsService] PreviewRun", "model", req.ModelName, "provider", req.Provider, "node", req.Node)
+
+	requestBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	const path = "/zzrouter/v1/internal/runs/preview"
+	node := req.Node
+	var resp *routing.Response
+	if req.ModelName != "" && (node == "" || node == "*") {
+		if s.modelRouter == nil {
+			return nil, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model router is unavailable; pass node to preview on one node")
+		}
+		resp, err = s.modelRouter.RouteToModelOrBroadcast(ctx, req.ModelName, path, http.MethodPost, requestBody)
+	} else {
+		if node == "" {
+			node = "@master"
+		}
+		resp, err = s.router.Unicast(ctx, node, path, http.MethodPost, requestBody)
+	}
+	if err != nil {
+		return nil, newRoutedTransportError(err, req.Node)
+	}
+
+	// Surface worker-side errors (e.g. 400 unknown provider) as a typed
+	// *RoutedError so the public controller forwards the same status +
+	// Problem Details body — not a 200 with an empty preview.
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+
+	var preview PreviewRunResponse
+	if err := json.Unmarshal(resp.Body, &preview); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if preview.Assessment == nil {
+		preview.Assessment = &process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.NodeOutdated, Reason: process.NodeOutdated.Reason()}
+	}
+
+	preview.Assessment.NormalizeLegacy()
+
+	slog.Info("[RunsService] Preview generated for model", "model", preview.Model)
+	return &preview, nil
+}
+
+func validateRunTarget(configured func() *pkgConfig.AppsConfig, provider, model, endpoint string) error {
+	var svc pkgConfig.ServiceConfig
+	if configured != nil {
+		if cfg := configured(); cfg != nil {
+			svc, _ = cfg.LookupApp(provider)
+		}
+	}
+	if err := svc.ValidateRunTarget(model, endpoint); err != nil {
+		return newProblemError(http.StatusBadRequest, "Bad Request", err.Error())
+	}
+	return nil
 }
 
 // EnsureRunRequest is the body of POST /zzrouter/v1/runs/ensure. Only
 // model is required; endpoint defaults to "chat". Other launch knobs
-// (provider, parameters, env_vars) are inferred from the cache so the
+// (provider, parameters, environment) are inferred from the cache so the
 // agent doesn't need cluster-topology knowledge.
 type EnsureRunRequest struct {
 	Model    string `json:"model" binding:"required"`
@@ -561,13 +692,17 @@ func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*En
 	if model == "" {
 		model = resolved.ModelName
 	}
+	node := resolved.Node
+	if node == "" {
+		node = "@master"
+	}
 	launchResp, err := s.LaunchRun(ctx, &LaunchRunRequest{
 		Provider:   resolved.Provider,
 		LaunchMode: string(instance.LaunchModeNative),
 		Model:      model,
 		Endpoint:   endpoint,
 		AutoDeploy: true,
-		Node:       resolved.Node,
+		Node:       node,
 	})
 	if err != nil {
 		return nil, err
@@ -610,6 +745,10 @@ func (s *RunsService) runAutoDeployChain(ctx context.Context, req *LaunchRunRequ
 		return nil, newProblemError(http.StatusBadRequest, "Bad Request", err.Error())
 	}
 	if node != "" && node != "@master" {
+		selector := constants.ParseNodeIdentifier(node)
+		if selector.IsMaster() && s.deployments.nodeInfo != nil {
+			node = s.deployments.nodeInfo.GetNodename()
+		}
 		deployReq.Nodes = []string{node}
 	}
 
@@ -620,6 +759,10 @@ func (s *RunsService) runAutoDeployChain(ctx context.Context, req *LaunchRunRequ
 	if err != nil {
 		return nil, newProblemError(http.StatusInternalServerError, "Internal Server Error", "deploy failed: "+err.Error())
 	}
+	if len(deployment.Nodes) != 1 || strings.TrimSpace(deployment.Nodes[0].Node) == "" {
+		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "deployment did not identify one owning node", httperr.CodeUpstreamShape, node)
+	}
+	node = deployment.Nodes[0].Node
 
 	//nolint:contextcheck // detached on purpose: the job carries its own context and outlives this request
 	runHandle, err := s.jobs.StartDetached(jobs.KindRun, "", jobs.Meta{
@@ -650,6 +793,7 @@ func (s *RunsService) runAutoDeployChain(ctx context.Context, req *LaunchRunRequ
 
 	return &LaunchRunResponse{
 		ID:          "",
+		Accepted:    true,
 		JobID:       runHandle.ID(),
 		DeployJobID: deploymentLocalJobID(deployment, node),
 		Provider:    req.Provider,
@@ -671,14 +815,9 @@ func (s *RunsService) waitDeployThenForward(runHandle jobs.Handle, deploymentID 
 		return
 	}
 	runHandle.Meta(jobs.Meta{"phase": "launching"})
-	body, err := json.Marshal(req)
-	if err != nil {
-		runHandle.Fail(err)
-		return
-	}
-	resp, err := routeAndParse[LaunchRunResponse](ctx, s.router, "POST", "/zzrouter/v1/internal/runs", node, body)
+	resp, err := s.forwardLaunch(ctx, &req, node)
 	if err == nil && resp.JobID != "" {
-		err = s.deployments.jobs.Wait(ctx, resp.JobID, node)
+		err = s.deployments.jobs.Wait(ctx, resp.JobID, resp.Node)
 	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy on %s: %w", node, err))

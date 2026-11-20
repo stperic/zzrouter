@@ -1,6 +1,7 @@
 package clientcli
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -56,7 +56,7 @@ For stopping instances, use:
 				return err
 			}
 
-			return runPs(nil, provider, model) // clientConfig not needed since EnsureConnected handles it
+			return runPs(cmd.Context(), provider, model)
 		},
 	}
 
@@ -71,15 +71,15 @@ For stopping instances, use:
 	return cmd
 }
 
-func runPs(_ *pkgConfig.ClientConfig, provider, model string) error {
+func runPs(ctx context.Context, provider, model string) error {
 	// Use centralized sign-in logic
-	client, err := EnsureConnected()
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
 
 	// Fetch and filter instances using shared data layer
-	filteredInstances, err := shared.FetchInstances(client, provider, model)
+	filteredInstances, err := shared.FetchInstances(ctx, client, provider, model)
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,7 @@ Examples:
 				return err
 			}
 
-			return runPs(nil, provider, model) // Same as default ps behavior
+			return runPs(cmd.Context(), provider, model)
 		},
 	}
 
@@ -491,7 +491,7 @@ Examples:
 
 			fmt.Printf("📡 Streaming logs for %s (press Ctrl+C to stop)...\n", instance.Model)
 			fmt.Println(strings.Repeat("-", 80))
-			err = client.StreamInstanceLogs(instance.ID, instance.Node)
+			err = client.StreamInstanceLogs(cmd.Context(), instance.ID, instance.Node)
 			fmt.Println(strings.Repeat("-", 80))
 			return err
 		},

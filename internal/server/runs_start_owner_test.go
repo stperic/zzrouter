@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -19,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestLoadExecutorPublishesCanonicalOwner(t *testing.T) {
+func TestRunsExecutorPublishesCanonicalOwner(t *testing.T) {
 	for _, withRun := range []bool{false, true} {
 		t.Run(map[bool]string{false: "endpoint", true: "run"}[withRun], func(t *testing.T) {
 			cfg := aliasLoadConfig(t)
@@ -42,26 +43,37 @@ func TestLoadExecutorPublishesCanonicalOwner(t *testing.T) {
 				require.NoError(t, manager.Instances().Register(run))
 				t.Cleanup(func() { _ = manager.Instances().Remove(run.ID) })
 			}
-			executor := NewLoadExecutor(manager, emptyModelStore{}, func() string { return "canonical-worker" })
-			response, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "m", Provider: provider, Node: "requested-alias"})
+			executor := NewRunsExecutor(manager, func() string { return "canonical-worker" }, manager.AppsConfig, nil, nil, nil)
+			response, err := startForTest(t, t.Context(), executor, LaunchRunRequest{Model: "m", Provider: provider, Node: "requested-alias"})
 			require.NoError(t, err)
 			require.Equal(t, "canonical-worker", response.Node)
-			require.Equal(t, withRun, response.InstanceID != "")
+			require.Equal(t, withRun, response.ID != "")
 		})
 	}
 }
 
-func TestLoadServiceRefusesMissingOwner(t *testing.T) {
-	service := NewLoadService(nil, &loadResultRouter{status: http.StatusOK, body: `{"instance_id":"run","model":"m","provider":"fake","job_id":"worker-job"}`, node: "192.0.2.10"})
-	response, err := service.LoadModel(t.Context(), &LoadModelRequest{ModelName: "m", Provider: "fake", Node: "requested-alias"})
-	require.Error(t, err)
-	require.Nil(t, response)
-	require.Equal(t, http.StatusBadGateway, answeredStatus(err))
+func TestStartRunRefusesMissingOwner(t *testing.T) {
+	for _, target := range []string{"@master", "worker", "requested-alias"} {
+		t.Run(target, func(t *testing.T) {
+			status := http.StatusAccepted
+			if target == "@master" {
+				status = http.StatusOK
+			}
+			router := &runResultRouter{status: status, body: `{"id":"run","job_id":"job"}`, node: "192.0.2.10"}
+			controller := NewRunsController(NewRunsService(router), nil, nil, nil, nil)
+			c, w := postJSON(t, `{"provider":"fake","model":"m","node":"`+target+`"}`)
+			controller.LaunchRun(c)
+			require.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
+			problem := requireStartProblem(t, parseRoutedError(w.Code, w.Body.Bytes(), w.Header()), http.StatusBadGateway, string(httperr.CodeUpstreamShape))
+			require.Contains(t, problem.Detail, "missing its owning node")
+			require.Equal(t, target, problem.Node)
+		})
+	}
 }
 
 // Exercise the existing client watch against an actual worker-owned job registry.
 // The transport's IP is deliberately not a registered node selector.
-func TestLoadModelWatchPreservesWorkerJobOwner(t *testing.T) {
+func TestStartRunWatchPreservesWorkerJobOwner(t *testing.T) {
 	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "canonical-worker", Clock: clock.System()})
 	require.NoError(t, err)
 	t.Cleanup(registry.Stop)
@@ -72,11 +84,11 @@ func TestLoadModelWatchPreservesWorkerJobOwner(t *testing.T) {
 	NewJobsController(registry, "canonical-worker", nil).RegisterInternalRoutes(worker.Group("/zzrouter/v1/internal"))
 	workerHTTP := httptest.NewServer(worker)
 	t.Cleanup(workerHTTP.Close)
-	loadBody, err := json.Marshal(LoadModelResponse{InstanceID: "ready-run", Model: "m", Provider: "fake", Status: "running", Node: "canonical-worker", JobID: job.ID()})
+	loadBody, err := json.Marshal(LaunchRunResponse{ID: "ready-run", Provider: "fake", Status: "running", Node: "canonical-worker", JobID: job.ID()})
 	require.NoError(t, err)
-	service := NewLoadService(nil, &loadResultRouter{status: http.StatusOK, body: string(loadBody), node: "192.0.2.10"})
+	service := NewRunsService(&runResultRouter{status: http.StatusAccepted, body: string(loadBody), node: "192.0.2.10"})
 	coordinator := gin.New()
-	coordinator.POST("/zzrouter/v1/runs/load", NewRunsController(nil, service, nil, nil, nil, nil).LoadModel)
+	coordinator.POST("/zzrouter/v1/runs", NewRunsController(service, nil, nil, nil, nil).LaunchRun)
 	proxy := &JobsProxy{
 		StreamClient: func() (*http.Client, error) { return workerHTTP.Client(), nil },
 		ResolveEndpoint: func(node string) *mesh.Endpoint {
@@ -90,7 +102,7 @@ func TestLoadModelWatchPreservesWorkerJobOwner(t *testing.T) {
 	coordinatorHTTP := httptest.NewServer(coordinator)
 	t.Cleanup(coordinatorHTTP.Close)
 	client := pkgClient.NewClient(config.ClientNodeConfig{Name: "coordinator", Address: coordinatorHTTP.URL})
-	loaded, err := client.LoadModelWithProviderForceParamsAndEnv("requested-alias", "m", "fake", false, nil, nil)
+	loaded, err := client.StartRun(t.Context(), pkgClient.StartRunRequest{Node: "requested-alias", Model: "m", Provider: "fake"})
 	require.NoError(t, err)
 	terminal, err := client.SubscribeJob(t.Context(), loaded.JobID, loaded.Node, nil)
 	require.NoError(t, err)

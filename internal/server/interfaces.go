@@ -10,7 +10,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/routing"
 )
 
 // ModelCacheProvider defines the interface for model cache operations
@@ -18,7 +17,6 @@ type ModelCacheProvider interface {
 	LookupModel(ctx context.Context, name string) (*cache.CachedModel, error)
 	ListModels(ctx context.Context, host, repo, app, model string) ([]*cache.CachedModel, error)
 	Invalidate()
-	RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error)
 	ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error)
 	IsLocalNode(host string) bool
 }

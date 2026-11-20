@@ -47,7 +47,7 @@ func (r EnsureRequest) Key() instance.Key {
 }
 
 func (r EnsureRequest) want() Want {
-	return Want{Key: r.Key(), Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin}
+	return Want{Key: r.Key(), Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin, Parameters: r.Parameters, Environment: r.EnvVars}
 }
 
 // EnsureResult reports a reused or newly started run; no run means the provider serves the model without one.

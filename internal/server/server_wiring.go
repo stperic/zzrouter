@@ -123,15 +123,6 @@ func (s *Server) newRunsExecutor() *RunsExecutor {
 	return e
 }
 
-// newLoadExecutor wires a LoadExecutor with narrow deps from Server.
-func (s *Server) newLoadExecutor() *LoadExecutor {
-	return NewLoadExecutor(
-		s.providers.appMgr,
-		s.model.Registry,
-		s.node.Nodename,
-	)
-}
-
 // newInternalExecutor wires an InternalExecutor with narrow deps from Server.
 func (s *Server) newInternalExecutor() *InternalExecutor {
 	getResourceMetrics := func() any {

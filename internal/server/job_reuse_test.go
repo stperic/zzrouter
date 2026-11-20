@@ -21,20 +21,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRunReuseOmitsGoneJob(t *testing.T) {
-	for _, gone := range []string{"expired", "never-registered"} {
-		t.Run(gone, func(t *testing.T) {
+func TestRunReuseReturnsOnlyReadableJobs(t *testing.T) {
+	for _, state := range []string{"retained", "expired", "never-registered"} {
+		t.Run(state, func(t *testing.T) {
 			fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
 			registry, err := jobs.NewRegistry(jobs.Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
 			require.NoError(t, err)
 			t.Cleanup(registry.Stop)
 			id := "run_never-registered"
-			if gone == "expired" {
+			if state != "never-registered" {
 				h, startErr := registry.StartDetached(jobs.KindRun, "", nil)
 				require.NoError(t, startErr)
 				h.Done()
 				id = h.ID()
-				fc.Advance(constants.IdempotencyReplayWindow)
+				if state == "expired" {
+					fc.Advance(constants.IdempotencyReplayWindow)
+				}
 			}
 			cfg := aliasLoadConfig(t)
 			manager, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithJobsRegistry(registry))
@@ -45,25 +47,18 @@ func TestRunReuseOmitsGoneJob(t *testing.T) {
 			run.MarkRunning(false, nil)
 			require.NoError(t, manager.Instances().Register(run))
 			executor := NewRunsExecutor(manager, func() string { return "node" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
-			for _, path := range []string{"start", "load"} {
-				bodyJSON := `{"provider":"fake","model_name":"local"}`
-				if path == "start" {
-					bodyJSON = `{"provider":"fake","model_name":"local","launch_mode":"native"}`
-				}
-				c, response := postJSON(t, bodyJSON)
-				if path == "start" {
-					executor.HandleInternalLaunchRun(c)
-					require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
-				} else {
-					NewLoadExecutor(manager, emptyModelStore{}, func() string { return "node" }).HandleInternalLoadModel(c)
-					require.Equal(t, http.StatusConflict, response.Code, response.Body.String())
-				}
-				var body map[string]any
-				require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
-				require.NotContains(t, body, "job_id", path)
-				require.NotContains(t, body, "stream_job_id", "the response must not leak the instance's stale ID")
-				require.Contains(t, body["message"], "zz_runs", path)
+			c, response := postJSON(t, `{"provider":"fake","model_name":"local","launch_mode":"native"}`)
+			executor.HandleInternalLaunchRun(c)
+			require.Equal(t, http.StatusAccepted, response.Code, response.Body.String())
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+			if state == "retained" {
+				require.Equal(t, id, body["job_id"])
+			} else {
+				require.NotContains(t, body, "job_id")
 			}
+			require.NotContains(t, body, "stream_job_id", "the response must not leak the instance's stale ID")
+			require.Contains(t, body["message"], "zz_runs")
 		})
 	}
 }

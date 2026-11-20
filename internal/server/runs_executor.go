@@ -302,6 +302,82 @@ func (e *RunsExecutor) publishRunMutation(c *gin.Context, id string, before inst
 	return true
 }
 
+// PreviewLocalRun generates a preview of what would be run
+func (e *RunsExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunRequest) (*PreviewRunResponse, error) {
+	utils.LogDebugf("[RunsExecutor] PreviewLocalRun: model=%s, provider=%s",
+		req.ModelName, req.Provider)
+
+	if err := validateRunTarget(e.appMgr.AppsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
+	if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
+		return nil, err
+	}
+	normalizedApp := utils.NormalizeAppType(req.Provider)
+	if normalizedApp == "" {
+		// A plain error here surfaced as a 500 "failed to preview run"
+		// with no cause; the caller simply left a field out.
+		return nil, newProblemError(http.StatusBadRequest, "Bad Request",
+			"provider is required: preview renders the launch command for one provider")
+	}
+	// Check the worker's current config independently of the coordinator snapshot.
+	if err := previewProviderError(e.appMgr, normalizedApp); err != nil {
+		return nil, err
+	}
+
+	if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
+		return nil, err
+	}
+
+	projectedPort := 0
+	if p, err := e.appMgr.Ports().ProjectForProvider(normalizedApp); err == nil {
+		projectedPort = p
+	}
+	launch, err := e.appMgr.PreviewLaunch(ctx, prov_apps.EnsureRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
+	if err != nil {
+		return nil, err
+	}
+
+	workingDir := launch.WorkingDir
+	if workingDir == "" {
+		workingDir = "."
+	}
+	fullCommand := strings.Join(append([]string{launch.Command}, launch.Args...), " ")
+
+	return &PreviewRunResponse{
+		Model:            launch.Model,
+		Provider:         normalizedApp,
+		Node:             e.getNodename(),
+		Port:             projectedPort,
+		FullCommand:      fullCommand,
+		Assessment:       &launch.Assessment,
+		Parameters:       launch.Params,
+		ParameterSources: launch.Sources,
+		Environment:      launch.Environment,
+		WorkingDir:       workingDir,
+	}, nil
+}
+
+// HandleInternalPreviewRun handles POST /zzrouter/internal/runs/preview (internal API)
+func (e *RunsExecutor) HandleInternalPreviewRun(c *gin.Context) {
+	if !e.requireProviderAppMgr(c) {
+		return
+	}
+	var req PreviewRunRequest
+	if !BindJSONStrict(c, &req) {
+		return
+	}
+
+	preview, err := e.PreviewLocalRun(c.Request.Context(), &req)
+	if err != nil {
+		slog.Error("Failed to preview run", "model", req.ModelName, "error", err)
+		RespondToError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, preview)
+}
+
 // HandleInternalLaunchRun handles POST /zzrouter/internal/runs (internal API)
 func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	if !e.requireProviderAppMgr(c) {
@@ -319,19 +395,14 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		Port             int                    `json:"port,omitempty"`
 		Files            []instance.FileMount   `json:"files,omitempty"`
 		Parameters       schema.ParameterValues `json:"parameters,omitempty"`
-		EnvVars          map[string]string      `json:"env_vars,omitempty"`
+		Environment      map[string]string      `json:"environment,omitempty"`
+		Replace          bool                   `json:"replace,omitempty"`
 		NativeConfig     *instance.NativeConfig `json:"native_config,omitempty"`
 	}
 
 	// BindJSON emits a structured errors[] array so agents can read the
 	// allowed launch_mode enum (param="native") from the validator.
 	if !BindJSON(c, &req) {
-		return
-	}
-
-	// Validate provider type
-	if !e.appMgr.IsProviderSupported(req.Provider) {
-		BadRequest(c, fmt.Sprintf("unsupported provider type: %s", req.Provider))
 		return
 	}
 
@@ -358,7 +429,8 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		Endpoint:     prov_apps.Endpoint(req.Endpoint),
 		Port:         req.Port,
 		Parameters:   req.Parameters,
-		EnvVars:      req.EnvVars,
+		EnvVars:      req.Environment,
+		Force:        req.Replace,
 		Files:        req.Files,
 		NativeConfig: req.NativeConfig,
 	}
@@ -367,10 +439,11 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	// download via DeploymentsService and chain the launch behind it.
 	// The handler returns 202 immediately with both job IDs; the run
 	// job's first phase waits on the deploy job. A provider without runs has nothing to download.
-	svc, _ := e.appsConfig().LookupApp(req.Provider)
-	if req.Model != "" && req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
-		e.handleAutoDeployLaunch(c, req.Provider, req.Endpoint, launchReq)
-		return
+	if req.Model != "" && req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) {
+		if svc, ok := e.appsConfig().LookupApp(req.Provider); ok && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
+			e.handleAutoDeployLaunch(c, req.Provider, req.Endpoint, launchReq)
+			return
+		}
 	}
 
 	result, err := e.appMgr.EnsureRun(c.Request.Context(), launchReq)
@@ -590,7 +663,7 @@ func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endp
 	deployReq.Nodes = []string{e.getNodename()}
 	d := featureDownload(deployReq, svc, *deployReq.Features)
 	dedupeKey := deployPlanKey(providerName, *deployReq.Features, &d)
-	// Detach ctx: shared singleflight + request cancel would fail all coalesced callers.
+	// The shared download must be independent of every caller's context.
 	v, err, _ := e.deployGroup.Do(dedupeKey, func() (any, error) {
 		return e.deploy(context.Background(), deployReq)
 	})

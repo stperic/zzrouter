@@ -170,7 +170,7 @@ and the provider sync carries to every node.
 Closed-enum `code` values from `pkg/httperr.ParamErrorCode`, one Problem
 `errors[]` entry per key: `{"key","code","got","want","min","max","message","hint"}`.
 
-A launch (`POST /runs`, `/runs/preview`, `/runs/load`, a restart or a pinned
+A launch (`POST /runs`, `/runs/preview`, a restart or a pinned
 restore) checks every parameter it would pass, from every tier, with the same
 rules and answers 400 before any process starts. Keys are flag names, so
 `ctx_size` and `ctx-size` are one parameter and the later one in the tier walk
@@ -288,6 +288,9 @@ Common `title`/`code` pairs an agent will see:
 | 400 `bad_request` with provider disabled and not installed | The target node's inventory has no installed copy. | `POST /zzrouter/v1/providers/:name/install` on that node, follow the job, then retry. |
 | 400 `bad_request` with provider disabled and installed | The target node has an installed copy that is disabled. | `PATCH /zzrouter/v1/providers/:name` with `{"enabled":true}` on that node, then retry. |
 | 400 `run_preview_not_applicable` | A cloud or external provider has no local process command or memory budget to preview. | Use `zz_chat` to verify its serving path. |
+| 404 `not_found` with provider not found | Start selected a provider absent from the target node's configuration. | Use `zz_providers` to find a configured provider on that node. |
+| 409 `run_settings_differ` | The request tier differs from the run identified by `run_id`. | Call `zz_run_start` with `replace: true` and the complete intended request tier. |
+| 400 `run_node_required` | Start could not select one owning node. A missing model needs explicit placement to start a download. | Use `zz_models` to locate the model or `zz_nodes` to choose a download target, then pass `node` to `zz_run_start`. |
 | 404 with `not in this provider's catalog` | The node does not list the requested model for that provider. | Download or register it; use `POST /zzrouter/v1/deployments` for a cloud model. Cataloged external and cloud models return ready without a run. |
 | 400 with `provider %q has no search.registry configured` | auto_deploy was requested but the provider can't infer a download source. | Either deploy explicitly via `/deployments` or pick a provider with a registry. |
 | 421 with `Location: <coord-url>` | Worker received a write that only the coordinator may serve (e.g. provider PATCH). | Retry against the URL in the `Location` header. |

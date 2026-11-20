@@ -34,7 +34,7 @@ func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart)
 
 func runView(run *instance.Instance) *RunView {
 	cfg := run.SnapshotConfig()
-	view := &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load(), Failure: run.FailureCause()}
+	view := &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load(), Failure: run.FailureCause(), Parameters: cfg.Parameters, Environment: cfg.EnvVars}
 	if view.Failure == nil && view.Status.IsTerminal() {
 		view.Failure = fmt.Errorf("run %s is %s: %s", run.ID, view.Status, run.GetErrorMessage())
 	}

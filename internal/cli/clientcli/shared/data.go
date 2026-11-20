@@ -27,8 +27,8 @@ func FetchModels(client *pkgClient.Client, params *ModelQueryParams, refresh boo
 }
 
 // FetchInstances retrieves and filters running instances.
-func FetchInstances(client *pkgClient.Client, app, model string) ([]pkgClient.Instance, error) {
-	instances, err := client.ListInstances()
+func FetchInstances(ctx context.Context, client *pkgClient.Client, app, model string) ([]pkgClient.Instance, error) {
+	instances, err := client.ListInstancesCtx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list instances: %w", err)
 	}

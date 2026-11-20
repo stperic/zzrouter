@@ -27,6 +27,22 @@ listener. The coordinator applies client policy before dispatching to workers.
 Cluster connection direction, enrollment and replication are described in
 [cluster networking](cluster_networking.md). Only the coordinator initiates cluster connections.
 
+## Start and preview runs
+
+`POST /zzrouter/v1/runs` accepts a provider, a model for model-scoped
+providers, and optional `parameters`, `environment`, and `replace`.
+Omit `node` to resolve the model's owner as preview does. Starts never
+broadcast. If there is no owner or a download needs placement, pass a node
+name. `POST /zzrouter/v1/runs/preview` accepts `parameters` and `environment` and can
+broadcast a preview when the catalog has no owner.
+
+A successful start returns HTTP 202 with `id` and the owning `node`.
+A provider that can serve without a run returns an empty `id`. Follow
+`job_id` when present. A warm start reuses the run when the request tier
+is absent or equivalent after pin replay. Different settings return
+`run_settings_differ` and the current `run_id`. Send the complete intended
+request tier with `replace: true` to replace it.
+
 ## Provider operations and endpoint discovery
 
 The fixed operation interfaces expose provider-specific behavior through trusted
