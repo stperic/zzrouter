@@ -430,8 +430,8 @@ The job is the record. There is a new job kind, `calibration`, with ID prefix
 `cal_`, registered in `pkg/jobs/kind.go` with an entry in `jobOutcomeTools`.
 
 - **Timeouts.** The kind has its own ring policy and inactivity timeout. A
-  calibration can run 8 steps of 600 s, past the default 30-minute inactivity
-  reap. Progress `Meta` set on every sample also refreshes its activity.
+  calibration can run 8 steps of up to 1,800 s each (600 s by default), past
+  the default 30-minute inactivity reap. Progress `Meta` set on every sample also refreshes its activity.
 - **The report** reaches clients through job `Meta` set before the terminal
   event, as a restart job's `restarted` map does.
 - **Cancellation.** The runner watches `context.Cause` of its job context for
