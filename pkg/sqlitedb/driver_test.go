@@ -1,22 +1,26 @@
 package sqlitedb_test
 
 import (
-	"runtime/debug"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/mod/modfile"
 )
 
+// TestDriverVersionPair reads the selected versions from go.mod, which lists
+// every module the build uses: a Go 1.26 test binary's build info lists none.
 func TestDriverVersionPair(t *testing.T) {
-	info, ok := debug.ReadBuildInfo()
-	require.True(t, ok, "test binary must contain module build information")
+	data, err := os.ReadFile("../../go.mod")
+	require.NoError(t, err)
+	mod, err := modfile.Parse("go.mod", data, nil)
+	require.NoError(t, err)
 	versions := make(map[string]string)
-	for _, dep := range info.Deps {
-		version := dep.Version
-		if dep.Replace != nil {
-			version = dep.Replace.Version
-		}
-		versions[dep.Path] = version
+	for _, req := range mod.Require {
+		versions[req.Mod.Path] = req.Mod.Version
+	}
+	for _, rep := range mod.Replace {
+		versions[rep.Old.Path] = rep.New.Version
 	}
 	for path, want := range map[string]string{
 		"modernc.org/sqlite": "v1.62.0",
