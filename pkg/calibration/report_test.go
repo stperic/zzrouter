@@ -35,7 +35,7 @@ func TestReportJSON(t *testing.T) {
 	step := summarizeStep(0, 2*time.Second, []stepRun{testStepRun(Chat, 1, m)}, observed, map[string]RunSample{}, false, targets)
 	report := Report{
 		Outcome: verified, StartedAt: epoch, CompletedAt: epoch.Add(2 * time.Second), Request: request,
-		SamplingIntervalMS: 500, LargestSampleGapMS: new(640.0), Resources: checkPools(pools, targets),
+		SamplingIntervalMS: 500, LargestSampleGapMS: new(640.0), Resources: DescribePools(pools, targets),
 		Runs: []RunReport{run}, Steps: []StepReport{step},
 	}
 	body, err := json.Marshal(report)
@@ -85,7 +85,7 @@ func TestReportNulls(t *testing.T) {
 		{ID: "gpu", Kind: "gpu", Holders: []Holder{}},
 		{ID: "wddm", Kind: "gpu", Holders: []Holder{{PID: 13}}},
 	}
-	body, err := json.Marshal(checkPools(pools, nil))
+	body, err := json.Marshal(DescribePools(pools, nil))
 	require.NoError(t, err)
 	require.JSONEq(t, `[
 	  {"id":"gpu","kind":"gpu","vendor":null,"total_mib":null,"ownership":"verified","holders":[]},

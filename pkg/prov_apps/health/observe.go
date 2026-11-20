@@ -12,7 +12,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/model"
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
@@ -105,7 +104,7 @@ func ReadObservation(ctx context.Context, client *http.Client, run *instance.Ins
 }
 
 func observesRun(observe *schema.Observe, run *instance.Instance) bool {
-	return observe != nil && (observe.Runtimes == nil || config.MatchesRuntime(observe.Runtimes, run.Provider, run.Resolved().Runtime))
+	return observe != nil && (observe.Runtimes == nil || observe.Applies(run.Provider, run.Resolved().Runtime))
 }
 
 func (o *Observation) combineSeries(family *dto.MetricFamily, maximum bool) *float64 {

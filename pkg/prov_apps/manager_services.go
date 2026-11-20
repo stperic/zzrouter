@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1093,4 +1094,21 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 // holds reports a run of any provider and endpoint for a name the daemon lists, case aside.
 func (m *ProviderAppManager) holds(name string) bool {
 	return slices.ContainsFunc(m.instances.List(), func(run *instance.Instance) bool { return strings.EqualFold(run.Model, name) })
+}
+
+// CalibrationDaemon reads the model inventory of a managed daemon on the run's endpoint.
+func (m *ProviderAppManager) CalibrationDaemon(ctx context.Context, run *instance.Instance) (int, []string) {
+	name, _, found := m.resolveConfigKey(run.Provider)
+	if !found {
+		return 0, nil
+	}
+	status, err := m.ProviderServiceStatus(ctx, name)
+	if err != nil || !status.Managed || !status.Running || status.Supervisor == "external" || status.PID <= 0 {
+		return 0, nil
+	}
+	held, endpoint, ok := m.daemonHolds(ctx, name)
+	if !ok || !backend.SameEndpoint(run.Weights().Backend, endpoint) {
+		return status.PID, nil
+	}
+	return status.PID, slices.Collect(maps.Keys(held))
 }

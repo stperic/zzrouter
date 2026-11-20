@@ -48,6 +48,11 @@ type Observe struct {
 	Extra        map[string]any `yaml:",inline" json:"-"`
 }
 
+// Applies reports whether the observation is declared for the run's effective runtime.
+func (o *Observe) Applies(provider, runtime string) bool {
+	return o != nil && (o.Runtimes == nil || config.MatchesRuntime(o.Runtimes, provider, runtime))
+}
+
 // Calibration declares request fields that force full-length engine output.
 type Calibration struct {
 	Output map[string]any `yaml:"output" json:"output"`

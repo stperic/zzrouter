@@ -281,11 +281,12 @@ func (c *JobsController) InternalCancelJob(ctx *gin.Context) {
 // --- helpers ---
 
 var jobOutcomeTools = map[jobs.Kind]string{
-	jobs.KindInstall:  "zz_providers",
-	jobs.KindService:  "zz_providers",
-	jobs.KindDownload: "zz_models",
-	jobs.KindRun:      "zz_runs",
-	jobs.KindUpdate:   "zz_update_status",
+	jobs.KindCalibration: "zz_runs",
+	jobs.KindInstall:     "zz_providers",
+	jobs.KindService:     "zz_providers",
+	jobs.KindDownload:    "zz_models",
+	jobs.KindRun:         "zz_runs",
+	jobs.KindUpdate:      "zz_update_status",
 }
 
 func respondJobNotFound(ctx *gin.Context, node string) {

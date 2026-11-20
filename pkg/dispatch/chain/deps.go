@@ -35,6 +35,7 @@ type InstanceRequest struct {
 	ClientModel  string
 	Hints        *keepalive.Override
 	Synthetic    bool
+	OnLease      func()
 }
 
 // Topology captures the cluster-shape questions the Proxy asks during a

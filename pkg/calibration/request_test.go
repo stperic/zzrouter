@@ -112,7 +112,7 @@ func TestGenerator(t *testing.T) {
 		require.Equal(t, true, body["stream"])
 		require.Equal(t, true, body["ignore_eos"])
 		require.Equal(t, 4, body["max_tokens"])
-		require.NotContains(t, body, "seed")
+		require.Equal(t, 12, body["seed"])
 		messages, ok := body["messages"].([]map[string]string)
 		require.True(t, ok)
 		require.Len(t, messages, 1)

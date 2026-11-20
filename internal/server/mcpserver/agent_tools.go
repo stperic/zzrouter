@@ -449,7 +449,7 @@ func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, erro
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port base_url browser engine_busy pinned memory_commitments_mib processor context_length cache status started_by waiting_on evicted_runs admission_warning error_message failure parameters_status parameters record_only last_refusal"
+	fields := "id:run_id target_revision requests_admitted provider model node port base_url browser engine_busy pinned memory_commitments_mib processor context_length cache status started_by waiting_on evicted_runs admission_warning error_message failure parameters_status parameters record_only last_refusal"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err

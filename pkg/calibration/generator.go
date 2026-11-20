@@ -68,7 +68,6 @@ func (g *generator) body(target Target, characters, outputTokens int) map[string
 	}
 	body := make(map[string]any, len(target.Output)+4)
 	maps.Copy(body, target.Output)
-	delete(body, "seed")
 	body["model"] = target.Run.Model
 	body["stream"] = true
 	body["messages"] = []map[string]string{{"role": "user", "content": prompt}}

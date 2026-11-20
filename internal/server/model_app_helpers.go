@@ -153,6 +153,9 @@ func (s *Server) openRun(req instanceRequest, inst *instance.Instance, recorder 
 		}
 		return nil, nil, backend.Upstream{}, false
 	}
+	if req.OnLease != nil {
+		req.OnLease()
+	}
 	base, up, err := s.providers.appMgr.Upstream(inst)
 	var target *url.URL
 	if err == nil {
@@ -336,7 +339,12 @@ func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error 
 func (s *Server) instanceRequest(req instanceRequest, inst *instance.Instance) (body []byte, answerAs string) {
 	clientModel := wire.ModelFromBody(req.OriginalBody)
 	if len(req.OriginalBody) > 0 {
-		body = wire.SetDefaultFields(req.OriginalBody, s.requestDefaults(req.Context, inst.Provider, clientModel, req.Path))
+		defaults := s.requestDefaults(req.Context, inst.Provider, clientModel, req.Path)
+		var omit []string
+		if req.Synthetic {
+			omit = []string{"seed"}
+		}
+		body = wire.SetDefaultFields(req.OriginalBody, defaults, omit...)
 		if clientModel != "" {
 			body = wire.SetModelIfPresent(body, s.providers.appMgr.RequestModel(inst, clientModel))
 		}

@@ -24,24 +24,24 @@ const (
 
 // Request describes a calibration as submitted, before applying defaults.
 type Request struct {
-	Node               string       `json:"node"`
-	StepTimeoutSeconds *int         `json:"step_timeout_seconds,omitempty"`
-	Runs               []RunRequest `json:"runs"`
+	Node               string       `json:"node" jsonschema:"Name of the node holding every listed run, as reported by zz_runs."`
+	StepTimeoutSeconds *int         `json:"step_timeout_seconds,omitempty" jsonschema:"Time limit in seconds for each step. Default 600, maximum 1800."`
+	Runs               []RunRequest `json:"runs" jsonschema:"List one to three running instances on this node, with at least one workload."`
 }
 
 // RunRequest identifies a workload or a resident run to observe.
 type RunRequest struct {
-	RunID          string    `json:"run_id"`
-	TargetRevision *string   `json:"target_revision,omitempty"`
-	Workload       *Workload `json:"workload,omitempty"`
+	RunID          string    `json:"run_id" jsonschema:"Exact run ID returned by zz_runs."`
+	TargetRevision *string   `json:"target_revision,omitempty" jsonschema:"Optional run revision from zz_runs. A mismatch refuses the request."`
+	Workload       *Workload `json:"workload,omitempty" jsonschema:"Workload to measure on this run. Omit to observe a resident run without sending requests."`
 }
 
 // Workload describes the lengths and in-flight request count to measure.
 type Workload struct {
-	InputTokens     int   `json:"input_tokens"`
-	OutputTokens    *int  `json:"output_tokens,omitempty"`
-	Concurrency     []int `json:"concurrency"`
-	RequestsPerStep *int  `json:"requests_per_step,omitempty"`
+	InputTokens     int   `json:"input_tokens" jsonschema:"Target input token count per request."`
+	OutputTokens    *int  `json:"output_tokens,omitempty" jsonschema:"Target output token count per request. Required for chat. Omit for embeddings."`
+	Concurrency     []int `json:"concurrency" jsonschema:"In-flight request count for each step. Zero keeps the run idle. All workloads must list the same number of steps."`
+	RequestsPerStep *int  `json:"requests_per_step,omitempty" jsonschema:"Total requests per active step, at least the highest concurrency. When omitted, use the greater of three times the step concurrency and ten."`
 }
 
 // FieldError identifies the invalid request field for a submission refusal.

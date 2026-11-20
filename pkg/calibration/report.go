@@ -27,7 +27,7 @@ type PoolReport struct {
 // GPUIdentity holds the driver and process attribution available at check time.
 type GPUIdentity struct {
 	Vendor    *string  `json:"vendor"`
-	Ownership string   `json:"ownership"`
+	Ownership *string  `json:"ownership"`
 	Holders   []Holder `json:"holders"`
 }
 
@@ -36,6 +36,8 @@ type Holder struct {
 	PID       int     `json:"pid"`
 	MemoryMiB *int64  `json:"memory_mib"`
 	RunID     *string `json:"run_id"`
+	// ListedRuns names a shared daemon's checked runs without duplicating its holder.
+	ListedRuns []string `json:"-"`
 }
 
 // RunReport records the run and its safe settings at check time.

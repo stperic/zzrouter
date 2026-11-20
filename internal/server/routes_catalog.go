@@ -261,6 +261,7 @@ func snapshotAllowed(r *http.Request) bool {
 // that check: /zzrouter/v1/internal/* is undocumented by decision, so
 // those entries remain claims.
 var asyncRoutes = []string{
+	"POST /calibrations",
 	"POST /runs",
 	"POST /runs/ensure",
 	"POST /runs/:id/restart",

@@ -50,9 +50,10 @@ package version
 // Protocol 23 binds forwarded models to the trusted provider hint, rejecting conflicting qualifiers.
 // Protocol 24 adds planner-owned command script exports; absence on older peers means unavailable.
 // Protocol 25 adds strict operation definitions and effective native listener declarations.
+// Protocol 26 unifies run start and requires observation, KV budget and calibration contracts.
 const (
-	ClusterProtocolVersion    = 25
-	MinClusterProtocolVersion = 25
+	ClusterProtocolVersion    = 26
+	MinClusterProtocolVersion = 26
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

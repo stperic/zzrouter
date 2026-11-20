@@ -33,3 +33,12 @@ func TestSetDefaultFields(t *testing.T) {
 	assert.Equal(t, []byte(`[1]`), SetDefaultFields([]byte(`[1]`), map[string]any{"a": 1}), "not an object")
 	assert.Equal(t, []byte(`not json`), SetDefaultFields([]byte(`not json`), map[string]any{"a": 1}))
 }
+
+func TestSetDefaultFieldsOmitsFromBodyAndDefaults(t *testing.T) {
+	defaults := map[string]any{"Seed": 10, "temperature": 0.2}
+	for _, body := range []string{`{"model":"m","sEeD":12}`, `{"model":"m"}`} {
+		assert.JSONEq(t, `{"model":"m","temperature":0.2}`, string(SetDefaultFields([]byte(body), defaults, "seed")))
+	}
+	assert.Equal(t, 10, defaults["Seed"])
+	assert.JSONEq(t, `{"model":"m","Seed":10,"temperature":0.2}`, string(SetDefaultFields([]byte(`{"model":"m"}`), defaults)))
+}

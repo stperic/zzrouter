@@ -50,6 +50,21 @@ const (
 	// CodeRunSettingsDiffer asks the caller to opt into replacing a run with different settings.
 	CodeRunSettingsDiffer RouteErrorCode = "run_settings_differ"
 
+	// CodeRunNotFound means a calibration run is missing on the selected node.
+	CodeRunNotFound RouteErrorCode = "run_not_found"
+	// CodeContextTooSmall means the served context cannot hold the calibration workload.
+	CodeContextTooSmall RouteErrorCode = "context_too_small"
+	// CodeConcurrencyAboveLimit means a calibration workload exceeds the run admission limit.
+	CodeConcurrencyAboveLimit RouteErrorCode = "concurrency_above_limit"
+	// CodeRunNotReady means a calibration run is not ready to serve.
+	CodeRunNotReady RouteErrorCode = "run_not_ready"
+	// CodeRunChanged means the run revision no longer matches the calibration target.
+	CodeRunChanged RouteErrorCode = "run_changed"
+	// CodeCalibrationUnsupported means the run lacks a supported calibration workload API.
+	CodeCalibrationUnsupported RouteErrorCode = "calibration_unsupported"
+	// CodeCalibrationRunning means a calibration already owns the node claim.
+	CodeCalibrationRunning RouteErrorCode = "calibration_running"
+
 	// CodeModelSourceAmbiguous requires an exact source id for same-name physical weights.
 	CodeModelSourceAmbiguous RouteErrorCode = "model_source_ambiguous"
 	// CodeModelDetailUnsupported means catalog identity exists without a supported detail reader.

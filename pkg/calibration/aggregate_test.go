@@ -104,12 +104,26 @@ func TestPoolAndRunObservations(t *testing.T) {
 	require.Equal(t, map[string]*int64{"gpu": new(int64(60)), "host": new(int64(60)), "unified": nil}, run.MemoryPeakMiB)
 	require.Equal(t, &MeanPeak{101, 110}, run.CPUPct)
 	require.Equal(t, EnginePeak{new(2), new(0), new(0.9)}, run.Engine)
-	require.Equal(t, "verified", checkPools(snapshots[0].Pools, targets)[0].Ownership)
-	require.Equal(t, "shared", checkPools(snapshots[1].Pools, targets)[0].Ownership)
+	require.Equal(t, new("verified"), DescribePools(snapshots[0].Pools, targets)[0].Ownership)
+	require.Equal(t, new("shared"), DescribePools(snapshots[1].Pools, targets)[0].Ownership)
 	for _, holders := range [][]Holder{nil, {{PID: 16, RunID: new("a")}}} {
 		pool := PoolSample{ID: "gpu", Kind: "gpu", Holders: holders}
-		require.Equal(t, "unknown", checkPools([]PoolSample{pool}, targets)[0].Ownership)
+		require.Equal(t, new("unknown"), DescribePools([]PoolSample{pool}, targets)[0].Ownership)
 	}
 	empty := PoolSample{ID: "gpu", Kind: "gpu", Holders: []Holder{}}
-	require.Equal(t, "verified", checkPools([]PoolSample{empty}, targets)[0].Ownership)
+	require.Equal(t, new("verified"), DescribePools([]PoolSample{empty}, targets)[0].Ownership)
+}
+
+func TestSharedDaemonGPUHolderContributesOnce(t *testing.T) {
+	targets := map[string]Target{"a": {}, "b": {}}
+	pool := PoolSample{Kind: "gpu", Holders: []Holder{{PID: 9, MemoryMiB: new(int64(80)), ListedRuns: []string{"a", "b"}}}}
+	require.Equal(t, "verified", gpuOwnership(pool, targets))
+	for id := range targets {
+		require.Equal(t, new(int64(80)), gpuMemory(pool, func(owner string) bool { return owner == id }))
+	}
+	other := func(id string) bool { _, ok := targets[id]; return !ok }
+	require.Equal(t, new(int64(0)), gpuMemory(pool, other))
+	pool.Holders[0].ListedRuns = nil
+	require.Equal(t, "shared", gpuOwnership(pool, targets))
+	require.Equal(t, new(int64(80)), gpuMemory(pool, other))
 }

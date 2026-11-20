@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"testing"
 
@@ -120,7 +121,7 @@ func TestMCPWireListContract(t *testing.T) {
 	expected := map[string]struct{ readOnly, destructive, idempotent bool }{
 		"zz_overview": {readOnly: true}, "zz_job": {readOnly: true}, "zz_nodes": {readOnly: true},
 		"zz_models": {readOnly: true}, "zz_model_search": {readOnly: true}, "zz_model_download": {}, "zz_model_delete": {destructive: true},
-		"zz_runs": {readOnly: true}, "zz_run_preview": {readOnly: true}, "zz_run_start": {}, "zz_run_restart": {},
+		"zz_runs": {readOnly: true}, "zz_run_preview": {readOnly: true}, "zz_run_start": {}, "zz_run_restart": {}, "zz_calibrate": {},
 		"zz_run_stop": {destructive: true}, "zz_chat": {}, "zz_logs": {readOnly: true}, "zz_job_cancel": {destructive: true},
 		"zz_providers": {readOnly: true}, "zz_provider_install": {}, "zz_params_get": {readOnly: true}, "zz_params_set": {},
 		"zz_model_files": {readOnly: true}, "zz_api_search": {readOnly: true}, "zz_api_get": {readOnly: true}, "zz_api": {destructive: true},
@@ -167,7 +168,7 @@ func TestMCPWireListContract(t *testing.T) {
 func TestMCPWireObjectSubschemas(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	result := mcpWireResponse(t, s, mcpWireRequest(t, "tools/list", "2026-07-28", nil), http.StatusOK)["result"].(map[string]any)
-	stable := map[string]bool{"zz_overview": true, "zz_chat": true, "zz_run_start": true, "zz_run_restart": true, "zz_model_download": true}
+	stable := map[string]bool{"zz_overview": true, "zz_chat": true, "zz_run_start": true, "zz_run_restart": true, "zz_model_download": true, "zz_calibrate": true}
 	for _, value := range result["tools"].([]any) {
 		tool := value.(map[string]any)
 		t.Run(tool["name"].(string), func(t *testing.T) {
@@ -190,6 +191,13 @@ func TestMCPWireObjectSubschemas(t *testing.T) {
 				case "zz_overview":
 					require.Contains(t, properties, "unhealthy_nodes")
 					require.NotContains(t, properties, "enabled_providers")
+				case "zz_calibrate":
+					require.Len(t, properties, 2)
+					for _, field := range []string{"job_id", "node"} {
+						require.Contains(t, properties, field)
+						require.Equal(t, "string", properties[field].(map[string]any)["type"])
+					}
+					require.ElementsMatch(t, []any{"job_id", "node"}, output.(map[string]any)["required"])
 				case "zz_run_start", "zz_run_restart":
 					require.Contains(t, properties, "run_id")
 					require.Contains(t, properties, "job_id")
@@ -285,7 +293,8 @@ func TestIntegrationMCPLegacySmoke(t *testing.T) {
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 30)
+	require.Len(t, tools.Tools, 31)
+	require.True(t, slices.ContainsFunc(tools.Tools, func(tool *mcp.Tool) bool { return tool.Name == "zz_calibrate" }))
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError)

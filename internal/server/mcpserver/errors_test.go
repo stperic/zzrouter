@@ -236,6 +236,7 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 		"zz_provider_install": {"provider": "p"}, "zz_run_preview": {"model": "m", "provider": "p"},
 		"zz_run_start": {"model": "m", "provider": "p"}, "zz_run_restart": {"run_id": "r"}, "zz_run_stop": {"run_id": "r"},
 		"zz_chat": {"model": "m", "message": "hi"}, "zz_job": {"job_id": "j"}, "zz_job_cancel": {"job_id": "j"},
+		"zz_calibrate":  calibrationToolErrorInput(),
 		"zz_params_get": {"provider": "p"}, "zz_params_set": {"provider": "p", "patch": map[string]any{}},
 		"zz_api_search": {"query": "runs"}, "zz_api_get": {"path": "/zzrouter/v1/models"}, "zz_api": {"method": "POST", "path": "/zzrouter/v1/runs"},
 		"zz_operations": {}, "zz_operation": {"operation_id": "p.inspect"}, "zz_connections": {},
@@ -265,6 +266,23 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 			}
 		})
 	}
+}
+
+func calibrationToolErrorInput() map[string]any {
+	return map[string]any{"node": "n", "runs": []map[string]any{
+		{"run_id": "r", "workload": map[string]any{"input_tokens": 10, "concurrency": []int{1}}},
+	}}
+}
+
+func TestCalibrateToolPreservesRESTProblem(t *testing.T) {
+	d, want := problemFixture(t)
+	result := callAgentTool(t, d, "zz_calibrate", calibrationToolErrorInput())
+	require.Equal(t, true, result["isError"])
+	raw, err := json.Marshal(result["structuredContent"])
+	require.NoError(t, err)
+	var problem utils.ProblemDetails
+	require.NoError(t, json.Unmarshal(raw, &problem))
+	require.Equal(t, want, problem)
 }
 
 func TestToolErrorFailedJobIsSuccess(t *testing.T) {

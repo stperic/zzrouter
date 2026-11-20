@@ -62,6 +62,19 @@ func RedactJSON(raw []byte) []byte {
 	return []byte(RedactSensitive(strings.TrimSuffix(buf.String(), "\n")))
 }
 
+// RedactStringFields copies flat settings while redacting credential fields and values.
+func RedactStringFields(fields map[string]string) map[string]string {
+	out := make(map[string]string, len(fields))
+	for key, value := range fields {
+		if isJSONSensitiveKey(key) {
+			out[key] = RedactedPlaceholder
+		} else {
+			out[key] = RedactSensitive(value)
+		}
+	}
+	return out
+}
+
 func redactValue(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
