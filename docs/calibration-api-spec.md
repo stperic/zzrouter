@@ -735,9 +735,12 @@ verified when every run active in it is verified.
 | `inconclusive` | No step is verified, no request failed, and a step was cut short. |
 | `cancelled` | A cancellation was requested. |
 
-A run step that both had a failed request and was cut short is `failed`: an
-error is a finding. For the same reason `failed` takes precedence over
-`inconclusive` overall.
+A run step that both had a failed request and was cut short by the step
+timeout is `failed`: an error is a finding. For the same reason `failed` takes
+precedence over `inconclusive` overall. A run that stopped, restarted or was
+replaced during the step is `inconclusive` with `run_changed` even when its
+requests failed, because the change caused the failures. A warm-up cut off by
+its deadline gives `step_timeout`, not `usage_unavailable`.
 
 Every outcome except `verified` carries a `reason`: a `code`, a `message`, and
 a `next_action` with its own `code` and the `tool` to call.
