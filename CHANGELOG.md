@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Apple Silicon node views show the unified pool's actual available memory.
+
 - Check vLLM's startup fraction and an independent per-GPU hold when
   `kv-cache-memory-bytes` is set. Expert launches can use
   `memory-admission: report` to surface a fit refusal as an admission warning

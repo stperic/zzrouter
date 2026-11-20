@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 )
 
 // DiscoverMemory discovers system memory information
@@ -12,16 +12,14 @@ func DiscoverMemory(ctx context.Context) (HardwareInfo, []error) {
 	var hardware HardwareInfo
 	var errors []error
 
-	memInfo, err := mem.VirtualMemoryWithContext(ctx)
+	total, available, err := resources.ReadRAM(ctx)
 	if err != nil {
 		errors = append(errors, fmt.Errorf("failed to get memory information: %w", err))
 		return hardware, errors
 	}
 
-	hardware.TotalRAM = int64(memInfo.Total)
-	hardware.AvailableRAM = int64(memInfo.Available)
-	used := int64(memInfo.Used)
-	hardware.UsedRAM = &used
+	hardware.TotalRAM = total
+	hardware.AvailableRAM = available
 
 	return hardware, errors
 }

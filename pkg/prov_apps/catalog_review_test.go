@@ -42,9 +42,9 @@ func TestFailedEvictionPublishesServingTransition(t *testing.T) {
 			budget := f.mgr.stopBudget
 			f.mgr.stopBudget = func(string) time.Duration { return -time.Nanosecond }
 			defer func() { f.mgr.stopBudget = budget }()
-			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-			}
+			})
 			publicationErr := errors.New("catalog unavailable")
 			published := make(chan struct{}, 1)
 			f.mgr.publishCatalog = func() error { published <- struct{}{}; return publicationErr }
@@ -118,7 +118,7 @@ func TestInstallSmokeAdmissionFailurePublishesAfterUnlock(t *testing.T) {
 			victim.SetProcessInfo(9000001, 0, 0, nil)
 			require.NoError(t, f.mgr.instances.Register(victim))
 			var cancelSmoke context.CancelFunc
-			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+			f.mgr.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 				free := int64(1000)
 				if victim.GetStatus() == instance.StatusStopped {
 					free = 6000
@@ -127,7 +127,7 @@ func TestInstallSmokeAdmissionFailurePublishesAfterUnlock(t *testing.T) {
 					}
 				}
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-			}
+			})
 			coord := f.mgr.installs
 			busyReturned := false
 			if mode == "retry_cancel" {

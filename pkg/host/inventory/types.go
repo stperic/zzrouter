@@ -16,26 +16,17 @@ type NodeMemory struct {
 	Sample      *MemorySample `json:"sample,omitempty"`
 	TotalGB     float64       `json:"total_gb"`
 	AvailableGB float64       `json:"available_gb"`
-	UsedPercent float64       `json:"used_percent"`
+	UsedPercent *float64      `json:"used_percent,omitempty"`
 }
 
-// NodeGPU reports GPU information for a node.
-//
-// Group-level MemoryTotalGB / MemoryAvailableGB / UtilizationPercent are
-// aggregates across every GPU on the node (sum for memory, mean for
-// utilization) sourced from gpu.LiveMetricsContext. Per-card breakdown
-// lives in GPUs; those rows come from hardware.DiscoverGPUs via
-// gpu.InventoryContext and carry static per-card metadata only (Name,
-// MemoryTotalGB, ComputeCapability).
-//
-// Wire key: "gpu".
+// NodeGPU reports aggregate pool metrics and per-card details for the node.
 type NodeGPU struct {
 	Count              int              `json:"count"`
 	Type               string           `json:"type"`
 	GPUs               []NodeGPUDetails `json:"gpus,omitempty"`
 	MemoryTotalGB      float64          `json:"memory_total_gb,omitempty"`
 	MemoryAvailableGB  float64          `json:"memory_available_gb,omitempty"`
-	UtilizationPercent float64          `json:"utilization_percent,omitempty"`
+	UtilizationPercent *float64         `json:"utilization_percent,omitempty"`
 
 	// UnifiedMemory reports that GPU memory IS system memory (Apple
 	// Silicon). Without it a caller sizing a model would add this node's

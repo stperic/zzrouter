@@ -35,6 +35,8 @@ test('measured zero, missing usage, partial GPUs and unified memory stay distinc
   node.gpu.unified_memory = true;
   assert.equal(memoryRows(node).length, 1);
   assert.equal(memoryRows(node)[0].label, 'Unified RAM');
+  delete node.memory.sample.used_bytes;
+  assert.match(memorySummary(node), /Unified RAM  Unavailable \/ 64/);
   node.health_status = 'down'; assert.ok(memoryRows(node)[0].stale);
 });
 

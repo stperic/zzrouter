@@ -341,17 +341,18 @@ func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 	}
 
 	if snap.RAMTotalGB > 0 {
-		usedPercent := (snap.RAMTotalGB - snap.RAMAvailableGB) / snap.RAMTotalGB * 100
 		nodeInfo["memory"] = map[string]any{
 			"total_gb":     math.Round(snap.RAMTotalGB*10) / 10,
 			"available_gb": math.Round(snap.RAMAvailableGB*10) / 10,
-			"used_percent": math.Round(usedPercent*10) / 10,
 		}
 	}
 
 	if sample := snap.MemorySample.Current(utils.Now(), healthStatus != "healthy"); sample != nil {
 		if memory, ok := nodeInfo["memory"].(map[string]any); ok {
 			memory["sample"] = sample
+			if usedPercent := sample.UsedPercent(); usedPercent != nil {
+				memory["used_percent"] = math.Round(*usedPercent*10) / 10
+			}
 		}
 	}
 	if activity := snap.Activity.Current(utils.Now(), healthStatus != "healthy"); activity != nil {
@@ -620,10 +621,11 @@ func (s *Server) GetLocalNodeInfo() map[string]any {
 	if diskInfo := inventory.GatherDisk(ctx, modelsDir, cache); diskInfo != nil {
 		hostInfo["disk"] = diskInfo
 	}
-	if memInfo := inventory.GatherMemory(ctx, cache); memInfo != nil {
+	snapshot := cache.GetSnapshot(ctx)
+	if memInfo := inventory.GatherMemory(snapshot); memInfo != nil {
 		hostInfo["memory"] = memInfo
 	}
-	if gpuInfo := inventory.GatherGPU(ctx, gpu.List(false), cache); gpuInfo != nil {
+	if gpuInfo := inventory.GatherGPU(gpu.List(false), snapshot); gpuInfo != nil {
 		hostInfo["gpu"] = gpuInfo
 	}
 	return hostInfo

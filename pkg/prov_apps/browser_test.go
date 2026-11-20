@@ -45,12 +45,10 @@ func browserLaunchFixture(t *testing.T) (*ProviderAppManager, preparedLaunch, *i
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
-	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
-	}
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+
+	m.memorySnapshot = deviceSnapshot(func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 24576}}, nil
-	}
+	})
 	snapshot, err := m.resolveRecipe("comfyui", "comfyui")
 	require.NoError(t, err)
 	manifest := &fsroot.InstallManifest{Version: snapshot.Recipe.Source.Version, WorkingDir: snapshot.WorkingDir, Recipe: &snapshot.Recipe, RecipeFingerprint: snapshot.Fingerprint, PlanID: "installed-browser-source", Interpreter: &fsroot.ManifestInterpreter{Path: "python", Version: "3.14.0"}, Inventory: []fsroot.ManifestPackage{{Name: "torch", Version: "2.9"}}}

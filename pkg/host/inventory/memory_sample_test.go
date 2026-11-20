@@ -1,12 +1,14 @@
 package inventory
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,32 +16,37 @@ import (
 
 func TestReportedMemoryIsNotTotalMinusAvailable(t *testing.T) {
 	now := utils.Now()
-	used := int64(17 << 30)
-	cache := &Cache{ttl: time.Hour, memoryAt: now.Add(-10 * time.Second),
-		memInfo: &hardware.HardwareInfo{TotalRAM: 64 << 30, AvailableRAM: 32 << 30, UsedRAM: &used}}
-	memory := GatherMemory(t.Context(), cache)
+	used := int64(17 << 10)
+	cache := &Cache{ttl: time.Hour, snapshot: resources.Snapshot{
+		At:    now.Add(-10 * time.Second),
+		Pools: []resources.Pool{{Kind: resources.Host, TotalMiB: new(int64(64 << 10)), AvailableMiB: new(int64(32 << 10)), UsedMiB: &used}},
+	}}
+	memory := GatherMemory(cache.GetSnapshot(t.Context()))
 	require.NotNil(t, memory.Sample)
-	assert.Equal(t, used, *memory.Sample.UsedBytes)
-	assert.Equal(t, cache.memoryAt.UTC(), memory.Sample.ObservedAt)
+	assert.Equal(t, used<<20, *memory.Sample.UsedBytes)
+	assert.Equal(t, new(17.0/64*100), memory.UsedPercent)
+	assert.Equal(t, cache.snapshot.At.UTC(), memory.Sample.ObservedAt)
 	assert.GreaterOrEqual(t, memory.Sample.AgeSeconds, float64(10))
 	assert.NotEqual(t, int64((memory.TotalGB-memory.AvailableGB)*(1<<30)), *memory.Sample.UsedBytes)
-	cache.memInfo.UsedRAM = nil
-	assert.Nil(t, GatherMemory(t.Context(), cache).Sample.UsedBytes)
+	cache.snapshot.Pools[0].UsedMiB = nil
+	assert.Nil(t, GatherMemory(cache.GetSnapshot(t.Context())).Sample.UsedBytes)
+	assert.Nil(t, GatherMemory(cache.GetSnapshot(t.Context())).UsedPercent)
 	zero := int64(0)
-	cache.memInfo.UsedRAM = &zero
-	assert.Equal(t, &zero, GatherMemory(t.Context(), cache).Sample.UsedBytes)
+	cache.snapshot.Pools[0].UsedMiB = &zero
+	assert.Equal(t, &zero, GatherMemory(cache.GetSnapshot(t.Context())).Sample.UsedBytes)
 }
 
 func TestDiskRefreshDoesNotRenewMemorySample(t *testing.T) {
 	old := utils.Now().Add(-time.Hour)
-	cache := &Cache{ttl: time.Minute, diskAt: utils.Now(), memoryAt: old,
-		diskInfo: []hardware.DiskInfo{{TotalGB: 1}}, memInfo: &hardware.HardwareInfo{TotalRAM: 1}}
+	cache := NewCacheWithProbe(time.Minute, func(context.Context, *resources.Snapshot) resources.Snapshot {
+		return resources.Snapshot{Pools: []resources.Pool{{Kind: resources.Host, TotalMiB: new(int64(64 << 10))}}}
+	})
+	cache.diskAt, cache.snapshot.At = utils.Now(), old
+	cache.diskInfo = []hardware.DiskInfo{{TotalGB: 1}}
 	cache.GetDiskInfo(t.Context())
-	value, at := cache.GetMemoryInfo(t.Context())
-	require.True(t, at.After(old), "a fresh disk cache must not mask expired RAM")
-	require.NotEqual(t, int64(1), value.TotalRAM)
-	_, again := cache.GetMemoryInfo(t.Context())
-	assert.Equal(t, at, again, "reading a cached sample must not renew it")
+	value := cache.GetSnapshot(t.Context())
+	require.True(t, value.At.After(old), "a fresh disk cache must not mask expired RAM")
+	assert.Equal(t, value.At, cache.GetSnapshot(t.Context()).At, "reading a cached sample must not renew it")
 }
 
 func TestMemorySampleUsesLocalClockAndRetainsAge(t *testing.T) {
@@ -64,15 +71,15 @@ func TestMemorySampleUsesLocalClockAndRetainsAge(t *testing.T) {
 
 func TestGPUCardSamplesKeepIdentityAndPartialMeasurements(t *testing.T) {
 	used, zero := int64(1024), int64(0)
-	cache := &Cache{ttl: time.Hour, gpuCardsAt: utils.Now(), gpuCards: []gpu.CardMetrics{
-		{UUID: "B", TotalMemoryMiB: 8192, UsedMemoryMiB: &used},
-		{UUID: "A", TotalMemoryMiB: 8192, UsedMemoryMiB: &zero, FreeMemoryMiB: &zero},
-	}}
+	cache := &Cache{ttl: time.Hour, snapshot: resources.Snapshot{At: utils.Now(), Pools: []resources.Pool{
+		{Kind: resources.GPU, Vendor: "nvidia", ID: "B", TotalMiB: new(int64(8192)), UsedMiB: &used},
+		{Kind: resources.GPU, Vendor: "nvidia", ID: "A", TotalMiB: new(int64(8192)), UsedMiB: &zero, FreeMiB: &zero},
+	}}}
 	inv := gpu.Inventory{Cards: []gpu.Card{
 		{Vendor: gpu.VendorNVIDIA, UUID: "A", PCIAddress: "0000:01:00.0", MemoryMiB: 8192},
 		{Vendor: gpu.VendorNVIDIA, UUID: "B", PCIAddress: "0000:02:00.0", MemoryMiB: 8192},
 	}}
-	value := GatherGPU(t.Context(), inv, cache)
+	value := GatherGPU(inv, cache.GetSnapshot(t.Context()))
 	require.Len(t, value.GPUs, 2)
 	require.NotNil(t, value.GPUs[0].Sample)
 	assert.Equal(t, int64(0), *value.GPUs[0].Sample.UsedBytes)
