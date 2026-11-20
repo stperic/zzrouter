@@ -32,6 +32,37 @@ func TestColdLoadMemoryDiagnosticExtensionsContract(t *testing.T) {
 	assert.Equal(t, management.Title, wire.Title)
 }
 
+func TestMemoryRefusalGuidesUnknownActivityHolder(t *testing.T) {
+	for _, reason := range []string{"activity_unknown", "pinned"} {
+		t.Run(reason, func(t *testing.T) {
+			fit := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5500, FreeMiB: 1000,
+				Holders: []process.MemoryHolder{{Run: "comfy", Ownership: "zzrouter", ReclaimSkippedReason: reason}}}
+			w := httptest.NewRecorder()
+			writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", nil)), failureWire(fit, http.StatusInternalServerError))
+			require.Equal(t, http.StatusConflict, w.Code)
+			var problem struct {
+				Code   string `json:"code"`
+				Errors []struct {
+					Got  process.MemoryFitError `json:"got"`
+					Hint string                 `json:"hint"`
+				} `json:"errors"`
+			}
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &problem))
+			require.Equal(t, "out_of_range", problem.Code)
+			require.Len(t, problem.Errors, 1)
+			issue := problem.Errors[0]
+			require.Equal(t, fit.Holders, issue.Got.Holders)
+			if reason == "activity_unknown" {
+				assert.Contains(t, issue.Hint, "activity_unknown")
+				assert.Contains(t, issue.Hint, "zz_runs with its run_id to inspect activity")
+				assert.Contains(t, issue.Hint, "zz_run_stop with that run_id to free memory")
+			} else {
+				assert.NotContains(t, issue.Hint, "activity_unknown")
+			}
+		})
+	}
+}
+
 func TestColdLoadExplicitWireExtensionsContract(t *testing.T) {
 	want := httperr.Error{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "specific_failure", Message: "try later", Title: "Specific failure", RetryAfter: 1500 * time.Millisecond, Extra: map[string]any{"run_id": "r", "job_id": "j"}}
 	got := loadFailureWire(fmt.Errorf("wrapped: %w", want))

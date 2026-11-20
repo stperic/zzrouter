@@ -42,7 +42,7 @@ func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
 	if err != nil {
 		return
 	}
-	field := declared.ForEndpoint(run.Endpoint)[svc.GetContextParam()].Served
+	field := declared.ForEndpoint(run.Key().Endpoint)[svc.GetContextParam()].Served
 	p, ok := m.Protocol(key)
 	if field == "" || !ok {
 		return

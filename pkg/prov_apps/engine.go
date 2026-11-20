@@ -152,6 +152,7 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	if err != nil {
 		return nil, nil, err
 	}
+	run.KeyEndpoint, run.Endpoint = req.Key().Endpoint, string(EndpointOrDefault(req.Endpoint))
 	settings, _ := e.m.runSettings(svc, req) // prepare checked it
 	keepAlive, explicit := settings.KeepAlive, settings.KeepAliveExplicit
 	// The daemon applies an explicit keep-alive, else its own default; zero is zzRouter's: end at release.
@@ -175,6 +176,7 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 
 func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {
 	m := e.m
+	req.Endpoint = EndpointOrDefault(req.Endpoint)
 	run, daemonKeepAlive, err := e.servedRun(ctx, req, selection.config, selection.key)
 	if err != nil {
 		return nil, err
@@ -228,7 +230,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 	}
 	if run.Context().Err() == nil {
 		run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: m.retireDisplaced(ctx, run)})
-		if m.publishRunning(run, false, "loaded") {
+		if m.publishServed(run.Context(), run, "loaded") {
 			return
 		}
 	}
@@ -239,6 +241,19 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		}
 	}
 
+}
+
+// publishServed resolves the serving endpoint of a registered run before announcing readiness.
+func (m *ProviderAppManager) publishServed(ctx context.Context, run *instance.Instance, message string) bool {
+	if loader, daemon, ok := m.daemonForRun(run); ok && ctx.Err() == nil && run.Context().Err() == nil {
+		endpoint := loader.ModelEndpoint(ctx, daemon, run.WireModel)
+		if _, _, ok := m.daemonForRun(run); ok && ctx.Err() == nil {
+			run.SetServedEndpoint(endpoint)
+			return m.publishRunning(run, false, message)
+		}
+	}
+	m.retireRun(run, "daemon observation ended before readiness", obsruns.StopReasonCrash)
+	return false
 }
 
 func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {

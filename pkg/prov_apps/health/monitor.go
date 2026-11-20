@@ -95,6 +95,24 @@ func (m *Monitor) Config() MonitorConfig {
 	return m.config
 }
 
+// ConfigureActivity declares the observation before the run can become ready.
+func (m *Monitor) ConfigureActivity(inst *instance.Instance, hc CheckConfig) {
+	if hc.observesBusy(inst) {
+		inst.ConfigureActivityObservation(2*m.pollInterval(hc) + constants.HealthCheckTimeout)
+	}
+}
+
+func (c CheckConfig) observesBusy(inst *instance.Instance) bool {
+	return observesRun(c.Observe, inst) && len(c.Observe.Busy) > 0
+}
+
+func (m *Monitor) pollInterval(hc CheckConfig) time.Duration {
+	if hc.Interval > 0 {
+		return hc.Interval
+	}
+	return m.config.Interval
+}
+
 // Run starts health monitoring for an instance. It blocks until ctx is cancelled
 // or the instance transitions to a terminal state. The caller should run this in
 // a goroutine and call inst.TrackGoroutine/GoroutineDone. publishRunning is required.
@@ -111,15 +129,8 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 		return
 	}
 
-	// Resolve per-instance overrides
-	interval := m.config.Interval
-	if hcConfig.Interval > 0 {
-		interval = hcConfig.Interval
-	}
-	observeBusy := observesRun(hcConfig.Observe, inst) && len(hcConfig.Observe.Busy) > 0
-	if observeBusy {
-		inst.ConfigureActivityObservation(2*interval + constants.HealthCheckTimeout)
-	}
+	interval := m.pollInterval(hcConfig)
+	observeBusy := hcConfig.observesBusy(inst)
 
 	maxFailures := m.config.MaxRetries
 	if hcConfig.MaxRetries > 0 {

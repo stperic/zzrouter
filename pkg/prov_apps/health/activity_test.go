@@ -189,6 +189,7 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 				})}})
 				cfg := queueConfig()
 				cfg.MaxRetries = policy.override
+				monitor.ConfigureActivity(run, cfg)
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
@@ -230,7 +231,7 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 					sample(true, true)
 				}
 				sample(true, false)
-				require.True(t, run.Evictable())
+				require.Equal(t, "activity_unknown", run.EvictionBlockedReason())
 				require.Equal(t, instance.StatusRunning, run.GetStatus())
 				sample(false, true)
 			})
@@ -252,6 +253,7 @@ func TestMonitorObservationValidityWindow(t *testing.T) {
 	cfg.Interval = 5 * time.Millisecond
 	client := observationClient(http.StatusOK, `{"queue_running":[1],"queue_pending":[]}`)
 	monitor := NewMonitor(registry, MonitorConfig{Timeout: time.Second, MaxRetries: 1, HTTPClient: client})
+	monitor.ConfigureActivity(run, cfg)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -286,6 +288,7 @@ func TestMonitorSkipsObservationWithoutBusyRole(t *testing.T) {
 	monitor := NewMonitor(registry, MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: 1, HTTPClient: client})
 	cfg := queueConfig()
 	cfg.Observe = &schema.Observe{Path: "/metrics", Format: "prometheus", Running: "running"}
+	monitor.ConfigureActivity(run, cfg)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	published := false
@@ -318,6 +321,7 @@ func TestMonitorScopesBusyObservationToEffectiveRuntime(t *testing.T) {
 			monitor := NewMonitor(registry, MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: 1, HTTPClient: client})
 			cfg := queueConfig()
 			cfg.Observe.Runtimes = []string{"mlx-vlm"}
+			monitor.ConfigureActivity(run, cfg)
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
 			monitor.Run(ctx, run, cfg, func(run *instance.Instance) {

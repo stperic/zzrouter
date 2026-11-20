@@ -17,7 +17,7 @@ import (
 type ResourceTracker struct {
 	mu          sync.RWMutex
 	metrics     *ResourceMetrics
-	observedAt  time.Time
+	sequence    uint64
 	cache       *inventory.Cache
 	nodeName    string
 	updateFreq  time.Duration
@@ -155,18 +155,20 @@ func (rt *ResourceTracker) runCollector(ctx context.Context) {
 }
 
 func (rt *ResourceTracker) collectMetrics(ctx context.Context) {
-	snapshot := rt.cache.RefreshSnapshot(ctx)
-	metrics := resourceMetrics(rt.nodeName, snapshot)
+	snapshot, sequence := rt.cache.RefreshSnapshot(ctx)
+	rt.publishMetrics(resourceMetrics(rt.nodeName, snapshot), sequence)
+}
 
+func (rt *ResourceTracker) publishMetrics(metrics *ResourceMetrics, sequence uint64) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	if sequence < rt.sequence {
+		return
+	}
 	if rt.metrics != nil {
-		if rt.observedAt.After(snapshot.At) {
-			return
-		}
 		metrics.ActiveModels = rt.metrics.ActiveModels
 	}
-	rt.metrics, rt.observedAt = metrics, snapshot.At
+	rt.metrics, rt.sequence = metrics, sequence
 }
 
 func resourceMetrics(nodeName string, snapshot resources.Snapshot) *ResourceMetrics {

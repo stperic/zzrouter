@@ -24,6 +24,10 @@ type activityObservation struct {
 	validFor time.Duration
 }
 
+func (o activityObservation) unknown(now time.Time) bool {
+	return o.validFor > 0 && (!o.known || !now.Before(o.at.Add(o.validFor)))
+}
+
 // ConfigureActivityObservation declares expected evidence before the first probe.
 func (i *Instance) ConfigureActivityObservation(validFor time.Duration) {
 	i.mu.Lock()
@@ -31,7 +35,7 @@ func (i *Instance) ConfigureActivityObservation(validFor time.Duration) {
 	i.activityObservation = activityObservation{validFor: validFor}
 }
 
-// ActivityUnknown invalidates display evidence without prematurely dropping a hold.
+// ActivityUnknown invalidates probe evidence and retains the positive hold until requested otherwise.
 func (i *Instance) ActivityUnknown(releaseHold bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -55,11 +59,11 @@ func (i *Instance) activitySnapshotLocked(now time.Time) Activity {
 	}
 	result.ActiveRequests = i.GetActiveRequests()
 	probe := i.activityObservation
-	remaining := probe.at.Add(probe.validFor).Sub(now).Seconds()
 	if probe.validFor > 0 {
-		if !probe.known || remaining <= 0 {
+		if probe.unknown(now) {
 			result.State, result.ValidForSeconds = "unknown", 0
 		} else {
+			remaining := probe.at.Add(probe.validFor).Sub(now).Seconds()
 			result.ValidForSeconds = math.Min(result.ValidForSeconds, remaining)
 			result.ObservedAt = probe.at.UTC()
 			result.AgeSeconds = math.Max(0, now.Sub(probe.at).Seconds())

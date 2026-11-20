@@ -35,35 +35,54 @@ func TestProcessTreeSumsAndAgreesWithGPUAncestry(t *testing.T) {
 	child := int32(pid)
 	require.NoError(t, err)
 	root := cmd.Process.Pid
-	if _, err := processParents(t.Context()); errors.Is(err, syscall.EPERM) {
+	parents, err := processParents(t.Context())
+	if errors.Is(err, syscall.EPERM) {
 		t.Skipf("sandbox denied process enumeration: %v", err)
-	} else {
-		require.NoError(t, err)
 	}
+	require.NoError(t, err)
+	list := func(context.Context) (map[int32]int32, error) { return parents, nil }
+	parentOf := func(pid int32) (int32, error) { return parents[pid], nil }
+	requireOwner := func(tree map[int32]processSample, want int, isRoot func(int) bool) {
+		t.Helper()
+		for pid := range tree {
+			owner, _ := OwningPID(int(pid), isRoot, parentOf)
+			require.Equal(t, want, owner, "owner of PID %d", pid)
+		}
+	}
+	rootOnly := func(pid int) bool { return pid == root }
 	pools := []Pool{{Kind: GPU, Holders: []Holder{{PID: int(child), MemoryMiB: new(int64(7))}}}}
 	owners := []Run{{ID: "root", PID: root}, {ID: "shared", PID: root}}
-	runs, trees := sampleRuns(t.Context(), owners, pools, true, processParents)
+	runs, trees := sampleRuns(t.Context(), owners, pools, true, list)
 	tree := trees["root"]
-	require.Len(t, tree, 2)
-	require.NotNil(t, tree[int32(root)].memory)
-	require.NotNil(t, tree[child].memory)
-	want := int64((*tree[int32(root)].memory + *tree[child].memory) >> 20)
+	require.Contains(t, tree, int32(root))
+	require.Contains(t, tree, child)
+	requireOwner(tree, root, rootOnly)
+	var total uint64
+	for pid, sample := range tree {
+		require.NotNil(t, sample.memory, "RSS of PID %d", pid)
+		total += *sample.memory
+	}
+	want := int64(total >> 20)
 	require.Positive(t, want)
 	require.Equal(t, &want, runs["root"].HostMemoryMiB)
 	require.Nil(t, runs["root"].CPUPct)
 	require.Equal(t, &want, runs["shared"].HostMemoryMiB)
 	require.Equal(t, "root", pools[0].Holders[0].RunID)
 
-	unifiedRuns, unifiedTrees := sampleRuns(t.Context(), owners, nil, false, processParents)
+	unifiedRuns, unifiedTrees := sampleRuns(t.Context(), owners, nil, false, list)
 	require.Nil(t, unifiedRuns["root"].HostMemoryMiB)
-	require.Len(t, unifiedTrees["root"], 2)
+	require.Contains(t, unifiedTrees["root"], int32(root))
 	require.NotNil(t, unifiedTrees["root"][child].cpuTime)
+	requireOwner(unifiedTrees["root"], root, rootOnly)
 
 	owners = append(owners, Run{ID: "nested", PID: int(child)})
-	runs, trees = sampleRuns(t.Context(), owners, pools, true, processParents)
+	runs, trees = sampleRuns(t.Context(), owners, pools, true, list)
 	require.Equal(t, "nested", pools[0].Holders[0].RunID)
-	require.Len(t, trees["root"], 1)
-	require.Len(t, trees["nested"], 1)
+	require.Contains(t, trees["root"], int32(root))
+	require.Contains(t, trees["nested"], child)
+	eitherRoot := func(pid int) bool { return pid == root || pid == int(child) }
+	requireOwner(trees["root"], root, eitherRoot)
+	requireOwner(trees["nested"], int(child), eitherRoot)
 	require.Positive(t, *runs["nested"].HostMemoryMiB)
 }
 

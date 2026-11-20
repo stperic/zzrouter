@@ -122,10 +122,10 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 	if err != nil {
 		return nil, err
 	}
-	endpoint := req.Key().Endpoint
-	id := instance.GenerateID(req.Provider, req.Model, endpoint)
+	keyEndpoint := req.Key().Endpoint
+	id := instance.GenerateID(req.Provider, req.Model, keyEndpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, port, settings.KeepAlive, 0)
-	inst.Endpoint = endpoint
+	inst.Endpoint = keyEndpoint
 	inst.StartedBy = instance.StartedByAPI
 	if req.Origin == OriginRequest {
 		inst.StartedBy = instance.StartedByRequest
@@ -434,6 +434,7 @@ func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest
 
 // startRun spawns an admitted run's lifecycle: launch, reaper, health monitor.
 func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) {
+	m.healthMon.ConfigureActivity(inst, run.health)
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
@@ -1101,7 +1102,7 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 		EnvVars:    cfg.EnvVars,
 	}
 	if req.Endpoint == "" {
-		req.Endpoint = Endpoint(inst.Endpoint)
+		req.Endpoint = Endpoint(inst.ServingEndpoint())
 	}
 	if inst.StartedBy == instance.StartedByRequest {
 		req.Origin = OriginRequest

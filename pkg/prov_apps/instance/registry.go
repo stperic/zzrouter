@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -44,7 +45,7 @@ func NewKey(provider, model, endpoint string) Key {
 }
 
 // Key returns the immutable identity under which this run is registered.
-func (i *Instance) Key() Key { return NewKey(i.Provider, i.Model, i.Endpoint) }
+func (i *Instance) Key() Key { return NewKey(i.Provider, i.Model, cmp.Or(i.KeyEndpoint, i.Endpoint)) }
 
 // NewRegistry creates a new instance registry.
 func NewRegistry() *Registry {

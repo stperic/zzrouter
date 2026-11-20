@@ -266,6 +266,8 @@ func TestRestartRequestPreservesEndpoint(t *testing.T) {
 	inst := instResult.Run
 	require.NoError(t, err)
 	require.Equal(t, string(EndpointEmbeddings), inst.Endpoint)
+	require.Equal(t, string(EndpointEmbeddings), inst.ToInfo("node").Endpoint)
+	require.Equal(t, string(EndpointEmbeddings), inst.Key().Endpoint)
 
 	// Drive the real request builder, not a copy of it: a test that
 	// re-implements the logic passes no matter what the code does.

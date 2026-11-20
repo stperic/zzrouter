@@ -21,6 +21,7 @@ type Cache struct {
 
 	resourceMu sync.Mutex
 	snapshot   resources.Snapshot
+	sequence   uint64
 	probe      func(context.Context, *resources.Snapshot) resources.Snapshot
 }
 
@@ -36,15 +37,16 @@ func NewCacheWithProbe(ttl time.Duration, probe func(context.Context, *resources
 
 // GetSnapshot keeps concurrent views on the same source sample until its TTL expires.
 func (c *Cache) GetSnapshot(ctx context.Context) resources.Snapshot {
-	return c.readSnapshot(ctx, false)
+	snapshot, _ := c.readSnapshot(ctx, false)
+	return snapshot
 }
 
-// RefreshSnapshot re-probes and publishes the result for ordinary cache readers.
-func (c *Cache) RefreshSnapshot(ctx context.Context) resources.Snapshot {
+// RefreshSnapshot forces a probe and returns the cached observation with its sequence.
+func (c *Cache) RefreshSnapshot(ctx context.Context) (resources.Snapshot, uint64) {
 	return c.readSnapshot(ctx, true)
 }
 
-func (c *Cache) readSnapshot(ctx context.Context, refresh bool) resources.Snapshot {
+func (c *Cache) readSnapshot(ctx context.Context, refresh bool) (resources.Snapshot, uint64) {
 	c.resourceMu.Lock()
 	defer c.resourceMu.Unlock()
 	if (refresh || time.Since(c.snapshot.At) >= c.ttl) && ctx.Err() == nil {
@@ -54,9 +56,10 @@ func (c *Cache) readSnapshot(ctx context.Context, refresh bool) resources.Snapsh
 		if ctx.Err() == nil {
 			snapshot.At = utils.Now()
 			c.snapshot = snapshot
+			c.sequence++
 		}
 	}
-	return c.snapshot.Clone()
+	return c.snapshot.Clone(), c.sequence
 }
 
 // GetDiskInfo returns cached disk info or refreshes if expired.
