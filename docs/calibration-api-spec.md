@@ -524,6 +524,12 @@ Submission validation is synchronous, because every run is already up:
 | 409 | `calibration_running` | A calibration is already running on that node; the problem names its job. |
 | 503 | | The named worker is unreachable. |
 
+The identifiers a refusal names are typed fields of the Problem, never only
+prose: `job_id` on `calibration_running`, and `run_id` on every refusal that
+concerns one run (`run_not_found`, `run_not_ready`, `run_changed`,
+`calibration_unsupported`, `context_too_small`, `concurrency_above_limit`).
+The internal route refuses a request whose `node` is not the node it reached.
+
 One calibration runs per node at a time, so two calibrations never contaminate
 each other's measurements.
 
@@ -713,7 +719,10 @@ Definitions:
   `stale` (behind the configuration) or `unknown`. `overridden` lists the keys
   the run's request tier sets, so a non-empty list means the tested settings
   include per-run overrides not yet saved. Both are read once per run at
-  check time, because the status re-resolves the launch.
+  check time, because the status re-resolves the launch. `overridden` uses the
+  canonical flag names `resolved_parameters` uses. `redacted_parameters` lists
+  the keys whose values the report redacts; a client never saves those values
+  back as settings.
 - **Format.** Units are milliseconds, MiB, watts, percent, and a 0 to 1
   fraction for KV usage. Unknown values are null, measured zero is zero, and an
   empty list is empty. A run idle in a step is absent from that step's `runs`.
@@ -761,9 +770,12 @@ a `next_action` with its own `code` and the `tool` to call.
 | `step_timeout` | `change_workload` | `zz_calibrate` |
 | `cancelled` | none | none |
 
-The job ends `done` whenever a report is published. Cancellation ends it
-`failed` with the existing cancellation error, after the report records the
-steps already measured.
+The job ends `done` when the calibration ran to its end and published its
+report. When its context ends early (cancellation, or the node shutting down),
+it publishes the report with the steps already measured and then ends
+`failed` with that cause; cancellation uses the existing cancellation error.
+The node's one-calibration claim is released only after the job is terminal,
+and a panic in the runner fails the job and releases the claim.
 
 ## Providers
 
