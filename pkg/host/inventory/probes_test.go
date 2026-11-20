@@ -91,4 +91,7 @@ func TestCanceledResourceProbeDoesNotReplaceThePriorSample(t *testing.T) {
 	at := utils.Now().Add(-time.Hour)
 	cache.snapshot = resources.Snapshot{At: at}
 	require.Equal(t, at, cache.GetSnapshot(ctx).At)
+	snapshot, sequence := cache.RefreshSnapshot(ctx)
+	require.Equal(t, at, snapshot.At)
+	require.Zero(t, sequence)
 }
