@@ -95,6 +95,34 @@ func runParameterProblem(t *testing.T, body []byte) utils.ProblemDetails {
 	return problem
 }
 
+func TestInvalidMemoryAdmissionIs400OnPatchStartAndPreview(t *testing.T) {
+	s := variantNode(t)
+	check := func(t *testing.T, status int, body []byte) {
+		t.Helper()
+		require.Equal(t, http.StatusBadRequest, status, string(body))
+		problem := runParameterProblem(t, body)
+		require.Len(t, problem.Errors, 1)
+		assert.Equal(t, "memory-admission", problem.Errors[0].Key)
+		assert.Equal(t, string(httperr.CodeCoercionFailed), problem.Errors[0].Code)
+	}
+	for _, value := range []string{"warn", "auto", ""} {
+		t.Run(value, func(t *testing.T) {
+			t.Run("patch", func(t *testing.T) {
+				status, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"memory-admission": value}}})
+				check(t, status, []byte(body))
+			})
+			for _, path := range []string{"/zzrouter/v1/runs", "/zzrouter/v1/runs/preview"} {
+				t.Run(path, func(t *testing.T) {
+					body := raw(map[string]any{"model": qwenModel, "provider": "llamacpp", "parameters": map[string]any{"memory-admission": value}})
+					w := assetRequest(t, s, http.MethodPost, path, body)
+					check(t, w.Code, w.Body.Bytes())
+				})
+			}
+		})
+	}
+	assert.Empty(t, s.providers.appMgr.ListInstances(""))
+}
+
 // An agent spelled llama.cpp's context parameter the way another engine
 // does. Every launch surface refuses it before a process exists, and the
 // refusal names the key the provider takes instead.

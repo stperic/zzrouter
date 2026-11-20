@@ -580,6 +580,21 @@ func TestParametersPatch_RunSettings(t *testing.T) {
 	assert.NotContains(t, svc.Defaults.Parameters, "evict-idle-on-memory-pressure")
 }
 
+func TestVLLMShippedSchemaDeclaresAbsoluteKVAndReport(t *testing.T) {
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"vllm"}})
+	declared := loadProviderSchema(s.configStore, "vllm")
+	require.NotNil(t, declared.Diagnostics)
+	require.NotNil(t, declared.Diagnostics.Memory)
+	assert.Equal(t, "kv-cache-memory-bytes", declared.Diagnostics.Memory.KVBytesParameter)
+	path := "/zzrouter/v1/providers/vllm/parameters"
+	for bytes, want := range map[int]int{0: http.StatusBadRequest, 2147483648: http.StatusOK} {
+		response := makeAuthRequest(t, s, http.MethodPatch, path, TestAdminKey, map[string]any{
+			"defaults": map[string]any{"parameters": map[string]any{"kv-cache-memory-bytes": bytes, "memory-admission": "report"}},
+		})
+		require.Equal(t, want, response.Code, string(response.Body))
+	}
+}
+
 func TestOperatorSchemaRefusesUnsupportedKinds(t *testing.T) {
 	for _, mode := range []string{"cloud", "registry"} {
 		cfg := &pkgConfig.ServiceConfig{Mode: mode}

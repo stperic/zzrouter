@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -95,6 +96,52 @@ func TestMemoryReclaimDisabled(t *testing.T) {
 	f.assertNothingEvicted(t, nil)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+}
+
+func TestMemoryAdmissionReportSkipsReclaimAndUnadmittedCommitment(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	budget := &schema.MemoryBudget{Kind: schema.MemoryReserveMiB, Parameter: "budget"}
+	declared, err := memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) { return budget, nil })("vllm")
+	require.NoError(t, err)
+	f.features.declared = declared
+	f.features.Params["budget"] = "5000"
+	f.features.Params["memory-admission"] = "report"
+	f.features.Commitments = map[string]int64{"GPU-A": 5000}
+	require.True(t, f.older.Evictable())
+	observations := 0
+	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		observations++
+		return []gpu.MemoryDevice{f.device}, nil
+	}
+	assessment, effects, err := f.mgr.admitMemory(t.Context(), f.features, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "no_fit", assessment.Status)
+	require.NotNil(t, effects.Warning)
+	assert.Equal(t, "budget", effects.Warning.Parameter)
+	assert.Equal(t, int64(5000), effects.Warning.RequiredMiB)
+	assert.Equal(t, int64(1000), effects.Warning.FreeMiB)
+	require.Len(t, effects.Warning.Holders, 2)
+	assert.Equal(t, f.older.ID, effects.Warning.Holders[0].Run)
+	assert.Equal(t, 1, observations)
+	assert.Empty(t, effects.EvictedRuns)
+	assert.Empty(t, f.features.Commitments)
+	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+}
+
+func TestMemoryAdmissionReportStillReturnsNonFitErrors(t *testing.T) {
+	f := newReclaimFixture(t, false)
+	f.features.Params["memory-admission"] = "report"
+	f.features.Params["budget"] = "0"
+	_, effects, err := f.mgr.admitMemory(t.Context(), f.features, false, nil)
+	require.ErrorIs(t, err, process.ErrMemoryBudgetInvalid)
+	assert.Nil(t, effects.Warning)
+
+	f.features.Params["budget"] = "0.5"
+	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("driver unavailable") }
+	_, effects, err = f.mgr.admitMemory(t.Context(), f.features, false, nil)
+	require.ErrorIs(t, err, process.ErrMemoryObservation)
+	assert.Nil(t, effects.Warning)
 }
 
 func TestMemoryReclaimOldestMinimum(t *testing.T) {

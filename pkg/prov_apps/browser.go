@@ -64,7 +64,7 @@ func browserArgumentsProven(prepared preparedLaunch) bool {
 	}
 	for key, value := range prepared.resolved.Parameters {
 		name := runsettings.FlagName(key)
-		if name == runsettings.KeepAliveParameter || name == runsettings.EvictIdleParameter {
+		if runsettings.IsParameter(name) {
 			continue
 		}
 		actual, known := prepared.parameters.parameterShapes[name]

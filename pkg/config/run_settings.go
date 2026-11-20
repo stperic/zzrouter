@@ -8,8 +8,9 @@ import (
 
 // Run parameter names and their parser are shared with provider schema validation.
 const (
-	KeepAliveParameter = runsettings.KeepAliveParameter
-	EvictIdleParameter = runsettings.EvictIdleParameter
+	KeepAliveParameter       = runsettings.KeepAliveParameter
+	EvictIdleParameter       = runsettings.EvictIdleParameter
+	MemoryAdmissionParameter = runsettings.MemoryAdmissionParameter
 )
 
 // RunSettings is one launch's idle and memory-pressure policy.

@@ -161,6 +161,11 @@ R4 routes known run/provider refusals through one ordered wire table, including 
 Memory-fit holders record `reclaim_skipped_reason` from the actual selection or atomic claim decision
 (pinned, busy, in use or not idle), including after the admission retry. Unused commitment holders have no PID. Memory refusals remain 409 `out_of_range`; pinned holders are not `evicted_runs`. Run reports expose `pinned: true` separately from the mutable `keep_alive` timer.
 
+`memory-admission` follows the same parameter tiers. With `report`, admission
+keeps the fit refusal as evidence on the run and skips reclaim. Replacements
+still simulate the stop first and the new run records evidence from its fresh
+admission. Capacity and preview continue to report their unmodified fit verdict.
+
 ## Pins across node restarts
 
 The launching node records a plan-less process start by an operator when its resolved

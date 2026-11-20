@@ -133,3 +133,24 @@ func TestReservationSchema(t *testing.T) {
 		require.Error(t, budget.validate())
 	}
 }
+
+func TestAbsoluteKVSchemaRequiresFractionTotal(t *testing.T) {
+	definition := strings.Replace(diagnosticSchema, "parameter: device-budget}", "parameter: device-budget, kv_bytes_parameter: kv-cache-memory-bytes}", 1)
+	declared, err := LoadYAMLSchema([]byte(definition))
+	require.NoError(t, err)
+	merged, errs := Merge("arbitrary-engine", declared, config.ServiceConfig{})
+	require.Empty(t, errs)
+	require.Equal(t, "kv-cache-memory-bytes", merged.Diagnostics.Memory.KVBytesParameter)
+	wire, err := json.Marshal(merged.Diagnostics)
+	require.NoError(t, err)
+	var decoded Diagnostics
+	require.NoError(t, json.Unmarshal(wire, &decoded))
+	assert.Equal(t, merged.Diagnostics.Memory, decoded.Memory)
+	for _, kind := range []string{MemoryReserveMiB, MemoryLayers, MemoryUnified, MemoryExternal} {
+		t.Run(kind, func(t *testing.T) {
+			budget := *decoded.Memory
+			budget.Kind = kind
+			require.ErrorContains(t, budget.validate(), MemoryFractionTotal)
+		})
+	}
+}

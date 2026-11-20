@@ -73,6 +73,70 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	assert.Equal(t, int64(4000), failure.FreeMiB)
 }
 
+func absoluteKVLaunchFixture(t *testing.T, mode string) (*ProviderAppManager, EnsureRequest) {
+	t.Helper()
+	mgr, req, _ := capacityFixture(t)
+	mgr.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization", KVBytesParameter: "kv-cache-memory-bytes"}, nil
+	}, "parameters:\n  kv-cache-memory-bytes: {type: int, min: 1}\n")
+	req.Parameters = map[string]string{
+		"memory-admission": mode, "gpu-memory-utilization": "0.1", "kv-cache-memory-bytes": "2147483648",
+	}
+	return mgr, req
+}
+
+func TestAbsoluteKVEnforceRefusalLeavesRunUnresolved(t *testing.T) {
+	mgr, req := absoluteKVLaunchFixture(t, "enforce")
+	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 4000}}, nil
+	}
+	result, err := mgr.EnsureRun(t.Context(), req)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	require.Equal(t, "kv-cache-memory-bytes", fit.Parameter)
+	require.Equal(t, int64(5120), fit.RequiredMiB)
+	assert.Nil(t, result.Run)
+	var failed *runStartFailure
+	require.ErrorAs(t, err, &failed)
+	assert.Equal(t, instance.Resolved{}, failed.run.Resolved(), "a refused absolute KV launch must never record its resolved settings")
+}
+
+func TestAbsoluteKVReportWarnsWithoutCommitmentOrReclaim(t *testing.T) {
+	mgr, req := absoluteKVLaunchFixture(t, "report")
+	mgr.idleEvictionDefault = true
+	idle := instance.NewInstance("idle-kv-holder", "vllm", "other-model", 0, time.Hour, 1)
+	idle.SetStatus(instance.StatusRunning)
+	idle.SetProcessInfo(9000001, 0, 0, nil)
+	require.NoError(t, mgr.instances.Register(idle))
+	require.True(t, mgr.evictable(idle))
+
+	observations := 0
+	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		observations++
+		device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}
+		if idle.GetStatus() == instance.StatusRunning {
+			device.FreeMiB = 4000
+			device.Processes = []gpu.MemoryProcess{{PID: idle.GetProcessID(), MemoryMiB: new(int64(6000))}}
+		}
+		return []gpu.MemoryDevice{device}, nil
+	}
+	features, err := mgr.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	assessment, effects, err := mgr.admitMemory(t.Context(), features, false, nil)
+	require.NoError(t, err)
+	assert.Empty(t, effects.EvictedRuns, "a waived KV refusal must not reclaim an idle holder")
+	assert.Equal(t, instance.StatusRunning, idle.GetStatus())
+	assert.Equal(t, 1, observations)
+	assert.Empty(t, features.Commitments)
+	assert.Equal(t, "no_fit", assessment.Status)
+	require.NotNil(t, effects.Warning)
+	assert.Equal(t, "kv-cache-memory-bytes", effects.Warning.Parameter)
+	assert.Equal(t, int64(5120), effects.Warning.RequiredMiB)
+	assert.Equal(t, int64(4000), effects.Warning.FreeMiB)
+	require.Len(t, effects.Warning.Holders, 1)
+	assert.Equal(t, idle.ID, effects.Warning.Holders[0].Run)
+}
+
 // queueFixture is a manager whose engine stays starting until release is
 // called, under a fraction_total budget of 0.55 of a 10000 MiB GPU.
 type queueFixture struct {
@@ -190,6 +254,7 @@ func TestQueuedRefusalFailsRunWithItsError(t *testing.T) {
 	require.ErrorAs(t, second.FailureCause(), &fit)
 	assert.Contains(t, second.GetErrorMessage(), "cannot fit")
 	assert.Zero(t, second.GetProcessID(), "a refused run never starts its engine")
+	assert.Equal(t, instance.Resolved{}, second.Resolved(), "a refused admission never records resolved launch settings")
 	require.NoError(t, f.mgr.StopInstance(t.Context(), second.ID))
 }
 

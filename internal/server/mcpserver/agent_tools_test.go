@@ -68,6 +68,44 @@ func TestRunToolsAcceptParameterScalars(t *testing.T) {
 	}
 }
 
+func TestRunToolsProjectAdmissionWarning(t *testing.T) {
+	const warning = `{"message":"GPU budget cannot fit","parameter":"kv-cache-memory-bytes","device":"GPU-A","required_mib":7895,"free_mib":7894,"holders":[{"ownership":"zzrouter","run":"held","memory_mib":2000}]}`
+	const sizedWarning = `{"message":"Context exceeds memory budget","parameter":"ctx-size","device":"","budget_kind":"layers","required_mib":7895,"free_mib":7894,"holders":null}`
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		wire string
+		want string
+	}{
+		{"zz_run_start", map[string]any{"provider": "vllm", "model": "m", "parameters": map[string]string{"memory-admission": "report"}}, `{"data":{"id":"r","admission_warning":` + warning + `}}`, `{"run_id":"r","admission_warning":` + warning + `}`},
+		{"zz_run_start", map[string]any{"provider": "llamacpp", "model": "m", "parameters": map[string]string{"memory-admission": "report"}}, `{"data":{"id":"r","admission_warning":` + sizedWarning + `}}`, `{"run_id":"r","admission_warning":` + sizedWarning + `}`},
+		{"zz_runs", map[string]any{"run_id": "r"}, `{"data":{"id":"r","admission_warning":` + warning + `}}`, `{"run_id":"r","admission_warning":` + warning + `}`},
+		{"zz_runs", nil, `{"data":[{"id":"r","admission_warning":` + warning + `}]}`, `[{"run_id":"r","admission_warning":` + warning + `}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				if tc.name == "zz_run_start" {
+					var body struct {
+						Parameters map[string]string `json:"parameters"`
+					}
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+					require.Equal(t, "report", body.Parameters["memory-admission"])
+				}
+				writeFixture(t, w, []byte(tc.wire))
+			})
+			got := callAgentTool(t, d, tc.name, tc.args)
+			require.NotEqual(t, true, got["isError"], got)
+			structured := got["structuredContent"]
+			if tc.args == nil {
+				structured = structured.(map[string]any)["runs"]
+			}
+			actual, err := json.Marshal(structured)
+			require.NoError(t, err)
+			require.JSONEq(t, tc.want, string(actual))
+		})
+	}
+}
+
 func TestAgentToolIntegerInputsKeepSDKSemantics(t *testing.T) {
 	for _, tc := range []struct {
 		name string

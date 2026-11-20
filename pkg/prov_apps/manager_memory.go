@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -221,7 +222,8 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	credits := make(map[string]*int64)
 	var devices []gpu.MemoryDevice
 	var systemMiB int64
-	err = admitWithReclaim(settings.EvictIdle && !capacity, func() error {
+	report := settings.MemoryAdmission == runsettings.MemoryAdmissionReport
+	err = admitWithReclaim(settings.EvictIdle && !capacity && !report, func() error {
 		if replacement == nil || devices == nil {
 			if !capacity {
 				owners = m.memoryRuns()
@@ -272,8 +274,17 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 			}
 			fit.KeptRun, fit.CreditedMiB = replacement.run, credit
 		}
+		if report && !capacity {
+			effects.Warning = &instance.AdmissionWarning{
+				Message: fit.Error(), KeptRun: fit.KeptRun, CreditedMiB: fit.CreditedMiB, BudgetKind: fit.BudgetKind,
+				Parameter: fit.Parameter, Device: fit.Device, RequiredMiB: fit.RequiredMiB, FreeMiB: fit.FreeMiB,
+				Holders: fit.Holders, AttributionReason: fit.AttributionReason,
+			}
+			clear(commitments) // A waived fit grants no commitment, and a replacement pre-check clears only its clone.
+			err = nil
+		}
 	}
-	if !capacity && (budget.Kind == schema.MemoryLayers || budget.Kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
+	if mayDeferMemoryObservation(err, budget.Kind, capacity, owners) {
 		err = nil
 	}
 	if ctx.Err() != nil {
@@ -282,6 +293,10 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 		return assessment, effects, ctx.Err()
 	}
 	return assessment, effects, err
+}
+
+func mayDeferMemoryObservation(err error, kind string, capacity bool, owners []process.RunRef) bool {
+	return !capacity && (kind == schema.MemoryLayers || kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 })
 }
 
 // memoryTotals shares the cached device observation used by reservation preparation.

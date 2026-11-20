@@ -143,7 +143,7 @@ parameters:
   disable-custom-all-reduce: {type: bool, negatable: true, description: "Use NCCL instead of the custom all-reduce"}
   enable-fault-tolerance: {type: bool, negatable: true, description: "Enable engine fault tolerance"}
   fault-tolerance-config: {type: string, description: "Fault tolerance config as JSON"}
-  kv-cache-memory-bytes: {type: int, description: "KV cache size per GPU in bytes, overrides utilization"}
+  kv-cache-memory-bytes: {type: int, min: 1, description: "Fixed KV cache bytes per GPU; gpu-memory-utilization still sets the startup free-memory requirement"}
   num-gpu-blocks-override: {type: int, description: "Override the profiled number of GPU blocks"}
   enable-prefix-caching: {type: bool, negatable: true, description: "Prefix caching; unset lets vLLM decide"}
   prefix-caching-hash-algo: {type: string, enum: [sha256, sha256_cbor, xxhash, xxhash_cbor], description: "Prefix caching hash algorithm"}
@@ -252,6 +252,7 @@ diagnostics:
   memory:
     kind: fraction_total
     parameter: gpu-memory-utilization
+    kv_bytes_parameter: kv-cache-memory-bytes
     device_count_parameter: tensor-parallel-size
     # auto reserves max(2048 MiB, ceil(5% of total)) per GPU by default.
     # Release-owned metadata: positive MiB overrides it; zero/omitted uses the default.

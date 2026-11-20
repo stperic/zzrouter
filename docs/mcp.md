@@ -429,6 +429,16 @@ Affordability never substitutes for served context. Missing geometry, native
 range, devices or context-aware worker evidence is unknown. Fixed-budget
 failures refuse launch without eviction. Auto context keeps greedy allocation.
 
+For vLLM with a fixed KV cache, pass positive `kv-cache-memory-bytes` per GPU.
+`gpu-memory-utilization` then sets the startup requirement. Preview also
+checks the weights share, fixed KV and safety margin against each GPU.
+
+For an expert start, pass `memory-admission: report` in `parameters`. A fit
+refusal becomes `admission_warning` in `zz_run_start` and `zz_runs`, with
+the failing parameter, memory figures and holders. The start skips idle
+reclaim. A queued start exposes the warning in `zz_runs` after admission.
+`zz_run_preview` still reports `no_fit` for a capacity shortfall.
+
 An exact `zz_models.model` name or source-id filter returning one complete model
 also adds `show` to that entry. Incomplete rows keep their catalog identity without
 a detail request. Case-insensitive exact matches qualify; globs,

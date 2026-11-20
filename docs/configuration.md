@@ -314,6 +314,22 @@ The launch reports what it stopped: its run's `evicted_runs` and its run job's
 `meta.evicted_runs` list each run id, model and the MiB it held. A lookup of an
 evicted run answers 404 naming the live run that evicted it.
 
+Set `memory-admission: report` in the parameter tiers or in a start request to
+attempt a launch after a zzRouter memory-fit refusal. The default is `enforce`.
+Report mode skips idle reclaim and exposes the refusal as `admission_warning`
+on the start response and the run. For a queued launch, read the run after
+admission. Preview and capacity still report `no_fit` for a capacity shortfall.
+The engine still applies its own startup checks. Use an explicit numeric
+fraction when preview cannot resolve `gpu-memory-utilization: auto`.
+
+For vLLM, set a positive `kv-cache-memory-bytes` value to size the cache per
+GPU. `gpu-memory-utilization` still gates startup: each selected GPU must have
+at least the fraction of its total memory free, rounded up to MiB. The fixed
+KV check adds each GPU's share of the known weights, the KV bytes rounded up
+to MiB and the safety margin (by default, the greater of 2,048 MiB and 5% of
+total, rounded up). Unknown weights leave the startup check and an unknown
+fit assessment. The vLLM launch records no memory commitment.
+
 ## Parameter tiers
 
 Effective launch settings resolve from provider defaults, model-family defaults,

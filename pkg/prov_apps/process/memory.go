@@ -1,6 +1,7 @@
 package process
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -24,17 +26,8 @@ var ErrMemorySelection = fmt.Errorf("%w", ErrMemoryObservation)
 // ErrMemoryBudgetInvalid identifies an invalid resolved budget parameter.
 var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 
-// MemoryHolder describes driver attribution without exposing process command lines.
-type MemoryHolder struct {
-	PID                  int    `json:"pid,omitempty"`
-	MemoryMiB            *int64 `json:"memory_mib,omitempty"`
-	Run                  string `json:"run,omitempty"`
-	Model                string `json:"model,omitempty"`
-	Ownership            string `json:"ownership"`
-	Provider             string `json:"provider,omitempty"`
-	UnusedCommitmentMiB  int64  `json:"unused_commitment_mib,omitempty"`
-	ReclaimSkippedReason string `json:"reclaim_skipped_reason,omitempty"`
-}
+// MemoryHolder is the driver attribution shared with an admission warning.
+type MemoryHolder = instance.MemoryHolder
 
 // RunRef identifies the zzRouter run behind a process, by id and the model it serves.
 type RunRef struct {
@@ -164,14 +157,8 @@ func (assessment *MemoryAssessment) NormalizeLegacy() {
 
 // AdmitMemoryBudget shares capacity evidence and launch admission arithmetic.
 func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64, usableFraction float64) (assessment MemoryAssessment, err error) {
-	assessment = MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, Status: "unknown", WeightsMiB: need.WeightsMiB, BudgetKind: budget.Kind}
-	if assessment.ContextMode == "" {
-		assessment.ContextMode = "unknown"
-	}
-	assessment.SetUnknown(need.UnknownCause, "")
-	if assessment.UnknownCause == "" {
-		assessment.SetUnknown(ModelUnmodelled, "")
-	}
+	assessment = MemoryAssessment{ContextMode: cmp.Or(need.ContextMode, "unknown"), ContextTokens: need.ContextTokens, WeightsMiB: need.WeightsMiB, BudgetKind: budget.Kind}
+	assessment.SetUnknown(cmp.Or(need.UnknownCause, ModelUnmodelled), "")
 	defer func() { assessment.finish(err) }()
 	if budget.Kind == schema.MemoryExternal {
 		assessment.SetUnknown(BudgetNotSized, "")
@@ -193,6 +180,10 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		if device.TotalMiB <= 0 || device.FreeMiB < 0 || device.FreeMiB > device.TotalMiB {
 			return assessment, ErrMemoryObservation
 		}
+	}
+	if _, ok := parameters[budget.KVBytesParameter]; budget.KVBytesParameter != "" && ok {
+		err = admitAbsoluteKV(budget, need, parameters, selected, owners, fraction, auto, &assessment)
+		return assessment, err
 	}
 	if err := weightMemoryFit(budget, need, selected, systemMiB, fraction, auto); err != nil {
 		return assessment, err
@@ -238,6 +229,38 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	}
 	err = admitFraction(budget, need, parameters, selected, owners, fraction, auto, sized)
 	return assessment, err
+}
+
+func admitAbsoluteKV(budget schema.MemoryBudget, need Need, parameters map[string]string, selected []gpu.MemoryDevice, owners []RunRef, fraction float64, auto bool, assessment *MemoryAssessment) error {
+	kvBytes, err := strconv.ParseInt(parameters[budget.KVBytesParameter], 10, 64)
+	if err != nil || kvBytes <= 0 {
+		return fmt.Errorf("%w: %s must be positive bytes", ErrMemoryBudgetInvalid, budget.KVBytesParameter)
+	}
+	if err := admitFraction(budget, need, parameters, selected, owners, fraction, auto, false); err != nil {
+		return err
+	}
+	if need.WeightsMiB <= 0 {
+		assessment.SetUnknown(WeightsUnavailable, "")
+		return nil
+	}
+	kvMiB := bytesToMiB(kvBytes)
+	weightsPerDevice := (need.WeightsMiB-1)/int64(len(selected)) + 1
+	for _, device := range selected {
+		margin := safetyMargin(budget, device)
+		if weightsPerDevice > math.MaxInt64-kvMiB-margin {
+			return ErrMemoryBudgetInvalid
+		}
+		required := weightsPerDevice + kvMiB + margin
+		fit := memoryFitError(budget.KVBytesParameter, device, required, owners)
+		if required > fit.FreeMiB {
+			return fit
+		}
+		if assessment.CapacityMiB == 0 || fit.FreeMiB-required < assessment.CapacityMiB-assessment.RequiredMiB {
+			assessment.RequiredMiB, assessment.CapacityMiB = required, fit.FreeMiB
+		}
+	}
+	assessment.Status, assessment.UnknownCause, assessment.Reason = "fit", "", "weights and fixed KV cache fit the assessed free memory with the safety margin"
+	return nil
 }
 
 func declaredFraction(budget schema.MemoryBudget, parameters map[string]string, usableFraction float64) (float64, bool, error) {

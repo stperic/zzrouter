@@ -432,6 +432,8 @@ func decodeStrict(data []byte, v any) error {
 
 // LaunchRunResponse represents the response from launching a run
 type LaunchRunResponse struct {
+	AdmissionWarning *instance.AdmissionWarning `json:"admission_warning,omitempty"`
+
 	BaseURL           string            `json:"base_url,omitempty"`
 	Accepted          bool              `json:"accepted"`
 	ID                string            `json:"id"`
