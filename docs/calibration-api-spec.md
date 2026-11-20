@@ -424,7 +424,7 @@ browser CSRF controls, success envelopes and Problem Details.
 | `GET /jobs?node={node}&kind=calibration` | Calibrations on that node still inside retention, through the existing paginated job list. Job lists omit `meta.report`, which only the item read and the stream's terminal event return. A worker's internal job list is unpaginated, and the coordinator's proxy refuses bodies over 1 MiB. A report at the limits is about 30 to 50 KB, so about 25 retained reports would otherwise break every job list on that node. |
 | `DELETE /jobs/{id}?node={node}` | Cancels: in-flight requests are aborted, and the report keeps the steps already measured. |
 | `GET /providers/{name}/schema` | Gains `calibration` (output-forcing request fields) and `observe` (declared roles), so a client can say what a report will contain. |
-| `GET /zzrouter/v1` (discovery) | Lists the calibration limits and workload kinds under `data.calibration`, so clients never hardcode them. |
+| `GET /zzrouter/v1` (discovery) | Lists the calibration limits and workload kinds under `data.calibration` (`workload_kinds`, `max_runs`, `max_steps`, `max_concurrency`, `max_requests_per_step`, `max_step_timeout_seconds`, `default_step_timeout_seconds`), so clients never hardcode them. |
 
 The job is the record. There is a new job kind, `calibration`, with ID prefix
 `cal_`, registered in `pkg/jobs/kind.go` with an entry in `jobOutcomeTools`.
@@ -583,9 +583,14 @@ with `usage_unavailable`.
    distinct prompt prefix, so prefix caching cannot flatter the result.
 4. **Publish.** Write the report into job `Meta`, then end the job.
 
-Progress `meta` carries `step`, `steps`, `requests_completed`,
-`requests_total` and the latest resource sample. Job steps are `checking`,
-`warming_up` and `measuring`.
+Progress `meta` carries `step` (0-based) and `steps`; `requests_completed`
+and `requests_total`, each an object keyed by `run_id` (a run idle in the step
+is absent; an unknown total is null); and `sample`, the latest accepted
+resource sample, as `{"at": <time>, "pools": [...]}`. Each pool uses the
+report's pool field names: `id`, `kind`, `vendor`, `total_mib`, `used_mib`,
+`free_mib`, `available_mib`, `swap_used_mib`, `utilization_pct`, `power_w`,
+`cpu_pct`, `ownership` and `holders`; unknown values are null. Job steps are
+`checking`, `warming_up` and `measuring`.
 
 ### Sampling
 
