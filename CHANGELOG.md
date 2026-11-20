@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Protect runs with declared busy probes from memory reclaim and idle expiry while their activity is unknown.
+- Report the Ollama model's serving endpoint from its capabilities for both started and adopted runs.
+
 - Calibrate chat and embeddings on live runs through `POST /zzrouter/v1/calibrations`,
   `zz_calibrate` or the console's Calibrations view. Compare workloads with
   resident runs alongside them, follow progress and read the retained report

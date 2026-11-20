@@ -240,7 +240,10 @@ Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
 `errors[].got.holders[]` names each holder's `run`, `model` or `provider`, with
 `reclaim_skipped_reason: "pinned"` for a protected run. List runs to inspect
 `pinned: true`. Explicitly DELETE that run, or change launch `keep-alive` and
-restart it. Inference hints cannot pin or unpin. A refused launch leaves records
+restart it. Inference hints cannot pin or unpin. A holder with
+`reclaim_skipped_reason: "activity_unknown"` declares a busy probe whose reading
+is missing or expired. The refusal hint names `zz_runs` to inspect its activity
+and `zz_run_stop` to free its memory. A refused launch leaves records
 untouched and excludes pins from `evicted_runs`. A preparation-refused restart keeps the
 old run serving; a memory-refused replacement can leave no live run. Failed registered
 pins retain failure details for `zz_logs` and `zz_run_restart`. A retained record with no

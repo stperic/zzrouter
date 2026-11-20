@@ -66,8 +66,10 @@ type Instance struct {
 	end    *endResult
 
 	// String not prov_apps.Endpoint to avoid a back-import (prov_apps imports instance).
-	Endpoint   string `json:"endpoint,omitempty"`
-	SourceRepo string `json:"source_repo,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	KeyEndpoint    string `json:"-"` // Shared engine identity, set before registration.
+	servedEndpoint atomic.Pointer[string]
+	SourceRepo     string `json:"source_repo,omitempty"`
 	// WireModel is the token this engine keys on in the "model" field of
 	// wire payloads: the canonical model name for most engines, the
 	// weights path for engines that load by whatever the request carries.
@@ -559,6 +561,7 @@ type IdleState struct {
 	Status                    Status
 	Leased, Claimed, Released bool
 	Pinned, Busy              bool
+	ActivityUnknown           bool
 }
 
 // IdleSnapshot reads idle policy inputs under one lock.
@@ -569,7 +572,11 @@ func (i *Instance) IdleSnapshot() IdleState {
 }
 
 func (i *Instance) idleSnapshotLocked() IdleState {
-	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Pinned: i.pinned, Busy: i.activityHold, Leased: i.GetActiveRequests() != 0 || i.activityHold, Claimed: i.idleStopClaimed, Released: i.idleReleased}
+	return IdleState{
+		KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Pinned: i.pinned,
+		Busy: i.activityHold, ActivityUnknown: i.activityObservation.unknown(utils.Now()),
+		Leased: i.GetActiveRequests() != 0 || i.activityHold, Claimed: i.idleStopClaimed, Released: i.idleReleased,
+	}
 }
 
 // GetLastActivity returns the last activity time.
@@ -857,6 +864,17 @@ func (i *Instance) targetRevisionLocked(hostname string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", hostname, i.ID, i.Provider, i.Model, i.Config.Runtime, i.resolved.Execution, i.StartedAt.UnixNano()))))
 }
 
+// SetServedEndpoint records capability evidence without changing the registry key.
+func (i *Instance) SetServedEndpoint(endpoint string) { i.servedEndpoint.Store(&endpoint) }
+
+// ServingEndpoint reports the endpoint learned at readiness or the launch fallback.
+func (i *Instance) ServingEndpoint() string {
+	if endpoint := i.servedEndpoint.Load(); endpoint != nil && *endpoint != "" {
+		return *endpoint
+	}
+	return i.Endpoint
+}
+
 // ToInfo creates a read-only InstanceInfo snapshot for API responses.
 // hostname is the externally-reachable name of this node; it replaces the
 // localhost in the stored HealthURL so coordinators (and any cross-node
@@ -877,7 +895,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Provider:              i.Provider,
 		LaunchMode:            string(i.LaunchMode),
 		Model:                 i.Model,
-		Endpoint:              i.Endpoint,
+		Endpoint:              i.ServingEndpoint(),
 		SourceRepo:            i.SourceRepo,
 		SizeBytes:             i.SizeBytes,
 		Processor:             i.Processor,

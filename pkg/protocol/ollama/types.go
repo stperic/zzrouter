@@ -3,7 +3,17 @@
 // the Ollama protocol dictates the wire format.
 package ollama
 
-import "time"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/utils"
+)
 
 // ChatMessage is one entry in a chat request's messages array.
 type ChatMessage struct {
@@ -54,6 +64,40 @@ func (r *ManagementRequest) ModelName() string {
 		return r.Name
 	}
 	return r.Source
+}
+
+// ModelCapabilities reads explicit capabilities from the model's daemon.
+func ModelCapabilities(ctx context.Context, client *http.Client, daemon *backend.Resolved, model string) ([]string, bool) {
+	body, _ := json.Marshal(ManagementRequest{Model: model})
+	req, err := daemon.NewRequest(ctx, http.MethodPost, "/api/show", bytes.NewReader(body))
+	if err != nil {
+		return nil, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	var result struct {
+		Capabilities []any `json:"capabilities"`
+	}
+	raw, err := utils.ReadCapped(resp.Body, constants.MaxClusterBodySize)
+	if err != nil || json.Unmarshal(raw, &result) != nil || result.Capabilities == nil {
+		return nil, false
+	}
+	capabilities := make([]string, 0, len(result.Capabilities))
+	for _, value := range result.Capabilities {
+		capability, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities, true
 }
 
 // ModelDetails carries the per-model metadata block Ollama returns
