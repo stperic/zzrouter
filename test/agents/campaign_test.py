@@ -618,3 +618,85 @@ class RunCapacityTest(unittest.TestCase):
             self.assertFalse(bad['capacity']['requirements_confirmed'])
         ctx['calls'][-1]['evidence']['context_length']=4096
         self.assertFalse(passed(c.check_explainable_fit(ctx)))
+
+
+class CalibrateTwoModelsTest(unittest.TestCase):
+    def setUp(self):
+        self.models = ("publisher/Small", "publisher/Big")
+        self.run_rows = [{"model": model, "node": "n", "provider": "vllm", "run_id": f"run_{i}"}
+                         for i, model in enumerate(self.models)]
+        self.start = [call("zz_run_start", {k: row[k] for k in ("model", "node", "provider")},
+                           {"run_id": row["run_id"]}) for row in self.run_rows]
+        self.submit = call("zz_calibrate", {"node": "n", "runs": [{"run_id": row["run_id"]} for row in self.run_rows]},
+                           {"job_id": "cal_job", "node": "n"})
+        self.job = call("zz_job", {"job_id": "cal_job", "node": "n"}, {"job_id": "cal_job", "state": "done"})
+        self.ctx = {"node": "n", "scenario": {"provider": "vllm", "models": self.models}, "left": [],
+                    "calls": self.start + [self.submit, self.job],
+                    "rj": {"models": {m: {"setting": 1} for m in self.models}, "calibration_job": "cal_job",
+                           "outcome": "verified", "together": dict(zip(self.models, (101, 17.5)))}}
+
+    def test_scenario_uses_only_eligible_cells_and_named_picks(self):
+        from unittest.mock import patch
+
+        picks = {role: {"name": model} for role, model in zip(("text", "big"), self.models)}
+        roles = {"text": {"family": "small", "size": "1B"}}
+        for provider in ("vllm", "ollama", "llamacpp", "mlx"):
+            for cell in (picks, {"text": picks["text"]}, {"big": picks["big"]}):
+                with self.subTest(provider=provider, picks=tuple(cell)), patch.dict(c.ROLES, roles), \
+                        patch.dict(c.MATRIX, {("n", provider): cell}):
+                    cases = [s for s in c.scenarios("n", provider) if s["id"] == "calibrate-two-models"]
+                    self.assertEqual(len(cases), int(provider in ("vllm", "ollama") and cell == picks))
+                    for scenario in cases:
+                        self.assertEqual(scenario["models"], self.models)
+                        self.assertIs(scenario["check"], c.check_calibrate_two_models)
+                        for phrase in (*self.models, "On node n", provider, "each model alone and then both together",
+                                       "Stop any run you started", "only zz_* tools", "Do not use shell, SSH or native APIs", "RESULT:"):
+                            self.assertIn(phrase, scenario["prompt"])
+                        self.assertNotRegex(scenario["prompt"], r"\bzz_\w+")
+
+    def test_accepts_start_inventory_or_report_identity(self):
+        self.assertTrue(passed(c.check_calibrate_two_models(self.ctx)))
+        self.ctx["calls"] = [call("zz_runs", {}, c.call_evidence({"runs": self.run_rows})), self.submit, self.job]
+        self.assertTrue(passed(c.check_calibrate_two_models(self.ctx)))
+        report = {"runs": self.run_rows, "outcome": "cancelled"}
+        self.job["evidence"] = c.call_evidence({"job_id": "cal_job", "state": "failed", "result": {"report": report}})
+        self.ctx["calls"] = [self.submit, self.job]
+        self.ctx["rj"]["outcome"] = "cancelled"
+        self.assertTrue(passed(c.check_calibrate_two_models(self.ctx)))
+
+    def test_rejects_wrong_runs_or_unfollowed_job(self):
+        for key, value in (("run_id", "other"), ("model", "wrong"), ("provider", "ollama"), ("node", "other")):
+            with self.subTest(key=key):
+                ctx = copy.deepcopy(self.ctx)
+                ctx["calls"][0]["evidence"][key] = value
+                self.assertFalse(passed(c.check_calibrate_two_models(ctx)))
+        for calls in (self.start + [self.job], self.start + [self.submit], self.start + [self.job, self.submit]):
+            self.assertFalse(passed(c.check_calibrate_two_models({**self.ctx, "calls": calls})))
+        for key, value in (("job_id", "other"), ("state", "running")):
+            ctx = copy.deepcopy(self.ctx)
+            ctx["calls"][-1]["evidence"][key] = value
+            self.assertFalse(passed(c.check_calibrate_two_models(ctx)))
+
+    def test_rejects_incomplete_or_invalid_answer(self):
+        for key in self.ctx["rj"]:
+            answer = self.ctx["rj"].copy()
+            del answer[key]
+            rows = c.check_calibrate_two_models({**self.ctx, "rj": answer})
+            self.assertIn("reported all result keys", {name for name, ok, _ in rows if not ok}, key)
+        small, big = self.models
+        for key, value in (("calibration_job", "cal_other"), ("outcome", "queued"), ("models", {small: {}}),
+                           ("together", {small: 1}), ("together", {small: 1, big: "2"}),
+                           ("together", {small: 1, big: True}), ("together", {small: 1, big: float("inf")})):
+            with self.subTest(key=key, value=value):
+                ctx = {**self.ctx, "rj": {**self.ctx["rj"], key: value}}
+                self.assertFalse(passed(c.check_calibrate_two_models(ctx)))
+
+    def test_flags_confusion_and_leftover_runs(self):
+        cases = [(call(tool, {}, {}), {"no escape hatch"}) for tool in c.ESCAPE_HATCH]
+        failed = call("zz_calibrate", self.submit["args"], {}, error=True)
+        cases += [(failed, {"no failed calibration call", "no calibration retries"}),
+                  (self.submit, {"no calibration retries"})]
+        for extra, expected in cases:
+            ctx = {**self.ctx, "calls": self.ctx["calls"] + [extra]}
+            self.assertEqual({name for name, ok, _ in c.check_calibrate_two_models(ctx) if not ok}, expected)
+        self.assertFalse(passed(c.check_calibrate_two_models({**self.ctx, "left": ["other-model(run_3)"]})))

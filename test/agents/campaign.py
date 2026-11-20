@@ -599,6 +599,11 @@ def call_evidence(fields):
         evidence["runs"] = [call_evidence(row) for row in fields["runs"][:16]]
         if len(fields["runs"]) > 16:
             evidence["capture_overflow"] = True
+    result = fields.get("result")
+    report = result.get("report") if isinstance(result, dict) else None
+    if isinstance(report, dict) and isinstance(report.get("runs"), list):
+        evidence["calibrated_runs"] = [{k: row.get(k) for k in ("run_id", "model", "provider")}
+                                       for row in report["runs"][:3] if isinstance(row, dict)]
     if isinstance(fields.get("lines"), list):
         evidence["lines"] = [line[:1000] for line in fields["lines"] if isinstance(line, str)
                              and re.search(r"Maximum concurrency|GPU KV cache size|llama_kv_cache:|n_slots =|max_num_seqs|Mamba cache|at most", line)][:40]
@@ -804,10 +809,13 @@ def analyze(out_dir):
 
 
 # ---------------------------------------------------------------- MCP scenarios (one set per cell)
+RESULT_LINE = "Finish with exactly one line: RESULT: <compact JSON>."
+
+
 def tail(provider):
     return (f"\nUse only the zzrouter tools and the {provider} inference backend; no cloud providers. Model search's provider selects a registry such as huggingface or ollama. "
             "A stop reply with status=stopped confirms its run_id was stopped; each evicted_runs entry confirms its listed run_id was stopped. Verify those IDs are absent from the node's zz_runs collection; do not query or stop those IDs, or chat their models to verify absence. "
-            "Finish with exactly one line: RESULT: <compact JSON>.")
+            + RESULT_LINE)
 
 
 def describe(role):
@@ -905,6 +913,19 @@ def scenarios(node, provider):
             sc["setup"] = lambda sc=sc, mode=mode: prepare_probe(node, provider, mode, sc)
             out.append(sc)
     big = cell.get("big")
+    if provider in ("vllm", "ollama") and cell.get("text") and big:
+        small_name, big_name = cell["text"]["name"], big["name"]
+        out.append({
+            "id": "calibrate-two-models",
+            "provider": provider,
+            "models": (small_name, big_name),
+            "prompt": f"On node {node}, find launch settings that let {small_name} and {big_name} run at the same time with {provider}. "
+                      "Confirm it with a calibration that runs each model alone and then both together. Stop any run you started when done.\n"
+                      f"Use only zz_* tools. Do not use shell, SSH or native APIs. {RESULT_LINE} "
+                      "JSON keys: models (each exact model name mapped to the settings you set), calibration_job (the job id), "
+                      "outcome (the report's overall outcome), together (each exact model name mapped to its output tokens per second when both ran).",
+            "check": check_calibrate_two_models,
+        })
     if big:
         out.append({
             "id": "tool-calling",
@@ -1289,6 +1310,51 @@ def cleanup_fit_runs(calls, before):
     for node, run_id in owned:
         if node in before and run_id and run_id not in before[node]:
             http("DELETE", f"/zzrouter/v1/runs/{run_id}?" + urlencode({"node": node}))
+
+
+def check_calibrate_two_models(ctx):
+    node, scenario = ctx["node"], ctx["scenario"]
+    provider, models = scenario["provider"], set(scenario["models"])
+    answer = ctx["rj"] if isinstance(ctx["rj"], dict) else {}
+    calibrations = tool_calls(ctx, "zz_calibrate")
+    known_runs, accepted, terminal = {}, {}, {}
+    for c in ctx["calls"]:
+        if c["is_error"] is not False:
+            continue
+        tool, args, fields = c["tool"], c["args"] or {}, c["evidence"]
+        job_id = fields.get("job_id")
+        rows = []
+        if tool in ("zz_run_start", "zz_run_restart"):
+            rows = [{**args, **fields}]
+        elif tool == "zz_runs":
+            rows = fields.get("runs", [fields])
+        elif tool == "zz_calibrate" and args.get("node") == fields.get("node") == node and job_id:
+            accepted[job_id] = [row.get("run_id") for row in args.get("runs", [])]
+        elif (tool == "zz_job" and job_id in accepted and args.get("job_id") == job_id
+              and args.get("node") in (None, "", node) and job_phase(fields) in JOB_TERMINAL):
+            terminal[job_id] = job_phase(fields)
+            rows = [{**row, "node": node} for row in fields.get("calibrated_runs", [])]
+        for row in rows:
+            if row.get("node") == node and row.get("provider") == provider and row.get("run_id"):
+                known_runs[row["run_id"]] = row.get("model")
+    matching = [job_id for job_id, run_ids in accepted.items() if models <= {known_runs.get(r) for r in run_ids}]
+    followed = [job_id for job_id in matching if job_id in terminal]
+    settings, together = answer.get("models"), answer.get("together")
+    return [
+        ("accepted calibration names both model runs", bool(matching), accepted),
+        ("calibration job reached a terminal phase", bool(followed), terminal),
+        ("reported calibration job matches", answer.get("calibration_job") in followed, answer.get("calibration_job")),
+        ("reported all result keys", {"models", "calibration_job", "outcome", "together"} <= answer.keys(), answer),
+        ("reported settings for both models", isinstance(settings, dict)
+         and all(isinstance(settings.get(m), dict) for m in models), settings),
+        ("reported a calibration outcome", answer.get("outcome") in ("verified", "partial", "failed", "inconclusive", "cancelled"), answer.get("outcome")),
+        ("reported both together rates", isinstance(together, dict) and all(
+            type(v) is int or (type(v) is float and math.isfinite(v)) for v in (together.get(m) for m in models)), together),
+        ("no escape hatch", not any(c["tool"] in ESCAPE_HATCH for c in ctx["calls"]), ""),
+        ("no failed calibration call", all(c["is_error"] is False for c in calibrations), len(calibrations)),
+        ("no calibration retries", len(calibrations) <= 1, len(calibrations)),
+        ("no owned runs left on node", not ctx["left"], ctx["left"]),
+    ]
 
 
 def check_contention(ctx):
