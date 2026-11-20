@@ -627,7 +627,10 @@ class CalibrateTwoModelsTest(unittest.TestCase):
                          for i, model in enumerate(self.models)]
         self.start = [call("zz_run_start", {k: row[k] for k in ("model", "node", "provider")},
                            {"run_id": row["run_id"]}) for row in self.run_rows]
-        self.submit = call("zz_calibrate", {"node": "n", "runs": [{"run_id": row["run_id"]} for row in self.run_rows]},
+        schedules = ([4, 0, 4], [0, 8, 8])
+        runs = [{"run_id": row["run_id"], "workload": {"concurrency": schedule, "input_tokens": 256, "output_tokens": 64}}
+                for row, schedule in zip(self.run_rows, schedules)]
+        self.submit = call("zz_calibrate", {"node": "n", "runs": runs, "idempotency_key": "cal_job"},
                            {"job_id": "cal_job", "node": "n"})
         self.job = call("zz_job", {"job_id": "cal_job", "node": "n"}, {"job_id": "cal_job", "state": "done"})
         self.ctx = {"node": "n", "scenario": {"provider": "vllm", "models": self.models}, "left": [],
@@ -664,6 +667,37 @@ class CalibrateTwoModelsTest(unittest.TestCase):
         self.ctx["rj"]["outcome"] = "cancelled"
         self.assertTrue(passed(c.check_calibrate_two_models(self.ctx)))
 
+    def test_accepts_haiku_solo_then_combined_calibrations(self):
+        workload = {"input_tokens": 256, "output_tokens": 128, "concurrency": [1, 4], "requests_per_step": 16}
+        calls = self.start.copy()
+        for run_indexes, timeout, job_id in (((0,), 600, "cal_small"), ((1,), 900, "cal_big"), ((0, 1), 900, "cal_job")):
+            runs = [{"run_id": self.run_rows[i]["run_id"], "workload": workload} for i in run_indexes]
+            calls.extend([
+                call("zz_calibrate", {"node": "n", "runs": runs, "step_timeout_seconds": timeout, "idempotency_key": job_id},
+                     {"job_id": job_id, "node": "n"}),
+                call("zz_job", {"job_id": job_id, "node": "n"}, {"job_id": job_id, "state": "done"}),
+            ])
+        self.assertTrue(passed(c.check_calibrate_two_models({**self.ctx, "calls": calls})))
+
+    def test_rejects_identical_body_with_a_different_idempotency_key(self):
+        repeated = call("zz_calibrate", {**self.submit["args"], "idempotency_key": "new-key"},
+                        {"job_id": "cal_repeat", "node": "n"})
+        rows = c.check_calibrate_two_models({**self.ctx, "calls": self.ctx["calls"] + [repeated]})
+        self.assertEqual([(name, detail) for name, ok, detail in rows if not ok],
+                         [("no calibration retries", 1)])
+
+    def test_rejects_changed_body_after_a_calibration_refusal(self):
+        refused = call("zz_calibrate", {**self.submit["args"], "step_timeout_seconds": 1801},
+                       {"status": 400, "code": "invalid_value"}, error=True)
+        inspected = call("zz_runs", {"node": "n"}, {"runs": self.run_rows})
+        http_error = {**refused, "evidence": {}, "is_error": None, "status": 503}
+        for failure in (refused, http_error):
+            with self.subTest(failure=failure):
+                calls = self.start + [failure, inspected, self.submit, self.job]
+                rows = c.check_calibrate_two_models({**self.ctx, "calls": calls})
+                self.assertEqual({name for name, ok, _ in rows if not ok}, {"no failed calibration call", "no calibration retries"})
+                self.assertIn(("no calibration retries", False, 1), rows)
+
     def test_rejects_wrong_runs_or_unfollowed_job(self):
         for key, value in (("run_id", "other"), ("model", "wrong"), ("provider", "ollama"), ("node", "other")):
             with self.subTest(key=key):
@@ -694,7 +728,9 @@ class CalibrateTwoModelsTest(unittest.TestCase):
     def test_flags_confusion_and_leftover_runs(self):
         cases = [(call(tool, {}, {}), {"no escape hatch"}) for tool in c.ESCAPE_HATCH]
         failed = call("zz_calibrate", self.submit["args"], {}, error=True)
+        distinct_failure = call("zz_calibrate", {**self.submit["args"], "step_timeout_seconds": 0}, {}, error=True)
         cases += [(failed, {"no failed calibration call", "no calibration retries"}),
+                  (distinct_failure, {"no failed calibration call"}),
                   (self.submit, {"no calibration retries"})]
         for extra, expected in cases:
             ctx = {**self.ctx, "calls": self.ctx["calls"] + [extra]}

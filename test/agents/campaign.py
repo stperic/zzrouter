@@ -1317,6 +1317,16 @@ def check_calibrate_two_models(ctx):
     provider, models = scenario["provider"], set(scenario["models"])
     answer = ctx["rj"] if isinstance(ctx["rj"], dict) else {}
     calibrations = tool_calls(ctx, "zz_calibrate")
+    seen_bodies, retries, previous_failed = set(), 0, False
+    for c in calibrations:
+        body = c["args"]
+        if isinstance(body, dict):
+            body = {key: value for key, value in body.items() if key != "idempotency_key"}
+        signature = json.dumps(body, sort_keys=True)
+        if signature in seen_bodies or previous_failed:
+            retries += 1
+        seen_bodies.add(signature)
+        previous_failed = c["is_error"] is True or (c.get("status") or 0) >= 400
     known_runs, accepted, terminal = {}, {}, {}
     for c in ctx["calls"]:
         if c["is_error"] is not False:
@@ -1352,7 +1362,7 @@ def check_calibrate_two_models(ctx):
             type(v) is int or (type(v) is float and math.isfinite(v)) for v in (together.get(m) for m in models)), together),
         ("no escape hatch", not any(c["tool"] in ESCAPE_HATCH for c in ctx["calls"]), ""),
         ("no failed calibration call", all(c["is_error"] is False for c in calibrations), len(calibrations)),
-        ("no calibration retries", len(calibrations) <= 1, len(calibrations)),
+        ("no calibration retries", retries == 0, retries),
         ("no owned runs left on node", not ctx["left"], ctx["left"]),
     ]
 

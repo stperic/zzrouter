@@ -471,6 +471,8 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 			require.NotEmpty(t, schema.Description, tool.Name+"."+field)
 		}
 		if tool.Name == "zz_calibrate" {
+			require.Contains(t, tool.Description, "Concurrency 0 keeps a run idle for that step")
+			require.Contains(t, tool.Description, "[4,0,4] and [0,8,8]")
 			runs := tool.InputSchema.Properties["runs"].Items
 			require.NotNil(t, runs)
 			for _, field := range []string{"run_id", "target_revision", "workload"} {
@@ -479,6 +481,7 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 			for _, field := range []string{"input_tokens", "output_tokens", "concurrency", "requests_per_step"} {
 				require.NotEmpty(t, runs.Properties["workload"].Properties[field].Description, field)
 			}
+			require.Contains(t, runs.Properties["workload"].Properties["concurrency"].Description, "Zero keeps the run idle")
 		}
 		if tool.Name == "zz_params_set" {
 			assert.NotContains(t, tool.InputSchema.Properties, "grep")
