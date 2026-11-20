@@ -221,6 +221,12 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 	if memory.KeptRun != "" && memory.BudgetKind == "" {
 		hint = "Lower the request with zz_params_set and zz_run_preview, or stop other holders with zz_run_stop; stop kept_run first only when holders include other_or_untracked memory zzRouter could not attribute, then zz_run_start. When holders show unused_commitment_mib, only stopping those holders with zz_run_stop helps."
 	}
+	for _, holder := range memory.Holders {
+		if holder.ReclaimSkippedReason == instance.EvictionActivityUnknown {
+			hint += " For an activity_unknown holder, use zz_runs with its run_id to inspect activity. Use zz_run_stop with that run_id to free memory."
+			break
+		}
+	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
 }
 

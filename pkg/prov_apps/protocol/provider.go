@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -27,6 +28,8 @@ type ModelLoader interface {
 	LoadModel(ctx context.Context, t Target, model string, keepAlive *time.Duration) error
 	UnloadModel(ctx context.Context, t Target, model string) error
 	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
+	// ModelEndpoint reports a model's serving endpoint, or an empty string without evidence.
+	ModelEndpoint(ctx context.Context, daemon *backend.Resolved, model string) string
 	// Identity is the name the daemon reports model loaded under.
 	Identity(model string) string
 }

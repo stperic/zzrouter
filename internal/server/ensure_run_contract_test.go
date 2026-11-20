@@ -302,6 +302,12 @@ func (d *servedDaemon) last(t *testing.T) inferenceSeen {
 	return d.seen[len(d.seen)-1]
 }
 
+func (d *servedDaemon) beginForwarding() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.seen = nil
+}
+
 func (d *servedDaemon) unloaded() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -453,6 +459,7 @@ func TestForwardToRunAnswersAsEveryRunPath(t *testing.T) {
 	t.Run("refused lease", func(t *testing.T) {
 		r := newServedServerRig(t)
 		run := r.served(t)
+		r.daemon.beginForwarding()
 		run.SetStatus(instance.StatusStopping)
 		w := httptest.NewRecorder()
 		r.s.forwardToRun(w, inference("/api/generate", native), native, run)
@@ -462,6 +469,7 @@ func TestForwardToRunAnswersAsEveryRunPath(t *testing.T) {
 	t.Run("client gone", func(t *testing.T) {
 		r := newServedServerRig(t)
 		run := r.served(t)
+		r.daemon.beginForwarding()
 		req := inference("/api/generate", native)
 		ctx, cancel := context.WithCancel(req.Context())
 		cancel()

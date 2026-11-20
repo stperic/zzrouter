@@ -250,6 +250,23 @@ func gpuCardFields(g mesh.GPUDetail, unavailable bool) map[string]any {
 	return card
 }
 
+func snapshotMemoryInfo(snap mesh.EndpointSnapshot, unavailable bool) map[string]any {
+	if snap.RAMTotalGB <= 0 || math.IsNaN(snap.RAMTotalGB) {
+		return nil
+	}
+	memory := map[string]any{
+		"total_gb":     math.Round(snap.RAMTotalGB*10) / 10,
+		"available_gb": math.Round(snap.RAMAvailableGB*10) / 10,
+	}
+	if sample := snap.MemorySample.Current(utils.Now(), unavailable); sample != nil {
+		memory["sample"] = sample
+		if usedPercent := sample.UsedPercent(); usedPercent != nil {
+			memory["used_percent"] = math.Round(*usedPercent*10) / 10
+		}
+	}
+	return memory
+}
+
 // endpointToNodeInfo converts a mesh.Endpoint (from the registry) to the node info map
 func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 	snap := ep.Snapshot
@@ -340,20 +357,8 @@ func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 		nodeInfo["last_seen_at"] = snap.CollectedAt.UTC().Format(time.RFC3339)
 	}
 
-	if snap.RAMTotalGB > 0 {
-		nodeInfo["memory"] = map[string]any{
-			"total_gb":     math.Round(snap.RAMTotalGB*10) / 10,
-			"available_gb": math.Round(snap.RAMAvailableGB*10) / 10,
-		}
-	}
-
-	if sample := snap.MemorySample.Current(utils.Now(), healthStatus != "healthy"); sample != nil {
-		if memory, ok := nodeInfo["memory"].(map[string]any); ok {
-			memory["sample"] = sample
-			if usedPercent := sample.UsedPercent(); usedPercent != nil {
-				memory["used_percent"] = math.Round(*usedPercent*10) / 10
-			}
-		}
+	if memoryInfo := snapshotMemoryInfo(snap, healthStatus != "healthy"); memoryInfo != nil {
+		nodeInfo["memory"] = memoryInfo
 	}
 	if activity := snap.Activity.Current(utils.Now(), healthStatus != "healthy"); activity != nil {
 		nodeInfo["activity"] = activity
