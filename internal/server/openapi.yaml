@@ -1355,16 +1355,33 @@ paths:
       operationId: getApiHealth
       summary: Cluster-wide health aggregated across nodes
       description: |
-        Health of this node behind the admin key, in the management
-        envelope. `GET /health` is the unauthenticated probe a load balancer
-        should use; this one is for a client that already holds a key and
-        wants the same answer in the shape the rest of the API returns.
+        Cluster-wide health in the management envelope. `GET /health` is
+        the unauthenticated probe for load balancers checking a single node.
       responses:
         '200':
           description: OK
           content:
             application/json:
-              schema: { type: object }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          cluster_health: { type: string, enum: [healthy, degraded] }
+                          total_nodes: { type: integer }
+                          nodes:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                ram_total_gb: { type: number, description: Total RAM in GiB when reported. }
+                                ram_used_gb:
+                                  type: number
+                                  minimum: 0
+                                  description: Measured RAM usage in GiB. Omitted when usage is unknown.
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
 
   /zzrouter/v1/server/version:
@@ -4812,6 +4829,7 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
         '404': { description: run_not_found on the selected node., content: *calibrationProblem }
         '409': { description: 'run_not_ready, run_changed, calibration_unsupported or calibration_running.', content: *calibrationProblem }
         '422': { description: The Idempotency-Key was recorded against a different body. Code is idempotency_key_conflict., content: *calibrationProblem }
@@ -14901,9 +14919,9 @@ components:
         step:
           type: string
           description: Human-readable description of the current step.
-        error:
+        err:
           type: string
-          description: Present only when phase is `failed`.
+          description: Error or cancellation message when a failed job supplies one.
         warning:
           type: string
           description: Non-fatal warning; a successful job may carry this field.

@@ -2,12 +2,25 @@
 
 ## Unreleased
 
-- Apple Silicon node views show the unified pool's actual available memory.
-
-- Check vLLM's startup fraction and an independent per-GPU hold when
-  `kv-cache-memory-bytes` is set. Expert launches can use
-  `memory-admission: report` to surface a fit refusal as an admission warning
-  and skip idle reclaim.
+- Calibrate chat and embeddings on live runs through `POST /zzrouter/v1/calibrations`,
+  `zz_calibrate` or the console's Calibrations view. Compare workloads with
+  resident runs alongside them, follow progress and read the retained report
+  through the job API. Run starts now use `POST /zzrouter/v1/runs` with
+  `environment` and `replace`. Remove `POST /zzrouter/v1/runs/load`.
+  `zzrouter run --force` selects the first model match and `--replace` replaces
+  the run. Starts with different settings return `409 run_settings_differ`
+  when replacement needs to be requested or a conflicting start is already
+  in flight. Starts that need explicit placement return `400 run_node_required`.
+  vLLM checks its startup fraction and an independent per-GPU hold when
+  `kv-cache-memory-bytes` is set. Expert launches can use `memory-admission: report`
+  to report a memory-fit refusal as `admission_warning` and skip idle reclaim.
+  Provider schemas use `observe` in place of `runtime.activity_probe`. Run
+  snapshots expose `requests_admitted` after the first lease grant. Admission,
+  node metrics and calibration share one resource snapshot. Apple Silicon
+  node views show the unified pool's actual available memory. Native node RAM
+  samples omit used memory because the OS reader derives it from availability.
+  Cluster protocol and minimum are both 26. Upgrade the coordinator and all
+  workers together.
 
 - Keep running worker models eligible for route selection when their GPUs
   have little free memory. The serving node handles memory admission for new runs.

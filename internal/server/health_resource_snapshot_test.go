@@ -2,10 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/resources"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -43,4 +47,50 @@ func TestPeerNodeMemoryUsageRequiresAnObservation(t *testing.T) {
 	ep.Snapshot.MemorySample = inventory.NewMemorySample(64<<30, new(int64(17<<30)), utils.Now())
 	info = service.endpointToNodeInfo(ep)
 	require.Equal(t, 26.6, info["memory"].(map[string]any)["used_percent"])
+}
+
+func TestClusterHealthReportsOnlyMeasuredRAMUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		used *int64
+		want float64
+	}{
+		{name: "unknown"},
+		{name: "measured", used: new(int64(17 * constants.BytesPerGB)), want: 17},
+		{name: "measured zero", used: new(int64(0)), want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sample := inventory.NewMemorySample(64*constants.BytesPerGB, tc.used, utils.Now())
+			state := &mockClusterState{
+				localNode: map[string]any{
+					"name": "coord", "health_status": "healthy",
+					"memory": &inventory.NodeMemory{TotalGB: 64, AvailableGB: 32, Sample: sample},
+				},
+				endpoints: []*mesh.Endpoint{{NodeName: "worker", Status: mesh.StatusUp, Snapshot: mesh.EndpointSnapshot{
+					HealthReport: mesh.HealthReport{RAMTotalGB: 64, RAMAvailableGB: 32, MemorySample: sample},
+				}}},
+			}
+			handler := &ClusterSystemHandlers{nodes: NewNodesService(state, nil, nil)}
+			engine := gin.New()
+			engine.GET("/zzrouter/v1/health", handler.HandleHealthFromNodes)
+			resp := httptest.NewRecorder()
+			engine.ServeHTTP(resp, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/zzrouter/v1/health", nil))
+			require.Equal(t, http.StatusOK, resp.Code)
+			var body struct {
+				Data struct {
+					Nodes []map[string]any `json:"nodes"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+			require.Len(t, body.Data.Nodes, 2)
+			require.Equal(t, 64.0, body.Data.Nodes[1]["ram_total_gb"])
+			for _, node := range body.Data.Nodes {
+				if tc.used == nil {
+					require.NotContains(t, node, "ram_used_gb", "%s", node["hostname"])
+				} else {
+					require.Equal(t, tc.want, node["ram_used_gb"], "%s", node["hostname"])
+				}
+			}
+		})
+	}
 }

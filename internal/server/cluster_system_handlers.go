@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/host/inventory"
 )
 
 // ClusterSystemHandlers serves cluster-wide /zzrouter/v1/health by
@@ -39,16 +40,18 @@ func (h *ClusterSystemHandlers) HandleHealthFromNodes(c *gin.Context) {
 			"role":           node["cluster_role"],
 		}
 
-		// Add RAM info if available
-		if mem, ok := node["memory"].(map[string]any); ok {
+		var sample *inventory.MemorySample
+		switch mem := node["memory"].(type) {
+		case *inventory.NodeMemory:
+			sample = mem.Sample
+		case map[string]any:
 			if total, ok := mem["total_gb"].(float64); ok {
 				healthNode["ram_total_gb"] = total
 			}
-			if avail, ok := mem["available_gb"].(float64); ok {
-				if total, ok := mem["total_gb"].(float64); ok {
-					healthNode["ram_used_gb"] = total - avail
-				}
-			}
+			sample, _ = mem["sample"].(*inventory.MemorySample)
+		}
+		if sample != nil && sample.UsedBytes != nil {
+			healthNode["ram_used_gb"] = float64(*sample.UsedBytes) / constants.BytesPerGB
 		}
 
 		if node["health_status"] == "down" {
