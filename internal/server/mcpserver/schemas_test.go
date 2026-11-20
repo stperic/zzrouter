@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -132,4 +134,88 @@ func TestAcceptedJobSchemasDoNotPredictExpiry(t *testing.T) {
 			require.NotContains(t, nodes.Items.Properties, "expires_at")
 		}
 	}
+}
+
+// TestToolSchemasSharedAcrossServers: servers built from the shared schemas
+// list the bytes a fresh build lists, and concurrent listing and validated
+// calls leave every shared schema equal to a fresh build of it.
+func TestToolSchemasSharedAcrossServers(t *testing.T) {
+	type input struct {
+		Model string `json:"model"`
+		Limit int    `json:"limit,omitempty"`
+	}
+	type snapshot struct {
+		types    map[reflect.Type][]byte
+		resolved map[string]*jsonschema.Schema
+	}
+	forget := func() {
+		typeSchemas.Clear()
+		resolvedSchemas.Clear()
+	}
+	take := func() snapshot {
+		s := snapshot{types: map[reflect.Type][]byte{}, resolved: map[string]*jsonschema.Schema{}}
+		typeSchemas.Range(func(k, v any) bool { s.types[k.(reflect.Type)] = v.([]byte); return true })
+		resolvedSchemas.Range(func(k, v any) bool { s.resolved[k.(string)] = v.(*jsonschema.Resolved).Schema(); return true })
+		return s
+	}
+	d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected REST dispatch") })
+	connect := func() (*mcp.ClientSession, context.Context) {
+		server := newServer(d.cfg)
+		registerTool(server, d.cfg, map[string][]string{}, &mcp.Tool{Name: "shared_schema_contract", OutputSchema: objectSchema[runOutput]{}}, nil,
+			func(_ dispatcher, _ context.Context, in input) (agentOutput, error) {
+				return agentOutput{fields: map[string]any{"run_id": in.Model, "port": in.Limit}}, nil
+			})
+		return connectToolClient(t, d, server)
+	}
+	list := func(client *mcp.ClientSession, ctx context.Context) []byte {
+		listed, err := client.ListTools(ctx, nil)
+		require.NoError(t, err)
+		encoded, err := json.Marshal(listed.Tools)
+		require.NoError(t, err)
+		return encoded
+	}
+
+	forget()
+	var wg sync.WaitGroup
+	lists := make([][]byte, 2)
+	for i := range lists {
+		client, ctx := connect()
+		wg.Go(func() {
+			lists[i] = list(client, ctx)
+			result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "shared_schema_contract", Arguments: map[string]any{"model": "m", "limit": 3}})
+			if !assertNoToolError(t, result, err) {
+				return
+			}
+			result, err = client.CallTool(ctx, &mcp.CallToolParams{Name: "shared_schema_contract", Arguments: map[string]any{"model": 7}})
+			if err == nil && !result.IsError {
+				t.Error("a call failing its input schema must be refused")
+			}
+		})
+	}
+	wg.Wait()
+	shared := take()
+	require.NotEmpty(t, shared.types)
+	require.NotEmpty(t, shared.resolved)
+
+	forget()
+	client, ctx := connect()
+	fresh := list(client, ctx)
+	require.Equal(t, string(fresh), string(lists[0]), "tools/list from shared schemas")
+	require.Equal(t, string(fresh), string(lists[1]), "tools/list from shared schemas")
+	rebuilt := take()
+	require.Equal(t, rebuilt.types, shared.types, "shared schema JSON after use")
+	require.Equal(t, rebuilt.resolved, shared.resolved, "shared resolved schemas after use")
+}
+
+func assertNoToolError(t *testing.T, result *mcp.CallToolResult, err error) bool {
+	t.Helper()
+	if err != nil {
+		t.Error(err)
+		return false
+	}
+	if result.IsError {
+		t.Errorf("tool error: %+v", result.Content)
+		return false
+	}
+	return true
 }
