@@ -258,7 +258,7 @@ against its base.
 - **Busy semantics.** The same signal drives the hold and the display.
   `ActivityUnknown` releases the hold only after `maxFailures`. The validity
   window is `2 × interval + timeout`, and the hold clears on stop.
-- **Payload cap** of 1 MiB. Measure vLLM's `/metrics` on the lab first.
+- **Payload cap** of 1 MiB (vLLM measured 56 KB under load, 2026-11-20).
 - **No credential** on engine requests (`health/activity_test.go`).
 
 **Tests:**
