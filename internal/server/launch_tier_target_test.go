@@ -3,14 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/model/cache"
-	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
@@ -73,57 +72,48 @@ func TestLaunchResolvesOnTheRunningNode(t *testing.T) {
 // capturingCache stands in for the cluster: it records the body a
 // request leaves with and answers as the target node would.
 type capturingCache struct {
+	fakeRouter
 	owner string
 	body  []byte
 }
 
-func (c *capturingCache) LookupModel(ctx context.Context, name string) (*cache.CachedModel, error) {
-	return &cache.CachedModel{Name: name, Node: c.owner}, nil
-}
+func (c *capturingCache) modelOwner(context.Context, string) (string, error) { return c.owner, nil }
 
-func (c *capturingCache) ListModels(ctx context.Context, host, repo, app, model string) ([]*cache.CachedModel, error) {
-	return nil, nil
-}
-
-func (c *capturingCache) Invalidate() {}
-
-func (c *capturingCache) ResolveModel(_ context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
-	return &resolver.Resolved{ModelName: ref.Model, Node: c.owner}, nil
-}
-
-func (c *capturingCache) IsLocalNode(host string) bool { return host == "" || host == "localhost" }
-
-func (c *capturingCache) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
+func (c *capturingCache) RouteToModelOrBroadcast(_ context.Context, _, _, _ string, body []byte) (*routing.Response, error) {
 	c.body = body
-	reply, err := json.Marshal(map[string]string{"instance_id": "i1", "status": "loading", "node": c.owner})
-	return &routing.Response{StatusCode: 200, Body: reply, Node: c.owner}, err
+	reply, err := json.Marshal(map[string]string{"id": "i1", "status": "starting", "node": c.owner})
+	return &routing.Response{StatusCode: 200, Body: reply}, err
 }
 
-// A preview and a start leave the coordinator alike, carrying only what the
-// caller sent: the node that runs the model resolves its own synced tree, so
-// its preview answers what a start there would launch, with its own sources.
-func TestLoadService_RemoteRequestsCarryOnlyWhatTheCallerSent(t *testing.T) {
-	cfg := tierProbeConfig(t)
-	for name, send := range map[string]func(*LoadService, *LoadModelRequest) error{
-		"preview": func(svc *LoadService, req *LoadModelRequest) error {
-			_, err := svc.PreviewRun(context.Background(), req)
-			return err
-		},
-		"start": func(svc *LoadService, req *LoadModelRequest) error {
-			_, err := svc.LoadModel(context.Background(), req)
-			return err
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cc := &capturingCache{owner: "worker1"}
-			svc := NewLoadService(cc, nil).WithAppsConfig(func() *pkgConfig.AppsConfig { return cfg })
-			require.NoError(t, send(svc, &LoadModelRequest{Provider: "vllm", ModelName: "m", Parameters: map[string]string{"seed": "42"}}))
+func (c *capturingCache) Route(_ context.Context, req *routing.Request) (*routing.Response, error) {
+	if req.Node != c.owner {
+		return nil, fmt.Errorf("unexpected start target %q", req.Node)
+	}
+	c.body = req.Body
+	reply, err := json.Marshal(map[string]string{"id": "i1", "status": "starting", "node": c.owner})
+	return &routing.Response{StatusCode: 202, Body: reply}, err
+}
 
-			var sent LoadModelRequest
+func TestRunsServiceRemoteRequestsCarryOnlyWhatTheCallerSent(t *testing.T) {
+	cfg := tierProbeConfig(t)
+	parameters := schema.ParameterValues{"seed": "42"}
+	environment := map[string]string{"DEVICE": "1"}
+	for _, preview := range []bool{true, false} {
+		t.Run(map[bool]string{true: "preview", false: "start"}[preview], func(t *testing.T) {
+			cc := &capturingCache{owner: "worker1"}
+			svc := NewRunsService(cc).WithModelRouter(cc, func() *pkgConfig.AppsConfig { return cfg })
+			if preview {
+				_, err := svc.PreviewRun(t.Context(), &PreviewRunRequest{Provider: "vllm", ModelName: "m", Parameters: parameters, Environment: environment})
+				require.NoError(t, err)
+			} else {
+				_, err := svc.LaunchRun(t.Context(), &LaunchRunRequest{Provider: "vllm", Model: "m", Parameters: parameters, Environment: environment, Replace: true})
+				require.NoError(t, err)
+			}
+			var sent LaunchRunRequest
 			require.NoError(t, json.Unmarshal(cc.body, &sent))
-			assert.Equal(t, schema.ParameterValues{"seed": "42"}, sent.Parameters,
-				"a value resolved here outranks the running node's own tiers as the request tier")
-			assert.Empty(t, sent.Environment)
+			assert.Equal(t, parameters, sent.Parameters)
+			assert.Equal(t, environment, sent.Environment)
+			assert.Equal(t, !preview, sent.Replace)
 		})
 	}
 }

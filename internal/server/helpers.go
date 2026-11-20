@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,7 +13,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -316,13 +314,9 @@ func (s *Server) buildIncompatibleDeployError(hostname, model, repo string) stri
 
 // RouteToModelOrBroadcast uses the same target selection as inference and preview tiers.
 func (s *Server) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
-	resolved, err := s.ResolveModel(ctx, resolver.Reference{Model: modelName})
+	node, err := s.modelOwner(ctx, modelName)
 	if err != nil {
 		return nil, err
-	}
-	node := resolved.Node
-	if node == "" && resolved.Provider != "" && !s.node.IsWorker() {
-		node = s.node.Nodename()
 	}
 	if node != "" {
 		return s.cluster.router.Unicast(ctx, node, path, method, body)
@@ -330,27 +324,18 @@ func (s *Server) RouteToModelOrBroadcast(ctx context.Context, modelName, path, m
 	return s.cluster.router.Broadcast(ctx, path, method, body)
 }
 
+func (s *Server) modelOwner(ctx context.Context, modelName string) (string, error) {
+	resolved, err := s.ResolveModel(ctx, resolver.Reference{Model: modelName})
+	if err != nil {
+		return "", err
+	}
+	if resolved.Node == "" && resolved.Provider != "" && !s.node.IsWorker() {
+		return s.node.Nodename(), nil
+	}
+	return resolved.Node, nil
+}
+
 // ResolveModel shares group-first resolution with inference and management callers.
 func (s *Server) ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
 	return s.model.Resolver.Resolve(ctx, ref)
-}
-
-// findMatchingModels finds models that match a name pattern (fuzzy matching)
-func findMatchingModels(pattern string, models []*metadata.ModelMetadata) []*metadata.ModelMetadata {
-	if pattern == "" {
-		return models
-	}
-
-	matches := []*metadata.ModelMetadata{}
-	patternLower := strings.ToLower(pattern)
-
-	for _, model := range models {
-		modelNameLower := strings.ToLower(model.Name)
-		// Exact match or contains
-		if modelNameLower == patternLower || strings.Contains(modelNameLower, patternLower) {
-			matches = append(matches, model)
-		}
-	}
-
-	return matches
 }

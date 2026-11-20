@@ -43,16 +43,6 @@ type FilteredModelResult struct {
 	QuantLevel    string `json:"quant_level,omitempty"`    // quantization level
 }
 
-// LoadModelRequest represents a model load request
-type LoadModelRequest struct {
-	Node        string            `json:"node,omitempty"` // Target cluster node
-	App         string            `json:"provider,omitempty"`
-	ModelName   string            `json:"model_name"`
-	Force       bool              `json:"force,omitempty"`       // Skip format validation
-	Parameters  map[string]string `json:"parameters,omitempty"`  // Model-specific runtime parameters
-	Environment map[string]string `json:"environment,omitempty"` // Model-specific environment variables
-}
-
 // UnloadModelRequest represents a model unload request
 type UnloadModelRequest struct {
 	ModelName string `json:"model_name"`
@@ -140,6 +130,7 @@ type ListInstancesResponse struct {
 // return `{error: {message, type}}` and a few passthrough paths return a
 // plain `{error: "..."}` string. ErrorResponse accepts all three.
 type ErrorResponse struct {
+	Code   string `json:"code"`
 	Error  any    `json:"error"`  // string or OpenAI {"type":"...","message":"..."} object
 	Title  string `json:"title"`  // RFC 9457 Problem Details
 	Detail string `json:"detail"` // RFC 9457 Problem Details
@@ -157,6 +148,7 @@ type APIError struct {
 	Operation  string
 	StatusCode int
 	Message    string
+	Code       string
 }
 
 func (e *APIError) Error() string {

@@ -118,6 +118,13 @@ func TestReplacementRefusalKeepsOldRunServing(t *testing.T) {
 	assert.Equal(t, pins, readPins(t))
 }
 
+// ReplacementRefusalFixture gives the HTTP contract test the same real run and memory evidence.
+func ReplacementRefusalFixture(t *testing.T) (*ProviderAppManager, *instance.Instance) {
+	t.Helper()
+	r := newReplacementRig(t, 1000, 2000, true)
+	return r.m, r.old
+}
+
 func TestReplacementUnifiedRefusalKeepsOldRunServing(t *testing.T) {
 	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 	t.Setenv("CUDA_VISIBLE_DEVICES", "unified")

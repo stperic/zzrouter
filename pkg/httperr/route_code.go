@@ -45,6 +45,11 @@ const (
 	// CodeModelNodeAmbiguous requires an explicit node for replicated remote models.
 	CodeModelNodeAmbiguous RouteErrorCode = "model_node_ambiguous"
 
+	// CodeRunNodeRequired asks the caller to choose one node for a run start.
+	CodeRunNodeRequired RouteErrorCode = "run_node_required"
+	// CodeRunSettingsDiffer asks the caller to opt into replacing a run with different settings.
+	CodeRunSettingsDiffer RouteErrorCode = "run_settings_differ"
+
 	// CodeModelSourceAmbiguous requires an exact source id for same-name physical weights.
 	CodeModelSourceAmbiguous RouteErrorCode = "model_source_ambiguous"
 	// CodeModelDetailUnsupported means catalog identity exists without a supported detail reader.

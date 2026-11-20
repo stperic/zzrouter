@@ -86,6 +86,7 @@ func TestPinnedRestoreShutdownAndRequestReplay(t *testing.T) {
 	var fields []map[string]any
 	require.NoError(t, json.Unmarshal(file["runs"], &fields))
 	assert.Len(t, fields[0], 6, "empty runtime is omitted; only the request tier persists")
+	assert.Contains(t, fields[0], "env_vars")
 	assert.NotContains(t, string(raw), "TIER_ONLY")
 	assert.NotContains(t, string(raw), r.engine)
 	require.NoError(t, r.m.Stop(t.Context()))

@@ -64,7 +64,6 @@ func apipathSamples() map[string]string {
 		"NodesCompatible":               apipath.NodesCompatible,
 		"ProvidersCatalog":              apipath.ProvidersCatalog,
 		"ProvidersInstances":            apipath.ProvidersInstances,
-		"RunsLoad":                      apipath.RunsLoad,
 		"RunsPreview":                   apipath.RunsPreview,
 		"PricingOverrides":              apipath.PricingOverrides,
 		"PricingStatus":                 apipath.PricingStatus,

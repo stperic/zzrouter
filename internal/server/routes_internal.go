@@ -44,7 +44,6 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// Initialize executors (direct provider access, no routing)
 	modelExecutor := s.newInternalExecutor()
 	runsExecutor := s.newRunsExecutor()
-	loadExecutor := s.newLoadExecutor()
 	deploymentsExecutor := s.newDeploymentsExecutor()
 
 	// Wire auto_deploy on /runs when both DeploymentsService and the
@@ -96,8 +95,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// IMPORTANT: Register specific routes BEFORE parameterized routes
 	router.GET("/runs", runsExecutor.HandleInternalListRuns)
 	router.POST("/runs", runsExecutor.HandleInternalLaunchRun)
-	router.POST("/runs/load", loadExecutor.HandleInternalLoadModel)     // Specific route before /runs/:id
-	router.POST("/runs/preview", loadExecutor.HandleInternalPreviewRun) // Specific route before /runs/:id
+	router.POST("/runs/preview", runsExecutor.HandleInternalPreviewRun) // Specific route before /runs/:id
 
 	// Parameterized routes come after specific routes
 	router.GET("/runs/:id", runsExecutor.HandleInternalGetRun)

@@ -262,7 +262,6 @@ func snapshotAllowed(r *http.Request) bool {
 // those entries remain claims.
 var asyncRoutes = []string{
 	"POST /runs",
-	"POST /runs/load",
 	"POST /runs/ensure",
 	"POST /runs/:id/restart",
 	"POST /deployments",

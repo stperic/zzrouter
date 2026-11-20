@@ -38,8 +38,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// so that subset is built by a function both roles call.
 	s.bindCompatServices(routingRouter)
 	s.services.Search = NewModelSearchService(s.appsConfig, s.model.Pricing, s.backend)
-	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
-	s.services.Load = NewLoadService(s, routingRouter).WithAppsConfig(s.appsConfig)
+	s.services.Runs = NewRunsService(routingRouter).WithModelRouter(s, s.appsConfig).WithModelValidator(s.validateModel)
 	if s.jobsProxy == nil && s.cluster.listener != nil && s.cluster.coordinator != nil {
 		s.jobsProxy = &JobsProxy{StreamClient: s.cachedJobsStreamClient(), ResolveEndpoint: s.resolveJobsEndpoint, ListPeers: s.listJobsPeers, ClusterPort: s.config.Cluster.BindPort}
 	}
@@ -81,7 +80,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	appsConfigFn := s.appsConfig
 	s.services.RunsUtility = NewRunsUtilityService(s.providers.appMgr, appsConfigFn)
 	s.controllers.Runs = NewRunsController(
-		s.services.Runs, s.services.Load, s.services.RunsUtility,
+		s.services.Runs, s.services.RunsUtility,
 		nodeValidator,  // NodeValidator
 		s.logsHandlers, // RunLogHandler
 		s.providerBrowserURL,

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -63,6 +64,7 @@ type Want struct {
 	Force                   bool
 	Unload                  bool // the caller asks the model unloaded, by a zero keep-alive
 	Origin                  Origin
+	Parameters, Environment map[string]string
 }
 
 // RunView is what policy sees of a registered run.
@@ -71,6 +73,7 @@ type RunView struct {
 	Status                      instance.Status
 	Unconfirmed                 bool  // its stop never drained, so its runtime is still occupied
 	Failure                     error // why a terminal run ended
+	Parameters, Environment     map[string]string
 }
 
 // Node is the evidence one decision is made on; a site sets what it has observed.
@@ -161,8 +164,9 @@ func Decide(w Want, n Node) Decision {
 // leaves the decision to Decide, starting after stopping Replace if set.
 func decideExisting(w Want, n Node, smoke bool) Decision {
 	run := n.Existing
+	forceJoin := n.Joined && w.Force && run.Provider == w.Provider && run.Runtime == w.Runtime && run.Plan == w.Plan
 	switch {
-	case n.Joined && run.Status.IsTerminal():
+	case n.Joined && run.Status.IsTerminal() && !forceJoin:
 		return refuse(run.Failure)
 	case w.Unload && (run.Status == instance.StatusStopping || run.Provider != w.Provider):
 		return Decision{Act: ActReady} // no run of this want to end: the provider answers for itself
@@ -171,17 +175,23 @@ func decideExisting(w Want, n Node, smoke bool) Decision {
 		return refuse(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
 	case smoke && (!run.Status.IsTerminal() || run.Unconfirmed):
 		return refuse(ErrInstancesRunning)
-	case n.Joined && w.Force && run.Provider == w.Provider && run.Runtime == w.Runtime && run.Plan == w.Plan:
-		return Decision{Act: ActReuse, Run: run.ID} // the flight did what Force asks; a second replacement would undo it
+	case forceJoin:
+		// Compare against the run the flight produced before considering a replacement.
 	case (w.Force && !n.Joined) || run.Status.IsTerminal():
 		return Decision{Replace: run.ID}
 	case run.Provider != w.Provider:
 		return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Key.Model, run.Provider, w.Provider))
 	case run.Runtime != w.Runtime || run.Plan != w.Plan:
 		return refuse(ErrInstancesRunning)
-	default:
-		return Decision{Act: ActReuse, Run: run.ID}
 	}
+	if len(w.Parameters) != 0 || len(w.Environment) != 0 {
+		requested := config.FlattenParameters(requestParameters(w.Parameters))
+		current := config.FlattenParameters(requestParameters(run.Parameters))
+		if !maps.Equal(requested, current) || !maps.Equal(w.Environment, run.Environment) {
+			return refuse(&RunSettingsDifferError{RunID: run.ID})
+		}
+	}
+	return Decision{Act: ActReuse, Run: run.ID}
 }
 
 // memoryNeedsStop leaves unknown evidence to admission after stopping the replaced run.

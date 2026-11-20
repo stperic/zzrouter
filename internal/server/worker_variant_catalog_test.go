@@ -67,13 +67,13 @@ func TestWorkerLaunchPreservesVariantCatalog(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, strings.ToUpper(variantChat)+".gguf"), []byte("GGUF"), 0600))
 	s.model.Cache.Invalidate()
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
-	executor := s.newLoadExecutor()
+	executor := s.newRunsExecutor()
 	launches := 0
 	prov_apps.WithModelSource(func(context.Context, string) string { launches++; return "" })(s.providers.appMgr)
 	for range 2 {
-		result, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: qwenModel, Provider: "llamacpp"})
+		result, err := startForTest(t, t.Context(), executor, LaunchRunRequest{Model: qwenModel, Provider: "llamacpp"})
 		require.NoError(t, err)
-		require.NotEmpty(t, result.InstanceID)
+		require.NotEmpty(t, result.ID)
 		require.Equal(t, true, s.model.Cache.GetCacheStats()["valid"], "a launch changes no physical model identity")
 		require.ErrorIs(t, s.providers.appMgr.ValidateModel(t.Context(), variantChat), config.ErrModelNameConflict)
 	}

@@ -1457,6 +1457,26 @@ func TestEnsureRunContractServed(t *testing.T) {
 		assert.Zero(t, r.daemon.count(true), "zzRouter sends no unload")
 	})
 
+	t.Run("a served run reuses absent and equal request settings", func(t *testing.T) {
+		r := newServedRig(t)
+		pinned := served
+		pinned.Parameters = map[string]string{"keep-alive": "-1"}
+		run := r.running(t, pinned)
+		same := served
+		same.Parameters = map[string]string{"keep_alive": "-1"}
+		for _, req := range []EnsureRequest{served, same} {
+			result, err := r.m.EnsureRun(t.Context(), req)
+			require.NoError(t, err)
+			assert.Same(t, run, result.Run)
+			assert.False(t, result.Started)
+		}
+		different := served
+		different.Parameters = map[string]string{"keep-alive": "30m"}
+		_, err := r.m.EnsureRun(t.Context(), different)
+		require.ErrorIs(t, err, ErrRunSettingsDiffer)
+		assert.Equal(t, 1, r.daemon.count(false))
+	})
+
 	t.Run("S13 a model a process provider holds refuses a served start", func(t *testing.T) {
 		r := newServedRig(t)
 		held := instance.NewInstance("held", "generic", servedLoaded, 0, 0, 0)

@@ -44,6 +44,7 @@ var sentinels = map[string]error{
 	"ErrModelIncomplete":          prov_apps.ErrModelIncomplete,
 	"ErrUnsupportedPlatform":      prov_apps.ErrUnsupportedPlatform,
 	"ErrRunHeldByOtherProvider":   prov_apps.ErrRunHeldByOtherProvider,
+	"ErrRunSettingsDiffer":        prov_apps.ErrRunSettingsDiffer,
 	"ErrModelNotLocal":            prov_apps.ErrModelNotLocal,
 	"ErrParameterValidation":      prov_apps.ErrParameterValidation,
 	"ErrPortOutOfRange":           prov_apps.ErrPortOutOfRange,
@@ -51,6 +52,25 @@ var sentinels = map[string]error{
 	"ErrShutdown":                 prov_apps.ErrShutdown,
 	"ErrAtCapacity":               prov_apps.ErrAtCapacity,
 	"ErrPortUnavailable":          prov_apps.ErrPortUnavailable,
+}
+
+func TestRunSettingsDifferProblem(t *testing.T) {
+	wrapped := fmt.Errorf("failed to launch: %w", &prov_apps.RunSettingsDifferError{RunID: "existing-run"})
+	wire, ok := knownFailure(wrapped)
+	require.True(t, ok)
+	assert.Equal(t, http.StatusConflict, answeredStatus(wrapped))
+	assert.Equal(t, "run_settings_differ", wire.Code)
+	assert.Equal(t, "existing-run", wire.Extra["run_id"])
+	assert.Contains(t, wire.Message, "zz_run_start with replace")
+}
+
+func TestRunNodeRequiredProblem(t *testing.T) {
+	wire, ok := knownFailure(fmt.Errorf("start: %w", errRunNodeRequired))
+	require.True(t, ok)
+	assert.Equal(t, http.StatusBadRequest, wire.Status)
+	assert.Equal(t, "run_node_required", wire.Code)
+	assert.Contains(t, wire.Message, "zz_models")
+	assert.Contains(t, wire.Message, "pass node")
 }
 
 // The sentinels reach handlers wrapped in whatever context the raise
