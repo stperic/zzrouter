@@ -665,6 +665,7 @@ func TestCalibrationLocalJobAndSyntheticSender(t *testing.T) {
 	s.httpStreamingClient = &http.Client{Transport: transport}
 	run := calibrationFixtureRun(t, s, "run_local", "http://127.0.0.1:1", instance.StatusRunning, calibration.Chat, "chat_completions")
 	request := calibrationRequestFor("local", run.ID, 1)
+	request.Runs[0].Workload.InputTokens = 4092
 	id := calibrationJobID(t, calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "first", request))
 	awaitDownloadSignal(t, entered)
 	require.Equal(t, id, calibrationJobID(t, calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "first", request)))
@@ -687,7 +688,7 @@ func TestCalibrationLocalJobAndSyntheticSender(t *testing.T) {
 	require.Equal(t, new(uint64(0)), result.PublicRequests)
 	require.Equal(t, new(1), result.Engine.Running)
 	require.Equal(t, new(0), result.Engine.Waiting)
-	require.Equal(t, &calibration.TokenRange{Min: 40, Max: 40}, result.InputTokens)
+	require.Equal(t, &calibration.TokenRange{Min: 4094, Max: 4094}, result.InputTokens)
 	require.NotNil(t, result.TimeToFirstTokenMS)
 	require.EqualValues(t, 4, run.ToInfo("local").RequestsAdmitted)
 	require.Equal(t, 0, event.Meta["step"])
@@ -942,7 +943,7 @@ func TestCalibrationEmbeddingsSender(t *testing.T) {
 	require.EqualValues(t, "verified", report.Outcome)
 	require.EqualValues(t, 4, hits.Load())
 	step := report.Steps[0].Runs[0]
-	require.Equal(t, &calibration.TokenRange{Min: 40, Max: 40}, step.InputTokens)
+	require.Equal(t, &calibration.TokenRange{Min: 44, Max: 44}, step.InputTokens)
 	require.Nil(t, step.OutputTokens)
 	require.Nil(t, step.ConcurrentStreamsPeak)
 	require.Equal(t, new(uint64(0)), step.PublicRequests)

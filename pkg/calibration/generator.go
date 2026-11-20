@@ -15,7 +15,6 @@ const (
 	// Embeddings is the endpoint for the embeddings-v1 workload.
 	Embeddings            = "embeddings"
 	shortWarmupCharacters = 256
-	longWarmupCharacters  = 8 * shortWarmupCharacters
 	maxPromptCharacters   = 1 << 20
 	promptFiller          = " Quartz granite basalt marble shale slate sandstone limestone."
 )
@@ -75,7 +74,18 @@ func (g *generator) body(target Target, characters, outputTokens int) map[string
 	return body
 }
 
-func promptSize(inputTokens int, short, long Sample) (int, *Reason) {
+func longWarmupSize(inputTokens int, short Sample) int {
+	if short.InputTokens == nil || *short.InputTokens <= 0 {
+		return 8 * shortWarmupCharacters
+	}
+	characters := math.Ceil(float64(inputTokens) * shortWarmupCharacters / float64(*short.InputTokens))
+	if characters <= shortWarmupCharacters {
+		return 2 * shortWarmupCharacters
+	}
+	return int(min(maxPromptCharacters, characters))
+}
+
+func (w Workload) promptSize(contextTokens *int, short, long Sample, longCharacters int) (int, *Reason) {
 	switch {
 	case short.ErrorCode != "":
 		return 0, requestFailure(short.ErrorCode)
@@ -86,9 +96,21 @@ func promptSize(inputTokens int, short, long Sample) (int, *Reason) {
 	case *short.InputTokens < 0 || *long.InputTokens <= *short.InputTokens:
 		return 0, reason(usageUnavailable)
 	}
-	ratio := float64(*long.InputTokens-*short.InputTokens) / (longWarmupCharacters - shortWarmupCharacters)
-	overhead := float64(*short.InputTokens) - ratio*shortWarmupCharacters
-	characters := math.Ceil((float64(inputTokens) - overhead) / ratio)
+	tokenDelta := float64(*long.InputTokens - *short.InputTokens)
+	characterDelta := float64(longCharacters - shortWarmupCharacters)
+	charactersForTokens := func(tokens float64) float64 {
+		return shortWarmupCharacters + (tokens-float64(*short.InputTokens))*characterDelta/tokenDelta
+	}
+	input := float64(w.InputTokens)
+	// Leave room for tokenization to differ from the fitted line.
+	characters := math.Ceil(charactersForTokens(input + max(4, math.Ceil(input/500))))
+	if contextTokens != nil {
+		inputLimit := *contextTokens
+		if w.OutputTokens != nil {
+			inputLimit -= *w.OutputTokens
+		}
+		characters = min(characters, math.Floor(charactersForTokens(float64(inputLimit))))
+	}
 	if characters > maxPromptCharacters {
 		failure := reason(requestsFailed)
 		failure.Message = "The warm-up fit sizes the prompt above the generator's 1 MiB limit."
