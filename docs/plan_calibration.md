@@ -490,3 +490,58 @@ keyboard use, narrow widths, and a draft surviving refresh.
   - live acceptance;
   - the user's go-ahead;
   - CI green after the push.
+
+## Live acceptance (2026-11-20)
+
+Build `2f7e9e8`, then `83dce04` with the sizing fix, on the coordinator (Apple
+Silicon), localai (RTX PRO 6000) and PC-ERIC, all at cluster protocol 26/26.
+
+Passed:
+- **vLLM pilot** (Qwen3.8-27B, 32,768 context, `max-num-seqs` 4,
+  `gpu-memory-utilization` 0.8, 30,000 input and 256 output, steps 1/2/4/8):
+  verified at 1, 2 and 4, queued at 8 (streams peak 4); TTFT p50 5.5, 7.9,
+  11.8 and 40.4 s; KV peak 11, 23, 46 and 45%; GPU about 99% at 525 to 564 W;
+  ownership verified with the vLLM process attributed; output forced to 256.
+  The first run found the input sizing defect (29,994 tokens for 30,000),
+  fixed before the rerun (30,060 measured).
+- **Public traffic:** three chat requests during step 1 counted as
+  `public_requests: 3` with the step still verified.
+- **Two vLLM runs sharing the GPU** with `kv-cache-memory-bytes` (27B at
+  fraction 0.62 with 8 GiB KV, 0.5B at 0.15 with 2 GiB KV), each alone and
+  together: verified; the small model fell from 2,048 to 901 output tokens
+  per second beside the 27B while the 27B held 34 to 35; minimum free GPU
+  25.9 GB; both holders attributed.
+- **Unified memory:** an MLX run on the coordinator verified; the unified
+  pool listed once, per-run memory null, engine figures null, output not
+  forced.
+- **Ollama served model:** verified at 1 and 2, queued at 4 (the daemon's
+  parallelism); GPU ownership shared with the vLLM run named.
+- **Interruptions:** a run restarted mid-step gave inconclusive with
+  `run_changed` (38 failed requests attributed to the change); a 5 s step
+  timeout gave `step_timeout` with `change_workload`; cancellation kept the
+  measured step and failed the job with `jobs: canceled`.
+- **Validation and claims:** stale revision 409 `run_changed`,
+  `context_too_small`, `concurrency_above_limit`, `run_not_found` (also for
+  a run on another node), limit field errors, typed `run_id`/`job_id`;
+  identical retry reused the job; a different request got
+  `calibration_running`; a fresh request after cancellation was accepted.
+- **Cluster:** calibrations on the coordinator itself and on a worker.
+
+Not covered live: llama.cpp offload host memory, Strata pinned host RAM
+(not installed on the lab), ComfyUI resident, Windows WDDM ownership, the
+agent campaign scenario, and the console journeys against live data (the
+console needs an operator sign-in; the Chrome journey with fixtures passes).
+
+## Follow-ups
+
+- **ComfyUI busy while unobserved** (predates this arc): a run whose
+  `observe.busy` read is unknown, before the first poll or after repeated
+  failures, can be reclaimed while busy. The fix belongs in
+  `instance/eviction.go` (treat unknown as busy for runs that declare
+  `observe.busy`, reason `activity_unknown`).
+- **Ollama embeddings runs report `endpoint: chat`:** a run started through
+  `POST /runs` with `endpoint: embeddings` for an Ollama embedding model
+  reports `chat` in its snapshot, so an embeddings calibration on it is
+  refused as a chat workload missing `output_tokens`.
+- `zzrouter run` has no endpoint flag, so the CLI cannot start an
+  embeddings run.
