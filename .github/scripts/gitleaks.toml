@@ -145,3 +145,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''(^|/)internal/server/integration_oauth_test\.go$''']
 regexes = ['''^\s*const key = "zzoa_B9vQ4x7pD2mR8tK3nH6wS1cF5jL0zA9uE4yG7dN2"\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: SHA-256 grant token digests in the access store's golden dump"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)pkg/access/sqlstore/testdata/access-v[0-9]+\.dump$''']
+regexes = ['''^[0-9a-f]{64}$''']
