@@ -191,7 +191,8 @@ observe:
   with the same meaning and validation as a provider operation's `runtimes`
   (`base`, or a feature runtime that exists on the provider), sharing that
   check. Absent, the block applies to every runtime.
-- **Roles.** Every role is optional.
+- **Roles.** Each role is optional, but a block declares at least one; a
+  block that observes nothing fails the merge.
   - `busy` keeps today's meaning exactly. A listed JSON field holding a
     non-empty array holds the run busy (the eviction hold and the activity
     observation). A missing or non-array field makes the read unknown.
