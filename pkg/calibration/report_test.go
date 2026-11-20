@@ -21,6 +21,7 @@ func TestReportJSON(t *testing.T) {
 	run := RunReport{
 		RunID: "a", Provider: "vllm", Model: "model", Endpoint: Chat, OutputForced: true,
 		ResolvedParameters: map[string]string{"max-num-seqs": "1"}, ParametersStatus: "current", Overridden: []string{},
+		RedactedParameters:  []string{},
 		ServedContextTokens: new(1024), MaxConcurrentRequests: new(0), WorkloadRevision: new("chat-v1"),
 		ObservedRoles: []string{"running", "waiting", "kv_cache_usage"},
 		Cache:         &CacheReport{KVTokens: new(int64(1024)), ContextTokens: new(int64(1024)), MaxConcurrency: new(1.0)},
@@ -53,7 +54,7 @@ func TestReportJSON(t *testing.T) {
 	  ],
 	  "runs": [{
 	    "run_id":"a","provider":"vllm","model":"model","endpoint":"chat",
-	    "resolved_parameters":{"max-num-seqs":"1"},"parameters_status":"current","overridden":[],
+	    "resolved_parameters":{"max-num-seqs":"1"},"redacted_parameters":[],"parameters_status":"current","overridden":[],
 	    "served_context_tokens":1024,"max_concurrent_requests":0,
 	    "cache":{"kv_tokens":1024,"context_tokens":1024,"max_concurrency":1},
 	    "output_forced":true,"observed_roles":["running","waiting","kv_cache_usage"],"workload_revision":"chat-v1"

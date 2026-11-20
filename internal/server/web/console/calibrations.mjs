@@ -532,14 +532,17 @@ function calibrationReport(p, job, back) {
       leaveButton(label, () => follow(choose ? candidates.find(run => run.run_id === choose.value) : run), p.api));
   }
   const save = run => {
+    const redacted = new Set(run.redacted_parameters || []), omitted = [];
     const overrides = Object.fromEntries((run.overridden || []).flatMap(path => {
       if (path.startsWith('environment.')) return [];
       const key = path.replace(/^parameters\./, ''), value = run.resolved_parameters?.[key];
+      if (redacted.has(key)) { omitted.push(key); return []; }
       return value == null ? [] : [[key, value]];
     }));
-    return Object.keys(overrides).length ? leaveButton('Save as model settings on this node',
+    const action = Object.keys(overrides).length ? leaveButton('Save as model settings on this node',
       () => editStored(p, { ...run, node: job.node }, revisit, overrides), p.api) :
       run.overridden?.length ? text('Override values are unavailable for saving.') : null;
+    return [action, omitted.length ? text(`Settings prefill omitted redacted values for ${omitted.join(', ')}.`) : null];
   };
   return el('div', { class: 'calibration-report' }, el('h2', {}, 'Calibration report'), badge(report.outcome),
     report.reason ? message(report.reason.message || report.reason.code, 'warning') : null, nextControl,

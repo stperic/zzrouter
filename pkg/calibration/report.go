@@ -47,6 +47,7 @@ type RunReport struct {
 	Model                 string            `json:"model"`
 	Endpoint              string            `json:"endpoint"`
 	ResolvedParameters    map[string]string `json:"resolved_parameters"`
+	RedactedParameters    []string          `json:"redacted_parameters"`
 	ParametersStatus      string            `json:"parameters_status"`
 	Overridden            []string          `json:"overridden"`
 	ServedContextTokens   *int              `json:"served_context_tokens"`

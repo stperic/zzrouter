@@ -528,9 +528,15 @@ means the report is ready.
   `zz_runs` read on the selected node.
 - `calibration_unsupported` means the target cannot serve the workload.
   Choose a supported run or list this run as a resident.
-- `calibration_running` names the active job in the Problem detail. Read
-  it with `zz_job` on that node. If the node is unreachable or times out,
-  check it with `zz_nodes`.
+- `calibration_running` supplies the active `job_id` in the Problem. Read it
+  with `zz_job` on the selected node.
+- `calibration_wrong_node` supplies the receiving `node` in the Problem.
+  If the request is misdirected, the node is unreachable or it times out,
+  check the intended node with `zz_nodes`.
+
+`run_not_found`, `run_not_ready`, `run_changed`, `calibration_unsupported`,
+`context_too_small` and `concurrency_above_limit` supply `run_id` in the
+Problem. Exclude each run's `redacted_parameters` when saving tested settings.
 
 The report's reason codes and their next tools are listed in the
 [calibration report error codes](agent_error_codes.md#calibration-report-reasons).

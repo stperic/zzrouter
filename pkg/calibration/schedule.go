@@ -2,14 +2,20 @@ package calibration
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // SamplingInterval spaces resource and engine observations.
 const SamplingInterval = 500 * time.Millisecond
+
+// ErrRunnerPanic identifies an unexpected abort without exposing panic values.
+var ErrRunnerPanic = errors.New("calibration runner panicked")
 
 // Clock allows the caller to control timestamps and timers together.
 type Clock interface {
@@ -100,6 +106,14 @@ type Runner struct {
 	Sampler  Sampler
 	Clock    Clock
 	Progress func(Progress)
+	cancel   context.CancelCauseFunc
+}
+
+func (r Runner) recoverWorker() {
+	if value := recover(); value != nil {
+		utils.LogPanic("calibration worker", value)
+		r.cancel(ErrRunnerPanic)
+	}
 }
 
 type measuredRequest struct {
@@ -145,6 +159,9 @@ func (s *sampleSeries) sample(ctx context.Context, r Runner) (Snapshot, bool) {
 
 // Run measures a validated request with a checked target for each run ID and returns any cancellation cause.
 func (r Runner) Run(ctx context.Context, request Request, targets map[string]Target) (Report, error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	r.cancel = cancel
 	report := Report{
 		StartedAt: r.Clock.Now().UTC(), Request: request, SamplingIntervalMS: SamplingInterval.Milliseconds(),
 		Steps: []StepReport{}, Resources: []PoolReport{},
@@ -183,6 +200,7 @@ func prepareRuns(request Request, targets map[string]Target, report *Report) ([]
 		view := target.Run
 		view.RunID = entry.RunID
 		view.Overridden = append([]string{}, view.Overridden...)
+		view.RedactedParameters = append([]string{}, view.RedactedParameters...)
 		view.ObservedRoles = append([]string{}, view.ObservedRoles...)
 		if view.ParametersStatus == "" {
 			view.ParametersStatus = "unknown"
@@ -209,6 +227,7 @@ func (r Runner) warmup(ctx context.Context, limit time.Duration, runs []prepared
 			continue
 		}
 		workers.Go(func() {
+			defer r.recoverWorker()
 			short := r.warmupRequest(ctx, gen, run.Target, shortWarmupCharacters)
 			long := r.warmupRequest(ctx, gen, run.Target, longWarmupCharacters)
 			if context.Cause(ctx) == context.DeadlineExceeded {
@@ -252,7 +271,11 @@ type stepFinish struct {
 
 func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Duration, prepared []preparedRun, gen *generator, series *sampleSeries, previous map[string]RunSample, targets map[string]Target) *StepReport {
 	stepCtx, stopStep := r.withTimeout(ctx, limit)
-	defer stopStep()
+	var workers sync.WaitGroup
+	defer func() {
+		stopStep()
+		workers.Wait()
+	}()
 	started := r.Clock.Now()
 	nextSample := started.Add(SamplingInterval)
 	series.previous = time.Time{}
@@ -266,13 +289,14 @@ func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Du
 	}
 	probeCtx, stopProbes := context.WithCancel(stepCtx)
 	defer stopProbes()
-	var workers sync.WaitGroup
 	r.startPools(stepCtx, &workers, runs, gen, completed)
 	finished := make(chan stepFinish, 1)
 	go func() {
+		defer close(finished)
+		defer stopProbes()
+		defer r.recoverWorker()
 		workers.Wait()
 		finished <- stepFinish{at: r.Clock.Now(), cause: context.Cause(stepCtx)}
-		stopProbes()
 	}()
 
 	for probeCtx.Err() == nil {
@@ -295,8 +319,8 @@ func (r Runner) measureStep(ctx context.Context, index, steps int, limit time.Du
 		return nil
 	}
 	identityCtx, stopIdentity := context.WithTimeout(ctx, time.Second)
+	defer stopIdentity()
 	revisions := r.Sampler.Revisions(identityCtx)
-	stopIdentity()
 	if last, ok := series.sample(stepCtx, r); ok {
 		snapshots = append(snapshots, last)
 		r.publishStep(progress, last, series.previous, runs, completed)
@@ -352,7 +376,10 @@ func (r Runner) startPools(ctx context.Context, workers *sync.WaitGroup, runs []
 		if run.warmupReason == nil {
 			var next atomic.Int64
 			for range run.concurrency {
-				workers.Go(func() { r.sendPool(ctx, run.preparedRun, gen, run.requests, &next, &completed[i]) })
+				workers.Go(func() {
+					defer r.recoverWorker()
+					r.sendPool(ctx, run.preparedRun, gen, run.requests, &next, &completed[i])
+				})
 			}
 		}
 	}

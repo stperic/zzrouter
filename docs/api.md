@@ -72,8 +72,10 @@ residents, `max_steps` is 8, `max_concurrency` is 256 per run and step, and
 `GET /zzrouter/v1/providers/{name}/schema` exposes the provider's `observe`
 roles and any `calibration.output` fields.
 
-The response is `202` with `data.job_id` and `data.node`. Use the returned
-node in subsequent job requests. A node runs one calibration at a time.
+The response is `202` with `data.job_id` and `data.node`. The response and
+the report's `request.node` use the node's canonical name, including when
+the request uses a routing alias. Use the returned node in subsequent job
+requests. A node runs one calibration at a time.
 Identical submissions while it is active reuse that job. A different valid
 submission receives `calibration_running`. Use `Idempotency-Key` with the
 same body to replay an accepted submission, including after completion within
@@ -95,8 +97,9 @@ the replay window.
   aborted. The terminal job has `phase: failed`, a cancellation message in
   `err`, and a `cancelled` report with the steps already measured.
 
-The terminal item and stream event carry `meta.report`. It contains the
-submitted `request`, `started_at`, `completed_at`, `sampling_interval_ms`,
+The first event has no `meta`. When a report is available, the terminal item
+and stream event add `meta.report` alongside the last progress fields. The
+report contains the submitted `request`, `started_at`, `completed_at`, `sampling_interval_ms`,
 `largest_sample_gap_ms`, initial `resources`, the runs and settings checked,
 and `steps`. Each step includes `index`, `outcome`, `duration_ms`, `throughput`,
 per-pool `resources` and active `runs`. A run's step includes `concurrency`,
@@ -104,16 +107,22 @@ per-pool `resources` and active `runs`. A run's step includes `concurrency`,
 engine metrics. `public_requests` records admissions outside the calibration.
 Unknown measurements are null. GPU ownership may be `verified`, `shared` or
 `unknown`. Unified memory appears once without per-run attribution. The
-report keeps summaries and redacted settings.
+report keeps summaries and redacted settings. Each run lists
+`redacted_parameters`, the keys to exclude when saving its settings.
 
 Read the report's `outcome` (`verified`, `partial`, `failed`, `inconclusive`
-or `cancelled`) and `reason` independently of the job phase. A published
-measurement normally finishes in `done`. The reason carries a code, message
-and any suggested next action. The terminal job's `expires_at` is 24 hours
+or `cancelled`) and `reason` independently of the job phase. A calibration
+that runs to completion ends in `done`. If its context ends early, including
+during node shutdown, it publishes the measured steps and ends in `failed`
+with the cause in `err`. A runner panic also fails the job. The report reason
+carries a code, message and any suggested next action. The terminal job's `expires_at` is 24 hours
 after completion or its latest ID hand-out, whichever is later. Jobs and
 reports are in memory and disappear when the owning node restarts.
 
-Submission errors use Problem Details.
+Submission errors use Problem Details. `calibration_running` supplies
+`job_id`. `run_not_found`, `run_not_ready`, `run_changed`,
+`calibration_unsupported`, `context_too_small` and `concurrency_above_limit`
+supply `run_id`.
 
 - `400 bad_request` for malformed JSON or unknown keys, or `400 invalid_value`
   with a field error for invalid request values. `context_too_small` and
@@ -123,6 +132,8 @@ Submission errors use Problem Details.
 - `404 run_not_found` when a run ID is missing on the chosen node.
 - `409 run_not_ready`, `run_changed`, `calibration_unsupported` or
   `calibration_running` for a run or node state conflict.
+- `421 calibration_wrong_node` when the request reaches a different node.
+  The Problem's `node` names the receiver.
 - `422 idempotency_key_conflict` if the key was used with a different body.
 - `503 node_unreachable` or `upstream_timeout` if the node does not answer,
   `service_unavailable` if calibration jobs are unavailable, or

@@ -4832,6 +4832,7 @@ paths:
         '403': { $ref: '#/components/responses/MgmtForbidden' }
         '404': { description: run_not_found on the selected node., content: *calibrationProblem }
         '409': { description: 'run_not_ready, run_changed, calibration_unsupported or calibration_running.', content: *calibrationProblem }
+        '421': { description: calibration_wrong_node identifies the node that received a misdirected calibration., content: *calibrationProblem }
         '422': { description: The Idempotency-Key was recorded against a different body. Code is idempotency_key_conflict., content: *calibrationProblem }
         '503': { description: The node is unreachable or its job registry is unavailable. A full retry store returns idempotency_store_full., content: *calibrationProblem }
         '504': { description: A duplicate exceeded its wait limit or replay window. Code is idempotency_wait_timeout., content: *calibrationProblem }
@@ -14942,12 +14943,10 @@ components:
           type: object
           description: |
             Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
-            Calibration progress uses CalibrationProgress. Terminal calibration job item reads and terminal stream events also carry report.
+            Calibration events begin without meta. When a report is available, the terminal event adds it to the last progress metadata.
           anyOf:
             - $ref: '#/components/schemas/CalibrationProgress'
             - type: object
-              properties:
-                report: { $ref: '#/components/schemas/CalibrationReport' }
           additionalProperties: true
 
     CalibrationRequest:
@@ -15003,10 +15002,10 @@ components:
     CalibrationProgress:
       type: object
       additionalProperties: false
-      required: [step, steps, requests_completed, requests_total, sample]
       properties:
         step: { type: integer, minimum: 0 }
-        steps: { type: integer, minimum: 1 }
+        steps: { type: integer, minimum: 0 }
+        report: { $ref: '#/components/schemas/CalibrationReport' }
         requests_completed: { type: object, additionalProperties: { type: integer }, description: Counts keyed by active run ID. }
         requests_total: { type: object, additionalProperties: { type: integer, nullable: true }, description: Scheduled requests keyed by active run ID. Null means unknown. }
         sample:
@@ -15093,8 +15092,9 @@ components:
         model: { type: string }
         endpoint: { type: string }
         resolved_parameters: { type: object, additionalProperties: { type: string } }
+        redacted_parameters: { type: array, items: { type: string }, description: Keys whose resolved values were redacted. Exclude these keys when saving the tested settings. }
         parameters_status: { type: string, enum: [current, stale, unknown] }
-        overridden: { type: array, items: { type: string } }
+        overridden: { type: array, items: { type: string }, description: Canonical parameter keys and environment paths held by the run's request tier. }
         served_context_tokens: { type: integer, nullable: true }
         max_concurrent_requests: { type: integer, nullable: true, description: Zero means unlimited. }
         cache:
@@ -15410,10 +15410,13 @@ components:
           example: 'not_found'
         node:
           type: string
-          description: The cluster node a routed request targeted, when applicable.
+          description: The cluster node a routed request targeted, or the receiving node for calibration_wrong_node.
         run_id:
           type: string
-          description: The run holding physical weights that deletion refused.
+          description: The run identified by run_not_found, run_not_ready, run_changed, calibration_unsupported, context_too_small or concurrency_above_limit, or the run holding physical weights that deletion refused.
+        job_id:
+          type: string
+          description: The job already running on the node for calibration_running.
         deleted:
           type: integer
           minimum: 0

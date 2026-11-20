@@ -38,7 +38,13 @@ const RedactedPlaceholder = "[REDACTED]"
 // RedactSensitive replaces sensitive data in a string with [REDACTED]
 // This should be called before logging any user-provided or system data
 func RedactSensitive(s string) string {
+	result, _ := redactSensitive(s)
+	return result
+}
+
+func redactSensitive(s string) (string, bool) {
 	result := s
+	redacted := false
 
 	for _, pattern := range SensitivePatterns {
 		// For patterns with capture groups, replace only the sensitive part
@@ -50,8 +56,10 @@ func RedactSensitive(s string) string {
 				if !isJSONSensitiveKey(key) {
 					return match
 				}
+				redacted = true
 				return match[:positions[2*group]] + RedactedPlaceholder + match[positions[2*group+1]:]
 			}
+			redacted = true
 			// Find where the sensitive value starts (after = or : or space)
 			for _, sep := range []string{"= ", "=", ": ", ":", " "} {
 				if idx := strings.Index(match, sep); idx != -1 {
@@ -64,7 +72,7 @@ func RedactSensitive(s string) string {
 		})
 	}
 
-	return result
+	return result, redacted
 }
 
 // AllowedEnvVars is the whitelist of environment variables that can be expanded

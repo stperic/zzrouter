@@ -249,11 +249,24 @@ test('opening calibration from a stale run detail requires an explicit reselecti
   assert.equal(f.calls.find(call => call.path === '/calibrations').body.runs[0].target_revision, 'q2');
 });
 
-test('an in-flight calibration refusal without field errors links to the reported job', async t => {
-  const f = fixture(t, { data: path => {
-    if (path === '/calibrations') throw new APIError('Calibration already running', { code: 'calibration_running', job_id: job.job_id });
+test('RFC 9457 calibration refusals link the active job and identify the affected run', async t => {
+  const busy = { code: 'calibration_running', job_id: job.job_id, detail: 'A calibration is active. Follow that job with zz_job.' };
+  const changed = { code: 'run_changed', run_id: embed.id, detail: 'A run has a different target revision. Read it with zz_runs.' };
+  let refusal = changed;
+  const api = new API({ fetcher: async path => {
+    assert.equal(path, '/zzrouter/v1/calibrations');
+    return Response.json({ type: 'about:blank', title: 'Conflict', status: 409, instance: path, request_id: 'calibration-request', ...refusal },
+      { status: 409, headers: { 'Content-Type': 'application/problem+json' } });
   } });
+  api.state = { csrf: 'fixture' };
+  const f = fixture(t, { data: (path, options) => path === '/calibrations' ? api.data(path, options) : undefined });
   await calibrationForm(f.owner, { run: qwen });
+  change(named(f.root, 'calibration_run_1'), true);
+  await drain();
+  await submit(f.root);
+  assert.equal(named(f.root, 'calibration_run_1').getAttribute('aria-invalid'), 'true');
+  assert.notEqual(named(f.root, 'calibration_run_0').getAttribute('aria-invalid'), 'true');
+  refusal = busy;
   await submit(f.root);
   assert.equal(named(f.root, 'calibration_node').getAttribute('aria-invalid'), 'true');
   await click(f.root, 'View calibration job');
@@ -586,6 +599,23 @@ test('report distinguishes shared GPU, unified pools and unknowns, and shows a s
   assert.match(f.root.textContent, /Settings diffslots2 → 3/);
   assert.doesNotMatch(f.root.textContent, /synthetic-private/);
   assert.ok(!f.calls.some(call => call.method === 'PATCH'));
+});
+
+test('saving report settings excludes and identifies redacted parameter keys', async t => {
+  const f = fixture(t, { request: (path, options) => {
+    if (path.endsWith('/schema')) return { ...schema, parameters: { ...schema.parameters, 'engine-note': { type: 'string' }, label: { type: 'string' } } };
+    if (options.method === 'PATCH') return {};
+  } });
+  const tested = { ...report.runs[0], overridden: ['slots', 'engine-note', 'label'], redacted_parameters: ['engine-note'],
+    resolved_parameters: { slots: '3', 'engine-note': 'before [REDACTED] after', label: '[REDACTED]' } };
+  f.owner.root.append(calibrationJob(f.owner, { ...job, meta: { report: { ...report, runs: [tested] } } }));
+  assert.match(f.root.textContent, /Settings prefill omitted redacted values for engine-note/);
+  await click(f.root, 'Save as model settings on this node');
+  assert.equal(named(f.root, 'parameters_engine-note').value, '');
+  assert.equal(named(f.root, 'parameters_label').value, '[REDACTED]');
+  await submit(f.root);
+  const patch = f.calls.find(call => call.method === 'PATCH');
+  assert.deepEqual(patch.body.nodes[node].models[qwen.model].endpoints.chat.parameters, { slots: 3, label: '[REDACTED]' });
 });
 
 test('run again carries workload values and deliberately rereads the run revision', async t => {

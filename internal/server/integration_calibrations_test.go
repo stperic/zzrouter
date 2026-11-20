@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -42,7 +44,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-const calibrationPath = "/zzrouter/v1/calibrations"
+const (
+	calibrationPath        = "/zzrouter/v1/calibrations"
+	calibrationWorkerAlias = "calibration-worker-alias"
+)
 
 func calibrationFixtureRun(t *testing.T, s *Server, id, backend string, status instance.Status, endpoint string, api ...string) *instance.Instance {
 	t.Helper()
@@ -176,8 +181,49 @@ func TestIntegrationCalibrationValidation(t *testing.T) {
 			if test.code == "invalid_value" {
 				require.Len(t, problem.Errors, 1)
 				require.Equal(t, "runs[0].workload.input_tokens", problem.Errors[0].Key)
+				require.Empty(t, problem.RunID)
+			} else {
+				require.Equal(t, req.Runs[0].RunID, problem.RunID)
 			}
+			require.Empty(t, problem.JobID)
 			require.Empty(t, s.jobs.List(jobs.KindCalibration))
+		})
+	}
+}
+
+func TestCalibrationInternalRefusesWrongNode(t *testing.T) {
+	s := operationTestNode(t, "receiver", config.ClusterModeWorker)
+	run := calibrationFixtureRun(t, s, "run_present", "http://127.0.0.1:1", instance.StatusRunning, calibration.Chat, "chat_completions")
+	response := calibrationHTTP(t, buildInternalEngine(s), http.MethodPost, internalCalibrationsPath, "", calibrationRequestFor("intended", run.ID, 1))
+	require.Equal(t, http.StatusMisdirectedRequest, response.Code, response.Body.String())
+	require.Contains(t, response.Header().Get("Content-Type"), "application/problem+json")
+	var problem utils.ProblemDetails
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
+	require.Equal(t, "calibration_wrong_node", problem.Code)
+	require.Equal(t, "receiver", problem.Node)
+	require.Contains(t, problem.Detail, `"receiver"`)
+	require.Empty(t, s.jobs.List(jobs.KindCalibration))
+}
+
+func TestCalibrationCanonicalizesCoordinatorAliases(t *testing.T) {
+	s := operationTestNode(t, "coordinator", config.ClusterModeCoordinator)
+	calibrationDefaults(t, s)
+	engine := calibrationChatHandler(t, nil)
+	client := &http.Client{Transport: deadlineTransport(func(req *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec.Result(), nil
+	})}
+	s.httpClient, s.httpStreamingClient = client, client
+	run := calibrationFixtureRun(t, s, "run_alias", "http://127.0.0.1:1", instance.StatusRunning, calibration.Chat, "chat_completions")
+	address := net.JoinHostPort(s.node.Bind(), strconv.Itoa(s.node.Port()))
+	for _, selector := range []string{"@master", address, "http://" + address} {
+		t.Run(selector, func(t *testing.T) {
+			response := calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "", calibrationRequestFor(selector, run.ID, 1))
+			id := calibrationJobID(t, response)
+			require.Contains(t, response.Body.String(), `"node":"coordinator"`)
+			report := calibrationReportOf(t, awaitCalibration(t, s.jobs, id, jobs.PhaseDone))
+			require.Equal(t, "coordinator", report.Request.Node)
 		})
 	}
 }
@@ -202,7 +248,7 @@ func linkCalibrationWorker(t *testing.T, coordinator, worker *Server) (http.Hand
 	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coordinator"}, "http://coordinator.invalid", coordinator, nil,
 		mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client, ClusterPort: remote.Addr().(*net.TCPAddr).Port}))
 	require.NoError(t, err)
-	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
+	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, Alias: calibrationWorkerAlias, NodeName: "worker", Status: mesh.StatusUp}))
 	useTestCluster(t, coordinator, cluster)
 	coordinator.cluster.listener = owner
 	coordinator.cluster.router = routing.NewClusterAwareRouterWithClient("coordinator", cluster.GetClient(), "0", coordinator.ServeLocalRequest, client)
@@ -294,7 +340,7 @@ func TestIntegrationCalibrationWorkerJobReplayAndReport(t *testing.T) {
 		}
 	}()
 	run := calibrationFixtureRun(t, worker, "run_worker", backend.URL, instance.StatusRunning, calibration.Chat, "chat_completions")
-	req := calibrationRequestFor("worker", run.ID, 1)
+	req := calibrationRequestFor("http://"+calibrationWorkerAlias+":9090", run.ID, 1)
 	req.Runs[0].TargetRevision = new(run.ToInfo("worker").TargetRevision)
 	accepted := calibrationHTTP(t, handler, http.MethodPost, calibrationPath, "calibration-replay", req)
 	id := calibrationJobID(t, accepted)
@@ -306,7 +352,9 @@ func TestIntegrationCalibrationWorkerJobReplayAndReport(t *testing.T) {
 		require.EqualValues(t, 1, forwarded.Load())
 	})
 	t.Run("retried_forward_reuses_job", func(t *testing.T) {
-		replayed := calibrationHTTP(t, handler, http.MethodPost, calibrationPath, "", req)
+		canonical := req
+		canonical.Node = "worker"
+		replayed := calibrationHTTP(t, handler, http.MethodPost, calibrationPath, "", canonical)
 		require.Equal(t, id, calibrationJobID(t, replayed))
 		require.EqualValues(t, 2, forwarded.Load())
 	})
@@ -314,14 +362,18 @@ func TestIntegrationCalibrationWorkerJobReplayAndReport(t *testing.T) {
 		other := calibrationRequestFor("worker", run.ID, 2)
 		busy := calibrationHTTP(t, handler, http.MethodPost, calibrationPath, "", other)
 		require.Equal(t, 409, busy.Code, busy.Body.String())
-		require.Contains(t, busy.Body.String(), "calibration_running")
-		require.Contains(t, busy.Body.String(), id)
-		require.Contains(t, busy.Body.String(), "zz_job")
+		var problem utils.ProblemDetails
+		require.NoError(t, json.Unmarshal(busy.Body.Bytes(), &problem))
+		require.Equal(t, "calibration_running", problem.Code)
+		require.Equal(t, id, problem.JobID)
+		require.Empty(t, problem.RunID)
+		require.Contains(t, problem.Detail, "zz_job")
 		require.Len(t, worker.jobs.List(jobs.KindCalibration), 1)
 	})
 	close(release)
 	event := awaitCalibration(t, worker.jobs, id, jobs.PhaseDone)
 	report := calibrationReportOf(t, event)
+	require.Equal(t, "worker", report.Request.Node)
 	require.EqualValues(t, "verified", report.Outcome)
 	require.Len(t, report.Steps, 1)
 	require.Equal(t, new(uint64(0)), report.Steps[0].Runs[0].PublicRequests)
@@ -671,11 +723,16 @@ func TestCalibrationCancellationReleasesClaim(t *testing.T) {
 	s := operationTestNode(t, "local", config.ClusterModeDisabled)
 	calibrationDefaults(t, s)
 	entered := make(chan struct{})
+	interrupted, release := make(chan struct{}), make(chan struct{})
+	finish := sync.OnceFunc(func() { close(release) })
+	defer finish()
 	var blocked atomic.Bool
 	engine := calibrationChatHandler(t, func(req *http.Request, _ int) bool {
 		if blocked.CompareAndSwap(false, true) {
 			close(entered)
 			<-req.Context().Done()
+			close(interrupted)
+			<-release
 			return false
 		}
 		return true
@@ -690,11 +747,96 @@ func TestCalibrationCancellationReleasesClaim(t *testing.T) {
 	awaitDownloadSignal(t, entered)
 	cancelled := calibrationHTTP(t, s.engine, http.MethodDelete, "/zzrouter/v1/jobs/"+id, "", nil)
 	require.Equal(t, http.StatusAccepted, cancelled.Code, cancelled.Body.String())
+	awaitDownloadSignal(t, interrupted)
+	request := calibrationRequestFor("local", run.ID, 1)
+	for _, entry := range []calibration.Request{request, calibrationRequestFor("local", "absent", 1)} {
+		busy := calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "", entry)
+		require.Equal(t, http.StatusConflict, busy.Code, busy.Body.String())
+		var problem utils.ProblemDetails
+		require.NoError(t, json.Unmarshal(busy.Body.Bytes(), &problem))
+		require.Equal(t, "calibration_running", problem.Code)
+		require.Equal(t, id, problem.JobID)
+	}
+	current, err := s.jobs.Get(id)
+	require.NoError(t, err)
+	require.False(t, current.Phase.IsTerminal())
+	finish()
 	awaitCalibration(t, s.jobs, id, jobs.PhaseFailed)
 
-	fresh := calibrationJobID(t, calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "", calibrationRequestFor("local", run.ID, 1)))
+	fresh := calibrationJobID(t, calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "", request))
 	require.NotEqual(t, id, fresh)
 	awaitCalibration(t, s.jobs, fresh, jobs.PhaseDone)
+}
+
+func TestCalibrationShutdownFailsWithMeasuredSteps(t *testing.T) {
+	s := operationTestNode(t, "local", config.ClusterModeDisabled)
+	calibrationDefaults(t, s)
+	entered := make(chan struct{})
+	var measured atomic.Int32
+	engine := calibrationChatHandler(t, func(req *http.Request, output int) bool {
+		if output == 2 && measured.Add(1) == 3 {
+			close(entered)
+			<-req.Context().Done()
+			return false
+		}
+		return true
+	})
+	s.httpStreamingClient = &http.Client{Transport: deadlineTransport(func(req *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+		return rec.Result(), nil
+	})}
+	run := calibrationFixtureRun(t, s, "run_shutdown", "http://127.0.0.1:1", instance.StatusRunning, calibration.Chat, "chat_completions")
+	id := calibrationJobID(t, calibrationHTTP(t, s.engine, http.MethodPost, calibrationPath, "", calibrationRequestFor("local", run.ID, 1, 1)))
+	awaitDownloadSignal(t, entered)
+	s.shutdownCancel()
+	event := awaitCalibration(t, s.jobs, id, jobs.PhaseFailed)
+	require.Equal(t, context.Canceled.Error(), event.Err)
+	report := calibrationReportOf(t, event)
+	require.EqualValues(t, "cancelled", report.Outcome)
+	require.Len(t, report.Steps, 1)
+	require.Equal(t, 2, report.Steps[0].Runs[0].Requests.Completed)
+}
+
+type calibrationTerminalHandle struct {
+	jobs.Handle
+	beforeTerminal func()
+	panicValue     string
+}
+
+func (h calibrationTerminalHandle) Progress(int, string, jobs.Bytes) { panic(h.panicValue) }
+
+func (h calibrationTerminalHandle) Fail(err error) {
+	h.beforeTerminal()
+	h.Handle.Fail(err)
+}
+
+func TestCalibrationRunnerPanicFailsBeforeReleasingClaim(t *testing.T) {
+	const panicValue = "private runner panic fixture"
+	logs, err := os.CreateTemp(t.TempDir(), "panic-log")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, logs.Close()) })
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	reg := newTestJobsRegistry(t)
+	job, err := reg.StartDetached(jobs.KindCalibration, "", nil)
+	require.NoError(t, err)
+	claim := &calibrationClaim{jobID: job.ID()}
+	handle := calibrationTerminalHandle{Handle: job, panicValue: panicValue, beforeTerminal: func() {
+		require.Equal(t, job.ID(), claim.jobID)
+	}}
+	runner := &nodeCalibration{}
+	runner.run(handle, calibration.Request{}, claim)
+	event := awaitCalibration(t, reg, job.ID(), jobs.PhaseFailed)
+	require.Equal(t, calibration.ErrRunnerPanic.Error(), event.Err)
+	require.NotContains(t, event.Meta, "report")
+	require.Empty(t, claim.jobID)
+	logged, err := os.ReadFile(logs.Name())
+	require.NoError(t, err)
+	require.Contains(t, string(logged), `"level":"ERROR"`)
+	require.Contains(t, string(logged), `"panic":"`+panicValue+`"`)
+	require.Contains(t, string(logged), `"stack":"goroutine `)
 }
 
 func TestCalibrationProgressWithZeroStepsAndUnknownTotal(t *testing.T) {
@@ -713,6 +855,40 @@ func TestCalibrationProgressWithZeroStepsAndUnknownTotal(t *testing.T) {
 	total, err := json.Marshal(event.Meta["requests_total"])
 	require.NoError(t, err)
 	require.JSONEq(t, `{"run_pending":null}`, string(total))
+}
+
+func TestCalibrationOpenAPISchemaMatchesJobMetadata(t *testing.T) {
+	registry := newTestJobsRegistry(t)
+	job, err := registry.StartDetached(jobs.KindCalibration, "", nil)
+	require.NoError(t, err)
+	job.Progress(0, calibration.Checking, jobs.Bytes{})
+	first, err := registry.Get(job.ID())
+	require.NoError(t, err)
+	body, err := json.Marshal(first)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), `"meta"`)
+	publishCalibrationProgress(job, calibration.Progress{Phase: calibration.Checking}, nil)
+	job.Meta(jobs.Meta{"report": calibration.Report{}})
+	job.Done()
+	last, err := registry.Get(job.ID())
+	require.NoError(t, err)
+	require.Len(t, last.Meta, 6)
+	schemas, ok := mapAt(loadSpecTree(t)["components"], "schemas")
+	require.True(t, ok)
+	progress, ok := mapAt(schemas, "CalibrationProgress")
+	require.True(t, ok)
+	require.Empty(t, progress["required"])
+	properties, ok := mapAt(progress, "properties")
+	require.True(t, ok)
+	for key := range last.Meta {
+		require.Contains(t, properties, key)
+	}
+	steps, ok := mapAt(properties, "steps")
+	require.True(t, ok)
+	require.Equal(t, last.Meta["steps"], steps["minimum"])
+	report, ok := mapAt(properties, "report")
+	require.True(t, ok)
+	require.Equal(t, "#/components/schemas/CalibrationReport", report["$ref"])
 }
 
 func TestCalibrationProgressUsesReportOwnership(t *testing.T) {
@@ -775,13 +951,19 @@ func TestCalibrationEmbeddingsSender(t *testing.T) {
 func TestCalibrationReportRedactsCredentials(t *testing.T) {
 	envFixture := t.Name() + "-environment-value"
 	info := instance.InstanceInfo{ID: "a", ResolvedParameters: map[string]string{
-		"ctx-size": "4096", "api-key": "test-key-value",
-	}, Environment: map[string]string{"SECRET": envFixture}}
+		"ctx-size": "4096", "api-key": "test-key-value", "engine-note": "before sk-123456789012345678901234 after",
+		"literal": "[REDACTED]", "structured": `"token":"[REDACTED]"`,
+	}, Environment: map[string]string{"SECRET": envFixture}, ParametersStatus: &instance.ParametersStatus{
+		State: instance.ParametersCurrent, Overridden: []string{"parameters.api-key", "parameters.ctx_size", "environment.SECRET"},
+	}}
 	target, _ := calibrationTarget(info, loadProviderSchema(nil, "llamacpp"))
 	payload, err := json.Marshal(target.Run)
 	require.NoError(t, err)
 	require.Contains(t, string(payload), `"ctx-size":"4096"`)
+	require.Contains(t, string(payload), `"redacted_parameters":["api-key","engine-note","structured"]`)
+	require.Contains(t, string(payload), `"overridden":["api-key","ctx-size","environment.SECRET"]`)
 	require.NotContains(t, string(payload), "test-key-value")
+	require.NotContains(t, string(payload), "sk-123456789012345678901234")
 	require.NotContains(t, string(payload), envFixture)
 }
 

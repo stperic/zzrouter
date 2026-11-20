@@ -106,6 +106,9 @@ func (e *RoutedError) Respond(c *gin.Context) {
 			if pd.RunID != "" {
 				wire.Extra["run_id"] = pd.RunID
 			}
+			if pd.JobID != "" {
+				wire.Extra["job_id"] = pd.JobID
+			}
 			if pd.Node != "" {
 				wire.Extra["node"] = pd.Node
 			}

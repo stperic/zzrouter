@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,8 +14,6 @@ import (
 )
 
 const internalCalibrationsPath = "/zzrouter/v1/internal/calibrations"
-
-type calibrationsService struct{ router routing.Router }
 
 type calibrationAccepted struct {
 	JobID string `json:"job_id"`
@@ -31,21 +30,29 @@ func validateCalibrationRequest(req calibration.Request) error {
 	return nil
 }
 
-func (s calibrationsService) submit(ctx context.Context, req calibration.Request) (*calibrationAccepted, error) {
+func (s *Server) submitCalibration(ctx context.Context, req calibration.Request) (*calibrationAccepted, error) {
 	if err := validateCalibrationRequest(req); err != nil {
 		return nil, err
+	}
+	selector := req.Node
+	node := constants.ParseNodeIdentifier(selector).Nodename
+	router := s.cluster.router
+	if clusterRouter, ok := router.(*routing.ClusterAwareRouter); ok && clusterRouter.IsLocalNode(node) {
+		req.Node = s.GetNodename()
+	} else if endpoint := s.resolveClusterEndpoint(node); endpoint != nil {
+		req.Node = cmp.Or(endpoint.NodeName, endpoint.Name, req.Node)
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	result, err := routeAndParse[calibrationAccepted](ctx, s.router, http.MethodPost, internalCalibrationsPath, req.Node, body)
+	result, err := routeAndParse[calibrationAccepted](ctx, router, http.MethodPost, internalCalibrationsPath, selector, body)
 	var routed *RoutedError
 	if errors.As(err, &routed) && routed.StatusCode == http.StatusBadGateway && routed.ProblemDetails != nil {
 		code := httperr.RouteErrorCode(routed.ProblemDetails.Code)
 		if code == httperr.CodeNodeUnreachable || code == httperr.CodeUpstreamTimeout {
 			return nil, newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable",
-				"The calibration node did not answer. Check the node with zz_nodes.", code, req.Node)
+				"The calibration node did not answer. Check the node with zz_nodes.", code, selector)
 		}
 	}
 	return result, err

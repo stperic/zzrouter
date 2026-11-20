@@ -10,7 +10,7 @@ func (s *Server) createCalibration(c *gin.Context) {
 	if !BindJSONStrict(c, &req) {
 		return
 	}
-	result, err := (calibrationsService{router: s.cluster.router}).submit(c.Request.Context(), req)
+	result, err := s.submitCalibration(c.Request.Context(), req)
 	if err != nil {
 		RespondToError(c, err)
 		return

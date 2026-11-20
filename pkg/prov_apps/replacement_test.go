@@ -141,6 +141,23 @@ func TestReplacementReportUsesFreshWarningAndSkipsIdleReclaim(t *testing.T) {
 	assert.Empty(t, info.MemoryCommitments)
 }
 
+func TestReplacementReportKeepsPreStopWarningWhenFreshAdmissionFits(t *testing.T) {
+	r := newReplacementRig(t, 1000, 2000, false)
+	r.after[0].FreeMiB, r.after[0].UsedMiB, r.after[0].Processes = 10000, new(int64(0)), nil
+	req := r.request()
+	req.Parameters = map[string]string{"memory-admission": "report"}
+	result, err := r.m.EnsureRun(t.Context(), req)
+	require.NoError(t, err)
+	require.True(t, result.Started)
+	awaitRunning(t, result.Run)
+	require.Equal(t, instance.StatusStopped, r.old.GetStatus())
+	info := result.Run.ToInfo("")
+	require.NotNil(t, info.AdmissionWarning)
+	require.Equal(t, r.old.ID, info.AdmissionWarning.KeptRun)
+	require.Equal(t, new(int64(2000)), info.AdmissionWarning.CreditedMiB)
+	require.EqualValues(t, 3000, info.AdmissionWarning.FreeMiB)
+}
+
 // ReplacementRefusalFixture gives the HTTP contract test the same real run and memory evidence.
 func ReplacementRefusalFixture(t *testing.T) (*ProviderAppManager, *instance.Instance) {
 	t.Helper()
