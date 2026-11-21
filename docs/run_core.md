@@ -279,8 +279,10 @@ the 30-minute terminal sweep on creation. Restart durability remains in-memory.
 
 ## Persisting model settings
 
-`zzrouter run --param` supplies request overrides. Persist model settings in the
-provider's `models` tier through the TUI editor or `zz_params_set`; use
-`zzrouter providers variant set` to create a named variant. The unused `run --save`
-flag, `POST /zzrouter/v1/models/defaults` and `PATCH /zzrouter/v1/runs/config`
-have been removed. Run-manager configuration still comes from `node.yaml`.
+`zzrouter run --param` supplies request overrides, and `--endpoint` picks the request
+shape (`chat`, `embeddings` or `reranking`) as `endpoint` does on `POST /runs`.
+Persist model settings in the provider's `models` tier through the TUI editor or
+`zz_params_set`; use `zzrouter providers variant set` to create a named variant.
+The unused `run --save` flag, `POST /zzrouter/v1/models/defaults` and
+`PATCH /zzrouter/v1/runs/config` have been removed. Run-manager configuration
+still comes from `node.yaml`.

@@ -108,11 +108,11 @@ func TestRunPreview_Fields(t *testing.T) {
 }
 
 func TestStartRunRequestEncodesSettings(t *testing.T) {
-	req := StartRunRequest{Node: "gpu-server", Provider: "vllm", Model: "meta-llama/Llama-3-8B", Replace: true,
+	req := StartRunRequest{Node: "gpu-server", Provider: "vllm", Model: "meta-llama/Llama-3-8B", Endpoint: "embeddings", Replace: true,
 		Parameters: map[string]string{"tensor-parallel-size": "2"}, Environment: map[string]string{"CUDA_VISIBLE_DEVICES": "0,1"}}
 	body, err := json.Marshal(req)
 	assert.NoError(t, err)
-	assert.JSONEq(t, `{"node":"gpu-server","provider":"vllm","model":"meta-llama/Llama-3-8B","replace":true,"parameters":{"tensor-parallel-size":"2"},"environment":{"CUDA_VISIBLE_DEVICES":"0,1"}}`, string(body))
+	assert.JSONEq(t, `{"node":"gpu-server","provider":"vllm","model":"meta-llama/Llama-3-8B","endpoint":"embeddings","replace":true,"parameters":{"tensor-parallel-size":"2"},"environment":{"CUDA_VISIBLE_DEVICES":"0,1"}}`, string(body))
 }
 
 func TestDeployRequest_Fields(t *testing.T) {

@@ -47,6 +47,9 @@ Examples:
   # Force selection when multiple matches
   zzrouter run "Qwen*" --force
   
+  # Serve embeddings (or reranking) instead of chat
+  zzrouter run nomic-embed-text --provider ollama --endpoint embeddings
+
   # Replace the current run with new settings
   zzrouter run llama2 --param keep-alive=5m --replace
 
@@ -62,6 +65,7 @@ Examples:
 			provider, _ := cmd.Flags().GetString("provider")
 			node, _ := cmd.Flags().GetString("node")
 			model, _ := cmd.Flags().GetString("model")
+			endpoint, _ := cmd.Flags().GetString("endpoint")
 
 			// Parse parameters from both formats (repeatable and comma-separated)
 			params, err := parseParameterFlags(cmd)
@@ -86,13 +90,14 @@ Examples:
 				return fmt.Errorf("specify a model or a node-scoped --provider")
 			}
 
-			return runRun(cmd.Context(), provider, node, model, force, replace, dryRun, stream, watch, params, envVars)
+			return runRun(cmd.Context(), provider, node, model, endpoint, force, replace, dryRun, stream, watch, params, envVars)
 		},
 	}
 
 	// Model Selection Flags (model is positional, only need provider and node)
 	cmd.Flags().StringP("provider", "a", "", "Provider name, including node-scoped providers such as comfyui")
 	cmd.Flags().StringP("node", "n", "", "Node name (defaults to * for all nodes)")
+	cmd.Flags().String("endpoint", "", "Request shape the run serves: chat, embeddings or reranking (default chat; omit for node-scoped providers)")
 
 	// Runtime Parameter Flags
 	cmd.Flags().StringArray("param", nil, "Additional runtime parameter (repeatable, format: key=value)")
@@ -186,7 +191,7 @@ func parseEnvironmentFlags(cmd *cobra.Command) (map[string]string, error) {
 	return result, nil
 }
 
-func runRun(ctx context.Context, provider, node, model string, force, replace, dryRun, stream, watch bool, params, envVars map[string]string) error {
+func runRun(ctx context.Context, provider, node, model, endpoint string, force, replace, dryRun, stream, watch bool, params, envVars map[string]string) error {
 	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
@@ -218,7 +223,7 @@ func runRun(ctx context.Context, provider, node, model string, force, replace, d
 	if dryRun {
 		fmt.Printf("\n%s Fetching run preview from server...\n", ui.GetSearchEmoji())
 
-		preview, err := client.PreviewRun(selectedModel.Node, modelID, selectedModel.Provider, params, envVars)
+		preview, err := client.PreviewRun(selectedModel.Node, modelID, selectedModel.Provider, endpoint, params, envVars)
 		if err != nil {
 			return fmt.Errorf("failed to get preview: %w", err)
 		}
@@ -229,7 +234,7 @@ func runRun(ctx context.Context, provider, node, model string, force, replace, d
 
 	start, err := client.StartRun(ctx, pkgClient.StartRunRequest{
 		Node: selectedModel.Node, Model: modelID, Provider: selectedModel.Provider,
-		Replace: replace, Parameters: params, Environment: envVars,
+		Endpoint: endpoint, Replace: replace, Parameters: params, Environment: envVars,
 	})
 	if err != nil {
 		var apiErr *pkgClient.APIError
