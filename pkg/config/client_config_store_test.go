@@ -250,20 +250,16 @@ func TestClientConfigSavePublishesCompleteSnapshots(t *testing.T) {
 	first := &ClientConfig{Node: NodeConnection{Address: "first"}, Preferences: ClientPreferences{Chat: ChatSettings{SystemPrompt: strings.Repeat("a", 8192)}}}
 	second := &ClientConfig{Node: NodeConnection{Address: "second"}, Preferences: ClientPreferences{Chat: ChatSettings{SystemPrompt: strings.Repeat("b", 8192)}}}
 	require.NoError(t, cm.SaveClientConfig(first))
+	// A separate manager shares no in-memory state with the writer, as another process would not.
+	other := NewConfigManager("zzrouter")
+	require.Equal(t, cm.GetClientConfigPath(), other.GetClientConfigPath())
 	stop := make(chan struct{})
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		close(started)
 		for {
-			select {
-			case <-stop:
-				done <- nil
-				return
-			default:
-			}
-			// The lock-free production read races the saves, as another process would.
-			got, err := cm.LoadClientConfig()
+			got, err := other.LoadClientConfig()
 			if err != nil {
 				done <- err
 				return
@@ -275,6 +271,12 @@ func TestClientConfigSavePublishesCompleteSnapshots(t *testing.T) {
 			if got.Node.Address != want.Node.Address || got.Preferences.Chat.SystemPrompt != want.Preferences.Chat.SystemPrompt {
 				done <- errors.New("reader observed incomplete client configuration")
 				return
+			}
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
 			}
 		}
 	}()
