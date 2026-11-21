@@ -165,6 +165,7 @@ type StartRunRequest struct {
 	Node        string            `json:"node,omitempty"`
 	Provider    string            `json:"provider"`
 	Model       string            `json:"model,omitempty"`
+	Endpoint    string            `json:"endpoint,omitempty"`
 	Replace     bool              `json:"replace,omitempty"`
 	Parameters  map[string]string `json:"parameters,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
@@ -193,17 +194,19 @@ func (c *Client) StartRun(ctx context.Context, req StartRunRequest) (*StartRunRe
 }
 
 // PreviewRun gets a preview of what a run would look like without executing it
-func (c *Client) PreviewRun(node, modelName, provider string, parameters, environment map[string]string) (*RunPreview, error) {
+func (c *Client) PreviewRun(node, modelName, provider, endpoint string, parameters, environment map[string]string) (*RunPreview, error) {
 	req := struct {
 		Node        string            `json:"node,omitempty"`
 		App         string            `json:"provider,omitempty"`
 		ModelName   string            `json:"model_name"`
+		Endpoint    string            `json:"endpoint,omitempty"`
 		Parameters  map[string]string `json:"parameters,omitempty"`
 		Environment map[string]string `json:"environment,omitempty"`
 	}{
 		Node:        node,
 		App:         provider,
 		ModelName:   modelName,
+		Endpoint:    endpoint,
 		Parameters:  parameters,
 		Environment: environment,
 	}

@@ -555,5 +555,5 @@ operator sign-in; the Chrome journey with fixtures passes).
 - Done (`991feb8`): ComfyUI is no longer reclaimed or idle-expired while its
   `observe.busy` read is unknown (`activity_unknown`), and served runs report
   the endpoint the model serves from daemon capability evidence.
-- `zzrouter run` has no endpoint flag, so the CLI cannot start an
-  embeddings run (`POST /runs` with `endpoint` can).
+- Done: `zzrouter run --endpoint embeddings` starts an embeddings run from the
+  CLI (`--dry-run` previews it the same way).

@@ -63,31 +63,46 @@ func TestNewRunCmd(t *testing.T) {
 		t.Error("expected 'force' flag to exist")
 	}
 	require.NotNil(t, flags.Lookup("replace"))
+	require.NotNil(t, flags.Lookup("endpoint"))
 }
 
 func TestRunCommandForceSelectionAndReplace(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		flags   []string
-		replace bool
-		refuse  bool
-		wantErr string
-		starts  int32
+		name     string
+		flags    []string
+		replace  bool
+		refuse   bool
+		endpoint string
+		wantErr  string
+		starts   int32
+		previews int32
 	}{
 		{name: "force selects and reuses", flags: []string{"--force"}, starts: 1},
+		{name: "endpoint goes on the wire", flags: []string{"--force", "--endpoint", "embeddings"}, endpoint: "embeddings", starts: 1},
+		{name: "dry run previews the endpoint", flags: []string{"--force", "--endpoint", "reranking", "--dry-run"}, endpoint: "reranking", previews: 1},
 		{name: "replace goes on the wire", flags: []string{"--force", "--replace"}, replace: true, starts: 1},
 		{name: "replace leaves selection ambiguous", flags: []string{"--replace"}, wantErr: "multiple models match"},
 		{name: "settings refusal suggests replace", flags: []string{"--force"}, refuse: true, wantErr: "Use --replace", starts: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
-			var starts atomic.Int32
+			var starts, previews atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case apipath.Health:
 					w.WriteHeader(http.StatusOK)
 				case apipath.Models:
 					_, _ = io.WriteString(w, `{"data":[{"name":"first","node":"worker","assigned_app":"llamacpp"},{"name":"second","node":"worker","assigned_app":"llamacpp"}]}`)
+				case apipath.RunsPreview:
+					previews.Add(1)
+					var preview struct {
+						ModelName string `json:"model_name"`
+						Endpoint  string `json:"endpoint"`
+					}
+					require.NoError(t, json.NewDecoder(r.Body).Decode(&preview))
+					require.Equal(t, "first", preview.ModelName)
+					require.Equal(t, tc.endpoint, preview.Endpoint)
+					_, _ = io.WriteString(w, `{"data":{"model":"first","provider":"llamacpp","node":"worker"}}`)
 				case apipath.Runs:
 					if r.Method == http.MethodGet {
 						_, _ = io.WriteString(w, `{"data":[]}`)
@@ -100,6 +115,7 @@ func TestRunCommandForceSelectionAndReplace(t *testing.T) {
 					require.Equal(t, "first", start.Model)
 					require.Equal(t, "worker", start.Node)
 					require.Equal(t, tc.replace, start.Replace)
+					require.Equal(t, tc.endpoint, start.Endpoint)
 					if tc.refuse {
 						w.WriteHeader(http.StatusConflict)
 						_, _ = io.WriteString(w, `{"code":"run_settings_differ","detail":"Settings differ"}`)
@@ -127,6 +143,7 @@ func TestRunCommandForceSelectionAndReplace(t *testing.T) {
 				require.NoError(t, err)
 			}
 			require.Equal(t, tc.starts, starts.Load())
+			require.Equal(t, tc.previews, previews.Load())
 		})
 	}
 
