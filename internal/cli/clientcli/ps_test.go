@@ -1,20 +1,75 @@
 package clientcli
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	shared "github.com/stperic/zzrouter/internal/cli/clientcli/shared"
+	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 
+	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
+
+func TestPsStructuredOutput(t *testing.T) {
+	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case apipath.Health:
+			w.WriteHeader(http.StatusOK)
+		case apipath.Runs:
+			_, _ = io.WriteString(w, `{"data":[{"id":"embedding-run","model":"tiny-embed"},{"id":"chat-run","model":"chat"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	addr := server.Listener.Addr().(*net.TCPAddr)
+	cm := config.NewConfigManager("zzrouter")
+	require.NoError(t, cm.SaveClientConfig(&config.ClientConfig{Node: config.NodeConnection{Address: addr.IP.String(), Port: addr.Port}}))
+
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		decode func([]byte, any) error
+		ids    []string
+	}{
+		{name: "JSON", args: []string{"ps", "-o", "json"}, decode: json.Unmarshal, ids: []string{"embedding-run", "chat-run"}},
+		{name: "filtered list", args: []string{"ps", "list", "tiny-*", "-o", "json"}, decode: json.Unmarshal, ids: []string{"embedding-run"}},
+		{name: "empty JSON", args: []string{"ps", "missing", "-o", "json"}, decode: json.Unmarshal},
+		{name: "YAML", args: []string{"ps", "list", "-o", "yaml"}, decode: yaml.Unmarshal, ids: []string{"embedding-run", "chat-run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			root := &cobra.Command{Use: "zzrouter"}
+			root.PersistentFlags().StringP("output", "o", "table", "Output format")
+			root.AddCommand(NewPsCmd())
+			root.SetArgs(tc.args)
+			root.SetOut(&output)
+			require.NoError(t, root.ExecuteContext(t.Context()))
+			var runs []struct{ ID string }
+			require.NoError(t, tc.decode(output.Bytes(), &runs))
+			require.NotNil(t, runs, "an empty result must be a sequence")
+			require.Len(t, runs, len(tc.ids))
+			for i, id := range tc.ids {
+				assert.Equal(t, id, runs[i].ID)
+			}
+		})
+	}
+}
 
 func TestPsTableNamesProviderAndModelRuns(t *testing.T) {
 	instances := []pkgClient.Instance{

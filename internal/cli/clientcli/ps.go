@@ -46,18 +46,7 @@ Subcommands:
 For stopping instances, use:
   zzrouter stop <model_spec_or_id>  # Stop running models`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			provider, _ := cmd.Flags().GetString("provider")
-
-			// --model is not registered on `ps`; the positional arg is
-			// the model filter.
-			model, err := ParsePositionalModelArg(args, "")
-			if err != nil {
-				return err
-			}
-
-			return runPs(cmd.Context(), provider, model)
-		},
+		RunE: runPsCommand,
 	}
 
 	AddCommonFilterFlags(cmd)
@@ -71,7 +60,16 @@ For stopping instances, use:
 	return cmd
 }
 
-func runPs(ctx context.Context, provider, model string) error {
+func runPsCommand(cmd *cobra.Command, args []string) error {
+	provider, _ := cmd.Flags().GetString("provider")
+	model, err := ParsePositionalModelArg(args, "")
+	if err != nil {
+		return err
+	}
+	return runPs(cmd.Context(), cmd, provider, model)
+}
+
+func runPs(ctx context.Context, cmd *cobra.Command, provider, model string) error {
 	// Use centralized sign-in logic
 	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
@@ -82,6 +80,13 @@ func runPs(ctx context.Context, provider, model string) error {
 	filteredInstances, err := shared.FetchInstances(ctx, client, provider, model)
 	if err != nil {
 		return err
+	}
+
+	if GetOutputFormat(cmd) != OutputTable {
+		if filteredInstances == nil {
+			filteredInstances = []pkgClient.Instance{}
+		}
+		return OutputData(cmd, filteredInstances, func() {})
 	}
 
 	if len(filteredInstances) == 0 {
@@ -373,18 +378,7 @@ Examples:
   zzrouter ps list Qwen/Qwen2.5/VL             # Filter by model name
   zzrouter ps list --provider "*llm" "Qwen*"        # Wildcard patterns`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			provider, _ := cmd.Flags().GetString("provider")
-			// --model not registered; positional arg is the model filter.
-
-			// Handle positional argument using DRY utility
-			model, err := ParsePositionalModelArg(args, "")
-			if err != nil {
-				return err
-			}
-
-			return runPs(cmd.Context(), provider, model)
-		},
+		RunE: runPsCommand,
 	}
 
 	AddCommonFilterFlags(cmd)
