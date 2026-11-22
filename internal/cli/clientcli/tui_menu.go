@@ -25,6 +25,19 @@ func menuLogoTick() tea.Cmd {
 	return tea.Tick(menuLogoInterval, func(time.Time) tea.Msg { return menuLogoTickMsg{} })
 }
 
+// advanceMenuLogo draws the next welcome-logo frame and schedules the one
+// after it, until the logo is complete or the menu is left.
+func (m *tuiModel) advanceMenuLogo() tea.Cmd {
+	if m.pane != paneMenu || !m.menuWelcome || m.menuLogoFrame >= menuLogoFrames {
+		return nil
+	}
+	m.menuLogoFrame++
+	if m.menuLogoFrame < menuLogoFrames {
+		return menuLogoTick()
+	}
+	return nil
+}
+
 type menuItem struct {
 	name        string
 	description string
