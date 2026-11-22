@@ -23,10 +23,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// isolatePythonSelection makes PATH hold only an in-range python3.13 that
-// answers the version probe, so planning never depends on the host's Python.
-// It refuses anything else (macOS probes with -I -S -c), so planning cannot
-// quietly run the interpreter it selected.
+// isolatePythonSelection supplies an in-range python3.13 on PATH for the plan.
+// The fixture accepts only version probes. Darwin can also try system paths.
 func isolatePythonSelection(t *testing.T) {
 	t.Helper()
 	bin := t.TempDir()
@@ -39,8 +37,7 @@ func TestVLLMInstallVerification(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("vLLM's managed install requires Unix")
 	}
-	// The fixture below executes the verifier under the host Python; only
-	// interpreter selection for the plan is isolated.
+	// Use the host Python for the verifier after providing a planning fallback.
 	python, err := exec.LookPath("python3")
 	require.NoError(t, err)
 	isolatePythonSelection(t)

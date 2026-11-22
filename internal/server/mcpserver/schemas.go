@@ -17,14 +17,14 @@ import (
 )
 
 // Tool schemas follow from Go types and literals alone, so the keys are finite
-// and every server shares one build of each; nothing writes a Resolved once it
+// and every server reuses the published result; nothing writes a Resolved once it
 // is resolved, and schema JSON leaves the cache only as a copy.
 var (
 	typeSchemas     sync.Map // reflect.Type -> []byte
 	resolvedSchemas sync.Map // schema JSON -> *jsonschema.Resolved
 )
 
-// cached returns key's value in m, building it on first use.
+// cached returns key's shared value, building a candidate on a cache miss.
 func cached[V any](m *sync.Map, key any, build func() (V, error)) (V, error) {
 	if v, ok := m.Load(key); ok {
 		if value, ok := v.(V); ok {

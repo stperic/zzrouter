@@ -158,7 +158,10 @@ func TestToolSchemasSharedAcrossServers(t *testing.T) {
 		resolvedSchemas.Range(func(k, v any) bool { s.resolved[k.(string)] = v.(*jsonschema.Resolved).Schema(); return true })
 		return s
 	}
-	d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected REST dispatch") })
+	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("unexpected REST dispatch")
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	connect := func() (*mcp.ClientSession, context.Context) {
 		server := newServer(d.cfg)
 		registerTool(server, d.cfg, map[string][]string{}, &mcp.Tool{Name: "shared_schema_contract", OutputSchema: objectSchema[runOutput]{}}, nil,
@@ -167,12 +170,12 @@ func TestToolSchemasSharedAcrossServers(t *testing.T) {
 			})
 		return connectToolClient(t, d, server)
 	}
-	list := func(client *mcp.ClientSession, ctx context.Context) []byte {
+	list := func(client *mcp.ClientSession, ctx context.Context) ([]byte, error) {
 		listed, err := client.ListTools(ctx, nil)
-		require.NoError(t, err)
-		encoded, err := json.Marshal(listed.Tools)
-		require.NoError(t, err)
-		return encoded
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(listed.Tools)
 	}
 
 	forget()
@@ -181,7 +184,12 @@ func TestToolSchemasSharedAcrossServers(t *testing.T) {
 	for i := range lists {
 		client, ctx := connect()
 		wg.Go(func() {
-			lists[i] = list(client, ctx)
+			listed, err := list(client, ctx)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			lists[i] = listed
 			result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "shared_schema_contract", Arguments: map[string]any{"model": "m", "limit": 3}})
 			if !assertNoToolError(t, result, err) {
 				return
@@ -199,7 +207,8 @@ func TestToolSchemasSharedAcrossServers(t *testing.T) {
 
 	forget()
 	client, ctx := connect()
-	fresh := list(client, ctx)
+	fresh, err := list(client, ctx)
+	require.NoError(t, err)
 	require.Equal(t, string(fresh), string(lists[0]), "tools/list from shared schemas")
 	require.Equal(t, string(fresh), string(lists[1]), "tools/list from shared schemas")
 	rebuilt := take()
