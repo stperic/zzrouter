@@ -93,7 +93,9 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 				if conn.WriteMessage(kind, body) != nil {
 					return
 				}
-				_, _, _ = conn.ReadMessage()
+				if reason != "demotion" {
+					_, _, _ = conn.ReadMessage()
+				}
 			}))
 			defer backend.Close()
 			endpoint, err := url.Parse(backend.URL)
@@ -177,36 +179,49 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, websocket.BinaryMessage, kind)
 			require.Equal(t, payload, echo)
+			if reason == "demotion" {
+				// The upstream has closed, but the client has not closed its write side.
+				_, _, err = conn.ReadMessage()
+				require.True(t, websocket.IsCloseError(err, websocket.CloseAbnormalClosure), "expected EOF from the backend, got %v", err)
+			}
+			// Revocation and policy edits can take one 15s session watch cycle.
+			// Demotion cancels the socket directly and must beat that cycle.
+			drainBudget := 20 * time.Second
+			if reason == "demotion" {
+				drainBudget = 10 * time.Second
+			}
+			drainCtx, cancel := context.WithTimeout(t.Context(), drainBudget)
+			defer cancel()
 			switch reason {
 			case "revocation":
-				_, _, err := coordinator.accessStore.RotateKey(t.Context(), "provider-browser-cluster-reader", audit.Event{})
+				_, _, err := coordinator.accessStore.RotateKey(drainCtx, "provider-browser-cluster-reader", audit.Event{})
 				require.NoError(t, err)
 			case "demotion":
 				// The crossing ends the node, whose stop closes browser streams first.
 				crossRole(t, coordinator, role.RoleWorker)
-				require.NoError(t, coordinator.stopProviderBrowser(t.Context()))
+				require.NoError(t, coordinator.stopProviderBrowser(drainCtx))
 			case "route policy":
-				_, err := coordinator.services.Teams.UpdateTeam(t.Context(), reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
+				_, err := coordinator.services.Teams.UpdateTeam(drainCtx, reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
 				require.NoError(t, err)
 			case "provider policy":
-				_, err := coordinator.services.Teams.UpdateTeam(t.Context(), reader.TeamID, &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}}, "admin")
+				_, err := coordinator.services.Teams.UpdateTeam(drainCtx, reader.TeamID, &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}}, "admin")
 				require.NoError(t, err)
 			}
-			_, _, err = conn.ReadMessage()
-			require.Error(t, err)
-			// Every leg closes from the session cancel itself. The bound only has to
-			// stay under the 15s session watch and the 20s read deadline, the slower
-			// mechanisms a leg left behind would wait on.
-			drained := time.After(10 * time.Second)
 			for _, leg := range []struct {
 				name string
 				done <-chan struct{}
 			}{{"gateway", gatewayFinished}, {"worker", workerFinished}, {"backend", backendClosed}} {
 				select {
 				case <-leg.done:
-				case <-drained:
+				case <-drainCtx.Done():
 					t.Fatalf("browser socket %s leg did not drain", leg.name)
 				}
+			}
+			if reason != "demotion" {
+				require.NoError(t, conn.SetReadDeadline(utils.Now().Add(2*time.Second)))
+				_, _, err = conn.ReadMessage()
+				require.Error(t, err)
+				require.NotErrorIs(t, err, os.ErrDeadlineExceeded)
 			}
 			require.Zero(t, worker.connManager.GetStats().StreamActiveRequests)
 			run.Cancel()

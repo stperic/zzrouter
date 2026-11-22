@@ -146,6 +146,45 @@ func TestProviderBrowserProxyPreservesWebSocketAndClosesWithRun(t *testing.T) {
 	require.Zero(t, manager.GetStats().StreamActiveRequests)
 }
 
+func TestProviderBrowserProxyCancellationDrainsHalfClosedWebSocket(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if assert.NoError(t, err) {
+			_ = conn.Close()
+		}
+	}))
+	defer backend.Close()
+	target, err := url.Parse(backend.URL)
+	require.NoError(t, err)
+	run := instance.NewInstance("half-closed", "fixture", "", 1, 0, 1)
+	defer run.Cancel()
+	finished := make(chan struct{})
+	handler := newProviderBrowserProxy(run, target, nil, 1024, nil)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(finished)
+		handler.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+	conn, handshake, err := websocket.DefaultDialer.DialContext(t.Context(), "ws"+strings.TrimPrefix(proxy.URL, "http"), nil)
+	if handshake != nil {
+		defer handshake.Body.Close()
+	}
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetReadDeadline(utils.Now().Add(2*time.Second)))
+	_, _, err = conn.ReadMessage()
+	require.True(t, websocket.IsCloseError(err, websocket.CloseAbnormalClosure), "expected EOF from the backend, got %v", err)
+
+	// The client still has its write side open after reading the backend's EOF.
+	run.Cancel()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancellation left the proxy waiting for the client")
+	}
+}
+
 func TestProviderBrowserStopBeforeDialCannotReachPortSuccessor(t *testing.T) {
 	old := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("retired run received a request") }))
 	target, err := url.Parse(old.URL)
