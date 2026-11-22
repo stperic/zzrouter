@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Read client configuration through the shared snapshot reader so concurrent
+  Windows file replacement preserves read-only, complete-snapshot access.
+- Close both sides of a ComfyUI browser WebSocket when its session or run ends,
+  so a half-closed connection cannot hold up coordinator shutdown.
+
 - Protect runs with declared busy probes from memory reclaim and idle expiry while their activity is unknown.
 - Report the Ollama model's serving endpoint from its capabilities for both started and adopted runs.
 
