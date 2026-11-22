@@ -283,7 +283,7 @@ func runRun(ctx context.Context, provider, node, model, endpoint string, force, 
 	}
 
 	// Non-streaming mode: show ps table
-	err = runPs(ctx, "", "")
+	err = runPs(ctx, nil, "", "")
 	if err != nil {
 		fmt.Printf("Warning: Failed to display running instances: %v\n", err)
 	}

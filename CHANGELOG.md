@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Honor JSON and YAML output for `zzrouter ps` and `zzrouter ps list`.
+
 - Read client configuration through the shared snapshot reader so concurrent
   Windows file replacement preserves read-only, complete-snapshot access.
 - Close both sides of a ComfyUI browser WebSocket when its session or run ends,
