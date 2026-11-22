@@ -8,12 +8,40 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	commonmcp "github.com/stperic/common/mcp"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
+
+// Tool schemas follow from Go types and literals alone, so the keys are finite
+// and every server reuses the published result; nothing writes a Resolved once it
+// is resolved, and schema JSON leaves the cache only as a copy.
+var (
+	typeSchemas     sync.Map // reflect.Type -> []byte
+	resolvedSchemas sync.Map // schema JSON -> *jsonschema.Resolved
+)
+
+// cached returns key's shared value, building a candidate on a cache miss.
+func cached[V any](m *sync.Map, key any, build func() (V, error)) (V, error) {
+	if v, ok := m.Load(key); ok {
+		if value, ok := v.(V); ok {
+			return value, nil
+		}
+	}
+	value, err := build()
+	if err != nil {
+		return value, err
+	}
+	if v, loaded := m.LoadOrStore(key, value); loaded {
+		if shared, ok := v.(V); ok {
+			return shared, nil
+		}
+	}
+	return value, nil
+}
 
 func resolveToolSchema(value any) (*jsonschema.Resolved, error) {
 	if value == nil {
@@ -23,11 +51,13 @@ func resolveToolSchema(value any) (*jsonschema.Resolved, error) {
 	if err != nil {
 		return nil, err
 	}
-	var declared jsonschema.Schema
-	if err := json.Unmarshal(raw, &declared); err != nil {
-		return nil, err
-	}
-	return declared.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	return cached(&resolvedSchemas, string(raw), func() (*jsonschema.Resolved, error) {
+		var declared jsonschema.Schema
+		if err := json.Unmarshal(raw, &declared); err != nil {
+			return nil, err
+		}
+		return declared.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true})
+	})
 }
 
 func applyToolSchema(raw []byte, declared *jsonschema.Resolved, input bool) ([]byte, error) {
@@ -170,16 +200,19 @@ func canonicalIntegerSpelling(number json.Number) json.Number {
 type objectSchema[T any] struct{}
 
 func (objectSchema[T]) MarshalJSON() ([]byte, error) {
-	schema, err := commonmcp.SchemaFor[T](map[reflect.Type]*jsonschema.Schema{
-		reflect.TypeFor[schema.ParameterValues](): {Type: "object", AdditionalProperties: &jsonschema.Schema{Types: []string{"string", "number", "boolean"}}},
-		reflect.TypeFor[toolCallOutcome]():        {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
-		reflect.TypeFor[probeKind]():              {Type: "string", Enum: []any{probeChat, probeTools, probeEmbed, probeVision}},
-		reflect.TypeFor[probeVerdict]():           {Type: "string", Enum: []any{probeVerified, probeNotSupported, probeInconclusive}},
+	encoded, err := cached(&typeSchemas, reflect.TypeFor[T](), func() ([]byte, error) {
+		schema, err := commonmcp.SchemaFor[T](map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[schema.ParameterValues](): {Type: "object", AdditionalProperties: &jsonschema.Schema{Types: []string{"string", "number", "boolean"}}},
+			reflect.TypeFor[toolCallOutcome]():        {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
+			reflect.TypeFor[probeKind]():              {Type: "string", Enum: []any{probeChat, probeTools, probeEmbed, probeVision}},
+			reflect.TypeFor[probeVerdict]():           {Type: "string", Enum: []any{probeVerified, probeNotSupported, probeInconclusive}},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(schema)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(schema)
+	return bytes.Clone(encoded), err
 }
 
 type runOutput struct {

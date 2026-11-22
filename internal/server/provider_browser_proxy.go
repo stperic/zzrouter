@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
@@ -138,8 +139,40 @@ func newProviderBrowserProxy(run *instance.Instance, target *url.URL, transport 
 		if forward.Body != nil {
 			forward.Body = http.MaxBytesReader(w, forward.Body, limit)
 		}
-		proxy.ServeHTTP(w, forward)
+		serveProviderBrowserProxy(proxy, w, forward)
 	})
+}
+
+func serveProviderBrowserProxy(proxy *httputil.ReverseProxy, w http.ResponseWriter, r *http.Request) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		proxy.ServeHTTP(w, r)
+		return
+	}
+	stream := &providerBrowserStreamWriter{ResponseWriter: w, ctx: r.Context()}
+	defer func() {
+		if stream.stop != nil {
+			stream.stop()
+		}
+	}()
+	proxy.ServeHTTP(stream, r)
+}
+
+type providerBrowserStreamWriter struct {
+	http.ResponseWriter
+	ctx  context.Context
+	stop func() bool
+}
+
+func (w *providerBrowserStreamWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *providerBrowserStreamWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, buffer, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		// ReverseProxy closes the upstream on cancellation. After upstream EOF,
+		// its other copy can still be blocked on the hijacked client socket.
+		w.stop = context.AfterFunc(w.ctx, func() { _ = conn.Close() })
+	}
+	return conn, buffer, err
 }
 
 func confineProviderBrowserRedirect(response *http.Response, target *url.URL) error {

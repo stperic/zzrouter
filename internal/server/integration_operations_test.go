@@ -449,6 +449,10 @@ func TestIntegrationWorkerDaemonConnectionsWithoutLoadedModel(t *testing.T) {
 		svc.Runtime.Endpoint = daemon.URL + "/native?api_key=fixture-private#private"
 		return nil
 	}))
+	// The endpoint change itself may probe the daemon's version: the reload
+	// skips the probe only when a version is already cached, and that cache
+	// is filled at startup by whatever Ollama the host runs on :11434.
+	setupProbes := calls.Load()
 	coordinator := operationTestNode(t, "coordinator", config.ClusterModeCoordinator)
 	linkOperationWorker(t, coordinator, worker)
 	read := func() []connectionInfo {
@@ -492,7 +496,7 @@ func TestIntegrationWorkerDaemonConnectionsWithoutLoadedModel(t *testing.T) {
 			require.Empty(t, row.NativeURL)
 		}
 	}
-	require.Zero(t, calls.Load(), "metadata must not probe a daemon")
+	require.Equal(t, setupProbes, calls.Load(), "metadata must not probe a daemon")
 }
 
 func linkOperationWorker(t *testing.T, coordinator, worker *Server) {

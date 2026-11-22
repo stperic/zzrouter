@@ -82,17 +82,26 @@ func (cm *ConfigManager) writeClientTemplate() error {
 	return nil
 }
 
+// ReadClientConfigFile returns the raw client file as one complete snapshot.
+// Its read pairs with atomicfile.WriteFile, so on Windows a concurrent save
+// neither refuses this open nor is refused by it.
+func (cm *ConfigManager) ReadClientConfigFile() ([]byte, error) {
+	return atomicfile.ReadFile(cm.GetClientConfigPath())
+}
+
 // readClientConfig reads a complete atomic snapshot without requiring write access.
 func (cm *ConfigManager) readClientConfig() (*ClientConfig, error) {
 	// Load .env from config directory so env var references (e.g. ZZROUTER_ADMIN_API_KEY) resolve
 	cm.LoadConfigDirEnv()
 
 	configFile := cm.GetClientConfigPath()
-	// Load config from file (either existing or newly created template)
+	data, err := cm.ReadClientConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read client config from %s: %w", configFile, err)
+	}
 	v := viper.New()
-	v.SetConfigFile(configFile)
-
-	if err := v.ReadInConfig(); err != nil {
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
 		return nil, fmt.Errorf("failed to read client config from %s: %w", configFile, err)
 	}
 

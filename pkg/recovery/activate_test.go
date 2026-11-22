@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -371,7 +371,10 @@ func TestActivateChild(t *testing.T) {
 	ctx := sqlitedb.WithStep(context.Background(), func(step string) {
 		if steps++; steps == stop {
 			fmt.Println("stopped at " + step)
-			testproc.AwaitOwner() // killed here, or ended with its test
+			// Killed here, or ended with its test, whose exit closes stdin.
+			// Nothing here may start a process, os.FindProcess included (it
+			// forks on Linux): a fork alive at the kill still holds the lock.
+			_, _ = io.Copy(io.Discard, os.Stdin)
 			os.Exit(1)
 		}
 	})
@@ -384,12 +387,13 @@ func TestActivateChild(t *testing.T) {
 func killAt(t *testing.T, dir, staging string, stop int, rollback bool) string {
 	t.Helper()
 	child := host.Command(os.Args[0], "-test.run=^TestActivateChild$", "-test.count=1")
-	owner, pid := testproc.OwnerEnv()
-	child.Env = append(os.Environ(), childDir+"="+dir, childStaging+"="+staging, childStop+"="+strconv.Itoa(stop), owner+"="+pid)
+	child.Env = append(os.Environ(), childDir+"="+dir, childStaging+"="+staging, childStop+"="+strconv.Itoa(stop))
 	if rollback {
 		child.Env = append(child.Env, childRollback+"=1")
 	}
 	stdout, err := child.StdoutPipe()
+	require.NoError(t, err)
+	_, err = child.StdinPipe() // held open until Wait
 	require.NoError(t, err)
 	require.NoError(t, child.Start())
 	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })

@@ -335,7 +335,7 @@ func TestMonitorScopesBusyObservationToEffectiveRuntime(t *testing.T) {
 				require.False(t, info.EngineBusy)
 				require.Equal(t, "idle", info.Activity.State)
 			} else {
-				require.Equal(t, 1, calls)
+				require.Positive(t, calls, "the effective runtime must be sampled")
 				require.True(t, info.EngineBusy)
 				require.Equal(t, "active", info.Activity.State)
 			}

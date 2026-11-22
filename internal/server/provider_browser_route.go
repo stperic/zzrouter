@@ -105,7 +105,7 @@ func (s *Server) forwardProviderBrowser(w http.ResponseWriter, r *http.Request, 
 			}
 		},
 	}
-	proxy.ServeHTTP(w, r)
+	serveProviderBrowserProxy(proxy, w, r)
 }
 
 func rewriteProviderBrowserRedirect(response *http.Response, destination *providerBrowserTarget) error {
