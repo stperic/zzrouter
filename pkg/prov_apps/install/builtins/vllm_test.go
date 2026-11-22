@@ -23,12 +23,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// isolatePythonSelection makes PATH hold only an in-range python3.13 that
+// answers the version probe, so planning never depends on the host's Python.
+// It refuses anything else (macOS probes with -I -S -c), so planning cannot
+// quietly run the interpreter it selected.
+func isolatePythonSelection(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	probe := "#!/bin/sh\ncase \"$*\" in --version|\"-I -S -c \"*) echo Python 3.13.0 ;; *) exit 64 ;; esac\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "python3.13"), []byte(probe), 0o700))
+	t.Setenv("PATH", bin)
+}
+
 func TestVLLMInstallVerification(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("vLLM's managed install requires Unix")
 	}
+	// The fixture below executes the verifier under the host Python; only
+	// interpreter selection for the plan is isolated.
 	python, err := exec.LookPath("python3")
 	require.NoError(t, err)
+	isolatePythonSelection(t)
 	root := t.TempDir()
 	fsroot.SetProviderRootOverride(root)
 	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
@@ -160,6 +175,7 @@ func TestManagedPythonVerifyPlanResolvesEnvironmentCallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("managed Python runtimes require Unix")
 	}
+	isolatePythonSelection(t)
 	fsroot.SetProviderRootOverride(t.TempDir())
 	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
 	for _, name := range []string{"vllm", "mlx", "mlx-vlm"} {

@@ -194,11 +194,18 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			}
 			_, _, err = conn.ReadMessage()
 			require.Error(t, err)
-			for _, done := range []<-chan struct{}{gatewayFinished, workerFinished, backendClosed} {
+			// Every leg closes from the session cancel itself. The bound only has to
+			// stay under the 15s session watch and the 20s read deadline, the slower
+			// mechanisms a leg left behind would wait on.
+			drained := time.After(10 * time.Second)
+			for _, leg := range []struct {
+				name string
+				done <-chan struct{}
+			}{{"gateway", gatewayFinished}, {"worker", workerFinished}, {"backend", backendClosed}} {
 				select {
-				case <-done:
-				case <-time.After(3 * time.Second):
-					t.Fatal("browser socket owner did not drain")
+				case <-leg.done:
+				case <-drained:
+					t.Fatalf("browser socket %s leg did not drain", leg.name)
 				}
 			}
 			require.Zero(t, worker.connManager.GetStats().StreamActiveRequests)

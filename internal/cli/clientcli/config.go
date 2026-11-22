@@ -2,7 +2,6 @@ package clientcli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -92,7 +91,7 @@ func runConfigClient() error {
 	fmt.Printf("Config File: %s\n", configFile)
 
 	// Read and display the raw config file content
-	content, err := os.ReadFile(configFile)
+	content, err := cm.ReadClientConfigFile()
 	if err != nil {
 		return fmt.Errorf("failed to read client config file: %w", err)
 	}
